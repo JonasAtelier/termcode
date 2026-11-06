@@ -123,7 +123,7 @@ fn view_json(v: &View) -> Value {
 fn view_of(v: &Value) -> Option<View> {
     let n = |i: usize| v.get(i)?.as_u64().map(|x| x as usize);
     let anchor = v.get(2).and_then(|a| Some(Pos::new(a.get(0)?.as_u64()? as usize, a.get(1)?.as_u64()? as usize)));
-    Some(View { cursor: Pos::new(n(0)?, n(1)?), anchor, want_x: None, scroll: n(3)?, hscroll: n(4)? })
+    Some(View { cursor: Pos::new(n(0)?, n(1)?), anchor, scroll: n(3)?, hscroll: n(4)?, ..Default::default() })
 }
 
 fn side_name(s: Side) -> &'static str {
@@ -437,7 +437,7 @@ mod tests {
         let i = app.scm_files.iter().position(|f| f.path == "a.txt").unwrap();
         app.open_diff(i, false); // into group 1
         let long = &mut app.groups[0].tabs[1].view;
-        *long = View { cursor: Pos::new(30, 1), anchor: Some(Pos::new(28, 0)), want_x: None, scroll: 20, hscroll: 2 };
+        *long = View { cursor: Pos::new(30, 1), anchor: Some(Pos::new(28, 0)), scroll: 20, hscroll: 2, ..Default::default() };
         (app.ag, app.groups[0].active) = (0, 1);
         app.side = Side::Search;
         (app.query, app.s_opts, app.side_w) = ("needle".into(), (true, false, true), Some(40));

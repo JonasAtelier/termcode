@@ -1085,11 +1085,12 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
                 drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
             });
             let view = &mut app.groups[g].tabs[active].view;
-            let (sb, mm) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini);
+            let (sb, mm, texts) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group);
             if let Some((area, mini)) = mm {
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.scroll });
             }
             gh.text = body;
+            gh.diff_text = texts;
             sb
         }
         Some(Doc::Text(b)) => {
@@ -1754,6 +1755,9 @@ pub(crate) fn diff_mini<'a>(cache: &'a mut std::collections::HashMap<String, (Di
 /// so they always move together; only the visible rows are drawn. `blank`:
 /// columns between the text and the scrollbar. Returns the scrollbar and the
 /// minimap, for hit-testing.
+/// What a diff view laid out: its scrollbar, its minimap, each side's text area.
+pub(crate) type DiffHits = (Option<ScrollHit>, Option<(Rect, Mini)>, Option<[Rect; 2]>);
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn diff_view(
     f: &mut Frame,
@@ -1765,10 +1769,11 @@ pub(crate) fn diff_view(
     gap: u16,
     rulers: &[(usize, Color)],
     mini: Option<DiffMini>,
-) -> (Option<ScrollHit>, Option<(Rect, Mini)>) {
+    focus: bool,
+) -> DiffHits {
     if let Some(note) = &d.note {
         f.render_widget(Paragraph::new(note.as_str()).style(Style::new().fg(P.dim)), area);
-        return (None, None);
+        return (None, None, None);
     }
     let n = d.rows.len();
     v.scroll = v.scroll.min(n.saturating_sub(1));
@@ -1790,6 +1795,10 @@ pub(crate) fn diff_view(
     v.hscroll = v.hscroll.min(longest.saturating_sub(tw));
     let sep: Vec<Line> = (0..area.height).map(|_| Line::raw("│")).collect();
     f.render_widget(Paragraph::new(sep).style(Style::new().fg(P.group_border)), Rect::new(area.x + half, area.y, 1, area.height));
+    // Each side's text, right of its gutter: where clicks and drags select (`panel::diff_pos`).
+    let texts = sides.map(|r| Rect::new(r.x + gw.min(r.width), r.y, r.width.saturating_sub(gw), r.height));
+    // The selection, on one side (`v.side`), in the editor's selection colour.
+    let (sel, sel_bg) = (v.selection(), if focus { P.selection } else { P.sel_inactive });
     for (k, r) in d.rows.iter().skip(v.scroll).take(area.height as usize).enumerate() {
         let y = area.y + k as u16;
         let words = if r.kind == Kind::Change {
@@ -1827,8 +1836,17 @@ pub(crate) fn diff_view(
                     let tr = Rect::new(sr.x + gw.min(sr.width), y, sr.width.saturating_sub(gw), 1);
                     let word_bg = if s == 0 { P.diff_del_text } else { P.diff_ins_text };
                     let ranges = if s == 0 { &words.0 } else { &words.1 };
-                    let overlays: Vec<_> = ranges.iter().map(|w| (w.start, w.end, word_bg.over(bg))).collect();
-                    f.render_widget(render_line(text, None, &overlays, None, v.hscroll, tr.width as usize, Style::new().fg(P.editor_fg).bg(bg)), tr);
+                    let mut overlays: Vec<_> = ranges.iter().map(|w| (w.start, w.end, word_bg.over(bg))).collect();
+                    // Last, so it wins over the diff's line and word colours.
+                    let mut eol = None;
+                    let i = v.scroll + k;
+                    if let Some((a, b)) = sel.filter(|(a, b)| s as u8 == v.side && (a.line..=b.line).contains(&i)) {
+                        let start = if i == a.line { a.col.min(text.len()) } else { 0 };
+                        let end = if i == b.line { b.col.min(text.len()) } else { text.len() };
+                        overlays.push((start, end, sel_bg));
+                        eol = (i < b.line).then_some(sel_bg);
+                    }
+                    f.render_widget(render_line(text, None, &overlays, eol, v.hscroll, tr.width as usize, Style::new().fg(P.editor_fg).bg(bg)), tr);
                     draw_rulers(f, tr, v.hscroll, rulers, bg);
                 }
             }
@@ -1866,12 +1884,12 @@ pub(crate) fn diff_view(
     }
     let h = track.height as usize;
     if h == 0 {
-        return (None, out_mini);
+        return (None, out_mini, Some(texts));
     }
     let s = decor::slider(track.height, n + h - 1, h, v.scroll, n.saturating_sub(1));
     paint_slider(f, track, s, slider);
     diff_overview(f, &d.rows, v, track);
-    (Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h }), out_mini)
+    (Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h }), out_mini, Some(texts))
 }
 
 /// A stable word span without diff work on the render path. Multiple edits on

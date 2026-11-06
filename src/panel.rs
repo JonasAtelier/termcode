@@ -484,6 +484,8 @@ pub struct GroupHit {
     pub marks_x: Option<u16>,
     /// The peek zone's rows (first row, height): text rows below it are shifted down.
     pub zone: Option<(u16, u16)>,
+    /// A side-by-side diff: each side's text area (original, modified), for selecting.
+    pub diff_text: Option<[Rect; 2]>,
 }
 
 enum Load {
@@ -547,6 +549,8 @@ pub struct App {
     pub drag: Drag,
     pub drop: Option<(usize, Zone)>,
     last_click: Option<(Instant, Position)>,
+    /// Clicks in a row on one spot (2: a word, 3: a line, in a diff).
+    clicks: u8,
     pub hover: Option<Position>,
     pending_k: bool,
     /// A key or click that ended a wheel/motion batch: handled after that batch's frame.
@@ -796,6 +800,10 @@ fn write_token(path: &Path) -> io::Result<String> {
 /// Put text on the system clipboard: wl-copy, then xclip, then OSC 52 (which
 /// herdr forwards to the outer terminal; not every terminal honours it).
 pub(crate) fn clipboard_set(text: &str) -> &'static str {
+    // Tests never touch the user's clipboard (they read `App::clip`).
+    if cfg!(test) {
+        return "test";
+    }
     for argv in [&["wl-copy"][..], &["xclip", "-selection", "clipboard"][..]] {
         let Ok(mut c) = Command::new(argv[0])
             .args(&argv[1..])
@@ -857,6 +865,25 @@ fn filter(files: &[String], q: &str) -> Vec<String> {
     let mut v: Vec<(usize, &String)> = files.iter().filter_map(|f| parse::match_score(f, q).map(|s| (s, f))).collect();
     v.sort_by_key(|(s, _)| *s);
     v.into_iter().take(500).map(|(_, f)| f.clone()).collect()
+}
+
+/// Row `i`'s text on `side` of a diff (0 original, 1 modified); None on a filler row.
+pub fn diff_cell(d: &DiffDoc, i: usize, side: u8) -> Option<&str> {
+    let r = d.rows.get(i)?;
+    (if side == 0 { &r.left } else { &r.right }).as_ref().map(|(_, t)| t.as_str())
+}
+
+/// A diff selection's text: that side's text of its rows, filler rows skipped, no
+/// line numbers or +/- signs.
+pub fn diff_selected_text(d: &DiffDoc, v: &View) -> Option<String> {
+    let (a, b) = v.selection()?;
+    let rows = (a.line..=b.line).filter_map(|i| {
+        let t = diff_cell(d, i, v.side)?;
+        let start = if i == a.line { a.col.min(t.len()) } else { 0 };
+        let end = if i == b.line { b.col.min(t.len()) } else { t.len() };
+        Some(t.get(start..end.max(start)).unwrap_or(""))
+    });
+    Some(rows.collect::<Vec<_>>().join("\n"))
 }
 
 pub fn base(rel: &str) -> &str {
@@ -925,6 +952,7 @@ impl App {
             drag: Drag::None,
             drop: None,
             last_click: None,
+            clicks: 0,
             hover: None,
             pending_k: false,
             pending_ev: None,
@@ -2296,7 +2324,7 @@ impl App {
     // ---- find widget ----------------------------------------------------------------
 
     fn open_find(&mut self, replace: bool) {
-        let seed = self.ed().and_then(|(b, t)| b.selected_text(&t.view)).filter(|s| !s.contains('\n'));
+        let seed = self.active_selection().filter(|s| !s.contains('\n'));
         let f = self.find.get_or_insert(Find {
             query: String::new(),
             replace: None,
@@ -2879,7 +2907,15 @@ impl App {
         match k.code {
             KeyCode::F(1) => return self.open_palette(),
             KeyCode::F(2) => return self.show_side(Side::Scm, false),
-            KeyCode::F(4) => return self.show_side(Side::Search, true),
+            KeyCode::F(4) => {
+                // VS Code seeds Find in Files with a one-line selection (editor or diff).
+                let seed = self.active_selection().filter(|s| !s.is_empty() && !s.contains('\n'));
+                self.show_side(Side::Search, true);
+                if let Some(s) = seed {
+                    self.query = s;
+                }
+                return;
+            }
             KeyCode::F(3) => return self.find_step(if shift { -1 } else { 1 }),
             // VS Code's Go to Next/Previous Change (Alt+F5); F7 where Alt+F5 does not arrive.
             // In a diff tab F7 walks the diff's changes instead.
@@ -3057,6 +3093,15 @@ impl App {
             return;
         }
         let page = self.ui.groups.get(self.ag).map_or(20, |g| g.text.height.max(1) as isize);
+        if self.ed().is_none() && ctrl && k.code == KeyCode::Char('a') {
+            return self.diff_select_all();
+        }
+        if self.ed().is_none() && k.code == KeyCode::Esc {
+            if let Some((_, v)) = self.diff_tab() {
+                v.anchor = None;
+            }
+            return;
+        }
         if self.ed().is_none() {
             // Diff views scroll, both sides at once (F7 is routed in on_key).
             let rows = match self.active_tab().map(|t| t.key.clone()).and_then(|k| self.docs.get(&k)) {
@@ -3149,6 +3194,13 @@ impl App {
     }
 
     fn copy_cut(&mut self, cut: bool) {
+        if self.ed().is_none() {
+            // A diff is read-only: Ctrl+C and Ctrl+X copy its selection, one side's text.
+            let Some(text) = self.diff_tab().and_then(|(d, v)| diff_selected_text(d, v)) else { return };
+            self.msg = format!("copied via {}", clipboard_set(&text));
+            self.clip = text;
+            return;
+        }
         let Some((b, tab)) = self.ed() else { return };
         let v = &mut tab.view;
         let text = match b.selected_text(v) {
@@ -3275,6 +3327,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 let double = self.last_click.is_some_and(|(t, q)| t.elapsed() < DOUBLE_CLICK && q == p);
                 self.last_click = Some((Instant::now(), p));
+                self.clicks = if double { self.clicks.saturating_add(1) } else { 1 };
                 self.click(p, double, shift);
             }
             // With a prompt open, a drag that started before it must not drop anything.
@@ -3470,6 +3523,9 @@ impl App {
                     }
                 }
                 if !gh.tabbar.contains(p) {
+                    if let Some(texts) = gh.diff_text {
+                        return self.diff_click(g, p, texts, shift);
+                    }
                     let pos = self.pos_at(g, p);
                     if let (Some(pos), Some((b, tab))) = (pos, self.ed()) {
                         if double {
@@ -3554,6 +3610,71 @@ impl App {
     }
 
     /// Buffer position under screen cell `p` in group `g`'s text area.
+    /// The active tab's side-by-side diff and its view.
+    fn diff_tab(&mut self) -> Option<(&DiffDoc, &mut View)> {
+        let grp = self.groups.get_mut(self.ag)?;
+        let tab = grp.tabs.get_mut(grp.active)?;
+        match self.docs.get(&tab.key)? {
+            Doc::Diff(d) => Some((d, &mut tab.view)),
+            Doc::Text(_) => None,
+        }
+    }
+
+    /// The selected text of the active editor or diff.
+    fn active_selection(&mut self) -> Option<String> {
+        if let Some((b, t)) = self.ed() {
+            return b.selected_text(&t.view);
+        }
+        let (d, v) = self.diff_tab()?;
+        diff_selected_text(d, v)
+    }
+
+    /// The diff row and byte column on `side` under `p` (`texts`: each side's text
+    /// area): rows clamp to the diff, columns to the side's text, so a drag past its
+    /// edge (or onto the other side) stays on its own side.
+    fn diff_pos(&mut self, p: Position, texts: [Rect; 2], side: u8) -> Option<Pos> {
+        let r = texts[side as usize];
+        let (d, v) = self.diff_tab()?;
+        let last = d.rows.len().checked_sub(1)?;
+        let row = (v.scroll + p.y.saturating_sub(r.y) as usize).min(last);
+        let x = v.hscroll + p.x.clamp(r.x, r.right().max(r.x + 1) - 1).saturating_sub(r.x) as usize;
+        let past = p.x >= r.right();
+        let col = diff_cell(d, row, side).map_or(0, |t| if past { t.len() } else { editor::byte_at_display(t, x) });
+        Some(Pos::new(row, col))
+    }
+
+    /// A click in a diff, as in VS Code's diff editor: the side under it takes the
+    /// cursor (F7 goes on from there); a second and a third click select the word and
+    /// the line; Shift extends on the same side. A drag selects on from there.
+    fn diff_click(&mut self, g: usize, p: Position, texts: [Rect; 2], shift: bool) {
+        let side = u8::from(p.x >= texts[0].right());
+        let clicks = self.clicks;
+        let Some(pos) = self.diff_pos(p, texts, side) else { return };
+        let Some((d, v)) = self.diff_tab() else { return };
+        if shift && v.side == side {
+            v.anchor.get_or_insert(v.cursor);
+            v.cursor = pos;
+        } else {
+            let text = diff_cell(d, pos.line, side).unwrap_or("");
+            let (a, c) = match clicks {
+                2 => editor::word_at(text, pos.col).map_or((pos.col, pos.col), |w| w),
+                n if n >= 3 => (0, text.len()),
+                _ => (pos.col, pos.col),
+            };
+            (v.side, v.anchor, v.cursor) = (side, (a != c).then_some(Pos::new(pos.line, a)), Pos::new(pos.line, c));
+        }
+        v.want_x = Some(0);
+        self.drag = Drag::Select(g);
+    }
+
+    /// Ctrl+A in a diff: all of its focused side.
+    fn diff_select_all(&mut self) {
+        let Some((d, v)) = self.diff_tab() else { return };
+        let Some(last) = d.rows.len().checked_sub(1) else { return };
+        let end = diff_cell(d, last, v.side).map_or(0, str::len);
+        (v.anchor, v.cursor) = (Some(Pos::new(0, 0)), Pos::new(last, end));
+    }
+
     fn pos_at(&self, g: usize, p: Position) -> Option<Pos> {
         let gh = self.ui.groups.get(g)?;
         let grp = self.groups.get(g)?;
@@ -3670,6 +3791,18 @@ impl App {
                 };
                 if let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) {
                     t.view.scroll = (t.view.scroll as isize + scroll).max(0) as usize;
+                }
+                // A diff selection stays on the side its drag started on.
+                if let (Some(texts), true) = (gh.diff_text, g == self.ag) {
+                    let q = Position::new(p.x, p.y.clamp(gh.text.y, gh.text.bottom().saturating_sub(1)));
+                    let side = self.diff_tab().map_or(0, |(_, v)| v.side);
+                    if let Some(pos) = self.diff_pos(q, texts, side) {
+                        if let Some((_, v)) = self.diff_tab() {
+                            v.anchor.get_or_insert(v.cursor);
+                            v.cursor = pos;
+                        }
+                    }
+                    return;
                 }
                 let q = Position::new(p.x.max(gh.text.x), p.y.clamp(gh.text.y, gh.text.bottom().saturating_sub(1)));
                 let pos = self.pos_at(g, q);
@@ -6672,6 +6805,129 @@ mod tests {
         assert!(app.diff_minis.is_empty() && app.gitui.cmds.conflicts.is_empty() && app.diff_cancel.is_none());
         wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The frame as truecolor ANSI, for `scratchpad/ans2png.py`.
+    fn ansi(t: &Terminal<TestBackend>) -> String {
+        let b = t.backend().buffer();
+        let rgb = |c: Color, fallback: (u8, u8, u8)| match c {
+            Color::Rgb(r, g, b) => (r, g, b),
+            _ => fallback,
+        };
+        (0..b.area.height)
+            .map(|y| {
+                let mut row = String::new();
+                for x in 0..b.area.width {
+                    let c = &b[(x, y)];
+                    let ((fr, fg, fb), (br, bg, bb)) = (rgb(c.fg, (204, 204, 204)), rgb(c.bg, (30, 30, 30)));
+                    let bold = if c.modifier.contains(Modifier::BOLD) { "1" } else { "22" };
+                    row.push_str(&format!("\x1b[{bold};38;2;{fr};{fg};{fb};48;2;{br};{bg};{bb}m{}", c.symbol()));
+                }
+                row + "\x1b[0m"
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Selecting in a diff, as in VS Code's diff editor: on one side only, copying that
+    /// side's text without line numbers, signs or filler rows.
+    #[test]
+    fn diff_selection_copies_one_side() {
+        let d = std::env::temp_dir().join(format!("herdr-code-dsel-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let mut app = App::new(d.canonicalize().unwrap(), None);
+        let rows = open_big_diff(&mut app);
+        let mut t = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        screen(&mut app, &mut t);
+        let [l, r] = app.ui.groups[0].diff_text.expect("a diff's two text areas");
+        let y = |row: usize, app: &App| l.y + (row - app.groups[0].tabs[0].view.scroll) as u16;
+        let copy = |app: &mut App| {
+            app.clip.clear();
+            key(app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+            app.clip.clone()
+        };
+        let drag = |app: &mut App, from: (u16, u16), to: (u16, u16)| {
+            mouse(app, MouseEventKind::Down(MouseButton::Left), from.0, from.1);
+            mouse(app, MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
+            mouse(app, MouseEventKind::Up(MouseButton::Left), to.0, to.1);
+        };
+        // A drag on the right side copies exactly that text.
+        {
+            let (from, to) = ((r.x + 5, y(3, &app)), (r.x + 4, y(5, &app)));
+            drag(&mut app, from, to);
+        }
+        assert_eq!(copy(&mut app), "003\nline 004\nline");
+        // One that starts on the left and crosses to the right stays on the left.
+        {
+            let (from, to) = ((l.x, y(1, &app)), (r.x + 3, y(2, &app)));
+            drag(&mut app, from, to);
+        }
+        assert_eq!(app.groups[0].tabs[0].view.side, 0);
+        assert_eq!(copy(&mut app), "line 001\nline 002");
+        // Filler rows are skipped: the left side across the five inserted lines.
+        let ins = rows.iter().position(|r| r.kind == diff::Kind::Ins).unwrap();
+        app.groups[0].tabs[0].view.scroll = ins - 2;
+        screen(&mut app, &mut t);
+        let (before, after) = (rows[ins - 1].left.clone().unwrap().1, rows[ins + 5].left.clone().unwrap().1);
+        assert!((ins..ins + 5).all(|i| rows[i].left.is_none()), "five fillers on the left");
+        {
+            let (from, to) = ((l.x, y(ins - 1, &app)), (l.x + 3, y(ins + 5, &app)));
+            drag(&mut app, from, to);
+        }
+        assert_eq!(copy(&mut app), format!("{before}\n{}", &after[..3]));
+        // Double-click: a word; triple-click: the line; Shift+click extends; Ctrl+A: the side.
+        app.groups[0].tabs[0].view.scroll = 0;
+        screen(&mut app, &mut t);
+        let (wx, wy) = (r.x + 6, y(3, &app));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), wx, wy);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), wx, wy);
+        assert_eq!(copy(&mut app), "003");
+        // F4 seeds Search with it, as VS Code seeds Find in Files.
+        key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
+        assert_eq!(app.query, "003");
+        app.focus = Focus::Editor;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), wx, wy);
+        assert_eq!(copy(&mut app), "line 003", "the third click: the line");
+        {
+            let at = (r.x, y(7, &app));
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), at.0, at.1);
+        }
+        app.on_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: r.x + 4, row: y(8, &app), modifiers: KeyModifiers::SHIFT });
+        {
+            let at = (r.x + 4, y(8, &app));
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), at.0, at.1);
+        }
+        assert_eq!(copy(&mut app), "line 007\nline");
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let right: Vec<&str> = rows.iter().filter_map(|r| r.right.as_ref().map(|(_, t)| t.as_str())).collect();
+        assert_eq!(copy(&mut app), right.join("\n"), "Ctrl+A: all of the modified side");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(copy(&mut app).is_empty(), "Esc clears it");
+        // Drawn in editor.selectionBackground, over the diff's word colours.
+        let chg = rows.iter().position(|r| r.kind == diff::Kind::Change).unwrap();
+        let cx = r.x + "line 020 ".len() as u16;
+        {
+            let (from, to) = ((cx, y(chg, &app)), (cx + 7, y(chg, &app)));
+            drag(&mut app, from, to);
+        }
+        screen(&mut app, &mut t);
+        assert_eq!(copy(&mut app), "changed");
+        let buf = t.backend().buffer();
+        assert_eq!((buf[(cx, y(chg, &app))].symbol(), buf[(cx, y(chg, &app))].bg), ("c", crate::theme::P.selection));
+        assert_ne!(buf[(cx - 2, y(chg, &app))].bg, crate::theme::P.selection, "outside it, the diff's colours");
+        if let Some(out) = std::env::var_os("HERDR_CODE_ANSI") {
+            {
+            let (from, to) = ((r.x + 5, y(17, &app)), (r.x + 9, y(chg, &app)));
+            drag(&mut app, from, to);
+        }
+            screen(&mut app, &mut t);
+            fs::write(out, ansi(&t)).unwrap();
+        }
+        // F7 goes on from the selection's row.
+        key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
+        assert_eq!(app.groups[0].tabs[0].view.cursor.line, ins, "the next change after line 20's");
+        wait_idle(&mut app);
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

@@ -96,6 +96,9 @@ impl Pos {
 pub struct View {
     pub cursor: Pos,
     pub anchor: Option<Pos>,
+    /// In a side-by-side diff: the side the cursor and selection are on (0 the
+    /// original, 1 the modified); their lines are diff rows.
+    pub side: u8,
     /// Sticky display column for Up/Down.
     pub want_x: Option<usize>,
     pub scroll: usize,
@@ -265,6 +268,16 @@ fn prev_boundary(s: &str, i: usize) -> usize {
 
 fn next_boundary(s: &str, i: usize) -> usize {
     s[i..].chars().next().map_or(i, |c| i + c.len_utf8())
+}
+
+/// The byte range of the word (or run of spaces, or of punctuation) at byte `col` of
+/// `l`, as a double-click selects it; None past the line's end.
+pub fn word_at(l: &str, col: usize) -> Option<(usize, usize)> {
+    let ch = l.get(col..)?.chars().next()?;
+    let k = class(ch);
+    let start = l[..col].char_indices().rev().take_while(|(_, c)| class(*c) == k).last().map_or(col, |(i, _)| i);
+    let end = l[col..].char_indices().find(|(_, c)| class(*c) != k).map_or(l.len(), |(i, _)| col + i);
+    Some((start, end))
 }
 
 fn class(c: char) -> u8 {
@@ -1019,11 +1032,7 @@ impl Buffer {
     /// Select the word under `p` (double-click).
     pub fn select_word(&mut self, v: &mut View, p: Pos) {
         let p = self.clamp(p);
-        let l = &self.lines[p.line];
-        let Some(ch) = l[p.col..].chars().next() else { return self.move_to(v, p, false) };
-        let k = class(ch);
-        let start = l[..p.col].char_indices().rev().take_while(|(_, c)| class(*c) == k).last().map_or(p.col, |(i, _)| i);
-        let end = l[p.col..].char_indices().find(|(_, c)| class(*c) != k).map_or(l.len(), |(i, _)| p.col + i);
+        let Some((start, end)) = word_at(&self.lines[p.line], p.col) else { return self.move_to(v, p, false) };
         v.anchor = Some(Pos::new(p.line, start));
         v.cursor = Pos::new(p.line, end);
         self.open_kind = None;
