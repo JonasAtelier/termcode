@@ -6042,7 +6042,7 @@ mod tests {
         // The default, one row: the full path of the folder the first visible row is in.
         assert_eq!((app.settings.sticky_max, app.ui.sticky.clone()), (1, vec![boards]));
         let (x, y) = (app.ui.side_list.x, app.ui.side_list.y);
-        let (_, hy) = cell_of(&t, &app.repo.to_uppercase(), 0);
+        let (_, hy) = cell_of(&t, &app.repo.to_uppercase()[..10], 0); // a long name is cut with …
         assert_eq!(y, hy + 1);
         // Nothing of the row it covers shows through after the path.
         assert!(side_line(&t, &app, y).trim_end().ends_with("arch › sh › boards"), "{}", side_line(&t, &app, y));

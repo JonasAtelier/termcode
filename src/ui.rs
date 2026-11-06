@@ -26,10 +26,10 @@ mod visual_tests {
     #[test]
     fn word_span_is_bounded_and_utf8_safe() {
         let (old, new) = super::diff_word_spans("same old 中 end", "same new 文 end");
-        assert_eq!(old, vec![5..12]);
-        assert_eq!(new, vec![5..12]);
-        assert!(super::diff_word_spans(&"x".repeat(2049), "new").0.is_empty());
-        assert!(super::diff_word_spans("same", "same").1.is_empty());
+        assert_eq!(old, Some(5..12));
+        assert_eq!(new, Some(5..12));
+        assert!(super::diff_word_spans(&"x".repeat(2049), "new").0.is_none());
+        assert!(super::diff_word_spans("same", "same").1.is_none());
     }
 }
 
@@ -356,9 +356,6 @@ fn side_title(app: &mut App, f: &mut Frame, r: Rect, title: &str, lay: Lay, bg: 
     let reserve = if app.side == Side::Scm { 4 } else { 1 };
     let text = fit(title, rr.x.saturating_sub(x + reserve) as usize);
     row(f, Rect::new(x, r.y, rr.x.saturating_sub(x), 1), bg, vec![Span::styled(text, Style::new().fg(P.sidebar_title))]);
-    if matches!(app.focus, Focus::Side | Focus::SearchInput) && r.width > 0 {
-        f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" }, Style::new().fg(P.focus_border).bg(bg)), Rect::new(r.x, r.y, 1, 1));
-    }
     f.render_widget(Span::styled(icons().refresh, Style::new().fg(P.icon_fg).bg(bg)), rr);
     app.ui.find_btns.push((rr, FindBtn::Refresh));
 }
@@ -1698,9 +1695,9 @@ pub(crate) fn diff_view(
         let words = if r.kind == Kind::Change {
             match (&r.left, &r.right) {
                 (Some((_, old)), Some((_, new))) => diff_word_spans(old, new),
-                _ => (Vec::new(), Vec::new()),
+                _ => (None, None),
             }
-        } else { (Vec::new(), Vec::new()) };
+        } else { (None, None) };
         for (s, cell) in [&r.left, &r.right].into_iter().enumerate() {
             let sr = Rect::new(sides[s].x, y, sides[s].width, 1);
             let changed = match (s, r.kind) {
@@ -1779,23 +1776,23 @@ pub(crate) fn diff_view(
 
 /// A stable word span without diff work on the render path. Multiple edits on
 /// one line share a span; long lines retain their line highlight only.
-fn diff_word_spans(old: &str, new: &str) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+fn diff_word_spans(old: &str, new: &str) -> (Option<std::ops::Range<usize>>, Option<std::ops::Range<usize>>) {
     if old == new || old.len() > 2048 || new.len() > 2048 {
-        return (Vec::new(), Vec::new());
+        return (None, None);
     }
     let prefix: usize = old.chars().zip(new.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum();
     let suffix: usize = old[prefix..].chars().rev().zip(new[prefix..].chars().rev()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum();
     let span = |text: &str| {
         let mut start = prefix;
         let mut end = text.len() - suffix;
-        if start == end { return Vec::new(); }
+        if start == end { return None; }
         while let Some(c) = text[..start].chars().next_back().filter(|c| !c.is_whitespace()) {
             start -= c.len_utf8();
         }
         while let Some(c) = text[end..].chars().next().filter(|c| !c.is_whitespace()) {
             end += c.len_utf8();
         }
-        vec![start..end]
+        Some(start..end)
     };
     (span(old), span(new))
 }
