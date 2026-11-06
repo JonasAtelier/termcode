@@ -701,7 +701,7 @@ fn peek(app: &mut App, f: &mut Frame, c: &Cols) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panel::{base, Side};
+    use crate::panel::{base, wait_idle, Side};
     use ratatui::crossterm::event::Event;
     use crate::settings::Spacing;
     use ratatui::backend::TestBackend;
@@ -868,6 +868,7 @@ mod tests {
         turn(&mut app, &mut t, KeyCode::Esc, none);
         let s = turn(&mut app, &mut t, KeyCode::F(12), KeyModifiers::SHIFT);
         assert!(s.contains("4 references"), "Shift+F12:\n{s}");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -890,6 +891,7 @@ mod tests {
         press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
         finish(&mut app);
         assert_eq!((file(&app).as_str(), cursor(&app).0), ("port.c", 2));
+        wait_idle(&mut app);
         fs::remove_dir_all(&repo).unwrap();
     }
 
@@ -917,6 +919,7 @@ mod tests {
         let mut tiny = term(40, 7);
         draw(&mut app, &mut tiny);
         assert!(app.nav.peek.is_none());
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -978,6 +981,7 @@ mod tests {
         finish(&mut app);
         assert_eq!((file(&app).as_str(), cursor(&app)), ("net/port.c", (2, 1)), "the definition, not the prototype");
         assert!(app.nav.flash.is_some() && app.nav.peek.is_none());
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1007,6 +1011,7 @@ mod tests {
         click(&mut app, p, KeyModifiers::CONTROL);
         finish(&mut app);
         assert_eq!(app.nav.peek.as_ref().map(|p| p.title.as_str()), Some("2 definitions"));
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1024,6 +1029,7 @@ mod tests {
         assert!(h.list.width >= 24, "a readable list: {h:?}");
         let rows: Vec<String> = (h.preview.y..h.preview.bottom()).map(|y| text(&t, y, h.preview)).collect();
         assert!(rows.iter().any(|r| r.contains("far_away(void)")), "match not in view: {rows:?}");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1058,6 +1064,7 @@ mod tests {
                 mouse(&mut app, MouseEventKind::Moved, p, KeyModifiers::NONE);
             }
         }
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1075,6 +1082,7 @@ mod tests {
         assert!(c.modifier.contains(Modifier::UNDERLINED) && c.symbol() == "t", "{c:?}");
         mouse(&mut app, MouseEventKind::Moved, p, KeyModifiers::NONE);
         assert_eq!(app.nav.link, None, "Ctrl released");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1126,6 +1134,7 @@ mod tests {
         press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
         assert!(app.nav.req.is_none());
         assert_eq!(app.msg, "No symbol at the cursor");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1163,6 +1172,7 @@ mod tests {
         assert_eq!(file(&app), "net/a.c", "Forward is empty after a new jump");
         press(&mut app, KeyCode::Left, KeyModifiers::ALT);
         assert_eq!(file(&app), "net/user.c");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 

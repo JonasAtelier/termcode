@@ -3794,6 +3794,33 @@ impl App {
     }
 }
 
+/// Tests: drain until no git job or index write and no load is in flight. Run it
+/// before removing a test repo: a job still running (the startup index refresh, a
+/// stage) would create index.lock in a directory being deleted.
+#[cfg(test)]
+pub(crate) fn wait_idle(app: &mut App) {
+    let end = Instant::now() + Duration::from_secs(20);
+    while app.gitui.busy() || !app.loading.is_empty() {
+        assert!(Instant::now() < end, "still busy after 20 s: {} git job(s), loads {:?}", app.gitui.writes(), app.loading.keys().collect::<Vec<_>>());
+        app.drain();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Tests: a dropped panel (one a test lets die) finishes its git jobs first, so
+/// none outlives it into a later App or the test's cleanup. Production quits as
+/// it always has (with Wait / Quit Anyway for queued writes).
+#[cfg(test)]
+impl Drop for App {
+    fn drop(&mut self) {
+        let end = Instant::now() + Duration::from_secs(20);
+        while (self.gitui.busy() || !self.loading.is_empty()) && Instant::now() < end {
+            self.drain();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3973,6 +4000,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.quit);
         assert_eq!(fs::read_to_string(root.join("README.md")).unwrap(), "hello\n");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4005,6 +4033,7 @@ mod tests {
         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert!(!bak.exists());
         assert_eq!(fs::read_to_string(root.join("README.md")).unwrap(), "unsaved hello\n");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4032,6 +4061,7 @@ mod tests {
         assert_eq!(rec["text"], "xhello");
         key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
         assert!(app.prompt.is_some(), "closing still asks");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4049,6 +4079,7 @@ mod tests {
         let y = (2..21).find(|&y| b[(l + 1, y)].symbol() == "─").expect("a line between the Explorer's sections");
         assert_eq!((b[(l, y)].symbol(), b[(r, y)].symbol()), ("├", "┤"));
         assert_eq!((b[(l, y - 1)].symbol(), b[(r, y + 1)].symbol()), ("│", "│"));
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4138,6 +4169,7 @@ mod tests {
         let Color::Rgb(r, g, b) = crate::blocks::border(true) else { panic!() };
         assert!([r, g, b].iter().all(|c| c.abs_diff(0x5A) <= 3), "{r:02X}{g:02X}{b:02X}");
         assert_ne!(crate::blocks::border(true), crate::theme::P.focus_border);
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4201,6 +4233,8 @@ mod tests {
         let mut again = App::new(root.clone(), Some(lay));
         screen(&mut again, &mut t);
         assert_eq!(again.ui.divider.x - again.ui.sidebar.x, 32, "a version 2 width is the outer one");
+        wait_idle(&mut app);
+        wait_idle(&mut again);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4370,6 +4404,7 @@ mod tests {
         app.open_quick();
         screen(&mut app, &mut t);
         assert_all_rgb(&t, "compact quick open over the find widget");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4408,6 +4443,7 @@ mod tests {
         typ(&mut app, "rainbow");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(!app.rainbow_on);
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4461,6 +4497,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), sb.track.x, sb.track.bottom() + 5);
         assert_eq!(app.groups[0].tabs[0].view.scroll, 99, "dragged to the end");
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sb.track.x, sb.track.bottom());
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4546,6 +4583,7 @@ mod tests {
             assert_eq!(mx - rx, sp.tree_indent, "{tag}");
             mouse(&mut app, MouseEventKind::Down(MouseButton::Left), mx, my);
             assert_eq!(app.groups[0].tabs[0].key, "file:src/main.rs", "{tag}");
+            wait_idle(&mut app);
             fs::remove_dir_all(&root).unwrap();
         }
     }
@@ -4778,6 +4816,7 @@ mod tests {
                 }
             }
         }
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4863,6 +4902,7 @@ mod tests {
         drag_tab(&mut app, &mut t, 0, 0, &[(a.x + 2, a.y + 5), (a.right() - 2, a.y + 5)]);
         assert!(app.drop.is_none());
         assert_eq!(tab_names(&app), names(&[&["b.txt"], &["README.md", "c.txt"]]));
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4899,6 +4939,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), a.right() - 2, a.y + 6);
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), a.right() - 2, a.y + 6);
         assert_eq!(app.groups.len(), 1, "no split from the stale file drag");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4938,6 +4979,7 @@ mod tests {
         }
         let Some(Doc::Text(b)) = app.docs.get("file:README.md") else { unreachable!() };
         assert_eq!((b.text(), b.dirty()), ("hello\n".to_string(), false), "undo history came along");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5086,6 +5128,7 @@ mod tests {
         let mut narrow = Terminal::new(TestBackend::new(70, 20)).unwrap();
         screen(&mut app, &mut narrow);
         assert!(app.ui.minimaps.is_empty(), "text under 40 + 4 columns: hidden");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5153,6 +5196,7 @@ mod tests {
         // Esc closes the peek.
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.peek.is_none());
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5182,6 +5226,7 @@ mod tests {
         assert!(app.msg.contains("not UTF-8"), "{}", app.msg);
         let b = match app.docs.get("file:bad.txt") { Some(Doc::Text(b)) => b, _ => unreachable!() };
         assert_eq!(b.text(), "x\nY\n", "nothing written");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5224,6 +5269,7 @@ mod tests {
             let gh = &app.ui.groups[0];
             assert_eq!(gh.text.y, gh.tabbar.y + 1 + u16::from(!compact), "compact {compact}: the blank row");
         }
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5264,6 +5310,7 @@ mod tests {
         assert_eq!(app.groups[0].tabs[0].view.cursor.line, 89, "cursor on the hunk's last line");
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), close.x, close.y);
         assert!(app.peek.is_none());
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5305,6 +5352,7 @@ mod tests {
             let has = |b: PeekBtn| app.ui.peek_btns.iter().any(|(_, x)| *x == b);
             assert!(!has(PeekBtn::Stage) || has(PeekBtn::Revert), "{w}: Stage without Revert");
         }
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5374,6 +5422,7 @@ mod tests {
         let row: Vec<&str> = s.lines().filter(|l| l.matches("0123456789").count() == 2 && !l.contains('X')).collect();
         assert_eq!(row.len(), 1, "{s}");
         assert_eq!(row[0].matches(g).count(), 2, "a ruler on each side: {:?}", row[0]);
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5422,6 +5471,7 @@ mod tests {
         assert!(!bak.join("legacy.json").exists());
         assert!(editor::backup_file(&bak, &app.backup_scope, &app.backup_instance, &readme).exists());
         assert!(bak.join("other.json").exists(), "another worktree's backup is left alone");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5448,6 +5498,8 @@ mod tests {
         assert!(!fb.exists() && fa.exists());
         let rec: serde_json::Value = serde_json::from_slice(&fs::read(&fa).unwrap()).unwrap();
         assert_eq!((rec["text"].as_str(), rec["instance"].as_str()), (Some("from a hello"), Some("w1:p1-101")));
+        wait_idle(&mut a);
+        wait_idle(&mut b);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5504,6 +5556,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(app.live_rg.load(Ordering::SeqCst), 0);
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5519,6 +5572,7 @@ mod tests {
         assert!(app.search.is_none(), "rg still running");
         assert_eq!(app.hits.len(), MAX_HITS);
         assert!(app.msg.contains("search stopped"), "{}", app.msg);
+        wait_idle(&mut app);
         fs::remove_dir_all(&tmp).unwrap();
     }
 
@@ -5624,6 +5678,7 @@ mod tests {
         app.scm_action(ScmAct::Stage(1));
         wait(&mut app);
         assert!(app.scm_files.iter().any(|f| f.section == Section::Staged && f.path == "src/main.rs"), "{:?}", app.scm_files);
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5663,6 +5718,7 @@ mod tests {
         wait(&mut app);
         app.update_qdiff();
         assert_eq!(app.hunks("file:README.md").len(), 1, "the base was refetched");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5712,6 +5768,7 @@ mod tests {
         screen(&mut app, &mut t);
         assert_eq!(git::CALLS.with(|n| n.get()), before, "no git command at all");
         assert!(app.loading.is_empty() && app.qdiff.is_empty() && app.branch.is_empty());
+        wait_idle(&mut app);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -5751,6 +5808,7 @@ mod tests {
         app.on_paste("hi");
         assert!(text(&app, "file:src/main.rs").contains("    herdr-code:bad:open:/x:1:1hiprintln!"));
         fs::remove_file(&out).unwrap();
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5821,6 +5879,7 @@ mod tests {
         // A click on it: block back on top.
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 4, y);
         assert_eq!((app.off[0], app.sel[0]), (block, block));
+        wait_idle(&mut app);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -5876,6 +5935,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 4, y + 3);
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 4, y + 3);
         assert_eq!(app.groups[0].tabs[0].key, "file:arch/sh/boards/b13.c");
+        wait_idle(&mut app);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -5944,6 +6004,7 @@ mod tests {
                 screen(&mut app, &mut t);
             }
         }
+        wait_idle(&mut app);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -5987,6 +6048,7 @@ mod tests {
             mouse(&mut app, MouseEventKind::ScrollDown, x + 3, y);
             assert_eq!(app.off[2], (h + 8).min(rows.len() - app.ui.side_rows), "{name}: clamped at the end");
         }
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6017,6 +6079,7 @@ mod tests {
         assert!(side_line(&t, &app, y).contains("many.txt"));
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 3, y);
         assert_eq!((app.off[1], app.sel[1]), (g, g), "the group's header back on top");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6062,6 +6125,7 @@ mod tests {
                 }
             }
         }
+        wait_idle(&mut app);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -6092,6 +6156,7 @@ mod tests {
         for off in 0..rows.len() {
             assert_sticky_holds(&depth, &app.pinned(off, 1, &[], &rows), off, 1, "changes");
         }
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6118,6 +6183,7 @@ mod tests {
         check(&app, "x86 and sh expanded");
         app.reload_all();
         check(&app, "reloaded");
+        wait_idle(&mut app);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -6150,6 +6216,7 @@ mod tests {
             }
         }
         assert!(stuck > 0, "some tiny size is in a sticky state");
+        wait_idle(&mut app);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -6274,6 +6341,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), mm.area.x + 2, mm.area.bottom() - 1);
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), mm.area.x + 2, mm.area.bottom() - 1);
         assert!(view(&app).scroll > 0);
+        wait_idle(&mut app);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -6304,6 +6372,7 @@ mod tests {
         }
         assert!(app.docs.is_empty() && app.loading.is_empty() && app.qdiff.is_empty() && app.peek.is_none());
         assert!(app.diff_minis.is_empty() && app.gitui.cmds.conflicts.is_empty() && app.diff_cancel.is_none());
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6330,6 +6399,7 @@ mod tests {
                 screen(&mut app, &mut t);
             }
         }
+        wait_idle(&mut app);
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -6465,6 +6535,7 @@ mod tests {
         assert_eq!(app.sel[0], 11, "then the key");
         app.step(&mut t, &mut dirty, |_| Ok(q.pop_front())).unwrap();
         assert!(q.is_empty() && app.off[0] > 9, "and the last tick");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6492,6 +6563,7 @@ mod tests {
         let before: usize = (0..200).map(|k| usize::from(mv(&mut app, l.x + (k % 20) as u16, l.y + (k / 50) as u16))).sum();
         BATCH2.with(|b| b.set(true));
         assert!(before > 150, "before: almost every move redrew ({before})");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6529,6 +6601,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!((calls, app.sel[0]), (1, sel + 2));
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6578,6 +6651,7 @@ mod tests {
             }
             assert!(start.elapsed() < Duration::from_secs(5), "never went idle");
         }
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6710,6 +6784,7 @@ mod tests {
         wait(&mut app);
         assert!(!lock.exists(), "no lock left behind");
         assert_eq!(fs::metadata(&index).unwrap().modified().unwrap(), before, "the index was never rewritten");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6731,6 +6806,7 @@ mod tests {
         assert_eq!(app.status_since, Some(started), "still the original start: the shown status is stale");
         wait(&mut app);
         assert!(app.status_since.is_none());
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6752,6 +6828,7 @@ mod tests {
         app.scm_action(ScmAct::Stage(i));
         wait(&mut app);
         assert_eq!(stale(&root), "", "refreshed right after the stage");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6808,6 +6885,7 @@ mod tests {
         // Each slowed git call takes ≥ 400 ms: a step that waited on one would show it.
         assert!(worst < Duration::from_millis(30), "a UI step took {worst:?} while git ran");
         assert!(app.scm_files.iter().any(|f| f.path == "n00.txt" && f.section == Section::Changes));
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6888,6 +6966,7 @@ mod tests {
         let t0 = Instant::now();
         crate::scm::finish_writes(&mut app, Some(Duration::from_secs(2)));
         assert!(t0.elapsed() >= Duration::from_millis(1900) && t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6908,6 +6987,7 @@ mod tests {
         wait(&mut app);
         assert_eq!(fs::read_to_string(root.join("README.md")).unwrap(), "newer edits, saved after confirming\n");
         assert!(app.msg.contains("discard cancelled"), "{}", app.msg);
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -6935,6 +7015,7 @@ mod tests {
         // Range overlap alone would have staged TWO; the content check refused it.
         let index = Command::new("git").arg("-C").arg(&root).args(["show", ":README.md"]).output().unwrap().stdout;
         assert_eq!(String::from_utf8_lossy(&index), "1\n2\n3\n", "nothing staged");
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 
