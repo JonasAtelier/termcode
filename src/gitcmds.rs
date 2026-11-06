@@ -1093,8 +1093,8 @@ pub fn status_blame(app: &mut App, f: &mut Frame, r: Rect, gap: u16) {
 /// The "…" action on the Source Control title row, left of Refresh.
 pub fn title_menu(app: &mut App, f: &mut Frame) {
     let sb = app.ui.sidebar;
-    let pad = app.settings.spacing.sidebar_padding.max(1);
-    let x = sb.right().saturating_sub(2 + pad + 3);
+    let Some((refresh, _)) = app.ui.find_btns.iter().find(|(_, b)| *b == crate::panel::FindBtn::Refresh) else { return };
+    let x = refresh.x.saturating_sub(3);
     if sb.width < 16 {
         return;
     }

@@ -29,7 +29,7 @@ pub struct Cfg {
     pub enabled: bool,
     pub max_column: usize,
     pub render_characters: bool,
-    /// `showSlider: "always"`; VS Code's default "mouseover" shows it only under the mouse.
+    /// `showSlider: "always"`; explicit "mouseover" shows it only under the mouse.
     pub slider_always: bool,
     pub left: bool,
     pub size: Size,
@@ -43,7 +43,7 @@ impl Default for Cfg {
             enabled: true,
             max_column: 120,
             render_characters: true,
-            slider_always: false,
+            slider_always: true,
             left: false,
             size: Size::Proportional,
             min_text: 40,
@@ -59,7 +59,7 @@ impl Cfg {
             enabled: g("enabled").and_then(Value::as_bool).unwrap_or(d.enabled),
             max_column: g("maxColumn").and_then(Value::as_u64).map_or(d.max_column, |n| n.clamp(20, 400) as usize),
             render_characters: g("renderCharacters").and_then(Value::as_bool).unwrap_or(d.render_characters),
-            slider_always: g("showSlider").and_then(Value::as_str) == Some("always"),
+            slider_always: g("showSlider").and_then(Value::as_str).map_or(d.slider_always, |s| s == "always"),
             left: g("side").and_then(Value::as_str) == Some("left"),
             size: match g("size").and_then(Value::as_str) {
                 Some("fill") => Size::Fill,
@@ -96,8 +96,8 @@ pub fn chars_per_col(cols: usize, max_column: usize) -> usize {
 
 /// How strongly a token colour shows over the minimap background: VS Code's
 /// 1x glyphs cover about 44% of their pixels (softened by 12/15) and its blocks
-/// are drawn at 50%; a braille dot is already thinner than a cell, so 65%.
-pub const INK: f64 = 0.65;
+/// are drawn at 50%; use 45% to keep code quieter than navigation markers.
+pub const INK: f64 = 0.45;
 
 /// A token colour as the minimap draws it: `INK` (scaled by
 /// `minimap.foregroundOpacity`'s alpha) of it over `bg`.
@@ -321,9 +321,9 @@ mod tests {
         let (ch, c) = braille(&[[a, b], [b, None], [None, None], [None, b]]);
         assert_eq!((ch, c), ('\u{288B}', b), "3 blue dots beat 1 red");
         assert_eq!(braille(&[[a, b]]).1, a, "a tie: the first dot's colour");
-        // 65% over the background, scaled by minimap.foregroundOpacity.
+        // Muted over the background, scaled by minimap.foregroundOpacity.
         let bg = Color::Rgb(0x1E, 0x1E, 0x1E);
-        assert_eq!(ink(Color::Rgb(255, 255, 255), 255, bg), Color::Rgb(176, 176, 176), "0.65 * 255 + 0.35 * 30");
+        assert_eq!(ink(Color::Rgb(255, 255, 255), 255, bg), Color::Rgb(131, 131, 131), "muted ink stays below the navigation overlays");
         assert_eq!(ink(Color::Rgb(255, 255, 255), 0, bg), bg, "opacity 0: invisible");
         assert_ne!(ink(Color::Rgb(255, 255, 255), 255, bg), Color::Rgb(255, 255, 255), "never the raw token colour");
     }

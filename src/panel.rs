@@ -431,6 +431,8 @@ pub struct Hits {
     pub prompt_btns: Vec<(Rect, usize)>,
     /// "Split Editor Right" button per group.
     pub split_btns: Vec<(Rect, usize)>,
+    /// Empty editor shortcuts: group and optional sidebar (None opens Quick Open).
+    pub welcome: Vec<(Rect, usize, Option<Side>)>,
     pub quick: Rect,
     pub quick_list: Rect,
     pub scrollbars: Vec<ScrollHit>,
@@ -3359,6 +3361,15 @@ impl App {
         if self.ui.close.contains(p) {
             return self.request_quit();
         }
+        if let Some(&(_, g, side)) = self.ui.welcome.iter().find(|(r, _, _)| r.contains(p)) {
+            self.ag = g;
+            if let Some(side) = side {
+                self.show_side(side, side == Side::Search);
+            } else {
+                self.open_quick();
+            }
+            return;
+        }
         if let Some(&(_, s)) = self.ui.activity.iter().find(|(r, _)| r.contains(p)) {
             if s == self.side && self.side_visible {
                 self.side_visible = false; // clicking the active view hides the sidebar
@@ -3926,6 +3937,55 @@ mod tests {
         g(&["add", "-A"]);
         g(&["commit", "-q", "-m", "init"]);
         d.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn welcome_actions_open_existing_views_and_stay_inside_editor() {
+        let root = repo("welcome-actions");
+        let mut app = App::new(root.clone(), None);
+        let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
+        let s = screen(&mut app, &mut t);
+        assert!(s.contains("herdr"));
+        assert_eq!(app.ui.welcome.len(), 3);
+        for (i, expected) in [None, Some(Side::Search), Some(Side::Scm)].into_iter().enumerate() {
+            screen(&mut app, &mut t);
+            let (r, _, _) = app.ui.welcome[i];
+            assert!(app.ui.groups[0].text.contains(Position::new(r.x, r.y)));
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+            if let Some(side) = expected {
+                assert_eq!(app.side, side);
+                assert!(app.side_visible);
+            } else {
+                assert!(!app.quick.as_ref().unwrap().commands);
+                app.quick = None;
+            }
+        }
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn dirty_tab_keeps_its_marker_on_hover_and_close_still_prompts() {
+        let root = repo("dirty-tab-marker");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/main.rs", false);
+        app.focus = Focus::Editor;
+        let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
+        screen(&mut app, &mut t);
+        let before = app.ui.groups[0].tabs[0];
+        typ(&mut app, "x");
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.groups[0].tabs[0], before, "dirty state reserves its own slot");
+        let (_, close) = before;
+        app.hover = Some(Position::new(close.x, close.y));
+        screen(&mut app, &mut t);
+        let b = t.backend().buffer();
+        assert_eq!(b[(close.x - 1, close.y)].symbol(), crate::theme::icons().dirty);
+        assert_eq!(b[(close.x, close.y)].symbol(), crate::theme::icons().close);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), close.x, close.y);
+        assert!(app.prompt.is_some(), "closing an edited file still asks to save");
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -4541,6 +4601,85 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_headers_fields_and_actions_share_alignment() {
+        use crate::blocks::BlockStyle;
+        use crate::settings::Spacing;
+        let root = repo("aligned-sidebar");
+        let custom = Spacing::parse(Spacing::COMFORTABLE, &serde_json::json!({"sidebarPadding":3,"iconGap":3}));
+        for (compact, spacing) in [(false, Spacing::COMFORTABLE), (true, Spacing::COMPACT), (false, custom)] {
+            for style in [BlockStyle::Cards, BlockStyle::Lines, BlockStyle::None] {
+                let mut app = App::new(root.clone(), None);
+                app.repo = "demo".into();
+                app.settings.compact = compact;
+                app.settings.spacing = spacing;
+                app.settings.blocks = style;
+                let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+                screen(&mut app, &mut t);
+                let title = cell_of(&t, "EXPLORER", 0).0;
+                let section = cell_of(&t, "DEMO", 0).0;
+                let icon = cell_of(&t, "README.md", 0).0 - crate::blocks::icon_gap(spacing.icon_gap) - 1;
+                assert_eq!(title, section, "{compact}/{style:?}: view and section title alignment");
+                assert_eq!(section, icon, "{compact}/{style:?}: root label aligns with file icons");
+                println!("{style:?} compact={compact} padding={}: title={title}, section={section}, file_icon={icon}", spacing.sidebar_padding);
+                let refresh = app.ui.find_btns.iter().find(|(_, b)| *b == FindBtn::Refresh).unwrap().0;
+                app.show_side(Side::Search, true);
+                screen(&mut app, &mut t);
+                let input = app.ui.side_input;
+                assert_eq!(input.x, app.ui.side_list.x + spacing.sidebar_padding);
+                assert_eq!(input.right(), refresh.right(), "input and right action share an edge");
+                for (r, b) in app.ui.find_btns.clone() {
+                    if b == FindBtn::SearchCase {
+                        let old = app.s_opts.0;
+                        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+                        assert_ne!(app.s_opts.0, old, "toggle hit follows rendered icon");
+                    }
+                }
+                app.show_side(Side::Scm, false);
+                screen(&mut app, &mut t);
+                assert_eq!((app.ui.commit_btn.x, app.ui.commit_btn.right()), (input.x, input.right()));
+                assert_eq!(cell_of(&t, "CHANGES", 0).0, title);
+                let menu = app.gitui.hits.cmds.iter().find(|(_, h)| *h == crate::gitcmds::Hit::Menu).unwrap().0;
+                assert_eq!(menu.x + 3, refresh.x, "SCM menu anchored to Refresh");
+                mouse(&mut app, MouseEventKind::Down(MouseButton::Left), menu.x, menu.y);
+                assert!(app.gitui.cmds.picker.is_some(), "menu hit follows rendered icon");
+                wait_idle(&mut app);
+            }
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn narrow_search_controls_and_text_stay_inside_the_input() {
+        let root = repo("narrow-alignment");
+        let mut app = App::new(root.clone(), None);
+        app.query = "a very long search query".into();
+        app.show_side(Side::Search, true);
+        for width in [12, 18, 28] {
+            for padding in [0, 3, 8] {
+                app.side_w = Some(width);
+                app.settings.spacing.sidebar_padding = padding;
+                let mut t = Terminal::new(TestBackend::new(75, 20)).unwrap();
+                screen(&mut app, &mut t);
+                let input = app.ui.side_input;
+                for (r, b) in &app.ui.find_btns {
+                    if matches!(b, FindBtn::SearchCase | FindBtn::SearchWord | FindBtn::SearchRegex) {
+                        assert_eq!(r.intersection(input), *r, "{width}/{padding}: drawn toggle stays inside input");
+                        let icon = match b {
+                            FindBtn::SearchCase => crate::theme::icons().case,
+                            FindBtn::SearchWord => crate::theme::icons().word,
+                            _ => crate::theme::icons().regex,
+                        };
+                        assert_eq!(t.backend().buffer()[(r.x, r.y)].symbol(), icon);
+                    }
+                }
+                assert!(input.x >= app.ui.sidebar.x && input.right() <= app.ui.sidebar.right());
+            }
+        }
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn hit_testing_matches_the_drawing_for_every_spacing() {
         use crate::settings::Spacing;
         let custom = Spacing::parse(
@@ -5071,6 +5210,7 @@ mod tests {
     #[test]
     fn minimap_draws_git_lane_find_and_slider_and_scrolls() {
         let (root, mut app) = changed_file("mini");
+        app.settings.minimap.slider_always = false; // Explicit mouseover mode remains supported.
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         screen(&mut app, &mut t);
         let m = app.ui.minimaps[0];
@@ -5085,7 +5225,7 @@ mod tests {
         let first = buf[(m.area.x + 1, m.area.y)].clone();
         assert_eq!(first.symbol(), "⣿", "lines 1-4, columns 0..10: all code");
         assert_eq!(buf[(m.area.x + 4, m.area.y)].symbol(), "⠀", "the fourth cell: past every line");
-        // Muted: the cell's token colour 65% over the background, never the raw colour.
+        // Muted: the cell's token colour over the background, never the raw colour.
         let b = match app.docs.get("file:long.c") {
             Some(Doc::Text(b)) => b,
             _ => unreachable!(),
@@ -5104,7 +5244,7 @@ mod tests {
         let m = app.ui.minimaps[0];
         let r9 = m.mini.row_of(m.scroll, 8).unwrap();
         assert_eq!(t.backend().buffer()[(m.area.right() - 1, m.area.y + r9)].bg, p.mini_find);
-        // Mouseover shows the slider (VS Code's showSlider default), translucent: blended
+        // Mouseover shows the slider in explicit mouseover mode, translucent: blended
         // over the background, the dots keep their colour.
         app.find = None;
         screen(&mut app, &mut t);
@@ -5285,7 +5425,7 @@ mod tests {
         let (x, y) = cell_of(&t, "hello", 0);
         assert_eq!((x, gh.marks_x, gh.text.x), (gh.area.x + 4, Some(gh.area.x + 3), x), "pad, two digits, the marker, the code");
         assert_eq!((sym(&t, gh.area.x, y), sym(&t, gh.area.x + 1, y), sym(&t, gh.area.x + 2, y), sym(&t, x - 1, y)), (" ".into(), " ".into(), "1".into(), " ".into()));
-        assert_eq!(gh.text.y, gh.tabbar.y + 2, "comfortable keeps the blank row under the tab bar");
+        assert_eq!(gh.text.y, gh.area.y + 2, "comfortable reuses the padding row above tabs for the accent");
         // long.c, 100 lines: the marker of a changed line sits right between number and code.
         app.open_file(0, "long.c", false);
         screen(&mut app, &mut t);
@@ -5314,7 +5454,7 @@ mod tests {
             assert!(row.contains(" 21+line 020 changed") && row.contains(" 21-line 020 "), "compact {compact}: {row}");
             assert_eq!(sym(&t, x - 1, y), "+");
             let gh = &app.ui.groups[0];
-            assert_eq!(gh.text.y, gh.tabbar.y + 1 + u16::from(!compact), "compact {compact}: the blank row");
+            assert_eq!(gh.text.y, gh.area.y + 1 + u16::from(!compact), "compact {compact}: editor height is preserved");
         }
         wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
@@ -6328,6 +6468,26 @@ mod tests {
     fn line_of(t: &Terminal<TestBackend>, y: u16) -> String {
         let b = t.backend().buffer();
         (0..b.area.width).map(|x| b[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn diff_word_emphasis_is_stable_and_keeps_unchanged_prefix_muted() {
+        let root = repo("diff-word-stable");
+        let mut app = App::new(root.clone(), None);
+        open_big_diff(&mut app);
+        app.groups[0].tabs[0].view.scroll = 20;
+        let mut t = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let (x, y) = cell_of(&t, "line 020 changed", 0);
+        assert_eq!(t.backend().buffer()[(x, y)].bg, crate::theme::P.diff_ins_line);
+        assert_eq!(t.backend().buffer()[(x + 9, y)].bg, crate::theme::P.diff_ins_text.over(crate::theme::P.diff_ins_line));
+        let before = t.backend().buffer().clone();
+        for _ in 0..4 {
+            screen(&mut app, &mut t);
+            assert_eq!(t.backend().buffer(), &before, "unchanged viewport retains word emphasis");
+        }
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

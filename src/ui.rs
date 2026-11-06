@@ -21,6 +21,18 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use syntect::highlighting::{FontStyle, Style as SStyle};
 use unicode_width::UnicodeWidthStr;
 
+#[cfg(test)]
+mod visual_tests {
+    #[test]
+    fn word_span_is_bounded_and_utf8_safe() {
+        let (old, new) = super::diff_word_spans("same old 中 end", "same new 文 end");
+        assert_eq!(old, vec![5..12]);
+        assert_eq!(new, vec![5..12]);
+        assert!(super::diff_word_spans(&"x".repeat(2049), "new").0.is_empty());
+        assert!(super::diff_word_spans("same", "same").1.is_empty());
+    }
+}
+
 /// `workbench.density` plus `herdr-code.spacing`: comfortable (default) frames
 /// popups and pads the gutter; compact is the original tight layout.
 #[derive(Clone, Copy)]
@@ -247,7 +259,7 @@ fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let x = r.x + (r.width.saturating_sub(t.width() as u16)) / 2;
     f.render_widget(Span::styled(t, st), Rect::new(x, r.y, r.right().saturating_sub(x), 1));
     app.ui.close = Rect::new(r.right().saturating_sub(w + tp), r.y, w, 1);
-    f.render_widget(Span::styled(close, Style::new().fg(P.status_err_fg).bg(P.status_err_bg)), app.ui.close);
+    f.render_widget(Span::styled(close, Style::new().fg(P.title_fg).bg(P.title_bg)), app.ui.close);
 }
 
 fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
@@ -336,9 +348,17 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
 
 /// Sidebar title row with right-aligned action icons.
 fn side_title(app: &mut App, f: &mut Frame, r: Rect, title: &str, lay: Lay, bg: Color) {
-    let indent = " ".repeat((lay.pad as usize + 1).max(2));
-    row(f, r, bg, vec![Span::styled(format!("{indent}{title}"), Style::new().fg(P.sidebar_title))]);
-    let rr = Rect::new(r.right().saturating_sub(2 + lay.pad.max(1)), r.y, 2, 1);
+    fill(f, r, bg);
+    let frame = crate::blocks::frame(app.settings.blocks) / 2;
+    let ir = inset(r, (lay.pad + frame).min(r.width / 2));
+    let rr = Rect::new(ir.right().saturating_sub(2).max(ir.x), r.y, ir.width.min(2), 1);
+    let x = (ir.x + 2 + crate::blocks::icon_gap(lay.s.icon_gap)).min(rr.x);
+    let reserve = if app.side == Side::Scm { 4 } else { 1 };
+    let text = fit(title, rr.x.saturating_sub(x + reserve) as usize);
+    row(f, Rect::new(x, r.y, rr.x.saturating_sub(x), 1), bg, vec![Span::styled(text, Style::new().fg(P.sidebar_title))]);
+    if matches!(app.focus, Focus::Side | Focus::SearchInput) && r.width > 0 {
+        f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" }, Style::new().fg(P.focus_border).bg(bg)), Rect::new(r.x, r.y, 1, 1));
+    }
     f.render_widget(Span::styled(icons().refresh, Style::new().fg(P.icon_fg).bg(bg)), rr);
     app.ui.find_btns.push((rr, FindBtn::Refresh));
 }
@@ -397,39 +417,42 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, lay: Lay) {
     let mut y = r.y;
     let ic = icons();
     // Inputs and buttons line up with the rows' padding (at least one cell).
-    let m = lay.pad.max(1);
+    let m = lay.pad.min(r.width / 2);
     let field = |y: u16, h: u16| Rect::new(r.x + m, y, r.width.saturating_sub(2 * m), h);
     match app.side {
         Side::Explorer => {
             let hr = Rect::new(r.x, y, r.width, 1);
             fill(f, hr, P.section_bg);
-            let hdr = format!("{}{}{}", ic.chev_down, sp(lay.s.icon_gap), app.repo.to_uppercase());
+            let hdr = format!(" {}{}{}", ic.chev_down, sp(crate::blocks::icon_gap(lay.s.icon_gap)), app.repo.to_uppercase());
             row(f, inset(hr, lay.pad), P.section_bg, vec![Span::styled(hdr, Style::new().fg(P.section_fg).bold())]);
             y += 1;
         }
         Side::Search => {
             let inp = field(y, 1);
             let focused = app.focus == crate::panel::Focus::SearchInput;
-            input(f, inp, &app.query, "Search", focused);
+            let controls = if inp.width >= 8 { 6 } else { 0 };
+            let text = Rect::new(inp.x, inp.y, inp.width - controls, 1);
+            fill(f, inp, P.input_bg);
+            input(f, text, &app.query, "Search", focused);
             app.ui.side_input = inp;
             let (c, w, rx) = app.s_opts;
             let toggles = [(ic.case, c, FindBtn::SearchCase), (ic.word, w, FindBtn::SearchWord), (ic.regex, rx, FindBtn::SearchRegex)];
-            let mut tx = inp.right().saturating_sub(6);
-            for (icon, on, b) in toggles {
+            let mut tx = inp.right().saturating_sub(controls);
+            for (icon, on, b) in toggles.into_iter().take(if controls > 0 { 3 } else { 0 }) {
                 let tr = Rect::new(tx, y, 1, 1);
                 let st = if on { Style::new().fg(P.option_fg).bg(P.option_bg) } else { Style::new().fg(P.input_fg).bg(P.input_bg) };
                 f.render_widget(Span::styled(icon, st), tr);
                 app.ui.find_btns.push((tr, b));
                 tx += 2;
             }
-            if focused {
-                let cx = inp.x + 1 + (app.query.width() as u16).min(inp.width.saturating_sub(8));
+            if focused && text.width > 1 {
+                let cx = text.x + 1 + (app.query.width() as u16).min(text.width.saturating_sub(2));
                 f.set_cursor_position((cx, y));
             }
             y += 1;
             let files = app.search_rows().len() - app.hits.len();
             let summary = if app.hits.is_empty() { String::new() } else { format!("{} results in {files} files", app.hits.len()) };
-            row(f, inset(Rect::new(r.x, y, r.width, 1), lay.pad), P.sidebar_bg, vec![Span::styled(format!("  {summary}"), Style::new().fg(P.dim))]);
+            row(f, inset(Rect::new(r.x, y, r.width, 1), lay.pad), P.sidebar_bg, vec![Span::styled(format!(" {summary}"), Style::new().fg(P.dim))]);
             y += 1;
         }
         Side::Scm => {}
@@ -770,6 +793,7 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
 }
 
 pub(crate) fn input(f: &mut Frame, r: Rect, text: &str, placeholder: &str, focused: bool) {
+    if r.is_empty() { return; }
     fill(f, r, P.input_bg);
     let (t, st) = if text.is_empty() {
         (placeholder.to_string(), Style::new().fg(P.placeholder))
@@ -831,7 +855,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
     // A restored tab's document is read when the tab is first shown.
     crate::session::materialize(app, g);
     let mut gh = GroupHit { area, ..Default::default() };
-    let tabbar = Rect::new(area.x, area.y, area.width, 1);
+    let accent = u16::from((lay.comfy || lay.s.editor_padding >= 2) && area.height >= 2);
+    let tabbar = Rect::new(area.x, area.y + accent, area.width, 1);
     gh.tabbar = tabbar;
     fill(f, tabbar, P.tabs_bg);
     let focused_group = g == app.ag;
@@ -856,9 +881,9 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
         let (glyph, gfg) = tab_icon(app, &t.key);
         let dirty = matches!(app.docs.get(&t.key), Some(Doc::Text(b)) if b.dirty());
         let active = i == app.groups[g].active;
-        // [edge][icon][gap][title][gap][close or dirty][edge]
+        // Dirty state and close have separate fixed slots, so hover never hides an edit.
         let label = format!("{edge}{glyph}{gap}{}{gap}", fit(&title, 30));
-        let tail_w = 1 + edge.len() as u16;
+        let tail_w = 2 + edge.len() as u16;
         let w = label.width() as u16 + tail_w;
         if x + w > split.x {
             break;
@@ -873,9 +898,10 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
             st = st.add_modifier(Modifier::ITALIC);
         }
         let tr = Rect::new(x, tabbar.y, w, 1);
-        let xr = Rect::new(x + w - tail_w, tabbar.y, 1, 1);
+        let xr = Rect::new(x + w - tail_w + 1, tabbar.y, 1, 1);
         let hovered = hover.is_some_and(|p| tr.contains(p));
-        let tail = if dirty && !hovered { ic.dirty } else if active || hovered { ic.close } else { " " };
+        let dot = if dirty { ic.dirty } else { " " };
+        let tail = if active || hovered { ic.close } else { " " };
         let lead = edge.to_string();
         let name = label[lead.len() + glyph.len()..].to_string();
         row(
@@ -886,10 +912,17 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
                 Span::styled(lead, st),
                 Span::styled(glyph, Style::new().fg(gfg).bg(bg)),
                 Span::styled(name, st),
-                Span::styled(format!("{tail}{edge}"), Style::new().fg(fg).bg(bg)),
+                Span::styled(format!("{dot}{tail}{edge}"), Style::new().fg(fg).bg(bg)),
             ],
         );
-        gh.tabs.push((Rect::new(x, tabbar.y, w - tail_w, 1), xr));
+        if active && accent > 0 {
+            let color = if focused_group && app.focus == Focus::Editor { P.tab_active_border } else { P.tab_border };
+            row(f, Rect::new(x, area.y, w, 1), P.tabs_bg,
+                vec![Span::styled(if crate::theme::ascii() { "-" } else { "━" }.repeat(w as usize), Style::new().fg(color))]);
+        } else if active && focused_group && app.focus == Focus::Editor && !edge.is_empty() {
+            f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" }, Style::new().fg(P.tab_active_border).bg(bg)), Rect::new(x, tabbar.y, 1, 1));
+        }
+        gh.tabs.push((Rect::new(x, tabbar.y, w - tail_w + 1, 1), xr));
         x += w;
         if x < split.x {
             fill(f, Rect::new(x, tabbar.y, 1, 1), P.tab_border);
@@ -908,20 +941,23 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
         app.ui.split_btns.push((split, g));
     }
     // A blank row under the tab bar: comfortable, or editorPadding of 2 or more.
-    let top = 1 + u16::from(lay.comfy || lay.s.editor_padding >= 2);
+    let top = 1 + accent;
     let body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
     let active = app.groups[g].active;
     let Some(key) = app.groups[g].tabs.get(active).map(|t| t.key.clone()) else {
-        let lines = vec![
-            Line::raw(""),
-            Line::styled("Open a file from the Explorer", Style::new().fg(P.dim)),
-            Line::styled("Command Palette     F1", Style::new().fg(P.dim)),
-            Line::styled("Quick Open          Ctrl+P", Style::new().fg(P.dim)),
-            Line::styled("Search in files     F4 / Alt+4", Style::new().fg(P.dim)),
-            Line::styled("Source Control      F2 / Alt+2", Style::new().fg(P.dim)),
-            Line::styled("Drag a file to an edge to split", Style::new().fg(P.dim)),
-        ];
-        f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), body);
+        let start = body.y + body.height.saturating_sub(9) / 2;
+        if start < body.bottom() {
+            f.render_widget(Paragraph::new("herdr").alignment(Alignment::Center).style(Style::new().fg(P.dim).bold()), Rect::new(body.x, start, body.width, 1));
+        }
+        for (i, (label, side)) in [("Open File       Ctrl+P", None), ("Search          F4", Some(Side::Search)), ("Source Control  F2", Some(Side::Scm))].into_iter().enumerate() {
+            let y = start + 2 + i as u16 * 2;
+            if y >= body.bottom() { break; }
+            let label = fit(label, body.width as usize);
+            let w = label.width() as u16;
+            let r = Rect::new(body.x + body.width.saturating_sub(w) / 2, y, w, 1);
+            row(f, r, P.editor_bg, vec![Span::styled(label, Style::new().fg(P.focus_border))]);
+            app.ui.welcome.push((r, g, side));
+        }
         gh.text = body;
         app.ui.groups.push(gh);
         return;
@@ -1659,6 +1695,12 @@ pub(crate) fn diff_view(
     f.render_widget(Paragraph::new(sep).style(Style::new().fg(P.group_border)), Rect::new(area.x + half, area.y, 1, area.height));
     for (k, r) in d.rows.iter().skip(v.scroll).take(area.height as usize).enumerate() {
         let y = area.y + k as u16;
+        let words = if r.kind == Kind::Change {
+            match (&r.left, &r.right) {
+                (Some((_, old)), Some((_, new))) => diff_word_spans(old, new),
+                _ => (Vec::new(), Vec::new()),
+            }
+        } else { (Vec::new(), Vec::new()) };
         for (s, cell) in [&r.left, &r.right].into_iter().enumerate() {
             let sr = Rect::new(sides[s].x, y, sides[s].width, 1);
             let changed = match (s, r.kind) {
@@ -1674,8 +1716,8 @@ pub(crate) fn diff_view(
                 Some((n, text)) => {
                     let bg = match (changed, s) {
                         (false, _) => P.editor_bg,
-                        (true, 0) => P.diff_del_bg,
-                        _ => P.diff_ins_bg,
+                        (true, 0) => P.diff_del_line,
+                        _ => P.diff_ins_line,
                     };
                     let sign = match (changed, s) {
                         (false, _) => " ",
@@ -1686,7 +1728,10 @@ pub(crate) fn diff_view(
                     let g = Span::styled(format!("{}{:>w$}{sign}", sp(gap), n + 1, w = digits as usize), Style::new().fg(P.line_nr).bg(bg));
                     f.render_widget(g, Rect::new(sr.x, y, gw.min(sr.width), 1));
                     let tr = Rect::new(sr.x + gw.min(sr.width), y, sr.width.saturating_sub(gw), 1);
-                    f.render_widget(render_line(text, None, &[], None, v.hscroll, tr.width as usize, Style::new().fg(P.editor_fg).bg(bg)), tr);
+                    let word_bg = if s == 0 { P.diff_del_text } else { P.diff_ins_text };
+                    let ranges = if s == 0 { &words.0 } else { &words.1 };
+                    let overlays: Vec<_> = ranges.iter().map(|w| (w.start, w.end, word_bg.over(bg))).collect();
+                    f.render_widget(render_line(text, None, &overlays, None, v.hscroll, tr.width as usize, Style::new().fg(P.editor_fg).bg(bg)), tr);
                     draw_rulers(f, tr, v.hscroll, rulers, bg);
                 }
             }
@@ -1730,6 +1775,29 @@ pub(crate) fn diff_view(
     paint_slider(f, track, s, slider);
     diff_overview(f, &d.rows, v, track);
     (Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h }), out_mini)
+}
+
+/// A stable word span without diff work on the render path. Multiple edits on
+/// one line share a span; long lines retain their line highlight only.
+fn diff_word_spans(old: &str, new: &str) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+    if old == new || old.len() > 2048 || new.len() > 2048 {
+        return (Vec::new(), Vec::new());
+    }
+    let prefix: usize = old.chars().zip(new.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum();
+    let suffix: usize = old[prefix..].chars().rev().zip(new[prefix..].chars().rev()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum();
+    let span = |text: &str| {
+        let mut start = prefix;
+        let mut end = text.len() - suffix;
+        if start == end { return Vec::new(); }
+        while let Some(c) = text[..start].chars().next_back().filter(|c| !c.is_whitespace()) {
+            start -= c.len_utf8();
+        }
+        while let Some(c) = text[end..].chars().next().filter(|c| !c.is_whitespace()) {
+            end += c.len_utf8();
+        }
+        vec![start..end]
+    };
+    (span(old), span(new))
 }
 
 /// The diff's overview ruler on its scrollbar track, as VS Code's two lanes:

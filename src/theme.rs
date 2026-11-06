@@ -138,6 +138,7 @@ pub struct Pal {
     pub tabs_bg: Color,
     pub tab_active_bg: Color,
     pub tab_active_fg: Color,
+    pub tab_active_border: Color,
     /// `tab.dragAndDropBorder`: where a dragged tab would go in a tab bar.
     pub tab_dnd_border: Color,
     pub tab_unfocused_fg: Color,
@@ -187,8 +188,6 @@ pub struct Pal {
     pub git_renamed: Color,
     pub git_untracked: Color,
     pub git_conflict: Color,
-    pub diff_ins_bg: Color,
-    pub diff_del_bg: Color,
     /// The diff editor's overview ruler (VS Code: the text backgrounds at twice the
     /// alpha when unset), composited over the scrollbar track where drawn.
     pub diff_ruler_ins: Rgba,
@@ -278,6 +277,8 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         tabs_bg: on("editorGroupHeader.tabsBackground", sidebar_bg),
         tab_active_bg,
         tab_active_fg: on("tab.activeForeground", tab_active_bg),
+        tab_active_border: t.get("tab.activeBorderTop").and_then(Value::as_str).and_then(Rgba::parse)
+            .unwrap_or_else(|| raw("focusBorder")).over(tab_active_bg),
         tab_dnd_border: on("tab.dragAndDropBorder", editor_bg),
         tab_unfocused_fg: on("tab.unfocusedActiveForeground", tab_active_bg),
         tab_inactive_bg,
@@ -323,8 +324,6 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         git_renamed: on("gitDecoration.renamedResourceForeground", sidebar_bg),
         git_untracked: on("gitDecoration.untrackedResourceForeground", sidebar_bg),
         git_conflict: on("gitDecoration.conflictingResourceForeground", sidebar_bg),
-        diff_ins_bg: on("diffEditor.insertedTextBackground", editor_bg),
-        diff_del_bg: on("diffEditor.removedTextBackground", editor_bg),
         diff_ruler_ins: raw("diffEditorOverview.insertedForeground"),
         diff_ruler_del: raw("diffEditorOverview.removedForeground"),
         diff_filler: on("diffEditor.diagonalFill", editor_bg),
@@ -358,7 +357,23 @@ pub fn build_pal(t: &Map<String, Value>) -> Pal {
 pub fn embedded_theme() -> &'static Value {
     static T: OnceLock<Value> = OnceLock::new();
     T.get_or_init(|| {
-        serde_json::from_str(&jsonc_to_json(include_str!("../assets/cpptools_dark_vs_new.json"))).unwrap_or_default()
+        let mut theme: Value = serde_json::from_str(&jsonc_to_json(include_str!("../assets/cpptools_dark_vs_new.json"))).unwrap_or_default();
+        // Workbench surfaces for herdr; user colour customizations are applied later.
+        if let Some(colors) = theme["colors"].as_object_mut() {
+            for (key, value) in [
+                ("sideBar.background", "#252526"),
+                ("editorWidget.background", "#303031"),
+                ("quickInput.background", "#303031"),
+                ("tab.activeBorderTop", "#007ACC"),
+                ("list.activeSelectionBackground", "#303E4C"),
+                ("list.inactiveSelectionBackground", "#303034"),
+                ("diffEditor.insertedLineBackground", "#66884418"),
+                ("diffEditor.removedLineBackground", "#AA555518"),
+            ] {
+                colors.insert(key.into(), value.into());
+            }
+        }
+        theme
     })
 }
 

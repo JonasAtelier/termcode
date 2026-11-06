@@ -99,6 +99,12 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
   alike). A no-argument launch from `arch/sh` keeps its own session though its root is the
   repo; a reused `--tab` keeps the session of the folder it was opened from.
   `herdr-code FILE:L` opens that file on top of it.
+- Visuals: the built-in theme uses layered grey surfaces, muted selections and diff line
+  backgrounds, with stronger word highlights. Active editor tabs have a short accent line
+  above them in comfortable density (a leading marker in compact); dirty tabs keep a
+  separate marker beside Close even on hover. Empty editors offer clickable Open File,
+  Search and Source Control shortcuts. Graph nodes are hollow except HEAD, which is solid.
+  Tool icons stay monochrome; Seti file colours and custom theme colours are preserved.
 - `prefix+g` is herdr's default `goto`, so no keybinding is shipped. To add one, bind
   `plugin_action` `jonas.herdr-code.open` to a free key.
 
@@ -162,8 +168,8 @@ one dot row per line and one dot per run of columns (so `maxColumn` fits), lit w
 has code, so indentation and line lengths show. Each cell takes the most frequent token
 colour of its dots, muted towards the background (`minimap.foregroundOpacity` scales it). The
 git changes are on its left edge, find matches and the selection behind the dots, and the
-viewport slider is a translucent overlay while the mouse is over it (herdr forwards plain mouse
-motion to the pane, so VS Code's `showSlider: "mouseover"` works). In a narrow editor it
+viewport slider is a translucent overlay, always visible by default (herdr forwards plain mouse
+motion to the pane, so explicit `showSlider: "mouseover"` also works). In a narrow editor it
 shrinks, then hides. `renderCharacters: false` draws half blocks instead, one line per half.
 
 Clicking a quick-diff marker opens VS Code's dirty-diff peek below the change: the index
@@ -277,7 +283,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `editor.minimap.enabled` | `true` | The minimap (F1 "View: Toggle Minimap" for the session) |
 | `editor.minimap.maxColumn` | `120` | Characters the minimap covers (about 8 per cell, 8 to 16 cells, at most 15% of the editor, shrunk to leave minEditorWidth) |
 | `editor.minimap.renderCharacters` | `true` | Braille dots (4 lines × 2 dot columns per cell); `false`: half blocks, a line per half |
-| `editor.minimap.showSlider` | `"mouseover"` | or `"always"` |
+| `editor.minimap.showSlider` | `"always"` | or `"mouseover"` |
 | `editor.minimap.side` | `"right"` | or `"left"` |
 | `herdr-code.minimap.minEditorWidth` | `40` | The minimap shrinks (to 4 cells) so the code keeps this many columns, then hides |
 | `editor.minimap.size` | `"proportional"` | `"fill"`: the whole file over the height; `"fit"`: proportional while it fits |

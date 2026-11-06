@@ -1157,7 +1157,7 @@ fn pane_header(app: &mut App, f: &mut Frame, r: Rect, title: &str, open: bool, h
     }
     let chev = if open { ic.chev_down } else { ic.chev_right };
     let fg = if focused { P.focus_border } else { P.section_fg };
-    let mut spans = vec![Span::styled(format!("{chev}{}{title}", sp(s.icon_gap)), Style::new().fg(fg).bold())];
+    let mut spans = vec![Span::styled(format!(" {chev}{}{title}", sp(crate::blocks::icon_gap(s.icon_gap))), Style::new().fg(fg).bold())];
     if !extra.is_empty() {
         spans.push(Span::styled(format!(" {extra}"), Style::new().fg(P.dim)));
     }
@@ -1223,7 +1223,7 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
     app.gitui.hits.changes = crect;
     app.ui.side_list = Rect::default();
     if crect.height > 0 {
-        let m = s.sidebar_padding.max(1);
+        let m = s.sidebar_padding.min(crect.width / 2);
         let btn = Rect::new(crect.x + m, crect.y, crect.width.saturating_sub(2 * m), 1);
         let label = format!("{}{}Add commit", icons().check, sp(s.icon_gap));
         fill(f, btn, P.button_bg);
@@ -1333,10 +1333,13 @@ fn graph_list(app: &mut App, f: &mut Frame, list: Rect) {
 fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: bool, pal: &Pal) {
     let g = &app.gitui.graph;
     let c = &g.commits[ci];
+    let head = c.refs.iter().any(|x| matches!(x, RefLabel::Current(_) | RefLabel::Head));
     let maxg = (r.width / 2) as usize;
     let mut spans = vec![Span::raw(" ")];
     for cell in g.rows[ci].cells.iter().take(maxg) {
-        spans.push(Span::styled(cell.glyph.to_string(), Style::new().fg(pal.lane(cell.color))));
+        let glyph = if cell.glyph == '●' && !head { '○' } else { cell.glyph };
+        let glyph = if crate::theme::ascii() && matches!(glyph, '●' | '○') { if head { '*' } else { 'o' } } else { glyph };
+        spans.push(Span::styled(glyph.to_string(), Style::new().fg(pal.lane(cell.color))));
     }
     spans.push(Span::raw(" "));
     // The subject keeps at least ~20 cells; the badges get the rest before they collapse.
@@ -1348,7 +1351,6 @@ fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: 
         rs.push(Span::styled(format!(" {}", info_icon()), Style::new().fg(P.icon_fg)));
     }
     let room = (r.width as usize).saturating_sub(width(&spans) as usize + width(&rs) as usize + 1);
-    let head = c.refs.iter().any(|x| matches!(x, RefLabel::Current(_) | RefLabel::Head));
     let subject = fit(&c.subject, room);
     let mut st = Style::new().fg(P.sidebar_fg);
     if head {
@@ -1837,8 +1839,8 @@ pub(crate) mod ui_tests {
         assert!(rx > lx + 20, "parent left, commit right: {s}");
         assert!(!s.contains("diff --git") && !s.contains("@@"), "no raw patch text: {s}");
         let del = tm.backend().buffer()[(lx, ly)].bg;
-        assert_eq!(del, P.diff_del_bg);
-        assert_eq!(tm.backend().buffer()[(rx, ry)].bg, P.diff_ins_bg);
+        assert_eq!(del, P.diff_del_text.over(P.diff_del_line));
+        assert_eq!(tm.backend().buffer()[(rx, ry)].bg, P.diff_ins_text.over(P.diff_ins_line));
         key_f7(&mut app);
         let v = &app.groups[app.ag].tabs[app.groups[app.ag].active].view;
         assert_eq!(v.want_x, Some(0), "F7 jumped to the change");
