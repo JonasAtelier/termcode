@@ -102,6 +102,9 @@ pub fn cmd(root: &Path) -> Command {
     CALLS.with(|n| n.set(n.get() + 1));
     let mut c = Command::new("git");
     c.arg("--literal-pathspecs").arg("-C").arg(root).stdin(Stdio::null());
+    // No optional locks: a background `git status` must never hold index.lock while
+    // the user stages or commits. Writes still take their own (mandatory) locks.
+    c.env("GIT_OPTIONAL_LOCKS", "0");
     c
 }
 

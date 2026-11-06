@@ -117,6 +117,72 @@ pub enum PAct {
     DiscardBackup(PathBuf),
 }
 
+/// Wheel and motion frames come at most this often (herdr itself renders every 16 ms).
+const FRAME: Duration = Duration::from_millis(16);
+/// FocusGained waits this long, so focus flicker runs one refresh.
+const FOCUS_DEBOUNCE: Duration = Duration::from_millis(150);
+/// The running `git status` shows a spinner after this long.
+pub const STATUS_SLOW: Duration = Duration::from_millis(300);
+const STATUS_KEY: &str = "status:";
+
+/// See `App::hover_key`.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+struct HoverKey {
+    row: Option<usize>,
+    sticky: Option<usize>,
+    git_row: Option<u16>,
+    tab: Option<(usize, usize)>,
+    scrollbar: Option<usize>,
+    minimap: Option<usize>,
+    peek: Option<usize>,
+    /// A commit-dialog splitter (sash.hoverBorder).
+    sash: Option<usize>,
+}
+
+/// Events the loop batches before one frame: wheel ticks and plain pointer motion.
+fn coalescable(ev: &Event) -> bool {
+    matches!(ev, Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight | MouseEventKind::Moved))
+}
+
+/// The branch label and `git status -z` of the repo at `g` (runs git; off the UI thread).
+fn read_status(g: &Path) -> (String, Vec<u8>) {
+    let run = |args: &[&str]| git::cmd(g).args(args).stderr(Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| o.stdout);
+    let line = |args: &[&str]| String::from_utf8_lossy(&run(args).unwrap_or_default()).trim().to_string();
+    let b = line(&["branch", "--show-current"]);
+    let branch = if !b.is_empty() {
+        b
+    } else {
+        match line(&["rev-parse", "--short", "HEAD"]) {
+            h if h.is_empty() => "(no commits)".into(),
+            h => format!("detached {h}"),
+        }
+    };
+    (branch, run(&["status", "--porcelain=v1", "-z", "--untracked-files=all"]).unwrap_or_default())
+}
+
+// The perf batch-2 behaviours, switchable only in tests (to measure before and after).
+#[cfg(test)]
+thread_local! {
+    pub(crate) static BATCH2: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+#[cfg(test)]
+fn on() -> bool {
+    BATCH2.with(|b| b.get())
+}
+#[cfg(not(test))]
+fn on() -> bool {
+    true
+}
+fn coalesce() -> bool {
+    on()
+}
+fn hover_keyed() -> bool {
+    on()
+}
+fn async_status() -> bool {
+    on()
+}
+
 /// Set by SIGHUP/SIGTERM (herdr closing the pane sends HUP, then TERM, then KILL).
 static SIGNALED: AtomicBool = AtomicBool::new(false);
 
@@ -386,6 +452,8 @@ pub struct GroupHit {
 
 enum Load {
     Diff(DiffDoc),
+    /// `git status` off the UI thread: the branch label and the porcelain bytes.
+    Status(String, Vec<u8>),
     /// Quick-diff base (the index blob) for a `file:` document.
     Base(Option<Vec<u8>>),
     Cancelled,
@@ -443,10 +511,20 @@ pub struct App {
     last_click: Option<(Instant, Position)>,
     pub hover: Option<Position>,
     pending_k: bool,
+    /// A key or click that ended a wheel/motion batch: handled after that batch's frame.
+    pending_ev: Option<Event>,
+    /// When the last frame was drawn (wheel/motion frames are at most one per FRAME).
+    last_draw: Option<Instant>,
+    /// FocusGained, debounced: the refresh it asked for.
+    refresh_due: Option<Instant>,
+    /// A refresh came while `git status` ran: run it again when that one lands.
+    status_again: bool,
+    /// The running `git status` started then (a spinner after STATUS_SLOW).
+    pub status_since: Option<Instant>,
     clip: String,
     load_tx: mpsc::Sender<(String, u64, Load)>,
     load_rx: mpsc::Receiver<(String, u64, Load)>,
-    loading: HashMap<String, u64>,
+    pub(crate) loading: HashMap<String, u64>,
     load_gen: u64,
     /// The last interactive diff load, cancelled when the next one replaces it.
     diff_cancel: Option<(String, Arc<AtomicBool>)>,
@@ -730,6 +808,11 @@ impl App {
             last_click: None,
             hover: None,
             pending_k: false,
+            pending_ev: None,
+            last_draw: None,
+            refresh_due: None,
+            status_again: false,
+            status_since: None,
             clip: String::new(),
             load_tx,
             load_rx,
@@ -769,7 +852,12 @@ impl App {
             gitui: crate::scm::GitUi::new(&saved),
         };
         a.backup_dir = a.layout_file.as_ref().and_then(|p| p.parent()).map(|d| d.join("backup"));
-        a.refresh();
+        // The first frame shows the real status: read it here, once, synchronously.
+        a.refresh_files();
+        if let Some(g) = a.git_root.clone() {
+            let (branch, raw) = read_status(&g);
+            a.apply_status(branch, raw);
+        }
         a.tree = a.read_dir("", 0);
         let pending = a.pending_backups();
         if pending > 0 {
@@ -1214,7 +1302,7 @@ impl App {
         &mut self,
         t: &mut Terminal<B>,
         dirty: &mut bool,
-        next: impl FnOnce(Duration) -> io::Result<Option<Event>>,
+        mut next: impl FnMut(Duration) -> io::Result<Option<Event>>,
     ) -> io::Result<Duration> {
         if self.backup_due.is_some_and(|t| Instant::now() >= t) {
             self.sync_backups();
@@ -1223,11 +1311,17 @@ impl App {
             self.update_qdiff();
             *dirty = true;
         }
+        if self.refresh_due.is_some_and(|t| Instant::now() >= t) {
+            self.refresh_due = None;
+            self.refresh();
+            *dirty = true;
+        }
         // Source Control timers: the resting-pointer card, the blame delay, the op spinner.
         *dirty |= crate::scm::tick(self);
         *dirty |= self.drain();
         if std::mem::take(dirty) {
             t.draw(|f| crate::ui::draw(self, f))?;
+            self.last_draw = Some(Instant::now());
         }
         // Wake often only while rg/git output streams in or a backup is pending,
         // so a HUP is noticed within 100 ms whenever there is something to save.
@@ -1238,16 +1332,51 @@ impl App {
             || self.nav.busy()
             || self.gitui.busy();
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
-        for t in [self.qdiff_due, self.gitui.due()].into_iter().flatten() {
+        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
-        let ev = match next(wait) {
-            Ok(ev) => ev,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(wait),
-            Err(e) => return Err(e),
+        // A key or click held back by the last batch runs now, after that batch's frame.
+        let ev = match self.pending_ev.take() {
+            Some(ev) => Some(ev),
+            None => match next(wait) {
+                Ok(ev) => ev,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(wait),
+                Err(e) => return Err(e),
+            },
         };
         let Some(ev) = ev else { return Ok(wait) };
-        *dirty |= match ev {
+        let batch = coalescable(&ev);
+        *dirty |= self.handle_event(ev);
+        if batch && coalesce() {
+            // Wheel and plain motion come in bursts: take every one queued, and those that
+            // arrive until a frame is due (FRAME after the last), then draw once. A key or
+            // click ends the batch and waits for that frame: clicks hit-test the drawn
+            // layout, and keys are never held for the cap.
+            let start = Instant::now();
+            let due = self.last_draw.map_or(start, |d| (d + FRAME).max(start));
+            loop {
+                let now = Instant::now();
+                // A stream that never pauses still gets a frame every FRAME of handling.
+                if now >= due.max(start) + FRAME {
+                    break;
+                }
+                match next(due.saturating_duration_since(now)) {
+                    Ok(Some(e)) if coalescable(&e) => *dirty |= self.handle_event(e),
+                    Ok(Some(e)) => {
+                        self.pending_ev = Some(e);
+                        break;
+                    }
+                    Ok(None) => break,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(if self.pending_ev.is_some() { Duration::ZERO } else { wait })
+    }
+
+    fn handle_event(&mut self, ev: Event) -> bool {
+        let redraw = match ev {
             Event::Key(k) if k.kind != KeyEventKind::Release => {
                 crate::navui::on_key(self, k);
                 self.schedule_backup();
@@ -1259,25 +1388,24 @@ impl App {
                 self.schedule_backup();
                 true
             }
+            // Debounced: focus flickers between windows run one refresh.
             Event::FocusGained => {
-                self.refresh();
-                true
+                if !async_status() {
+                    self.refresh();
+                    return true;
+                }
+                self.refresh_due.get_or_insert(Instant::now() + FOCUS_DEBOUNCE);
+                false
             }
             Event::Resize(..) => true,
             _ => false,
         };
         // Any edit (keys, paste, a Replace All click) re-diffs the gutter shortly after.
         self.schedule_qdiff();
-        Ok(wait)
+        redraw
     }
 
     // ---- git / filesystem ------------------------------------------------------
-
-    /// `git args` in the repo; None without one (and then git is not run at all).
-    fn git(&self, args: &[&str]) -> Option<Vec<u8>> {
-        let o = git::cmd(self.git_root.as_ref()?).args(args).stderr(Stdio::null()).output().ok()?;
-        o.status.success().then_some(o.stdout)
-    }
 
     /// A repo path (git status, SCM rows) as a document path: relative under the root, else absolute.
     pub fn doc_path(&self, repo_rel: &str) -> String {
@@ -1294,22 +1422,35 @@ impl App {
         Some(self.root.join(rel).strip_prefix(g).ok()?.to_string_lossy().into_owned())
     }
 
-    fn git_line(&self, args: &[&str]) -> String {
-        String::from_utf8_lossy(&self.git(args).unwrap_or_default()).trim().to_string()
+    /// Re-read git status (in the background: the old status shows until the new one
+    /// lands), decorations, and the disk state of open files.
+    pub fn refresh(&mut self) {
+        self.refresh_files();
+        self.refresh_status();
     }
 
-    /// Re-read git status, decorations, and the disk state of open files.
-    pub fn refresh(&mut self) {
-        let b = self.git_line(&["branch", "--show-current"]);
-        self.branch = if !b.is_empty() || self.git_root.is_none() {
-            b
-        } else {
-            match self.git_line(&["rev-parse", "--short", "HEAD"]) {
-                h if h.is_empty() => "(no commits)".into(),
-                h => format!("detached {h}"),
-            }
-        };
-        let raw = self.git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"]).unwrap_or_default();
+    /// `git status` as a job. One at a time: a refresh meanwhile reruns it after.
+    fn refresh_status(&mut self) {
+        let Some(g) = self.git_root.clone() else { return };
+        if !async_status() {
+            let (branch, raw) = read_status(&g);
+            return self.apply_status(branch, raw);
+        }
+        if self.loading.contains_key(STATUS_KEY) {
+            self.status_again = true;
+            return;
+        }
+        self.status_since = Some(Instant::now());
+        self.load(STATUS_KEY.into(), move |_| {
+            let (branch, raw) = read_status(&g);
+            Load::Status(branch, raw)
+        });
+    }
+
+    /// The status `git status` reported: SCM rows, Explorer marks, then what follows them.
+    fn apply_status(&mut self, branch: String, raw: Vec<u8>) {
+        self.status_since = None;
+        self.branch = branch;
         self.status = parse::parse_porcelain_z(&raw);
         let (staged, changes) = git::split(&self.status);
         self.scm_files = staged.into_iter().chain(changes).collect();
@@ -1320,6 +1461,11 @@ impl App {
             .filter_map(|e| Some((e.path.strip_prefix(&self.prefix)?.to_string(), git::decoration(e)?)))
             .collect();
         self.dirty_dirs = git::folder_marks(self.marks.iter().map(|(p, c)| (p.as_str(), *c)));
+        crate::scm::on_refresh(self);
+    }
+
+    /// The disk state of open files, the gutter bases, settings, visible diffs.
+    fn refresh_files(&mut self) {
         let mut notes = Vec::new();
         for (key, doc) in self.docs.iter_mut() {
             if let Doc::Text(b) = doc {
@@ -1350,7 +1496,6 @@ impl App {
         for (key, f) in visible {
             self.load_diff(key, f, None);
         }
-        crate::scm::on_refresh(self);
     }
 
     fn read_dir(&self, rel: &str, depth: usize) -> Vec<Node> {
@@ -1531,6 +1676,18 @@ impl App {
                 continue;
             }
             self.loading.remove(&key);
+            if let Load::Status(branch, raw) = load {
+                let since = self.status_since;
+                self.apply_status(branch, raw);
+                if std::mem::take(&mut self.status_again) {
+                    // What landed is already older than the refresh asked for meanwhile:
+                    // the spinner keeps its start, so it stays on until the rerun lands.
+                    self.refresh_status();
+                    self.status_since = since.or(self.status_since);
+                }
+                changed = true;
+                continue;
+            }
             if let Load::Base(blob) = load {
                 let doc = key.trim_start_matches("base:").to_string();
                 // Decoded exactly as the buffer is, so Revert writes the index's own lines.
@@ -1549,7 +1706,7 @@ impl App {
             }
             let doc = match load {
                 Load::Diff(d) => Doc::Diff(d),
-                Load::Base(_) | Load::Cancelled => continue,
+                Load::Base(_) | Load::Status(..) | Load::Cancelled => continue,
             };
             self.docs.insert(key, doc);
             changed = true;
@@ -2861,25 +3018,39 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => self.release(),
             MouseEventKind::ScrollUp => self.wheel(p, -3),
             MouseEventKind::ScrollDown => self.wheel(p, 3),
+            // Redraw only when what the frame shows for the pointer changes.
             MouseEventKind::Moved => {
                 let old = self.hover.replace(p);
-                let g = &self.gitui.hits;
-                let watched = |q: Position| {
-                    self.ui.side_list.contains(q)
-                        || g.graph.contains(q)
-                        || g.timeline.contains(q)
-                        || self.ui.groups.iter().any(|g| g.tabbar.contains(q))
-                        || self.ui.scrollbars.iter().any(|s| s.track.contains(q))
-                        || self.ui.minimaps.iter().any(|m| m.area.contains(q))
-                        || self.ui.peek_zone.contains(q)
-                        || self.gitui.dlg.as_ref().is_some_and(|d| d.hits.sashes.iter().any(|r| r.contains(q)))
+                let redraw = if hover_keyed() {
+                    old.map(|q| self.hover_key(q)) != Some(self.hover_key(p))
+                } else {
+                    let watched = |q: Position| self.hover_key(q) != HoverKey::default();
+                    old != Some(p) && (watched(p) || old.is_some_and(watched))
                 };
-                let redraw = old != Some(p) && (watched(p) || old.is_some_and(watched));
                 return crate::scm::moved(self, p) || redraw;
             }
             _ => return false,
         }
         true
+    }
+
+    /// Everything a frame draws differently under the pointer: the sidebar row (and a
+    /// sticky one), a GRAPH or TIMELINE row, a tab, a scrollbar, a minimap, a peek
+    /// button, a commit-dialog splitter.
+    fn hover_key(&self, p: Position) -> HoverKey {
+        let s = self.side as usize;
+        let side = self.ui.side_list.contains(p);
+        let g = &self.gitui.hits;
+        HoverKey {
+            row: side.then(|| self.ui.side_item(p.y, self.off[s])).flatten(),
+            sticky: side.then(|| self.ui.sticky_at(p.y)).flatten(),
+            git_row: (g.graph.contains(p) || g.timeline.contains(p)).then_some(p.y),
+            tab: self.ui.groups.iter().enumerate().find_map(|(gi, gh)| gh.tabs.iter().position(|(t, x)| t.contains(p) || x.contains(p)).map(|i| (gi, i))),
+            scrollbar: self.ui.scrollbars.iter().position(|sb| sb.track.contains(p)),
+            minimap: self.ui.minimaps.iter().position(|m| m.area.contains(p)),
+            peek: self.ui.peek_btns.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.peek_zone.contains(p).then_some(usize::MAX)),
+            sash: self.gitui.dlg.as_ref().and_then(|d| d.hits.sashes.iter().position(|r| r.contains(p))),
+        }
     }
 
     fn click(&mut self, p: Position, double: bool, shift: bool) {
@@ -3387,6 +3558,7 @@ mod tests {
 
         // Source Control: the saved edit is under Changes; diff, stage, commit.
         app.refresh();
+        wait(&mut app);
         app.show_side(Side::Scm, false);
         let s = screen(&mut app, &mut t);
         assert!(s.contains("Changes") && s.contains("main.rs") && s.contains("Add commit"), "{s}");
@@ -3396,6 +3568,7 @@ mod tests {
         let s = screen(&mut app, &mut t);
         assert!(s.contains("main.rs (Working Tree)") && s.contains("// hi"), "{s}");
         app.scm_action(ScmAct::Stage(i));
+        wait(&mut app);
         assert!(app.scm_files.iter().any(|f| f.section == Section::Staged && f.path == "src/main.rs"));
         app.commit(); // "Add commit": the commit dialog, caret in its message
         typ(&mut app, "edit main");
@@ -3407,6 +3580,7 @@ mod tests {
         // Discard always asks; Cancel (the default) keeps the file, Discard deletes it.
         fs::write(root.join("junk.txt"), "x").unwrap();
         app.refresh();
+        wait(&mut app);
         let j = app.scm_files.iter().position(|f| f.path == "junk.txt").unwrap();
         app.scm_action(ScmAct::Discard(j));
         assert!(app.prompt.as_ref().unwrap().text.join(" ").contains("IRREVERSIBLE"));
@@ -3562,6 +3736,7 @@ mod tests {
         fs::write(root.join("README.md"), "changed\n").unwrap(); // a change: SCM badge and counts
         let mut app = App::new(root.clone(), None);
         app.refresh();
+        wait(&mut app);
         app.open_file(0, "mxl.c", false);
         let mut t = Terminal::new(TestBackend::new(150, 40)).unwrap();
         screen(&mut app, &mut t);
@@ -3712,6 +3887,7 @@ mod tests {
         // Save and stage: the index now matches, so the marker goes away.
         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         app.refresh();
+        wait(&mut app);
         let i = app.scm_files.iter().position(|f| f.path == "long.txt").unwrap();
         app.scm_action(ScmAct::Stage(i));
         wait(&mut app);
@@ -3833,6 +4009,7 @@ mod tests {
             app.settings.spacing = sp;
             app.settings.rulers = vec![(2, None), (90, None)];
             app.refresh();
+            wait(&mut app);
             app.open_file(0, "src/main.rs", false);
             wait(&mut app);
             app.focus = Focus::Editor;
@@ -4258,6 +4435,7 @@ mod tests {
         fs::write(root.join("r.txt"), text.replace("next", "changed")).unwrap();
         app.settings.rulers = vec![(12, None)];
         app.refresh();
+        wait(&mut app);
         let i = app.scm_files.iter().position(|f| f.path == "r.txt").unwrap();
         app.open_diff(i, false);
         wait(&mut app);
@@ -4513,6 +4691,7 @@ mod tests {
         assert_eq!(tl, ["src/main.rs"]);
         // Staging from a subfolder root stages the repo path.
         app.scm_action(ScmAct::Stage(1));
+        wait(&mut app);
         assert!(app.scm_files.iter().any(|f| f.section == Section::Staged && f.path == "src/main.rs"), "{:?}", app.scm_files);
         fs::remove_dir_all(&root).unwrap();
     }
@@ -4569,6 +4748,7 @@ mod tests {
         assert!(screen(&mut app, &mut t).contains("sub"));
         app.open_file(0, "sub/a.txt", false);
         app.refresh();
+        wait(&mut app);
         app.show_side(Side::Scm, false);
         assert_eq!(app.focus, Focus::Side, "no commit box to type into");
         let s = screen(&mut app, &mut t);
@@ -4991,5 +5171,320 @@ mod tests {
         app.hits = (0..5000).map(|i| Hit { path: format!("dir/f{:03}.c", i / 10), line: i + 1, col: 1, text: format!("needle {i}") }).collect();
         app.off[1] = 5400;
         frame(&mut app, "Search, 500 files x 10 hits, off 5400");
+    }
+
+    // ---- perf batch 2: coalescing, hover keys, the frame cap, async status --------
+
+    fn mev(kind: MouseEventKind, x: u16, y: u16) -> Event {
+        Event::Mouse(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE })
+    }
+
+    fn many_files(tag: &str, n: usize) -> PathBuf {
+        let root = repo(tag);
+        for i in 0..n {
+            fs::write(root.join(format!("f{i:03}.txt")), "x\n").unwrap();
+        }
+        root
+    }
+
+    /// Wheel ticks batch before one frame; the click that ends the batch runs after that
+    /// frame (hit-testing what was drawn), the key after it, and nothing is lost.
+    #[test]
+    fn coalescing_batches_wheel_and_keeps_clicks_and_keys_in_order() {
+        let root = many_files("coalesce", 80);
+        let mut app = App::new(root.clone(), None);
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut dirty = true;
+        app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+        let l = app.ui.side_list;
+        let wheel = mev(MouseEventKind::ScrollDown, l.x + 2, l.y + 2);
+        let click = mev(MouseEventKind::Down(MouseButton::Left), l.x + 2, l.y + 1);
+        let key = Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let mut q: std::collections::VecDeque<Event> = [wheel.clone(), wheel.clone(), wheel.clone(), click, key, wheel].into();
+        app.step(&mut t, &mut dirty, |_| Ok(q.pop_front())).unwrap();
+        assert_eq!(app.off[0], 9, "three ticks in one batch");
+        assert!(app.pending_ev.is_some() && q.len() == 2, "the click waits for the frame; the rest stays queued");
+        assert_eq!(app.sel[0], 0);
+        let drawn = app.last_draw;
+        let mut calls = 0;
+        let wait = app
+            .step(&mut t, &mut dirty, |_| {
+                calls += 1;
+                Ok(None)
+            })
+            .unwrap();
+        assert!(app.last_draw > drawn && calls == 0, "drawn first, then the held click, without waiting");
+        assert_eq!(app.sel[0], 10, "the click hit row 1 of the scrolled list");
+        assert!(wait > Duration::ZERO);
+        app.step(&mut t, &mut dirty, |_| Ok(q.pop_front())).unwrap();
+        assert_eq!(app.sel[0], 11, "then the key");
+        app.step(&mut t, &mut dirty, |_| Ok(q.pop_front())).unwrap();
+        assert!(q.is_empty() && app.off[0] > 9, "and the last tick");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Plain motion asks for a frame only when what is drawn under the pointer changes.
+    #[test]
+    fn motion_redraws_only_when_the_hover_target_changes() {
+        let root = many_files("hoverkey", 10);
+        let mut app = App::new(root.clone(), None);
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        app.open_file(0, "f001.txt", false);
+        app.open_file(0, "f002.txt", false);
+        screen(&mut app, &mut t);
+        let (l, text, tab) = (app.ui.side_list, app.ui.groups[0].text, app.ui.groups[0].tabs[0].0);
+        let mv = |app: &mut App, x: u16, y: u16| app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: x, row: y, modifiers: KeyModifiers::NONE });
+        assert!(mv(&mut app, l.x + 1, l.y), "into a row");
+        assert!(!mv(&mut app, l.x + 6, l.y), "along the same row");
+        assert!(mv(&mut app, l.x + 1, l.y + 1), "the next row");
+        assert!(mv(&mut app, text.x + 4, text.y + 2), "off the list");
+        assert!(!mv(&mut app, text.x + 9, text.y + 3), "over plain text: nothing changes");
+        assert!(mv(&mut app, tab.x + 1, tab.y), "onto a tab");
+        assert!(!mv(&mut app, tab.x + 2, tab.y), "within it");
+        let moves: usize = (0..200).map(|k| usize::from(mv(&mut app, l.x + (k % 20) as u16, l.y + (k / 50) as u16))).sum();
+        assert_eq!(moves, 4, "200 moves over 4 rows (from the tab): one frame per row entered");
+        BATCH2.with(|b| b.set(false));
+        let before: usize = (0..200).map(|k| usize::from(mv(&mut app, l.x + (k % 20) as u16, l.y + (k / 50) as u16))).sum();
+        BATCH2.with(|b| b.set(true));
+        assert!(before > 150, "before: almost every move redrew ({before})");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The 16 ms cap holds wheel frames, never keys: a key ends the wait at once and runs
+    /// on the next turn without waiting; a key on its own is handled when it arrives.
+    #[test]
+    fn the_frame_cap_never_delays_keys() {
+        let root = many_files("cap", 40);
+        let mut app = App::new(root.clone(), None);
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut dirty = true;
+        app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+        let l = app.ui.side_list;
+        let key = Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        // Right after a frame: the tick may wait up to 16 ms for more, but the key ends it.
+        let mut q: std::collections::VecDeque<Event> = [mev(MouseEventKind::ScrollDown, l.x + 2, l.y), key.clone()].into();
+        let mut asked = Vec::new();
+        let ret = app
+            .step(&mut t, &mut dirty, |w| {
+                asked.push(w);
+                Ok(q.pop_front())
+            })
+            .unwrap();
+        assert!(asked.len() == 2 && asked[1] <= FRAME, "the batch waited at most a frame for more: {asked:?}");
+        assert_eq!(ret, Duration::ZERO, "the next turn runs at once");
+        let sel = app.sel[0];
+        app.step(&mut t, &mut dirty, |_| panic!("the held key must not wait for input")).unwrap();
+        assert_eq!(app.sel[0], sel + 1);
+        // A key alone, right after a frame: handled when it arrives, no batch, no cap.
+        let mut calls = 0;
+        let mut one = Some(key);
+        app.step(&mut t, &mut dirty, |_| {
+            calls += 1;
+            Ok(one.take())
+        })
+        .unwrap();
+        assert_eq!((calls, app.sel[0]), (1, sel + 2));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// git status runs as a job: the old status shows (never cleared) until the new one
+    /// lands; it is right after a stage and a discard; focus flicker runs one refresh;
+    /// and once it all settles the loop goes idle (no busy wake-ups).
+    #[test]
+    fn status_refreshes_in_the_background_and_the_loop_goes_idle() {
+        let root = repo("asyncstatus");
+        fs::write(root.join("README.md"), "changed\n").unwrap();
+        fs::write(root.join("junk.txt"), "x\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        assert_eq!(app.scm_files.len(), 2, "startup reads it at once");
+        let i = app.scm_files.iter().position(|f| f.path == "README.md").unwrap();
+        let rows = app.scm_files.len();
+        app.scm_action(ScmAct::Stage(i));
+        assert!(app.status_since.is_some() && app.scm_files.len() == rows, "in flight: the old rows stay");
+        wait(&mut app);
+        assert!(app.status_since.is_none() && app.scm_files.iter().any(|f| f.path == "README.md" && f.section == Section::Staged));
+        let j = app.scm_files.iter().position(|f| f.path == "junk.txt").unwrap();
+        app.scm_action(ScmAct::Discard(j));
+        app.prompt.as_mut().unwrap().sel = 0;
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        wait(&mut app);
+        assert!(!app.scm_files.iter().any(|f| f.path == "junk.txt"), "{:?}", app.scm_files);
+        // Three FocusGained in a row: one refresh, after the debounce.
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut dirty = true;
+        let mut q: std::collections::VecDeque<Event> = [Event::FocusGained, Event::FocusGained, Event::FocusGained].into();
+        for _ in 0..3 {
+            app.step(&mut t, &mut dirty, |_| Ok(q.pop_front())).unwrap();
+        }
+        let due = app.refresh_due.expect("debounced");
+        assert!(app.status_since.is_none(), "not yet");
+        // Then idle: no timer left, no job, the loop asks for its long wait.
+        let start = Instant::now();
+        loop {
+            let w = app
+                .step(&mut t, &mut dirty, |w| {
+                    std::thread::sleep(w.min(Duration::from_millis(20)));
+                    Ok(None)
+                })
+                .unwrap();
+            if Instant::now() > due && w >= Duration::from_secs(1) {
+                assert!(!dirty && app.refresh_due.is_none() && app.loading.is_empty());
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5), "never went idle");
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Before / after numbers for perf batch 2 (run with `-- --ignored --nocapture`):
+    /// frames, bytes and writes through a real crossterm backend, and the UI-thread time
+    /// of a focus switch.
+    #[test]
+    #[ignore = "measurement, prints numbers"]
+    fn perf_batch2_measure() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        #[derive(Clone, Default)]
+        struct Count(Rc<RefCell<(usize, usize, usize)>>);
+        impl io::Write for Count {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                let mut c = self.0.borrow_mut();
+                c.0 += b.len();
+                c.1 += 1;
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.0.borrow_mut().2 += 1;
+                Ok(())
+            }
+        }
+        let n = std::env::var("HC_PERF_FILES").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
+        let root = many_files("perf2", n);
+        let _ = Command::new("git").arg("-C").arg(&root).args(["add", "-A"]).status();
+        let _ = Command::new("git").arg("-C").arg(&root).args(["commit", "-qm", "files"]).status();
+        for on in [false, true] {
+            BATCH2.with(|b| b.set(on));
+            let mut app = App::new(root.clone(), None);
+            let c = Count::default();
+            let opts = ratatui::TerminalOptions { viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, 120, 40)) };
+            let mut t = Terminal::with_options(CrosstermBackend::new(c.clone()), opts).unwrap();
+            let mut dirty = true;
+            app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+            let l = app.ui.side_list;
+            let reset = |c: &Count| *c.0.borrow_mut() = (0, 0, 0);
+            let (frames, seen) = (std::cell::Cell::new(0), std::cell::Cell::new(app.last_draw));
+            let count = |app: &App| {
+                if app.last_draw != seen.get() {
+                    seen.set(app.last_draw);
+                    frames.set(frames.get() + 1);
+                }
+            };
+            // 1000 wheel ticks, 10 at a time (a gap between bursts), down then up.
+            reset(&c);
+            for burst in 0..100 {
+                let kind = if burst < 50 { MouseEventKind::ScrollDown } else { MouseEventKind::ScrollUp };
+                let mut q: std::collections::VecDeque<Event> = (0..10).map(|_| mev(kind, l.x + 2, l.y + 3)).collect();
+                while !q.is_empty() {
+                    app.step(&mut t, &mut dirty, |_| Ok(q.pop_front())).unwrap();
+                    count(&app);
+                }
+                app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+                count(&app);
+            }
+            let (wheel, wheel_frames) = (*c.0.borrow(), frames.replace(0));
+            // 200 plain moves over 4 list rows.
+            reset(&c);
+            for k in 0..200u16 {
+                let mut one = Some(mev(MouseEventKind::Moved, l.x + k % 20, l.y + k / 50));
+                app.step(&mut t, &mut dirty, |_| Ok(one.take())).unwrap();
+                count(&app);
+                app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+                count(&app);
+            }
+            let motion_frames = frames.get();
+            // A focus switch: UI-thread time (outside waits) until the new status is in.
+            let (mut ui, mut worst) = (Duration::ZERO, Duration::ZERO);
+            let mut ev = Some(Event::FocusGained);
+            let begin = Instant::now();
+            loop {
+                let mut waited = Duration::ZERO;
+                let s0 = Instant::now();
+                app.step(&mut t, &mut dirty, |w| {
+                    let w0 = Instant::now();
+                    if ev.is_none() {
+                        std::thread::sleep(w.min(Duration::from_millis(5)));
+                    }
+                    waited += w0.elapsed();
+                    Ok(ev.take())
+                })
+                .unwrap();
+                let spent = s0.elapsed() - waited;
+                ui += spent;
+                worst = worst.max(spent);
+                if ev.is_none() && app.refresh_due.is_none() && app.loading.is_empty() && begin.elapsed() > Duration::from_millis(10) {
+                    break;
+                }
+            }
+            println!(
+                "batch2 {} ({n} files): wheel 1000 -> {wheel_frames} frames {} B {} writes | motion 200 -> {motion_frames} frames | focus: longest UI step {:.1} ms (all {:.1} ms), fresh after {:.1} ms",
+                if on { "on " } else { "off" },
+                wheel.0,
+                wheel.1,
+                worst.as_secs_f64() * 1000.0,
+                ui.as_secs_f64() * 1000.0,
+                begin.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        BATCH2.with(|b| b.set(true));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// git never takes optional locks: a status running alongside the user's stage
+    /// cannot hold index.lock. With a lock already held it still works and leaves it
+    /// alone; and it never rewrites the index, even for a stat-stale file.
+    #[test]
+    fn status_takes_no_optional_locks() {
+        let envs: Vec<_> = git::cmd(Path::new("/")).get_envs().map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned()))).collect();
+        assert!(envs.contains(&("GIT_OPTIONAL_LOCKS".into(), Some("0".into()))), "{envs:?}");
+        let root = repo("nolocks");
+        let (index, lock) = (root.join(".git/index"), root.join(".git/index.lock"));
+        // A stat-stale entry: git status would normally refresh and rewrite the index.
+        std::thread::sleep(Duration::from_millis(1100));
+        fs::write(root.join("README.md"), "hello\n").unwrap();
+        let before = fs::metadata(&index).unwrap().modified().unwrap();
+        let mut app = App::new(root.clone(), None);
+        fs::write(&lock, "held by someone else").unwrap();
+        fs::write(root.join("new.txt"), "n\n").unwrap();
+        app.refresh();
+        wait(&mut app);
+        assert!(app.scm_files.iter().any(|f| f.path == "new.txt"), "status worked under a held lock: {:?}", app.scm_files);
+        assert_eq!(fs::read_to_string(&lock).unwrap(), "held by someone else", "the lock was left alone");
+        fs::remove_file(&lock).unwrap();
+        app.refresh();
+        wait(&mut app);
+        assert!(!lock.exists(), "no lock left behind");
+        assert_eq!(fs::metadata(&index).unwrap().modified().unwrap(), before, "the index was never rewritten");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A refresh queued behind a running status keeps the spinner on when the older one lands.
+    #[test]
+    fn a_queued_rerun_keeps_the_spinner() {
+        let root = repo("rerun");
+        let mut app = App::new(root.clone(), None);
+        app.refresh();
+        let started = app.status_since.expect("running");
+        app.refresh();
+        assert!(app.status_again, "queued behind it");
+        // Let the first land: the rerun starts and the spinner keeps the first start.
+        let t0 = Instant::now();
+        while app.status_again && t0.elapsed() < Duration::from_secs(5) {
+            app.drain();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.status_since, Some(started), "still the original start: the shown status is stale");
+        wait(&mut app);
+        assert!(app.status_since.is_none());
+        fs::remove_dir_all(&root).unwrap();
     }
 }

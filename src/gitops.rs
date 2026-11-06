@@ -1773,7 +1773,8 @@ mod tests {
         sh(&r, "git config core.sshCommand 'ssh -i mykey'");
         assert!(!envs(&git(&r, Mode::Net)).contains_key("GIT_SSH_COMMAND"), "core.sshCommand wins");
         assert_eq!(envs(&git(&r, Mode::Read))["GIT_OPTIONAL_LOCKS"].as_deref(), Some("0"));
-        assert!(!envs(&git(&r, Mode::Write)).contains_key("GIT_OPTIONAL_LOCKS"));
+        // Every call, writes too (git::cmd): a write still takes its mandatory locks.
+        assert_eq!(envs(&git(&r, Mode::Write))["GIT_OPTIONAL_LOCKS"].as_deref(), Some("0"));
     }
 
     #[test]

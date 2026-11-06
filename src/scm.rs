@@ -1505,7 +1505,7 @@ pub(crate) mod ui_tests {
     pub(crate) fn settle(app: &mut App) {
         for _ in 0..500 {
             app.drain();
-            if !app.gitui.busy() {
+            if !app.gitui.busy() && app.loading.is_empty() {
                 app.drain();
                 return;
             }
@@ -1574,8 +1574,10 @@ pub(crate) mod ui_tests {
         assert!(s.contains("Merge Changes") && s.contains("Changes") && s.contains("n.txt"), "{s}");
         // Stage All Changes leaves the conflict alone; the Merge group's + resolves it.
         app.scm_action(ScmAct::StageAll);
+        settle(&mut app);
         assert!(app.scm_files.iter().any(|f| f.letter == '!'));
         app.scm_action(ScmAct::StageMerge);
+        settle(&mut app);
         assert!(!app.scm_files.iter().any(|f| f.letter == '!'), "{:?}", app.scm_files);
     }
 
@@ -1626,6 +1628,7 @@ pub(crate) mod ui_tests {
         let v = &app.groups[app.ag].tabs[app.groups[app.ag].active].view;
         assert_eq!(v.want_x, Some(0), "F7 jumped to the change");
         app.refresh();
+        settle(&mut app);
         assert!(matches!(app.docs.get(&key), Some(Doc::Diff(d)) if d.title.contains("f.txt")), "refresh keeps commit diffs");
     }
 
@@ -1849,6 +1852,7 @@ pub(crate) mod ui_tests {
         // Stage → and ← Unstage move the selected file between the lists.
         fs::write(r.join("a.txt"), "changed\n").unwrap();
         app.refresh();
+        settle(&mut app);
         app.commit();
         screen(&mut app, &mut tm);
         click(&mut app, at(&tm, "Stage →"));

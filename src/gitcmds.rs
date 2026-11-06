@@ -411,7 +411,8 @@ pub fn on_refresh(app: &mut App) {
 
 /// Timers: blame after the cursor settles; true while the spinner turns.
 pub fn tick(app: &mut App) -> bool {
-    let mut redraw = app.gitui.cmds.op.is_some();
+    let slow_status = app.status_since.is_some_and(|t| t.elapsed() >= crate::panel::STATUS_SLOW);
+    let mut redraw = app.gitui.cmds.op.is_some() || slow_status;
     let s = &app.settings;
     let cur = if (s.blame_status || s.blame_decoration) && app.git_root.is_some() { cursor_spot(app) } else { None };
     let bl = &mut app.gitui.cmds.blame;
@@ -1050,6 +1051,10 @@ pub fn status_left(app: &mut App, f: &mut Frame, r: Rect, edge: u16, gap: u16) -
     let branch_icon = icons().branch;
     let bi = if branch_icon.is_empty() { String::new() } else { format!("{branch_icon}{ig}") };
     let mut items: Vec<(String, Hit)> = vec![(format!("{bi}{}{marks}", app.branch), Hit::Branch)];
+    // A slow `git status`: the status shown is the last one, still being re-read.
+    if app.status_since.is_some_and(|t| t.elapsed() >= crate::panel::STATUS_SLOW) {
+        items.push((spinner().to_string(), Hit::Branch));
+    }
     if let Some(op) = &app.gitui.cmds.op {
         let secs = op.since.elapsed().as_secs();
         let t = if secs >= 2 { format!(" {secs}s") } else { String::new() };
@@ -1691,9 +1696,11 @@ mod tests {
         let mut app = app(&t, &r);
         let hs = gitops::hunks(b"a\nb\nc\n", b"A\nb\nC\n");
         stage_hunk(&mut app, "f.txt", &hs[1]).unwrap();
+        settle(&mut app);
         assert!(app.scm_files.iter().any(|f| f.path == "f.txt" && f.section == crate::git::Section::Staged));
         let staged = gitops::hunks(b"a\nb\nc\n", b"a\nb\nC\n");
         unstage_hunk(&mut app, "f.txt", &staged[0]).unwrap();
+        settle(&mut app);
         assert!(!app.scm_files.iter().any(|f| f.section == crate::git::Section::Staged));
     }
 
