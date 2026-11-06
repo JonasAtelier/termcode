@@ -804,6 +804,13 @@ pub fn commit(repo: &Path, message: &str, o: CommitOpts) -> Res<()> {
     })
 }
 
+/// Write refreshed stat info into the index (status runs without optional locks,
+/// so it never does). It takes index.lock: call it only right after a write op, in
+/// the same job, where no other write runs. Failures are harmless and ignored.
+pub fn refresh_index(repo: &Path) {
+    let _ = write(repo, &["update-index", "-q", "--refresh"]);
+}
+
 /// git-gui's Sign Off line, from the committer identity (user.name / user.email).
 pub fn signoff_trailer(repo: &Path) -> Res<String> {
     let id = read(repo, &["var", "GIT_COMMITTER_IDENT"])?.text();
@@ -990,6 +997,7 @@ pub fn stage_sides(repo: &Path, path: &str) -> Res<(Vec<u8>, Vec<u8>)> {
 }
 
 /// HEAD's blob (empty before the first commit) and the index blob: `hunks` of these unstage.
+#[allow(dead_code)] // backend API: no Unstage-hunk action in the UI yet
 pub fn unstage_sides(repo: &Path, path: &str) -> Res<(Vec<u8>, Vec<u8>)> {
     let head = if git::has_head(repo) { text_only(file_at(repo, "HEAD", path)?, path)? } else { Vec::new() };
     Ok((head, index_file(repo, path)?))
@@ -1003,6 +1011,7 @@ pub fn stage_hunk(repo: &Path, path: &str, h: &Hunk) -> Res<()> {
 }
 
 /// Unstage one hunk of `hunks(unstage_sides)` for `path`.
+#[allow(dead_code)] // backend API: no Unstage-hunk action in the UI yet
 pub fn unstage_hunk(repo: &Path, path: &str, h: &Hunk) -> Res<()> {
     let (head, index) = unstage_sides(repo, path)?;
     apply_hunk(repo, path, &head, &index, h, true)

@@ -321,8 +321,12 @@ pub fn run_op(app: &mut App, op: Op) {
     c.next_id += 1;
     let id = c.next_id;
     c.op = Some(Running { label: op.label(), since: Instant::now(), cancel: flag.clone(), id, closable: op.closable() });
-    app.gitui.spawn(move || {
+    // Every op on the index writer (fetch too: it writes refs), in order with stages.
+    app.gitui.write(move || {
         let r = gitops::with_cancel(flag, || op.run(&root));
+        if !op.closable() {
+            gitops::refresh_index(&root);
+        }
         ScmMsg::Cmd(Msg::Done(id, op, r))
     });
 }
@@ -411,7 +415,7 @@ pub fn on_refresh(app: &mut App) {
 
 /// Timers: blame after the cursor settles; true while the spinner turns.
 pub fn tick(app: &mut App) -> bool {
-    let slow_status = app.status_since.is_some_and(|t| t.elapsed() >= crate::panel::STATUS_SLOW);
+    let slow_status = [app.status_since, app.gitui.write_since].iter().flatten().any(|t| t.elapsed() >= crate::panel::STATUS_SLOW);
     let mut redraw = app.gitui.cmds.op.is_some() || slow_status;
     let s = &app.settings;
     let cur = if (s.blame_status || s.blame_decoration) && app.git_root.is_some() { cursor_spot(app) } else { None };
@@ -847,26 +851,6 @@ pub fn sync_output(app: &mut App) -> bool {
     true
 }
 
-// ---------------------------------------------------------------- hunks (quick-diff peek)
-
-/// For the quick-diff peek: stage one hunk of `hunks(gitops::stage_sides)` of
-/// `path` (repo-relative), then refresh status and gutters.
-pub fn stage_hunk(app: &mut App, path: &str, h: &gitops::Hunk) -> Result<(), String> {
-    let g = app.git_root.clone().ok_or("no git repository")?;
-    let r = app.gitui.logged(|| gitops::stage_hunk(&g, path, h));
-    app.refresh();
-    r
-}
-
-/// Unstage one hunk of `hunks(gitops::unstage_sides)` of `path` (repo-relative).
-#[allow(dead_code)] // for an Unstage action on staged hunks (the peek shows index vs buffer only)
-pub fn unstage_hunk(app: &mut App, path: &str, h: &gitops::Hunk) -> Result<(), String> {
-    let g = app.git_root.clone().ok_or("no git repository")?;
-    let r = app.gitui.logged(|| gitops::unstage_hunk(&g, path, h));
-    app.refresh();
-    r
-}
-
 // ---------------------------------------------------------------- conflicts in the editor
 
 fn conflict_regions(app: &mut App, key: &str) -> Vec<ConflictRegion> {
@@ -1051,8 +1035,9 @@ pub fn status_left(app: &mut App, f: &mut Frame, r: Rect, edge: u16, gap: u16) -
     let branch_icon = icons().branch;
     let bi = if branch_icon.is_empty() { String::new() } else { format!("{branch_icon}{ig}") };
     let mut items: Vec<(String, Hit)> = vec![(format!("{bi}{}{marks}", app.branch), Hit::Branch)];
-    // A slow `git status`: the status shown is the last one, still being re-read.
-    if app.status_since.is_some_and(|t| t.elapsed() >= crate::panel::STATUS_SLOW) {
+    // A slow `git status` or index write: what shows is the last status, about to change.
+    let slow = |t: Option<Instant>| t.is_some_and(|t| t.elapsed() >= crate::panel::STATUS_SLOW);
+    if slow(app.status_since) || slow(app.gitui.write_since) {
         items.push((spinner().to_string(), Hit::Branch));
     }
     if let Some(op) = &app.gitui.cmds.op {
@@ -1688,20 +1673,6 @@ mod tests {
         }
         std::thread::sleep(BLAME_DELAY + Duration::from_millis(30));
         assert!(ok(&mut app), "after moves during a blame");
-    }
-
-    #[test]
-    fn hunk_api_for_the_quick_diff_peek() {
-        let (t, r) = repo("hunkapi", "printf 'a\\nb\\nc\\n' > f.txt; git add .; git commit -qm base; printf 'A\\nb\\nC\\n' > f.txt");
-        let mut app = app(&t, &r);
-        let hs = gitops::hunks(b"a\nb\nc\n", b"A\nb\nC\n");
-        stage_hunk(&mut app, "f.txt", &hs[1]).unwrap();
-        settle(&mut app);
-        assert!(app.scm_files.iter().any(|f| f.path == "f.txt" && f.section == crate::git::Section::Staged));
-        let staged = gitops::hunks(b"a\nb\nc\n", b"a\nb\nC\n");
-        unstage_hunk(&mut app, "f.txt", &staged[0]).unwrap();
-        settle(&mut app);
-        assert!(!app.scm_files.iter().any(|f| f.section == crate::git::Section::Staged));
     }
 
     #[test]

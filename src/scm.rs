@@ -132,6 +132,10 @@ pub enum GitAct {
     SyncAlways,
     /// The peek's Stage on an unsaved buffer: save this document, then stage.
     SaveStage(String),
+    /// Quitting with git still writing: wait for it, then quit.
+    QuitWait,
+    /// Quitting with git still writing: leave now; `run` lets git finish first.
+    QuitAnyway,
 }
 
 pub enum Msg {
@@ -146,7 +150,14 @@ pub enum Msg {
     Cmd(crate::gitcmds::Msg),
     /// A job panicked: only the jobs count comes back.
     Lost,
+    /// A job of the index writer finished (its message inside).
+    Written(Box<Msg>),
+    /// An index write (stage, unstage, discard...): a note, or git's error; `reload`
+    /// rereads the Explorer too (discard deletes files). Status follows either way.
+    Wrote(Result<String, String>, bool),
 }
+
+type WriteJob = Box<dyn FnOnce() -> Msg + Send>;
 
 /// Sends `Msg::Lost` if dropped before its job's message went out (a panic
 /// unwinding the job), so the jobs count always comes back down.
@@ -184,6 +195,14 @@ pub struct GitUi {
     pub cmds: crate::gitcmds::State,
     /// This panel's Git Output: every git call of its jobs and its UI.
     pub log: gitops::OutputLog,
+    /// The index writer: one thread runs every write job in order (see `write`).
+    writer: Option<mpsc::Sender<WriteJob>>,
+    /// Write jobs not finished yet, and since when there have been some (a spinner).
+    writes: usize,
+    pub write_since: Option<Instant>,
+    /// Quit once the writes are done ([Wait]); quit despite them ([Quit Anyway]).
+    pub quit_when_idle: bool,
+    pub quit_anyway: bool,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
     jobs: usize,
@@ -210,6 +229,11 @@ impl GitUi {
             hits: Hits::default(),
             cmds: crate::gitcmds::State::default(),
             log: gitops::OutputLog::default(),
+            writer: None,
+            writes: 0,
+            write_since: None,
+            quit_when_idle: false,
+            quit_anyway: false,
             tx,
             rx,
             jobs: 0,
@@ -243,6 +267,35 @@ impl GitUi {
                 let _ = tx.send(m);
             }
         });
+    }
+
+    /// Queue a job that writes the index or refs. One worker thread runs them in the
+    /// order queued, so no two git writers ever race for index.lock and stage A then
+    /// stage B land in that order; the UI thread never writes the index itself. A
+    /// panicking job is caught there and reported as `Msg::Lost`; the queue goes on.
+    pub fn write(&mut self, job: impl FnOnce() -> Msg + Send + 'static) {
+        self.jobs += 1;
+        self.writes += 1;
+        self.write_since.get_or_insert_with(Instant::now);
+        let (tx, log) = (self.tx.clone(), self.log.clone());
+        let q = self.writer.get_or_insert_with(|| {
+            let (qtx, qrx) = mpsc::channel::<WriteJob>();
+            std::thread::spawn(move || {
+                for job in qrx {
+                    let m = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gitops::with_log(&log, job))).unwrap_or(Msg::Lost);
+                    if tx.send(Msg::Written(Box::new(m))).is_err() {
+                        break;
+                    }
+                }
+            });
+            qtx
+        });
+        let _ = q.send(Box::new(job));
+    }
+
+    /// Write jobs queued or running.
+    pub fn writes(&self) -> usize {
+        self.writes
     }
 
     /// Run `f` (git calls on the UI thread) logged in this panel's Git Output.
@@ -461,6 +514,16 @@ pub fn drain(app: &mut App) -> bool {
     while let Ok(m) = app.gitui.rx.try_recv() {
         app.gitui.jobs = app.gitui.jobs.saturating_sub(1);
         changed = true;
+        let m = match m {
+            Msg::Written(inner) => {
+                app.gitui.writes = app.gitui.writes.saturating_sub(1);
+                if app.gitui.writes == 0 {
+                    app.gitui.write_since = None;
+                }
+                *inner
+            }
+            m => m,
+        };
         match m {
             Msg::Page(gen, skip, page) => {
                 let g = &mut app.gitui.graph;
@@ -539,9 +602,38 @@ pub fn drain(app: &mut App) -> bool {
             Msg::Dlg(m) => commitdlg::drain(app, m),
             Msg::Cmd(m) => crate::gitcmds::drain(app, m),
             Msg::Lost => app.msg = "a background git job failed".into(),
+            Msg::Written(_) => {}
+            Msg::Wrote(r, reload) => {
+                match r {
+                    Ok(m) if m.is_empty() => {}
+                    Ok(m) => app.msg = m,
+                    Err(e) => app.msg = e,
+                }
+                if reload {
+                    app.reload_all();
+                } else {
+                    app.refresh();
+                }
+            }
         }
     }
+    // [Wait] was chosen: quit now that git is done (unsaved files still get asked about).
+    if app.gitui.quit_when_idle && app.gitui.writes == 0 {
+        app.gitui.quit_when_idle = false;
+        app.request_quit();
+        changed = true;
+    }
     changed | crate::gitcmds::sync_output(app)
+}
+
+/// After the UI is gone: let queued and running writes finish (their pipes stay open
+/// and are drained, so git never takes SIGPIPE), for at most `limit` if one is given.
+pub fn finish_writes(app: &mut App, limit: Option<Duration>) {
+    let start = Instant::now();
+    while app.gitui.writes > 0 && limit.is_none_or(|l| start.elapsed() < l) {
+        drain(app);
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// The DiffDoc VS Code shows for a file of a commit: first parent left, commit right.
@@ -963,6 +1055,14 @@ pub fn run_act(app: &mut App, a: GitAct) {
         GitAct::StageAllCommit { push } => commitdlg::run_commit(app, push, true),
         GitAct::Run(op) => crate::gitcmds::run_op(app, op),
         GitAct::SyncAlways => crate::gitcmds::sync_always(app),
+        GitAct::QuitWait => {
+            app.gitui.quit_when_idle = true;
+            app.msg = "Waiting for git to finish, then quitting…".into();
+        }
+        GitAct::QuitAnyway => {
+            app.gitui.quit_anyway = true;
+            app.request_quit();
+        }
         GitAct::SaveStage(key) => {
             if let Err(e) = app.save_doc(&key).and_then(|_| app.stage_peek_hunk()) {
                 app.msg = e;

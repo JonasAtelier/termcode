@@ -158,6 +158,11 @@ fn coalescable(ev: &Event) -> bool {
     matches!(ev, Event::Mouse(m) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight | MouseEventKind::Moved))
 }
 
+/// (mtime, length) of each file, None for a missing one: what a confirmed discard re-checks.
+fn file_stamps(g: &Path, files: &[ScmFile]) -> Vec<Option<(SystemTime, u64)>> {
+    files.iter().map(|f| fs::symlink_metadata(g.join(&f.path)).ok().and_then(|m| Some((m.modified().ok()?, m.len())))).collect()
+}
+
 /// The branch label and `git status -z` of the repo at `g` (runs git; off the UI thread).
 fn read_status(g: &Path) -> (String, Vec<u8>) {
     let run = |args: &[&str]| git::cmd(g).args(args).stderr(Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| o.stdout);
@@ -625,6 +630,13 @@ pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> 
     // Every exit path (quit, signal, error, panic) leaves unsaved edits on disk.
     app.sync_backups();
     restore();
+    // Git writes still queued or running finish before the process ends (closing their
+    // pipes would SIGPIPE git mid-write). After HUP/TERM or a panic only briefly.
+    if app.gitui.writes() > 0 {
+        let hurry = SIGNALED.load(Ordering::SeqCst) || res.is_err();
+        eprintln!("herdr-code: waiting for {} git operation(s) to finish…", app.gitui.writes());
+        crate::scm::finish_writes(&mut app, hurry.then_some(Duration::from_secs(2)));
+    }
     app.stop_search();
     if let Some(p) = token_file.filter(|_| app.token.is_some()) {
         let _ = fs::remove_file(p);
@@ -877,6 +889,12 @@ impl App {
         // The first frame shows the real status: read it here, once, synchronously.
         a.refresh_files();
         if let Some(g) = a.git_root.clone() {
+            // The index stat refresh is the writer's first job (slow on a big repo).
+            let gw = g.clone();
+            a.gitui.write(move || {
+                crate::gitops::refresh_index(&gw);
+                crate::scm::Msg::Wrote(Ok(String::new()), false)
+            });
             let (branch, raw) = read_status(&g);
             a.apply_status(branch, raw);
         }
@@ -1160,21 +1178,31 @@ impl App {
         let g = self.git_root.clone().ok_or("no git repository")?;
         let rel = pk.key.strip_prefix("file:").and_then(|r| self.repo_path(r)).ok_or("not a file in the repository")?;
         let cur = self.qdiff.get(&pk.key).and_then(|q| q.hunks.get(pk.hunk)).map(|h| h.cur.clone()).ok_or("Changes moved, try again")?;
-        let (index, work) = self.gitui.logged(|| crate::gitops::stage_sides(&g, &rel))?;
-        let h = crate::gitops::hunks(&index, &work)
-            .into_iter()
-            .find(|h| {
-                let n = h.new_start..h.new_start + h.new_len;
-                if n.is_empty() || cur.is_empty() {
-                    n.is_empty() && cur.is_empty() && n.start == cur.start
-                } else {
-                    n.start < cur.end && cur.start < n.end
-                }
-            })
-            .ok_or("Changes moved, try again")?;
-        crate::gitcmds::stage_hunk(self, &rel, &h)?;
+        // The change as the peek shows it: the git hunk must carry exactly these lines.
+        let want: Vec<String> = match self.docs.get(&pk.key) {
+            Some(Doc::Text(b)) => b.lines.get(cur.clone()).unwrap_or_default().to_vec(),
+            _ => return Err("not a text file".into()),
+        };
+        // All of it on the index writer: the sides, the matching git hunk, the apply.
+        self.gitui.write(move || {
+            let staged = crate::gitops::stage_sides(&g, &rel).and_then(|(index, work)| {
+                let h = crate::gitops::hunks(&index, &work)
+                    .into_iter()
+                    .find(|h| {
+                        let n = h.new_start..h.new_start + h.new_len;
+                        let lines = String::from_utf8_lossy(&work).split_inclusive('\n').skip(n.start).take(n.len()).map(|l| l.trim_end_matches(['\n', '\r']).to_string()).collect::<Vec<_>>();
+                        let same = lines.iter().map(|l| l.trim_end_matches('\r')).eq(want.iter().map(|l| l.trim_end_matches('\r')));
+                        let at = if n.is_empty() || cur.is_empty() { n.is_empty() && cur.is_empty() && n.start == cur.start } else { n.start < cur.end && cur.start < n.end };
+                        at && same
+                    })
+                    .ok_or("Changes moved, try again")?;
+                crate::gitops::stage_hunk(&g, &rel, &h)
+            });
+            crate::gitops::refresh_index(&g);
+            crate::scm::Msg::Wrote(staged.map(|_| "staged the change".into()), false)
+        });
         self.peek = None;
-        self.msg = "staged the change".into();
+        self.msg = "staging the change…".into();
         Ok(())
     }
 
@@ -1557,7 +1585,7 @@ impl App {
         self.tree[i].open = !open;
     }
 
-    fn reload_all(&mut self) {
+    pub(crate) fn reload_all(&mut self) {
         self.refresh();
         let open: Vec<String> = self.tree.iter().filter(|n| n.open).map(|n| n.path.clone()).collect();
         self.tree = self.read_dir("", 0);
@@ -2015,6 +2043,19 @@ impl App {
     }
 
     pub fn request_quit(&mut self) {
+        // Queued or running git writes (a commit, a stage...) would be lost: ask, Wait first.
+        let w = self.gitui.writes();
+        if w > 0 && !self.gitui.quit_anyway {
+            self.prompt = Some(Prompt {
+                text: vec![
+                    format!("Git is still writing ({w} operation{}).", if w == 1 { "" } else { "s" }),
+                    "Wait quits when it is done; Quit Anyway lets it finish after the window closes.".into(),
+                ],
+                buttons: vec![("Wait".into(), PAct::Git(crate::scm::GitAct::QuitWait)), ("Quit Anyway".into(), PAct::Git(crate::scm::GitAct::QuitAnyway))],
+                sel: 0,
+            });
+            return;
+        }
         let n = self.docs.values().filter(|d| matches!(d, Doc::Text(b) if b.dirty())).count();
         if n == 0 {
             self.quit = true;
@@ -2040,11 +2081,17 @@ impl App {
             PAct::Cancel => {}
             PAct::Discard(files) => {
                 let Some(g) = self.git_root.clone() else { return };
-                self.msg = match git::discard(&g, &files) {
-                    Ok(_) => format!("discarded {} file(s)", files.len()),
-                    Err(e) => e,
-                };
-                self.reload_all();
+                // The index writer runs it, maybe after a slow op queued ahead: it acts only
+                // on the files as they were when the user confirmed.
+                let seen = file_stamps(&g, &files);
+                self.gitui.write(move || {
+                    if file_stamps(&g, &files) != seen {
+                        return crate::scm::Msg::Wrote(Err("File changed since you confirmed; discard cancelled".into()), true);
+                    }
+                    let r = git::discard(&g, &files).map(|_| format!("discarded {} file(s)", files.len()));
+                    crate::gitops::refresh_index(&g);
+                    crate::scm::Msg::Wrote(r, true)
+                });
             }
             PAct::SaveClose(key) => match self.save_doc(&key) {
                 Ok(()) => {
@@ -2323,19 +2370,19 @@ impl App {
             }
             ScmAct::Discard(i) => return self.confirm_discard(one(i)),
             ScmAct::DiscardAll => return self.confirm_discard(self.section_files(Section::Changes)),
-            ScmAct::Stage(i) => git::stage(&g, &one(i)),
-            ScmAct::Unstage(i) => git::unstage(&g, &one(i)),
-            ScmAct::StageAll => git::stage(&g, &self.section_files(Section::Changes)),
-            ScmAct::UnstageAll => git::unstage(&g, &self.section_files(Section::Staged)),
-            ScmAct::StageMerge => {
-                let merge: Vec<ScmFile> = self.scm_files.iter().filter(|f| f.letter == '!').cloned().collect();
-                git::stage(&g, &merge)
-            }
+            ScmAct::Stage(i) => (true, one(i)),
+            ScmAct::Unstage(i) => (false, one(i)),
+            ScmAct::StageAll => (true, self.section_files(Section::Changes)),
+            ScmAct::UnstageAll => (false, self.section_files(Section::Staged)),
+            ScmAct::StageMerge => (true, self.scm_files.iter().filter(|f| f.letter == '!').cloned().collect()),
         };
-        if let Err(e) = res {
-            self.msg = e;
-        }
-        self.refresh();
+        // On the index writer, in order; status follows each through drain.
+        let (stage, files) = res;
+        self.gitui.write(move || {
+            let r = if stage { git::stage(&g, &files) } else { git::unstage(&g, &files) };
+            crate::gitops::refresh_index(&g);
+            crate::scm::Msg::Wrote(r.map(|_| String::new()), false)
+        });
     }
 
     /// "Add commit": the git-gui style commit dialog.
@@ -3750,6 +3797,7 @@ mod tests {
         app.scm_action(ScmAct::Discard(j));
         app.prompt.as_mut().unwrap().sel = 0;
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        wait(&mut app);
         assert!(!root.join("junk.txt").exists());
 
         // Closing a dirty tab prompts (only for its last view); quitting with unsaved edits prompts.
@@ -5064,6 +5112,7 @@ mod tests {
         app.peek_button(PeekBtn::Stage);
         app.prompt.as_mut().unwrap().sel = 0;
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        wait(&mut app);
         assert!(app.msg.contains("staged"), "{}", app.msg);
         let index = Command::new("git").arg("-C").arg(&root).args(["show", ":README.md"]).output().unwrap().stdout;
         assert_eq!(String::from_utf8(index).unwrap(), "1\n2\n3\n4\n5\n6\n7\neight\n", "only that hunk");
@@ -5933,7 +5982,7 @@ mod tests {
         let i = app.scm_files.iter().position(|f| f.path == "README.md").unwrap();
         let rows = app.scm_files.len();
         app.scm_action(ScmAct::Stage(i));
-        assert!(app.status_since.is_some() && app.scm_files.len() == rows, "in flight: the old rows stay");
+        assert!(app.gitui.write_since.is_some() && app.scm_files.len() == rows, "queued: the old rows stay");
         wait(&mut app);
         assert!(app.status_since.is_none() && app.scm_files.iter().any(|f| f.path == "README.md" && f.section == Section::Staged));
         let j = app.scm_files.iter().position(|f| f.path == "junk.txt").unwrap();
@@ -6081,11 +6130,12 @@ mod tests {
         assert!(envs.contains(&("GIT_OPTIONAL_LOCKS".into(), Some("0".into()))), "{envs:?}");
         let root = repo("nolocks");
         let (index, lock) = (root.join(".git/index"), root.join(".git/index.lock"));
-        // A stat-stale entry: git status would normally refresh and rewrite the index.
+        // Startup refreshes the index once (on purpose); then a stat-stale entry, which
+        // git status would normally refresh and write back.
+        let mut app = App::new(root.clone(), None);
         std::thread::sleep(Duration::from_millis(1100));
         fs::write(root.join("README.md"), "hello\n").unwrap();
         let before = fs::metadata(&index).unwrap().modified().unwrap();
-        let mut app = App::new(root.clone(), None);
         fs::write(&lock, "held by someone else").unwrap();
         fs::write(root.join("new.txt"), "n\n").unwrap();
         app.refresh();
@@ -6118,6 +6168,182 @@ mod tests {
         assert_eq!(app.status_since, Some(started), "still the original start: the shown status is stale");
         wait(&mut app);
         assert!(app.status_since.is_none());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A stat-stale file (touched, same content) is written back to the index right
+    /// after a write op, so later statuses stop re-hashing it.
+    #[test]
+    fn a_write_op_refreshes_stale_index_stat() {
+        let root = repo("statrefresh");
+        let stale = |r: &Path| String::from_utf8(Command::new("git").arg("-C").arg(r).args(["diff-files", "--name-only"]).output().unwrap().stdout).unwrap();
+        let mut app = App::new(root.clone(), None);
+        std::thread::sleep(Duration::from_millis(1100));
+        fs::write(root.join("README.md"), "hello\n").unwrap();
+        fs::write(root.join("new.txt"), "n\n").unwrap();
+        assert_eq!(stale(&root), "README.md\n", "stat-dirty, same content");
+        app.refresh();
+        wait(&mut app);
+        assert_eq!(stale(&root), "README.md\n", "a status alone takes no lock, writes nothing");
+        let i = app.scm_files.iter().position(|f| f.path == "new.txt").unwrap();
+        app.scm_action(ScmAct::Stage(i));
+        wait(&mut app);
+        assert_eq!(stale(&root), "", "refreshed right after the stage");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The index writer: 20 quick stages never meet index.lock and all land; stage then
+    /// unstage lands in that order; with git made slow (a sleeping fsmonitor hook) the UI
+    /// thread only queues work, and steps stay quick while it runs.
+    #[test]
+    fn index_writes_are_serialized_off_the_ui_thread() {
+        let root = repo("writer");
+        for i in 0..20 {
+            fs::write(root.join(format!("n{i:02}.txt")), "n\n").unwrap();
+        }
+        let mut app = App::new(root.clone(), None);
+        let new: Vec<usize> = (0..app.scm_files.len()).filter(|&i| app.scm_files[i].path.starts_with('n')).collect();
+        assert_eq!(new.len(), 20);
+        for &i in &new {
+            app.scm_action(ScmAct::Stage(i));
+        }
+        wait(&mut app);
+        let staged = app.scm_files.iter().filter(|f| f.section == Section::Staged).count();
+        assert!(staged == 20 && !app.msg.contains("index.lock"), "{staged} staged; {}", app.msg);
+        // In order: unstage n00 then stage it again ends staged; the reverse ends unstaged.
+        let at = |app: &App| app.scm_files.iter().position(|f| f.path == "n00.txt").unwrap();
+        let i = at(&app);
+        app.scm_action(ScmAct::Unstage(i));
+        app.scm_action(ScmAct::Stage(i));
+        wait(&mut app);
+        assert!(app.scm_files.iter().any(|f| f.path == "n00.txt" && f.section == Section::Staged));
+        // A slow git: the UI thread queues and returns; steps stay quick meanwhile.
+        let hook = root.join(".git/slow-fsmonitor");
+        fs::write(&hook, "#!/bin/sh\nsleep 0.4\nexit 1\n").unwrap();
+        let _ = Command::new("chmod").arg("+x").arg(&hook).status();
+        let _ = Command::new("git").arg("-C").arg(&root).args(["config", "core.fsmonitor"]).arg(&hook).status();
+        let i = at(&app);
+        let t0 = Instant::now();
+        app.scm_action(ScmAct::Unstage(i));
+        assert!(t0.elapsed() < Duration::from_millis(20), "queued, not run: {:?}", t0.elapsed());
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let (mut dirty, mut worst, start) = (true, Duration::ZERO, Instant::now());
+        while app.gitui.busy() || !app.loading.is_empty() {
+            let s0 = Instant::now();
+            let mut slept = Duration::ZERO;
+            app.step(&mut t, &mut dirty, |w| {
+                let w0 = Instant::now();
+                std::thread::sleep(w.min(Duration::from_millis(10)));
+                slept += w0.elapsed();
+                Ok(None)
+            })
+            .unwrap();
+            worst = worst.max(s0.elapsed() - slept);
+            assert!(start.elapsed() < Duration::from_secs(10));
+        }
+        assert!(start.elapsed() >= Duration::from_millis(400), "git really was slow");
+        assert!(worst < Duration::from_millis(30), "a UI step took {worst:?} while git ran");
+        assert!(app.scm_files.iter().any(|f| f.path == "n00.txt" && f.section == Section::Changes));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn slow_write(app: &mut App, ms: u64) {
+        app.gitui.write(move || {
+            std::thread::sleep(Duration::from_millis(ms));
+            crate::scm::Msg::Wrote(Ok(String::new()), false)
+        });
+    }
+
+    fn slow_git(root: &Path) {
+        let hook = root.join(".git/slow-fsmonitor");
+        fs::write(&hook, "#!/bin/sh\nsleep 0.4\nexit 1\n").unwrap();
+        let _ = Command::new("chmod").arg("+x").arg(&hook).status();
+        let _ = Command::new("git").arg("-C").arg(root).args(["config", "core.fsmonitor"]).arg(&hook).status();
+    }
+
+    /// Quitting with git still writing asks first, [Wait] by default: it quits once the
+    /// writes are done. [Quit Anyway] leaves at once, and `finish_writes` (what run()
+    /// does after the UI) lets the running git complete. HUP/TERM gets ~2 s of that.
+    #[test]
+    fn quitting_never_drops_queued_git_writes() {
+        let root = repo("quitwrites");
+        let mut app = App::new(root.clone(), None);
+        wait(&mut app);
+        slow_write(&mut app, 300);
+        app.request_quit();
+        let p = app.prompt.as_ref().expect("asks");
+        assert!(p.text[0].contains("Git is still writing (1 operation)") && p.buttons[p.sel].0 == "Wait", "{:?}", p.text);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.quit && app.gitui.quit_when_idle);
+        wait(&mut app);
+        assert!(app.quit, "quit once git was done");
+        // Quit Anyway: a slow real stage still lands.
+        slow_git(&root);
+        fs::write(root.join("new.txt"), "n\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        wait(&mut app);
+        let i = app.scm_files.iter().position(|f| f.path == "new.txt").unwrap();
+        app.scm_action(ScmAct::Stage(i));
+        app.request_quit();
+        app.prompt.as_mut().unwrap().sel = 1;
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.quit && app.gitui.writes() > 0, "left with git still writing");
+        crate::scm::finish_writes(&mut app, None);
+        let staged = Command::new("git").arg("-C").arg(&root).args(["diff", "--cached", "--name-only"]).output().unwrap().stdout;
+        assert_eq!(String::from_utf8_lossy(&staged), "new.txt\n", "the write completed");
+        // HUP/TERM: a short grace, not forever.
+        let mut app = App::new(root.clone(), None);
+        slow_write(&mut app, 4000);
+        let t0 = Instant::now();
+        crate::scm::finish_writes(&mut app, Some(Duration::from_secs(2)));
+        assert!(t0.elapsed() >= Duration::from_millis(1900) && t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A discard confirmed behind a slow op checks the files again before acting: saved
+    /// edits made meanwhile are never thrown away.
+    #[test]
+    fn a_queued_discard_refuses_files_changed_since_confirming() {
+        let root = repo("stalediscard");
+        fs::write(root.join("README.md"), "changed\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        wait(&mut app);
+        slow_write(&mut app, 500);
+        let j = app.scm_files.iter().position(|f| f.path == "README.md").unwrap();
+        app.scm_action(ScmAct::Discard(j));
+        app.prompt.as_mut().unwrap().sel = 0;
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        fs::write(root.join("README.md"), "newer edits, saved after confirming\n").unwrap();
+        wait(&mut app);
+        assert_eq!(fs::read_to_string(root.join("README.md")).unwrap(), "newer edits, saved after confirming\n");
+        assert!(app.msg.contains("discard cancelled"), "{}", app.msg);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The peek stages its change only if the file still has those lines there.
+    #[test]
+    fn peek_stage_refuses_a_different_change_at_the_same_lines() {
+        let root = repo("peekcontent");
+        fs::write(root.join("README.md"), "1\n2\n3\n").unwrap();
+        let _ = Command::new("git").arg("-C").arg(&root).args(["commit", "-qam", "three"]).status();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "README.md", false);
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        let (b, t) = app.ed().unwrap();
+        t.view.anchor = Some(Pos::new(1, 0));
+        t.view.cursor = Pos::new(1, 1);
+        b.insert(&mut t.view, "two");
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        app.update_qdiff();
+        app.show_peek(0, "file:README.md".into(), 0);
+        // Someone else writes another change to the same line before Stage runs.
+        fs::write(root.join("README.md"), "1\nTWO\n3\n").unwrap();
+        app.peek_button(PeekBtn::Stage);
+        wait(&mut app);
+        // Range overlap alone would have staged TWO; the content check refused it.
+        let index = Command::new("git").arg("-C").arg(&root).args(["show", ":README.md"]).output().unwrap().stdout;
+        assert_eq!(String::from_utf8_lossy(&index), "1\n2\n3\n", "nothing staged");
         fs::remove_dir_all(&root).unwrap();
     }
 }

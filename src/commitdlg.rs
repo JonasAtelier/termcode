@@ -372,6 +372,12 @@ fn job(app: &mut App, job: impl FnOnce(&std::path::Path) -> Msg + Send + 'static
     app.gitui.spawn(move || ScmMsg::Dlg(job(&g)));
 }
 
+/// The same for a job that writes the index: on the index writer, in order.
+fn write_job(app: &mut App, job: impl FnOnce(&std::path::Path) -> Msg + Send + 'static) {
+    let Some(g) = app.git_root.clone() else { return };
+    app.gitui.write(move || ScmMsg::Dlg(job(&g)));
+}
+
 /// Esc / Cancel: close, keeping the draft (a New Commit message, not the amended one).
 fn cancel(app: &mut App) {
     let Some(d) = app.gitui.dlg.take() else { return };
@@ -432,7 +438,11 @@ fn add_signoff(app: &mut App, line: &str) {
 /// Stage (0) or unstage (1) the selected file in a job; the lists follow on `Msg::Staged`.
 fn stage_selected(app: &mut App, k: usize) {
     let Some(f) = app.gitui.dlg.as_ref().and_then(|d| d.lists[k].get(d.sel[k]).cloned()) else { return };
-    job(app, move |g| Msg::Staged(if k == 0 { git::stage(g, &[f]) } else { git::unstage(g, &[f]) }));
+    write_job(app, move |g| {
+        let r = if k == 0 { git::stage(g, &[f]) } else { git::unstage(g, &[f]) };
+        gitops::refresh_index(g);
+        Msg::Staged(r)
+    });
 }
 
 fn button(app: &mut App, b: Btn) {
@@ -443,7 +453,11 @@ fn button(app: &mut App, b: Btn) {
             // Modified and deleted tracked files; untracked and conflicted ones stay.
             let files: Vec<ScmFile> = app.gitui.dlg.as_ref().map_or(Vec::new(), |d| d.lists[0].iter().filter(|f| !matches!(f.letter, 'U' | '!')).cloned().collect());
             if !files.is_empty() {
-                job(app, move |g| Msg::Staged(git::stage(g, &files)));
+                write_job(app, move |g| {
+                    let r = git::stage(g, &files);
+                    gitops::refresh_index(g);
+                    Msg::Staged(r)
+                });
             }
         }
         Btn::New => set_amend(app, false),
@@ -489,12 +503,13 @@ pub fn run_commit(app: &mut App, push: bool, stage_all: bool) {
     let files: Vec<ScmFile> = if stage_all { d.lists[0].iter().filter(|f| f.letter != '!').cloned().collect() } else { Vec::new() };
     d.busy = true;
     d.note = if push { "Committing and pushing…" } else { "Committing…" }.into();
-    app.gitui.spawn(move || {
+    app.gitui.write(move || {
         let run = || -> Result<String, String> {
             if !files.is_empty() {
                 git::stage(&root, &files)?;
             }
             gitops::commit(&root, &text, CommitOpts { amend, ..Default::default() })?;
+            gitops::refresh_index(&root);
             let short = gitops::log_page(&root, 0, 1).ok().and_then(|p| p.items.first().map(|c| c.short.clone())).unwrap_or_default();
             let done = format!("Committed {short}: {}", text.lines().next().unwrap_or(""));
             if push {
