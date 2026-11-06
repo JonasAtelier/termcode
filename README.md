@@ -137,15 +137,17 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Alt+← / Alt+→ | Go Back / Go Forward (also VS Code Linux's Ctrl+Alt+- / Ctrl+Shift+- where they reach, and F1) |
 | Ctrl+hover | underlines the identifier under the mouse (`editorLink.activeForeground`) |
 
-Sticky scroll, as in VS Code: while a sidebar list is scrolled, the top-level folder holding
-its top row stays pinned under the root header (deep in `arch/sh/boards` the row under
-`LINUX_5_10` is `arch`), and it is replaced once its last row has scrolled under it. With
-`workbench.tree.stickyScrollMaxItemCount` above 1 the next folders follow, outermost first
-(`arch`, `sh`, `boards`), each with its own indent, chevron and icon. Search pins the file over its hits, Source Control the section
-over its files. Click a pinned row to scroll its folder back to the top; the wheel over them
-scrolls the list. At most `workbench.tree.stickyScrollMaxItemCount` rows, never over 40% of
-the list, coloured `sideBarStickyScroll.background` with a `sideBarStickyScroll.shadow`
-underline below the last.
+Sticky scroll: while the Explorer is scrolled, one row under the root header shows the full
+path of the folder the first visible row is in, breadcrumb style (deep in `arch/sh/boards`:
+`▾ arch › sh › boards`), each name coloured as in the tree and clickable (it scrolls that
+folder back into view); too narrow, it is cut from the left (`… › sh › boards`). It follows
+every folder end, and shows nothing while the path's top-level folder is still on screen.
+With `workbench.tree.stickyScrollMaxItemCount` above 1 the folders are nested rows instead,
+outermost first (`arch`, `sh`, `boards`), as VS Code draws them. Search pins the file over
+its hits, Source Control the section over its files; the wheel over them scrolls the list.
+A thin line (`sideBarStickyScroll.border`, here the cards' border colour) separates them
+from the list, on its own row (or the last row's listItemGap row). Never over 40% of the
+list; the background is `sideBarStickyScroll.background`.
 
 The editor gutter shows VS Code's quick diff against the git index (`:0:path`): green `▎`
 added, blue `▎` modified, red `▸` lines deleted below. Staging a hunk clears its marker. It
@@ -268,7 +270,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `workbench.tree.enableStickyScroll` | `true` | Sticky scroll in the Explorer, Search and Source Control lists |
 | `herdr-code.restoreSession` | `true` | Reopen the last session's groups, tabs and sidebar for this folder |
 | `workbench.editor.restoreViewState` | `true` | Restore each file's cursor, selection and scroll: in the restored tabs, and when a closed file is opened again |
-| `workbench.tree.stickyScrollMaxItemCount` | `1` | Pinned rows at most (1 to 10), outermost first; VS Code's default is 7 |
+| `workbench.tree.stickyScrollMaxItemCount` | `1` | 1: one breadcrumb row of the folder you are in; more (up to 10): nested rows, outermost first, as VS Code (its default is 7) |
 | `editor.rulers` | `[90]` | Vertical rulers after N display columns (tabs and wide characters counted), in `editorRuler.foreground`; `[]` for none; `[{ "column": 80, "color": "#rrggbb" }, 100]` gives one its own colour. Drawn behind the text, in the editor and both sides of the diff. F1 "View: Toggle Rulers" for the session |
 | `editor.minimap.enabled` | `true` | The minimap (F1 "View: Toggle Minimap" for the session) |
 | `editor.minimap.maxColumn` | `120` | Characters the minimap covers (about 8 per cell, 8 to 16 cells, at most 15% of the editor, shrunk to leave minEditorWidth) |
@@ -289,7 +291,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `sidebarWidth` | 36 | 30 | Sidebar content columns (a card adds its 2-cell frame) until you drag the divider (a dragged width is kept in layout.json) |
 | `sidebarPadding` | 2 | 0 | Left/right padding of sidebar rows and inputs |
 | `sectionGap` | 1 | 0 | Blank rows under the sidebar title (not above a card) and between SCM sections |
-| `editorPadding` | 1 | 1 | Gutter gaps in editors, diffs and peeks: `number␠marker␠code` in comfortable (compact: `number marker␠code`); comfortable, or 2 or more, also leaves the blank row under the tab bar |
+| `editorPadding` | 1 | 0 | Cells before the line numbers in editors, diffs and peeks; the number, then one cell (the quick-diff marker, else blank), then the code, as VS Code: `␠12▎code`. Comfortable, or 2 or more, also leaves the blank row under the tab bar |
 | `tabPadding` | 2 | 1 | Spaces each side of a tab label |
 | `statusBarGap` | 3 | 3 | Spaces between status bar items |
 | `statusBarPadding` | 2 | 1 | Spaces at the status bar's left and right edges |

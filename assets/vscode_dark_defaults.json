@@ -1,5 +1,5 @@
 {
-  "//": "VS Code colour-registry defaults for dark themes (registerColor dark values, VS Code 1.106 workbench.desktop.main.js and extensions/git/package.json). A value is #hex, another key, or [key, alpha factor] (VS Code's transparent()). Only keys herdr-code draws with.",
+  "//": "VS Code colour-registry defaults for dark themes (registerColor dark values, VS Code 1.106 workbench.desktop.main.js and extensions/git/package.json). A value is #hex, another key, or [key, alpha factor] (VS Code's transparent()). Only keys herdr-code draws with. Exception: sideBarStickyScroll.border (VS Code: none) is herdr-code's own default.",
   "foreground": "#CCCCCC",
   "descriptionForeground": ["foreground", 0.7],
   "errorForeground": "#F48771",
@@ -45,6 +45,7 @@
   "sideBarSectionHeader.background": "#80808033",
   "sideBarStickyScroll.background": "sideBar.background",
   "sideBarStickyScroll.shadow": "scrollbar.shadow",
+  "sideBarStickyScroll.border": "editorGroup.border",
   "scrollbar.shadow": "#000000",
   "sideBarSectionHeader.foreground": "sideBar.foreground",
   "editorGroupHeader.tabsBackground": "#252526",

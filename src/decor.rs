@@ -282,16 +282,17 @@ pub fn word_changes(old: &str, new: &str) -> (Vec<std::ops::Range<usize>>, Vec<s
 /// None when that row is not deeper than `k` (it is the folder itself, shown as it
 /// is, or lies outside the folder pinned at `k - 1`) or past the end.
 ///
-/// The pinned folders must hold the first row visible below them. When the
-/// deepest one's last row is the one it covers, VS Code pushes it up as that row
-/// scrolls away; on whole rows it goes at once, so a folder never sits over rows
-/// outside it. The row it covered is inside its parent, so one such pop is enough.
-pub fn sticky(ancestor: impl Fn(usize, usize) -> Option<usize>, off: usize, max: usize) -> Vec<usize> {
+/// The pinned folders must hold the first row visible below them and the `sep`
+/// rows of their separator. When the deepest one's last row is under them, VS Code
+/// pushes it up as that row scrolls away; on whole rows it goes at once, so a
+/// folder never sits over rows outside it.
+pub fn sticky(ancestor: impl Fn(usize, usize) -> Option<usize>, off: usize, max: usize, sep: usize) -> Vec<usize> {
     let mut pinned: Vec<usize> = (0..max).map_while(|k| ancestor(off + k, k)).collect();
-    if let Some(k) = pinned.len().checked_sub(1) {
-        if ancestor(off + pinned.len(), k) != Some(pinned[k]) {
-            pinned.pop();
+    while let Some(&last) = pinned.last() {
+        if ancestor(off + pinned.len() + sep, pinned.len() - 1) == Some(last) {
+            break;
         }
+        pinned.pop();
     }
     pinned
 }
@@ -377,7 +378,7 @@ mod tests {
     ];
 
     fn st(off: usize, max: usize) -> Vec<usize> {
-        sticky(|i, k| walk_back(|j| TREE.get(j).copied(), i, k), off, max)
+        sticky(|i, k| walk_back(|j| TREE.get(j).copied(), i, k), off, max, 0)
     }
 
     #[test]
@@ -404,7 +405,11 @@ mod tests {
         // One row: arch stays while anything of arch is under it, then block replaces it.
         assert!(st(9, 1).is_empty(), "d, arch's last row, under the sticky row: arch is pushed out over block");
         assert!(st(10, 1).is_empty(), "arch pushed out: block is the top row");
-        assert!(sticky(|i, k| walk_back(|_| None, i, k), 0, 7).is_empty());
+        assert!(sticky(|i, k| walk_back(|_| None, i, k), 0, 7, 0).is_empty());
+        // A separator row under them covers one more row: off 4 hides b, c, e and f.
+        let sep = |off, max| sticky(|i, k| walk_back(|j| TREE.get(j).copied(), i, k), off, max, 1);
+        assert_eq!(sep(4, 3), [0, 1], "g would be the first visible row: outside boards");
+        assert_eq!(sep(2, 3), [0, 1, 2], "e, the first visible row, is in boards");
     }
 
     fn s(v: &[&str]) -> Vec<String> {

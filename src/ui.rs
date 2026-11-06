@@ -487,20 +487,27 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, lay: Lay) {
 }
 
 /// VS Code's tree sticky scroll over the list just drawn: the folders (Search file
-/// groups, the CHANGES sections) holding the top rows, pinned over them, each drawn
-/// as its own row, with `sideBarStickyScroll.shadow` as a line under the last. At
-/// most `stickyScrollMaxItemCount` (default 1: the top-level folder), and never
-/// over 40% of the list. `pad`, `gap`: the list's row padding and listItemGap;
-/// `scm_rows` / `search_rows`: the rows of that view (empty for the others).
+/// groups, the CHANGES sections) holding the top rows, pinned over them, then a thin
+/// separator line in `sideBarStickyScroll.border` (its own row, or the last pinned
+/// item's listItemGap row). One Explorer row (the default) is the breadcrumb of the
+/// folder you are in. At most `stickyScrollMaxItemCount` rows, never over 40% of the
+/// list. `pad`, `gap`: the list's row padding and listItemGap; `scm_rows` /
+/// `search_rows`: the rows of that view (empty for the others).
 pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, gap: u16, scm_rows: &[SRow], search_rows: &[HRow]) {
     let step = 1 + gap;
-    let cap = if app.settings.sticky { app.settings.sticky_max.min(list.height as usize * 2 / 5 / step as usize) } else { 0 };
+    let sep = u16::from(gap == 0);
+    let room = (list.height as usize * 2 / 5).saturating_sub(sep as usize) / step as usize;
+    let cap = if app.settings.sticky { app.settings.sticky_max.min(room) } else { 0 };
     let s = app.side as usize;
     let pinned = app.pinned(app.off[s], cap, search_rows, scm_rows);
     app.ui.sticky_cap = cap;
     app.ui.sticky = pinned.clone();
-    let Some(last) = pinned.len().checked_sub(1) else { return };
-    let area = Rect::new(list.x, list.y, list.width, pinned.len() as u16 * step);
+    if pinned.is_empty() {
+        return;
+    }
+    let h = pinned.len() as u16 * step + sep;
+    app.ui.sticky_h = h;
+    let area = Rect::new(list.x, list.y, list.width, h);
     // Rows hidden under the sticky rows keep none of their buttons.
     app.ui.scm_btns.retain(|(b, _)| !area.contains(b.as_position()));
     let hover = app.hover.filter(|p| area.contains(*p)).and_then(|p| app.ui.sticky_at(p.y));
@@ -517,22 +524,73 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
             P.sticky_bg
         };
         let y = list.y + k as u16 * step;
+        // Cleared first: `fill` keeps the symbols, and the row this one covers would
+        // show through after a shorter name.
+        f.render_widget(Clear, Rect::new(list.x, y, list.width, step));
         fill(f, Rect::new(list.x, y, list.width, step), bg);
         let ir = inset(Rect::new(list.x, y, list.width, 1), pad);
         match app.side {
+            Side::Explorer if cap == 1 => breadcrumb_row(app, f, ir, bg, i),
             Side::Explorer => explorer_row(app, f, ir, bg, i),
             Side::Search => search_row(app, f, ir, bg, &search_rows[i]),
             Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
         }
     }
-    // The shadow: a line in the shadow colour along the sticky area's last row.
-    let y = list.y + last as u16 * step + step - 1;
+    // The separator: a thin line along the area's last row, on the sidebar, in its own
+    // colour only (no selection or text colour carries over).
+    let line = if crate::theme::ascii() { "-" } else { "▔" };
     let buf = f.buffer_mut();
     for x in list.x..list.right() {
-        let c = &mut buf[(x, y)];
-        c.modifier.insert(Modifier::UNDERLINED);
-        c.underline_color = P.sticky_shadow;
+        let c = &mut buf[(x, list.y + h - 1)];
+        c.reset();
+        c.set_symbol(line).set_fg(P.sticky_line).set_bg(P.sidebar_bg);
     }
+}
+
+/// The one-row sticky Explorer: folder `p`'s path from its top-level folder, ` › `
+/// between the names (each coloured as the tree colours it), cut from the left with
+/// `…` to fit, the deepest names kept. Each name is hit-tested on its own.
+fn breadcrumb_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, p: usize) {
+    const SEP: &str = " › ";
+    const MORE: &str = "… › ";
+    let lead = format!(" {}{}", icons().chev_down, sp(app.settings.spacing.icon_gap));
+    let names: Vec<(usize, String, Color)> = app
+        .tree_path(p)
+        .into_iter()
+        .map(|i| {
+            let n = &app.tree[i];
+            (i, n.name.clone(), app.dirty_dirs.get(&n.path).map_or(P.sidebar_fg, |&c| git_color(c)))
+        })
+        .collect();
+    let room = (r.width as usize).saturating_sub(lead.width() + 1);
+    let need = |k: usize| {
+        let shown = &names[names.len() - k..];
+        shown.iter().map(|(_, n, _)| n.width()).sum::<usize>() + SEP.width() * (k - 1) + if k < names.len() { MORE.width() } else { 0 }
+    };
+    let mut keep = names.len();
+    while keep > 1 && need(keep) > room {
+        keep -= 1;
+    }
+    let dim = Style::new().fg(P.dim);
+    let mut spans = vec![Span::styled(lead.clone(), Style::new().fg(P.icon_fg))];
+    let mut x = r.x + lead.width() as u16;
+    if keep < names.len() {
+        spans.push(Span::styled(MORE, dim));
+        x += MORE.width() as u16;
+    }
+    for (k, (i, name, fg)) in names[names.len() - keep..].iter().enumerate() {
+        if k > 0 {
+            spans.push(Span::styled(SEP, dim));
+            x += SEP.width() as u16;
+        }
+        // Only the deepest name alone can still be too wide: cut it.
+        let name = fit(name, (r.right().saturating_sub(x + 1)) as usize);
+        let w = name.width() as u16;
+        app.ui.sticky_segs.push((Rect::new(x, r.y, w, 1).intersection(r), *i));
+        spans.push(Span::styled(name, Style::new().fg(*fg)));
+        x += w;
+    }
+    row(f, r, bg, spans);
 }
 
 /// Right-aligned spans inside a row.
@@ -894,8 +952,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
                 drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
             });
             let view = &mut app.groups[g].tabs[active].view;
-            let gap = if lay.comfy { lay.s.editor_padding } else { 0 };
-            let (sb, mm) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), gap, &rulers, mini);
+            let (sb, mm) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini);
             if let Some((area, mini)) = mm {
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.scroll });
             }
@@ -1045,7 +1102,7 @@ pub(crate) fn render_line(
 /// What an editor draws besides the text.
 struct Deco<'a> {
     comfy: bool,
-    /// Columns between the line number and the marker (comfortable), and the marker and the code.
+    /// Cells before the line numbers (editorPadding); the marker cell follows the number.
     gap: u16,
     icon_gap: u16,
     marks: &'a [Option<Mark>],
@@ -1135,17 +1192,18 @@ fn text_editor(
         }
     }
     let ic = icons();
-    let digits = b.lines.len().to_string().len().max(3) as u16;
-    // Comfortable: [1][number][gap][marker][gap] text [blank][scrollbar];
-    // compact: [number][marker][gap] text [scrollbar].
-    let pad = u16::from(d.comfy);
-    let nums = pad + digits + if d.comfy { d.gap } else { 0 };
-    let gutter = nums + 1 + d.gap;
-    let base_text = area.width.saturating_sub(gutter + 1 + pad);
+    let digits = b.lines.len().to_string().len().max(2) as u16;
+    // VS Code's gutter: [pad][number][marker]text [blank][scrollbar]. The marker
+    // cell (the quick-diff ▎/▸, else blank) is the one cell between the number and
+    // the code; pad = editorPadding; blank: a column before the scrollbar (comfortable).
+    let (pad, blank) = (d.gap, u16::from(d.comfy));
+    let nums = pad + digits;
+    let gutter = nums + 1;
+    let base_text = area.width.saturating_sub(gutter + 1 + blank);
     let mw = d.minimap.map_or(0, |m| minimap::width(base_text, area.width, m.max_column, m.min_text));
     let left = d.minimap.is_some_and(|m| m.left);
     let gx = area.x + if left { mw } else { 0 };
-    let text = Rect::new(gx + gutter, area.y, area.width.saturating_sub(gutter + 1 + pad + mw), area.height);
+    let text = Rect::new(gx + gutter, area.y, area.width.saturating_sub(gutter + 1 + blank + mw), area.height);
     out.text = text;
     out.marks_x = Some(gx + nums);
     let h = area.height as usize;
@@ -1183,9 +1241,7 @@ fn text_editor(
         let cur_line = i == c.line && sel.is_none();
         let bg = if cur_line { P.cur_line } else { P.editor_bg };
         let nr_st = Style::new().fg(if i == c.line { P.line_nr_active } else { P.line_nr }).bg(P.editor_bg);
-        let p = sp(pad);
-        let after = sp(nums - pad - digits);
-        f.render_widget(Span::styled(format!("{p}{:>w$}{after}", i + 1, w = digits as usize), nr_st), Rect::new(gx, y, nums, 1));
+        f.render_widget(Span::styled(format!("{}{:>w$}", sp(pad), i + 1, w = digits as usize), nr_st), Rect::new(gx, y, nums, 1));
         let (mark, mfg) = match d.marks.get(i).copied().flatten() {
             Some(Mark::Added) => (ic.gutter_bar, P.gutter_added),
             Some(Mark::Modified) => (ic.gutter_bar, P.gutter_modified),
@@ -1510,11 +1566,8 @@ fn draw_peek(f: &mut Frame, zr: Rect, gx: u16, gutter: u16, tx: u16, pk: &PeekDr
         let rr = Rect::new(zr.x, y, zr.width, 1);
         fill(f, rr, line_bg);
         let sign = if removed { "-" } else { "+" };
-        // The editor's gutter columns: the number ends where its numbers do, the sign
-        // sits in its marker column.
-        let mark = gutter.saturating_sub(1 + d.gap);
-        let nw = mark.saturating_sub(if d.comfy { d.gap } else { 0 });
-        let num = format!("{:>nw$}{}{sign}", no, sp(mark - nw), nw = nw as usize);
+        // The editor's gutter: the number right before its marker cell, the sign in it.
+        let num = format!("{:>w$}{sign}", no, w = gutter.saturating_sub(1) as usize);
         f.render_widget(Span::styled(num, Style::new().fg(P.line_nr).bg(line_bg)), Rect::new(gx, y, gutter, 1).intersection(rr));
         let words = if idx < pairs {
             let (o, n) = decor::word_changes(&pk.base[h.base.start + idx], lines.get(h.cur.start + idx).map_or("", String::as_str));
@@ -1588,11 +1641,9 @@ pub(crate) fn diff_view(
     v.scroll = v.scroll.min(n.saturating_sub(1));
     let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
     let area = Rect::new(area.x, area.y, area.width.saturating_sub(1 + blank), area.height);
-    let digits = n.to_string().len().max(3) as u16;
-    // As the editor's gutter: `number␠sign␠code` (comfortable, gap = editorPadding);
-    // compact passes 0: `number␠sign` with the code right after.
-    let (pre, post) = (gap.max(1), gap);
-    let gw = digits + pre + 1 + post;
+    // As the editor's gutter: [pad][number][sign]code, pad = `gap` (editorPadding).
+    let digits = n.to_string().len().max(2) as u16;
+    let gw = gap + digits + 1;
     // The minimap takes its columns from the modified side, as in the editor.
     let right_w = area.width.saturating_sub(area.width.saturating_sub(1) / 2 + 1);
     let mw = mini.as_ref().map_or(0, |m| minimap::width(right_w.saturating_sub(gw), area.width, m.cfg.max_column, m.cfg.min_text));
@@ -1632,7 +1683,7 @@ pub(crate) fn diff_view(
                         _ => "+",
                     };
                     fill(f, sr, bg);
-                    let g = Span::styled(format!("{:>w$}{}{sign}{}", n + 1, sp(pre), sp(post), w = digits as usize), Style::new().fg(P.line_nr).bg(bg));
+                    let g = Span::styled(format!("{}{:>w$}{sign}", sp(gap), n + 1, w = digits as usize), Style::new().fg(P.line_nr).bg(bg));
                     f.render_widget(g, Rect::new(sr.x, y, gw.min(sr.width), 1));
                     let tr = Rect::new(sr.x + gw.min(sr.width), y, sr.width.saturating_sub(gw), 1);
                     f.render_widget(render_line(text, None, &[], None, v.hscroll, tr.width as usize, Style::new().fg(P.editor_fg).bg(bg)), tr);

@@ -670,8 +670,9 @@ fn peek(app: &mut App, f: &mut Frame, c: &Cols) {
     pk.top = pk.top.map(|_| top);
     pk.shown_top = top;
     b.highlight_view(top, top + rows);
-    let gw = b.lines.len().max(1).to_string().len() as u16 + 1;
-    let gutter = (gw + sp.editor_padding.max(1)).min(preview.width);
+    // As the editor's gutter: [editorPadding][number, 2+ digits] then one cell.
+    let gw = sp.editor_padding + b.lines.len().max(1).to_string().len().max(2) as u16;
+    let gutter = (gw + 1).min(preview.width);
     let code = Rect::new(preview.x + gutter, preview.y, preview.width - gutter, preview.height);
     ui::fill(f, preview, c.peek_bg);
     ui::fill(f, Rect::new(preview.x, preview.y, gutter, preview.height), c.gutter_bg);

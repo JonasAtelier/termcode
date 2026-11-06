@@ -21,9 +21,9 @@ pub struct Spacing {
     pub sidebar_padding: u16,
     /// Blank rows between sidebar sections and headers.
     pub section_gap: u16,
-    /// Columns between the line number and the quick-diff marker (comfortable) and
-    /// between the marker and the code, in editors, diffs and peeks; 2 or more also
-    /// leaves a blank row under the tab bar in compact (comfortable always has it).
+    /// Columns before the line numbers in editors, diffs and peeks (the number, its
+    /// marker cell, then the code: VS Code's gutter); 2 or more also leaves a blank
+    /// row under the tab bar in compact (comfortable always has it).
     pub editor_padding: u16,
     /// Spaces each side of a tab label.
     pub tab_padding: u16,
@@ -56,7 +56,7 @@ impl Spacing {
         sidebar_width: 36,
         sidebar_padding: 2,
         section_gap: 1,
-        // `␠number␠marker␠code`, VS Code's tight gutter.
+        // `␠number▎code`: one cell after the card border, VS Code's gutter.
         editor_padding: 1,
         tab_padding: 2,
         status_gap: 3,
@@ -75,7 +75,7 @@ impl Spacing {
         sidebar_width: 30,
         sidebar_padding: 0,
         section_gap: 0,
-        editor_padding: 1,
+        editor_padding: 0,
         tab_padding: 1,
         status_gap: 3,
         activity_width: 3,
@@ -97,7 +97,7 @@ impl Spacing {
             sidebar_width: n("sidebarWidth", 12, 200, base.sidebar_width),
             sidebar_padding: n("sidebarPadding", 0, 4, base.sidebar_padding),
             section_gap: n("sectionGap", 0, 3, base.section_gap),
-            editor_padding: n("editorPadding", 1, 8, base.editor_padding),
+            editor_padding: n("editorPadding", 0, 8, base.editor_padding),
             tab_padding: n("tabPadding", 0, 4, base.tab_padding),
             status_gap: n("statusBarGap", 1, 8, base.status_gap),
             activity_width: n("activityBarWidth", 2, 9, base.activity_width),
