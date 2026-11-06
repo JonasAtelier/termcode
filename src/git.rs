@@ -3,9 +3,11 @@
 
 use crate::parse::StatusEntry;
 use std::collections::HashMap;
-use std::io::Read;
+use std::fs::{self, File};
+use std::io::{Read, Seek, Write};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 const CAP: u64 = 1 << 20;
 
@@ -98,6 +100,30 @@ thread_local! {
 /// `git -C root`, with paths after `--` taken literally: a file named `*.txt`
 /// must never act as a glob for `clean`/`restore`/`add`.
 pub fn cmd(root: &Path) -> Command {
+    let mut c = base(root);
+    // Its own process group: terminal signals (Ctrl+C) reach us, never git. Unlike a
+    // pre_exec, std still spawns it with posix_spawn (vfork): no fork stalls the UI.
+    c.process_group(0);
+    c
+}
+
+/// `cmd` for a write or network call (only off the UI thread): its own session, so no
+/// controlling tty either (a prompt of ssh, a hook or a credential helper fails at once).
+/// The pre_exec makes std fork, not vfork. (A process group leader cannot setsid, so
+/// this is not built on `cmd`.)
+pub fn write_cmd(root: &Path) -> Command {
+    let mut c = base(root);
+    // SAFETY: setsid is async-signal-safe; the closure touches nothing else.
+    unsafe {
+        c.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    c
+}
+
+fn base(root: &Path) -> Command {
     #[cfg(test)]
     CALLS.with(|n| n.set(n.get() + 1));
     let mut c = Command::new("git");
@@ -108,13 +134,71 @@ pub fn cmd(root: &Path) -> Command {
     c
 }
 
-/// Run git; Ok(stdout) or Err(first lines of stderr).
+/// A git child whose stdout and stderr go to unlinked temp files, not pipes: if this
+/// process ends first, git keeps writing (no SIGPIPE mid-write) and init reaps it.
+pub struct Detached {
+    pub child: Child,
+    out: File,
+    err: File,
+}
+
+/// In the plugin's state dir, not /tmp (often tmpfs: RAM), and 0600: output can hold
+/// secrets. Tests keep to the temp dir, away from the user's state.
+fn scratch() -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = if cfg!(test) { std::env::temp_dir() } else { crate::plugin_dir(true) };
+    fs::create_dir_all(&dir)?;
+    let p = dir.join(format!(".herdr-code-git-{}-{n}", std::process::id()));
+    let f = fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&p)?;
+    let _ = fs::remove_file(&p);
+    Ok(f)
+}
+
+pub fn spawn_detached(c: &mut Command, input: Option<Vec<u8>>) -> std::io::Result<Detached> {
+    let (out, err) = (scratch()?, scratch()?);
+    c.stdout(out.try_clone()?).stderr(err.try_clone()?).stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
+    let mut child = c.spawn()?;
+    if let (Some(mut w), Some(data)) = (child.stdin.take(), input) {
+        std::thread::spawn(move || {
+            let _ = w.write_all(&data);
+        });
+    }
+    Ok(Detached { child, out, err })
+}
+
+impl Detached {
+    /// stdout and stderr (up to `cap` bytes each), once the child has exited.
+    pub fn read(mut self, cap: u64) -> (Vec<u8>, Vec<u8>) {
+        let get = |f: &mut File| {
+            let mut b = Vec::new();
+            let _ = f.rewind().and_then(|_| f.take(cap).read_to_end(&mut b));
+            b
+        };
+        (get(&mut self.out), get(&mut self.err))
+    }
+
+    /// While git runs: cut either file back to `cap` bytes (what `read` keeps), so a
+    /// huge output never fills the disk. Later writes leave a hole, not used blocks.
+    pub fn cap(&self, cap: u64) {
+        for f in [&self.out, &self.err] {
+            if f.metadata().is_ok_and(|m| m.len() > cap) {
+                let _ = f.set_len(cap);
+            }
+        }
+    }
+}
+
+/// Run a write; Ok(stdout) or Err(first lines of stderr).
 pub fn run(root: &Path, args: &[&str]) -> Result<String, String> {
-    let o = cmd(root).args(args).output().map_err(|e| format!("git: {e}"))?;
-    if o.status.success() {
-        Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+    let mut d = spawn_detached(write_cmd(root).args(args), None).map_err(|e| format!("git: {e}"))?;
+    let status = d.child.wait().map_err(|e| format!("git: {e}"))?;
+    let (out, err) = d.read(CAP);
+    if status.success() {
+        Ok(String::from_utf8_lossy(&out).into_owned())
     } else {
-        let err = String::from_utf8_lossy(&o.stderr);
+        let err = String::from_utf8_lossy(&err);
         Err(err.lines().take(3).collect::<Vec<_>>().join(" ").trim().to_string())
     }
 }
@@ -133,7 +217,9 @@ fn with_paths<'a>(head: &[&'a str], files: &'a [ScmFile], orig: bool) -> Vec<&'a
 }
 
 pub fn has_head(root: &Path) -> bool {
-    run(root, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok()
+    let mut c = cmd(root);
+    c.args(["rev-parse", "--verify", "-q", "HEAD"]).stdout(Stdio::null()).stderr(Stdio::null());
+    c.status().is_ok_and(|s| s.success())
 }
 
 /// `git add -A` so deletions are staged too.

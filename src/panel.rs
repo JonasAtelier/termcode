@@ -653,16 +653,15 @@ pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> 
     // The terminal first: saving backups and the session never holds the shell back.
     restore();
     finish(&mut app);
-    // Git writes still queued or running finish before the process ends (closing their
-    // pipes would SIGPIPE git mid-write). After HUP/TERM or a panic only briefly.
-    if app.gitui.writes() > 0 {
-        let hurry = SIGNALED.load(Ordering::SeqCst) || res.is_err();
-        eprintln!("herdr-code: waiting for {} git operation(s) to finish…", app.gitui.writes());
-        crate::scm::finish_writes(&mut app, hurry.then_some(Duration::from_secs(2)));
-    }
     app.stop_search();
     if let Some(p) = token_file.filter(|_| app.token.is_some()) {
         let _ = fs::remove_file(p);
+    }
+    // Git writes still queued or running finish before the process ends, everything
+    // else done first so Ctrl+C there loses nothing. After HUP/TERM or a panic: briefly.
+    if app.gitui.writes() > 0 {
+        let hurry = SIGNALED.load(Ordering::SeqCst) || res.is_err();
+        crate::scm::finish_writes(&mut app, hurry.then_some(Duration::from_secs(2)));
     }
     // Quitting just ends this process: herdr then closes the tab. Nothing here
     // signals or closes anything else.
@@ -963,7 +962,7 @@ impl App {
         if let Some(g) = a.git_root.clone() {
             // The index stat refresh is the writer's first job (slow on a big repo).
             let gw = g.clone();
-            a.gitui.write(move || {
+            a.gitui.write("refresh the index", move || {
                 crate::gitops::refresh_index(&gw);
                 crate::scm::Msg::Wrote(Ok(String::new()), false)
             });
@@ -1256,7 +1255,7 @@ impl App {
             _ => return Err("not a text file".into()),
         };
         // All of it on the index writer: the sides, the matching git hunk, the apply.
-        self.gitui.write(move || {
+        self.gitui.write("stage the change", move || {
             let staged = crate::gitops::stage_sides(&g, &rel).and_then(|(index, work)| {
                 let h = crate::gitops::hunks(&index, &work)
                     .into_iter()
@@ -2197,7 +2196,7 @@ impl App {
                 // The index writer runs it, maybe after a slow op queued ahead: it acts only
                 // on the files as they were when the user confirmed.
                 let seen = file_stamps(&g, &files);
-                self.gitui.write(move || {
+                self.gitui.write("discard", move || {
                     if file_stamps(&g, &files) != seen {
                         return crate::scm::Msg::Wrote(Err("File changed since you confirmed; discard cancelled".into()), true);
                     }
@@ -2491,7 +2490,7 @@ impl App {
         };
         // On the index writer, in order; status follows each through drain.
         let (stage, files) = res;
-        self.gitui.write(move || {
+        self.gitui.write(if stage { "stage" } else { "unstage" }, move || {
             let r = if stage { git::stage(&g, &files) } else { git::unstage(&g, &files) };
             crate::gitops::refresh_index(&g);
             crate::scm::Msg::Wrote(r.map(|_| String::new()), false)
@@ -6701,13 +6700,14 @@ mod tests {
             assert!(start.elapsed() < Duration::from_secs(10));
         }
         assert!(start.elapsed() >= Duration::from_millis(400), "git really was slow");
+        // Each slowed git call takes ≥ 400 ms: a step that waited on one would show it.
         assert!(worst < Duration::from_millis(30), "a UI step took {worst:?} while git ran");
         assert!(app.scm_files.iter().any(|f| f.path == "n00.txt" && f.section == Section::Changes));
         fs::remove_dir_all(&root).unwrap();
     }
 
     fn slow_write(app: &mut App, ms: u64) {
-        app.gitui.write(move || {
+        app.gitui.write("slow test write", move || {
             std::thread::sleep(Duration::from_millis(ms));
             crate::scm::Msg::Wrote(Ok(String::new()), false)
         });
@@ -6803,6 +6803,22 @@ mod tests {
         // Range overlap alone would have staged TWO; the content check refused it.
         let index = Command::new("git").arg("-C").arg(&root).args(["show", ":README.md"]).output().unwrap().stdout;
         assert_eq!(String::from_utf8_lossy(&index), "1\n2\n3\n", "nothing staged");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The quit wait names what git is doing: "waiting for 2 git operations: … (N s)".
+    #[test]
+    fn the_quit_wait_names_the_running_git_operation() {
+        let root = repo("waitline");
+        let mut app = App::new(root.clone(), None);
+        wait(&mut app);
+        slow_write(&mut app, 400);
+        slow_write(&mut app, 10);
+        std::thread::sleep(Duration::from_millis(100));
+        let line = app.gitui.waiting_line();
+        assert!(line.starts_with("waiting for 2 git operations: slow test write… (0 s)") && line.ends_with("Ctrl+C to stop waiting"), "{line}");
+        crate::scm::finish_writes(&mut app, None);
+        assert_eq!(app.gitui.writes(), 0);
         fs::remove_dir_all(&root).unwrap();
     }
 }

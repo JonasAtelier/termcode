@@ -322,7 +322,8 @@ pub fn run_op(app: &mut App, op: Op) {
     let id = c.next_id;
     c.op = Some(Running { label: op.label(), since: Instant::now(), cancel: flag.clone(), id, closable: op.closable() });
     // Every op on the index writer (fetch too: it writes refs), in order with stages.
-    app.gitui.write(move || {
+    let label = op.label();
+    app.gitui.write(&label, move || {
         let r = gitops::with_cancel(flag, || op.run(&root));
         if !op.closable() {
             gitops::refresh_index(&root);

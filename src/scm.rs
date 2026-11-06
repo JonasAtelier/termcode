@@ -139,6 +139,8 @@ pub enum GitAct {
 }
 
 pub enum Msg {
+    /// HEAD after a refresh (Debug of gitops::Head), for the graph.
+    Head(Option<String>),
     Page(u64, usize, Result<Page<Commit>, String>),
     Files(String, Result<Vec<FileChange>, String>),
     Diff(String, DiffDoc),
@@ -157,7 +159,7 @@ pub enum Msg {
     Wrote(Result<String, String>, bool),
 }
 
-type WriteJob = Box<dyn FnOnce() -> Msg + Send>;
+type WriteJob = (String, Box<dyn FnOnce() -> Msg + Send>);
 
 /// Sends `Msg::Lost` if dropped before its job's message went out (a panic
 /// unwinding the job), so the jobs count always comes back down.
@@ -197,6 +199,8 @@ pub struct GitUi {
     pub log: gitops::OutputLog,
     /// The index writer: one thread runs every write job in order (see `write`).
     writer: Option<mpsc::Sender<WriteJob>>,
+    /// The write job running now: its label, since when.
+    current: std::sync::Arc<std::sync::Mutex<Option<(String, Instant)>>>,
     /// Write jobs not finished yet, and since when there have been some (a spinner).
     writes: usize,
     pub write_since: Option<Instant>,
@@ -229,6 +233,7 @@ impl GitUi {
             cmds: crate::gitcmds::State::default(),
             log: gitops::OutputLog::default(),
             writer: None,
+            current: Default::default(),
             writes: 0,
             write_since: None,
             quit_when_idle: false,
@@ -289,16 +294,19 @@ impl GitUi {
     /// order queued, so no two git writers ever race for index.lock and stage A then
     /// stage B land in that order; the UI thread never writes the index itself. A
     /// panicking job is caught there and reported as `Msg::Lost`; the queue goes on.
-    pub fn write(&mut self, job: impl FnOnce() -> Msg + Send + 'static) {
+    /// `label` names it while it runs ("commit", "Pulling…") for the quit wait.
+    pub fn write(&mut self, label: &str, job: impl FnOnce() -> Msg + Send + 'static) {
         self.jobs += 1;
         self.writes += 1;
         self.write_since.get_or_insert_with(Instant::now);
-        let (tx, log) = (self.tx.clone(), self.log.clone());
+        let (tx, log, current) = (self.tx.clone(), self.log.clone(), self.current.clone());
         let q = self.writer.get_or_insert_with(|| {
             let (qtx, qrx) = mpsc::channel::<WriteJob>();
             std::thread::spawn(move || {
-                for job in qrx {
+                for (label, job) in qrx {
+                    *current.lock().unwrap_or_else(|e| e.into_inner()) = Some((label, Instant::now()));
                     let m = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gitops::with_log(&log, job))).unwrap_or(Msg::Lost);
+                    *current.lock().unwrap_or_else(|e| e.into_inner()) = None;
                     if tx.send(Msg::Written(Box::new(m))).is_err() {
                         break;
                     }
@@ -306,7 +314,15 @@ impl GitUi {
             });
             qtx
         });
-        let _ = q.send(Box::new(job));
+        let _ = q.send((label.to_string(), Box::new(job)));
+    }
+
+    /// The quit wait's line: "waiting for 2 git operations: commit… (3 s)".
+    pub fn waiting_line(&self) -> String {
+        let n = self.writes;
+        let cur = self.current.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let what = cur.map_or(String::new(), |(l, t)| format!(": {}… ({} s)", l.trim_end_matches('…'), t.elapsed().as_secs()));
+        format!("waiting for {n} git operation{}{what}; Ctrl+C to stop waiting", if n == 1 { "" } else { "s" })
     }
 
     /// Write jobs queued or running.
@@ -482,12 +498,8 @@ pub fn load_graph(app: &mut App, reset: bool) {
 pub fn on_refresh(app: &mut App) {
     let Some(root) = app.git_root.clone() else { return };
     if app.side == Side::Scm && app.side_visible {
-        let head = app.gitui.logged(|| gitops::head(&root)).ok().map(|h| format!("{h:?}"));
-        let g = &mut app.gitui.graph;
-        if head != g.head || !g.loaded && !g.loading {
-            g.head = head;
-            load_graph(app, true);
-        }
+        // Read off the UI thread; Msg::Head reloads the graph if it moved.
+        app.gitui.spawn(move || Msg::Head(gitops::head(&root).ok().map(|h| format!("{h:?}"))));
     }
     if app.gitui.dlg.is_some() {
         commitdlg::relist(app);
@@ -541,6 +553,13 @@ pub fn drain(app: &mut App) -> bool {
             m => m,
         };
         match m {
+            Msg::Head(head) => {
+                let g = &mut app.gitui.graph;
+                if head != g.head || !g.loaded && !g.loading {
+                    g.head = head;
+                    load_graph(app, true);
+                }
+            }
             Msg::Page(gen, skip, page) => {
                 let g = &mut app.gitui.graph;
                 if gen != g.gen {
@@ -644,11 +663,22 @@ pub fn drain(app: &mut App) -> bool {
 
 /// After the UI is gone: let queued and running writes finish (their pipes stay open
 /// and are drained, so git never takes SIGPIPE), for at most `limit` if one is given.
+/// It shows what runs on stderr. Ctrl+C there just ends this process: every git runs in
+/// its own session (no SIGINT) with its output in files (no SIGPIPE), and finishes alone.
 pub fn finish_writes(app: &mut App, limit: Option<Duration>) {
     let start = Instant::now();
+    let mut shown = String::new();
     while app.gitui.writes > 0 && limit.is_none_or(|l| start.elapsed() < l) {
+        let line = app.gitui.waiting_line();
+        if line != shown {
+            eprint!("\r\x1b[Kherdr-code: {line}");
+            shown = line;
+        }
         drain(app);
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !shown.is_empty() {
+        eprintln!();
     }
 }
 

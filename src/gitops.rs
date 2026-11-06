@@ -4,7 +4,8 @@
 //! stage/unstage, blame, merge conflicts and the file Timeline.
 //!
 //! Every call here:
-//! - goes through `git::cmd()`, so pathspecs are literal (`*.c` is a file name);
+//! - goes through `git::cmd()` (`git::write_cmd()` for writes), so pathspecs are
+//!   literal (`*.c` is a file name);
 //! - is argv only, with `--` before paths; a revision starting with `-` is refused;
 //! - runs with `LC_ALL=C`, and parses `-z` or `\x1f`-separated output;
 //! - caps stdout. Past the cap the pipe is closed and the child is reaped on a
@@ -23,7 +24,6 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::ops::Range;
 use std::os::fd::AsRawFd;
-use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,22 +60,12 @@ enum Mode {
 }
 
 fn git(root: &Path, mode: Mode) -> Command {
-    let mut c = git::cmd(root);
+    // Reads (also on the UI thread) keep posix_spawn; writes and network calls, all on
+    // the writer thread, get their own session: no tty prompt.
+    let mut c = if mode == Mode::Read { git::cmd(root) } else { git::write_cmd(root) };
     // A user's color.ui=always or log.showSignature would garble parsed output.
     c.args(["-c", "color.ui=false", "-c", "log.showSignature=false"]);
     c.env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "true");
-    if mode != Mode::Read {
-        // Its own session, so no controlling tty: a user's ssh, a hook or a credential
-        // helper that opens /dev/tty fails at once instead of drawing over the TUI and
-        // waiting. setsid only detaches; it sends no signal.
-        // SAFETY: setsid is async-signal-safe and the closure touches nothing else.
-        unsafe {
-            c.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
     match mode {
         Mode::Read => {
             c.env("GIT_OPTIONAL_LOCKS", "0");
@@ -115,7 +105,51 @@ impl Out {
 fn call(root: &Path, mode: Mode, args: &[&str], input: Option<Vec<u8>>, cap: usize) -> Res<Out> {
     let mut c = git(root, mode);
     c.args(args);
-    exec(c, args, input, cap)
+    if mode == Mode::Read {
+        exec(c, args, input, cap)
+    } else {
+        exec_detached(c, args, input, cap)
+    }
+}
+
+/// A write or network call: output in files (git::spawn_detached), so git survives this
+/// process ending mid-call without SIGPIPE. Cancel stops waiting; git finishes (or hits
+/// its timeouts) on its own and is reaped in the background.
+fn exec_detached(mut c: Command, args: &[&str], input: Option<Vec<u8>>, cap: usize) -> Res<Out> {
+    let start = Instant::now();
+    let when = SystemTime::now().duration_since(UNIX_EPOCH).map_or((0, 0), |d| (d.as_secs() as i64, d.subsec_millis()));
+    let entry = |code: Option<i32>, stderr: &[u8]| LogEntry {
+        when,
+        args: args.join(" "),
+        code,
+        ms: start.elapsed().as_millis(),
+        stderr: String::from_utf8_lossy(stderr).lines().take(20).collect::<Vec<_>>().join("\n"),
+    };
+    let mut d = git::spawn_detached(&mut c, input).map_err(|e| format!("git: {e}"))?;
+    let cancel = CANCEL.with(|c| c.borrow().clone());
+    let status = loop {
+        if cancel.as_ref().is_some_and(|f| f.load(Ordering::SeqCst)) {
+            crate::nav::reap(d.child, None);
+            log(entry(None, b"cancelled"));
+            return Err("Cancelled".into());
+        }
+        match d.child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {
+                d.cap(cap as u64 + 1);
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(format!("git: {e}")),
+        }
+    };
+    let (mut stdout, stderr) = d.read(cap as u64 + 1);
+    let truncated = stdout.len() > cap;
+    stdout.truncate(cap);
+    log(entry(status.code(), &stderr));
+    if status.success() {
+        return Ok(Out { stdout, truncated });
+    }
+    Err(message(&stderr, &stdout))
 }
 
 /// One git call, for the Git Output view (VS Code's Git output channel).
@@ -1759,6 +1793,44 @@ mod tests {
         assert!(push(&a).is_err(), "a non-fast-forward is refused");
         assert_eq!(sh(&t.0, "git -C remote.git rev-parse main"), before, "remote untouched");
         assert_eq!(default_remote(&t.0.join("a")).as_deref(), Some("origin"));
+    }
+
+    /// A write's git outlives this process safely: its output goes to (unlinked) files,
+    /// not pipes, and it has its own session, so Ctrl+C in our terminal never reaches it.
+    #[test]
+    fn write_calls_need_no_pipes_and_no_terminal() {
+        let t = tmp("detach");
+        let r = repo(&t);
+        let probe = t.0.join("probe");
+        sh(
+            &r,
+            &format!(
+                "mkdir hooks; printf '#!/bin/sh\\nreadlink /proc/self/fd/2 > {p}\\nawk \"{{print \\$6}}\" /proc/self/stat >> {p}\\nstat -L -c %%a /proc/self/fd/2 >> {p}\\n' > hooks/pre-commit; \
+                 chmod +x hooks/pre-commit; git config core.hooksPath hooks; echo a > a.txt; git add a.txt",
+                p = probe.display()
+            ),
+        );
+        commit(&r, "probe", CommitOpts::default()).unwrap();
+        let got = fs::read_to_string(&probe).unwrap();
+        let mut lines = got.lines();
+        let fd2 = lines.next().unwrap();
+        assert!(!fd2.starts_with("pipe:") && fd2.contains(".herdr-code-git-") && fd2.ends_with("(deleted)"), "{fd2}");
+        let sid: i64 = lines.next().unwrap().trim().parse().unwrap();
+        // SAFETY: getsid(0) only reads this process's session id.
+        assert_ne!(sid, unsafe { libc::getsid(0) } as i64, "its own session");
+        assert_eq!(lines.next(), Some("600"), "only we can read its output");
+    }
+
+    #[test]
+    fn read_calls_get_their_own_process_group_but_no_session() {
+        let t = tmp("pgrp");
+        let r = repo(&t);
+        let out = read(&r, &["-c", "alias.pg=!cat /proc/self/stat", "pg"]).unwrap().text();
+        // /proc/<pid>/stat after the name: state, ppid, pgrp, session.
+        let f: Vec<i64> = out.rsplit_once(')').unwrap().1.split_whitespace().skip(2).take(2).map(|x| x.parse().unwrap()).collect();
+        // SAFETY: getpgrp and getsid(0) only read this process's ids.
+        let (pg, sid) = unsafe { (libc::getpgrp() as i64, libc::getsid(0) as i64) };
+        assert!(f[0] != pg && f[1] == sid, "pgrp {} (ours {pg}), session {} (ours {sid})", f[0], f[1]);
     }
 
     #[test]
