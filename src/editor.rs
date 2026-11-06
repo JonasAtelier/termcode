@@ -130,6 +130,26 @@ const PLAIN: SStyle = SStyle {
     font_style: syntect::highlighting::FontStyle::empty(),
 };
 
+/// Text as buffer lines, exactly as a file is loaded: (lines, crlf, final newline).
+/// The EOL style is the first line's; in CRLF mode only the '\r' of a line break
+/// is dropped, so a lone '\r' (mixed endings, an unterminated last line) is kept.
+pub fn split_lines(text: &str) -> (Vec<String>, bool, bool) {
+    let crlf = text.find('\n').is_some_and(|i| text[..i].ends_with('\r'));
+    let final_newline = text.ends_with('\n');
+    let body = text.strip_suffix('\n').unwrap_or(text);
+    let pieces: Vec<&str> = body.split('\n').collect();
+    let n = pieces.len();
+    let lines = pieces
+        .iter()
+        .enumerate()
+        .map(|(k, l)| {
+            let ended = k + 1 < n || final_newline;
+            if crlf && ended { l.strip_suffix('\r').unwrap_or(l) } else { l }.to_string()
+        })
+        .collect();
+    (lines, crlf, final_newline)
+}
+
 /// Advance a display column over `c` (tabs to the next stop, wide chars = 2).
 pub fn advance(x: usize, c: char) -> usize {
     match c {
@@ -283,21 +303,7 @@ impl Buffer {
     }
 
     fn set_text(&mut self, text: &str) {
-        self.crlf = text.find('\n').is_some_and(|i| text[..i].ends_with('\r'));
-        self.final_newline = text.ends_with('\n');
-        let body = text.strip_suffix('\n').unwrap_or(text);
-        let pieces: Vec<&str> = body.split('\n').collect();
-        let n = pieces.len();
-        // In CRLF mode drop only the '\r' that belonged to a line break; a lone
-        // trailing '\r' on an unterminated last line is content and survives.
-        self.lines = pieces
-            .iter()
-            .enumerate()
-            .map(|(k, l)| {
-                let ended = k + 1 < n || self.final_newline;
-                if self.crlf && ended { l.strip_suffix('\r').unwrap_or(l) } else { l }.to_string()
-            })
-            .collect();
+        (self.lines, self.crlf, self.final_newline) = split_lines(text);
         let tabs = self.lines.iter().take(2000).filter(|l| l.starts_with('\t')).count();
         let spaces = self.lines.iter().take(2000).filter(|l| l.starts_with(' ')).count();
         self.indent = if tabs > spaces { "\t".into() } else { " ".repeat(tab()) };
@@ -694,6 +700,36 @@ impl Buffer {
             }
         }
         self.end(v);
+    }
+
+    /// Replace lines `start..end` with `with` (a quick-diff Revert): one undo
+    /// step, the cursor at the start of the range. `start == end` inserts.
+    pub fn replace_lines(&mut self, v: &mut View, start: usize, end: usize, with: &[String]) -> bool {
+        let n = self.lines.len();
+        if self.readonly.is_some() || start > end || end > n {
+            return false;
+        }
+        let eol = |l: usize| Pos::new(l, self.lines[l].len());
+        // Keep the line break structure: a range that reaches the end of the
+        // buffer takes the break before it instead of the one after it.
+        let (a, b, text) = if end < n {
+            (Pos::new(start, 0), Pos::new(end, 0), with.iter().map(|l| format!("{l}\n")).collect::<String>())
+        } else if start > 0 {
+            (eol(start - 1), eol(n - 1), with.iter().map(|l| format!("\n{l}")).collect::<String>())
+        } else {
+            (Pos::new(0, 0), eol(n - 1), with.join("\n"))
+        };
+        self.begin(v, Kind::Other);
+        if a != b {
+            self.do_del(a, b);
+        }
+        if !text.is_empty() {
+            self.do_ins(a, &text);
+        }
+        v.anchor = None;
+        v.cursor = self.clamp(Pos::new(start, 0));
+        self.end(v);
+        true
     }
 
     /// Replace every match (back to front so earlier positions stay valid). One undo step.
@@ -1316,6 +1352,26 @@ mod tests {
         assert_eq!(b.text(), "x x\nbar x 中x\n");
         b.undo(&mut v);
         assert_eq!(b.text(), "Foo foo\nbar FOO 中foo\n");
+    }
+
+    #[test]
+    fn replace_lines_is_one_undo_step_at_every_edge() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        for (text, start, end, with, want) in [
+            ("a\nX\nc\n", 1, 2, s(&["b"]), "a\nb\nc\n"),        // modified line
+            ("a\nnew\nb\n", 1, 2, s(&[]), "a\nb\n"),             // added line removed
+            ("a\nc\n", 1, 1, s(&["b"]), "a\nb\nc\n"),            // deleted line restored
+            ("a\nb\nX\n", 2, 3, s(&["c", "d"]), "a\nb\nc\nd\n"), // at the end
+            ("X\nY\n", 0, 2, s(&["a"]), "a\n"),                  // the whole buffer
+            ("a\n", 1, 1, s(&["b"]), "a\nb\n"),                  // insert at the end
+        ] {
+            let mut b = buf(text);
+            let mut v = View::default();
+            assert!(b.replace_lines(&mut v, start, end, &with));
+            assert_eq!(b.text(), want, "{text:?} {start}..{end}");
+            b.undo(&mut v);
+            assert_eq!(b.text(), text, "one undo restores {text:?}");
+        }
     }
 
     #[test]

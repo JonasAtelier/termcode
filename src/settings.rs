@@ -123,7 +123,10 @@ pub struct Settings {
     pub rainbow: Rainbow,
     pub guides: bool,
     pub tab_size: usize,
+    /// `editor.rulers`: display columns, each with an optional own colour.
+    pub rulers: Vec<(usize, Option<Rgba>)>,
     pub follow_vscode: bool,
+    pub minimap: crate::minimap::Cfg,
     pub theme: ThemeData,
     /// Parts that were skipped (a bad regex): shown, the rest still applies.
     pub warnings: Vec<String>,
@@ -148,7 +151,9 @@ impl Default for Settings {
             rainbow: Rainbow::default(),
             guides: true,
             tab_size: 4,
+            rulers: vec![(90, None)],
             follow_vscode: false,
+            minimap: crate::minimap::Cfg::default(),
             theme: ThemeData { json: theme::embedded_theme().clone(), extra_rules: Vec::new() },
             warnings: Vec::new(),
         }
@@ -254,10 +259,24 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         rainbow,
         guides: g("editor.guides.indentation").and_then(Value::as_bool).unwrap_or(d.guides),
         tab_size: g("editor.tabSize").and_then(Value::as_u64).filter(|n| (1..=16).contains(n)).map_or(d.tab_size, |n| n as usize),
+        rulers: g("editor.rulers").and_then(Value::as_array).map_or(d.rulers, |a| rulers(a)),
         follow_vscode: vscode.is_some(),
+        minimap: crate::minimap::Cfg::parse(user),
         theme: ThemeData { json, extra_rules },
         warnings,
     })
+}
+
+/// `editor.rulers`: `[90]`, or VS Code's `[{ "column": 80, "color": "#rrggbb" }, 100]`.
+fn rulers(a: &[Value]) -> Vec<(usize, Option<Rgba>)> {
+    a.iter()
+        .filter_map(|r| match r {
+            Value::Number(n) => Some((n.as_u64()? as usize, None)),
+            Value::Object(o) => Some((o.get("column")?.as_u64()? as usize, o.get("color").and_then(Value::as_str).and_then(Rgba::parse))),
+            _ => None,
+        })
+        .filter(|(c, _)| *c > 0)
+        .collect()
 }
 
 /// `indentRainbow.*`; a pattern that does not compile is skipped with a warning.
@@ -467,6 +486,14 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "indentRainbow.indicatorStyle": "classic",   // or "light"
     // "editor.guides.indentation": true,
     // "editor.tabSize": 4,
+    // "editor.rulers": [90],   // [] for none; [{ "column": 80, "color": "#5A5A5A" }, 100]
+    // "editor.minimap.enabled": true,
+    // "editor.minimap.maxColumn": 120,
+    // "editor.minimap.renderCharacters": false,   // true: braille dots
+    // "editor.minimap.showSlider": "mouseover",    // or "always"
+    // "editor.minimap.side": "right",              // or "left"
+    // "editor.minimap.size": "proportional",       // or "fill", "fit"
+    // "herdr-code.minimap.minEditorWidth": 40,     // shrink, then hide, below this
 }
 "##;
 
@@ -589,6 +616,12 @@ mod tests {
         )
         .unwrap();
         let r = from_maps(&m, None, &[]).unwrap().rainbow;
+        // editor.rulers: [90] by default, [] for none, numbers and objects with colours.
+        assert_eq!(Settings::default().rulers, vec![(90, None)]);
+        let none = parse_jsonc(r#"{"editor.rulers": []}"#).unwrap();
+        assert!(from_maps(&none, None, &[]).unwrap().rulers.is_empty());
+        let two = parse_jsonc(r##"{"editor.rulers": [{"column": 80, "color": "#ff0000"}, 100, "x"]}"##).unwrap();
+        assert_eq!(from_maps(&two, None, &[]).unwrap().rulers, vec![(80, Some(Rgba(255, 0, 0, 255))), (100, None)]);
         assert_eq!(r.colors, vec![Rgba(1, 2, 3, 128)]);
         assert!(r.tabmix.is_none() && r.light && !r.applies("c") && r.applies("rust"));
         let bad = parse_jsonc(r#"{"indentRainbow.ignoreLinePatterns": ["/(/", "/x/"]}"#).unwrap();

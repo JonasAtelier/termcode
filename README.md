@@ -62,6 +62,9 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Alt+Enter (Ctrl+Enter) | commit the staged changes with the message |
 | `r` in a list | refresh. Git status also refreshes on view switch and on pane focus |
 | scrollbars | click the track to page, drag the slider; the wheel scrolls the list or editor under it |
+| minimap | click: centre that line; drag the slider; the wheel scrolls the editor |
+| a gutter marker (click), Alt+F5 / Shift+Alt+F5, F7 / Shift+F7 | quick-diff peek on that / the next / the previous change |
+| in the peek | Revert (the hunk back to the index version, one undo step), ↑ ↓ (wraps), × or Esc closes |
 
 The Explorer header shows the worktree's name and, under it, its parent folder (`~` for
 $HOME, cut from the left as `…/work/fetched` when narrow).
@@ -70,6 +73,16 @@ The editor gutter shows VS Code's quick diff against the git index (`:0:path`): 
 added, blue `▎` modified, red `▸` lines deleted below. Staging a hunk clears its marker. It
 recomputes about 200 ms after an edit. The editor scrollbar's overview ruler marks git
 changes (left half), find matches (right half) and the cursor line.
+
+The minimap (VS Code's `editor.minimap`) sits between the code and the scrollbar: half-block
+cells, two lines tall, about 8 characters wide, coloured by the dominant token colour, with
+the git changes on its left edge, find matches and the selection behind the text, and the
+viewport slider while the mouse is over it (herdr forwards plain mouse motion to the pane, so
+VS Code's `showSlider: "mouseover"` works). In a narrow editor it shrinks, then hides.
+
+Clicking a quick-diff marker opens VS Code's dirty-diff peek below the change: the index
+lines on red, the buffer lines on green with word highlights. Stage is disabled until the git
+backend lands; Revert edits the buffer only (nothing is written or staged).
 
 ## Settings
 
@@ -98,6 +111,14 @@ the panel: the status bar shows the error and the last good settings stay.
 | `indentRainbow.ignoreLinePatterns` | `["/[ \t]* [*]/g", "/[ \t]+[/]{2}/g"]` | JS regex literals; a matching line never gets the error colour |
 | `editor.guides.indentation` | `true` | Indent guides (`editorIndentGuide.background` / `.activeBackground`) |
 | `editor.tabSize` | `4` | Tab stops, the indent unit, rainbow and guides |
+| `editor.rulers` | `[90]` | Vertical rulers after N display columns (tabs and wide characters counted), in `editorRuler.foreground`; `[]` for none; `[{ "column": 80, "color": "#rrggbb" }, 100]` gives one its own colour. Drawn behind the text, in the editor and both sides of the diff. F1 "View: Toggle Rulers" for the session |
+| `editor.minimap.enabled` | `true` | The minimap (F1 "View: Toggle Minimap" for the session) |
+| `editor.minimap.maxColumn` | `120` | Characters the minimap covers (about 8 per cell, 8 to 16 cells, at most 15% of the editor, shrunk to leave minEditorWidth) |
+| `editor.minimap.renderCharacters` | `false` | `true`: braille dots (4 lines × 2 dot columns per cell) instead of half blocks |
+| `editor.minimap.showSlider` | `"mouseover"` | or `"always"` |
+| `editor.minimap.side` | `"right"` | or `"left"` |
+| `herdr-code.minimap.minEditorWidth` | `40` | The minimap shrinks (to 4 cells) so the code keeps this many columns, then hides |
+| `editor.minimap.size` | `"proportional"` | `"fill"`: the whole file over the height; `"fit"`: proportional while it fits |
 
 `herdr-code.spacing` (comfortable / compact defaults):
 

@@ -2,7 +2,8 @@
 //! (Explorer / Search / Source Control / History), editor groups with preview
 //! tabs, find widget, prompts. Drawing lives in ui.rs.
 
-use crate::decor::{self, Mark, TrackHit};
+use crate::decor::{self, Hunk, Mark, TrackHit};
+use crate::minimap::Mini;
 use crate::diff;
 use crate::editor::{self, Buffer, Pos, View};
 use crate::git::{self, ScmFile, Section};
@@ -143,6 +144,10 @@ pub enum Cmd {
     ToggleRuler,
     ToggleGuides,
     ToggleSidebar,
+    ToggleMinimap,
+    ToggleRulers,
+    NextChange,
+    PrevChange,
     QuickOpen,
     Save,
     ReloadSettings,
@@ -155,6 +160,10 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Toggle Minimap Ruler", Cmd::ToggleRuler, ""),
     ("View: Toggle Indent Guides", Cmd::ToggleGuides, ""),
     ("View: Toggle Primary Side Bar Visibility", Cmd::ToggleSidebar, ""),
+    ("View: Toggle Minimap", Cmd::ToggleMinimap, ""),
+    ("View: Toggle Rulers", Cmd::ToggleRulers, ""),
+    ("Go to Next Change", Cmd::NextChange, "Alt+F5 / F7"),
+    ("Go to Previous Change", Cmd::PrevChange, "Shift+Alt+F5 / Shift+F7"),
     ("Go to File...", Cmd::QuickOpen, "Ctrl+P"),
     ("File: Save", Cmd::Save, "Ctrl+S"),
     ("Developer: Reload Settings", Cmd::ReloadSettings, ""),
@@ -195,8 +204,41 @@ pub struct QDiff {
     /// None: the file is not in the index (untracked, outside the repo).
     pub base: Option<Vec<String>>,
     pub marks: Vec<Option<Mark>>,
+    pub hunks: Vec<Hunk>,
+    /// The index blob is valid UTF-8 (else Revert would write replacement characters).
+    pub base_utf8: bool,
     /// Buffer version the marks are for.
     ver: Option<u64>,
+}
+
+/// The quick-diff peek (VS Code's dirty-diff widget): one hunk of one editor,
+/// drawn as a zone below the hunk.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Peek {
+    pub group: usize,
+    pub key: String,
+    pub hunk: usize,
+    /// First body row shown (the body scrolls when the hunk is taller than the zone).
+    pub scroll: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum PeekBtn {
+    Stage,
+    Revert,
+    Prev,
+    Next,
+    Close,
+}
+
+/// A drawn minimap, for clicks and slider drags.
+#[derive(Clone, Copy, Debug)]
+pub struct MiniHit {
+    pub area: Rect,
+    pub group: usize,
+    pub mini: Mini,
+    /// The editor's scroll when it was drawn.
+    pub scroll: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -213,6 +255,8 @@ pub enum Drag {
     Select(usize),
     /// Scrollbar slider grabbed `grab` rows below its top.
     Scroll(ScrollHit, u16),
+    /// Minimap slider grabbed `grab` rows below its top.
+    Minimap(MiniHit, u16),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -281,6 +325,13 @@ pub struct Hits {
     pub sidebar: Rect,
     pub side_rows: usize,
     pub side_gap: u16,
+    pub minimaps: Vec<MiniHit>,
+    pub peek_btns: Vec<(Rect, PeekBtn)>,
+    /// The peek zone, and its body rows (for the wheel).
+    pub peek_zone: Rect,
+    pub peek_body: Rect,
+    /// Body rows that do not fit (the peek's scroll range).
+    pub peek_max: usize,
 }
 
 impl Hits {
@@ -300,6 +351,10 @@ pub struct GroupHit {
     pub tabs: Vec<(Rect, Rect)>,
     /// Text area right of the gutter.
     pub text: Rect,
+    /// The quick-diff marker column.
+    pub marks_x: Option<u16>,
+    /// The peek zone's rows (first row, height): text rows below it are shifted down.
+    pub zone: Option<(u16, u16)>,
 }
 
 enum Load {
@@ -389,6 +444,9 @@ pub struct App {
     pub rainbow_on: bool,
     pub guides_on: bool,
     pub ruler_on: bool,
+    pub minimap_on: bool,
+    pub rulers_on: bool,
+    pub peek: Option<Peek>,
     pub qdiff: HashMap<String, QDiff>,
     qdiff_due: Option<Instant>,
 }
@@ -633,6 +691,9 @@ impl App {
             rainbow_on: true,
             guides_on: true,
             ruler_on: true,
+            minimap_on: true,
+            rulers_on: true,
+            peek: None,
             qdiff: HashMap::new(),
             qdiff_due: None,
         };
@@ -713,6 +774,8 @@ impl App {
         }
         self.rainbow_on = s.rainbow.enabled;
         self.guides_on = s.guides;
+        self.minimap_on = s.minimap.enabled;
+        self.rulers_on = true;
         if !s.warnings.is_empty() {
             self.msg = format!("settings.json: {}", s.warnings.join("; "));
         }
@@ -761,6 +824,16 @@ impl App {
                 }
                 self.save_layout();
             }
+            Cmd::ToggleMinimap => {
+                self.minimap_on = !self.minimap_on;
+                self.msg = format!("minimap {}", on_off(self.minimap_on));
+            }
+            Cmd::ToggleRulers => {
+                self.rulers_on = !self.rulers_on;
+                self.msg = format!("rulers {}", on_off(self.rulers_on));
+            }
+            Cmd::NextChange => self.peek_step(1),
+            Cmd::PrevChange => self.peek_step(-1),
             Cmd::QuickOpen => self.open_quick(),
             Cmd::Save => self.save_active(),
             Cmd::ReloadSettings => {
@@ -799,10 +872,141 @@ impl App {
                 continue;
             }
             qd.ver = Some(b.version());
-            qd.marks = match &qd.base {
+            (qd.marks, qd.hunks) = match &qd.base {
                 Some(base) => decor::quick_diff(base, &b.lines),
-                None => Vec::new(),
+                None => (Vec::new(), Vec::new()),
             };
+        }
+        // The peek follows its hunks: the same index if it still exists, else gone.
+        if let Some(pk) = &mut self.peek {
+            match self.qdiff.get(&pk.key).map_or(0, |q| q.hunks.len()) {
+                0 => self.peek = None,
+                n => pk.hunk = pk.hunk.min(n - 1),
+            }
+        }
+    }
+
+    // ---- quick-diff peek ----------------------------------------------------------
+
+    /// The active editor's document key and cursor line.
+    fn active_text(&self) -> Option<(usize, String, usize)> {
+        let grp = self.groups.get(self.ag)?;
+        let tab = grp.tabs.get(grp.active)?;
+        matches!(self.docs.get(&tab.key), Some(Doc::Text(_))).then(|| (self.ag, tab.key.clone(), tab.view.cursor.line))
+    }
+
+    fn hunks(&self, key: &str) -> &[Hunk] {
+        self.qdiff.get(key).map_or(&[][..], |q| &q.hunks)
+    }
+
+    /// Open the peek on hunk `i` of group `g`'s active document and bring it into view.
+    fn show_peek(&mut self, g: usize, key: String, i: usize) {
+        let Some(h) = self.hunks(&key).get(i).cloned() else { return };
+        self.peek = Some(Peek { group: g, key, hunk: i, scroll: 0 });
+        self.ag = g;
+        self.focus = Focus::Editor;
+        if let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) {
+            let rows = self.ui.groups.get(g).map_or(20, |gh| gh.text.height as usize);
+            // As VS Code: the cursor on the hunk's last line, and the zone below it on
+            // screen even for a hunk taller than the view (context above when it fits).
+            if h.mark_line() < t.view.scroll || h.peek_before() + rows / 3 > t.view.scroll + rows {
+                t.view.scroll = h.mark_line().saturating_sub(3).max((h.peek_before() + rows / 3).saturating_sub(rows));
+            }
+            t.view.cursor = Pos::new(if h.cur.is_empty() { h.mark_line() } else { h.cur.end - 1 }, 0);
+            t.view.anchor = None;
+        }
+    }
+
+    /// A click on the gutter marker of `line`.
+    fn peek_at_line(&mut self, g: usize, line: usize) {
+        let Some(key) = self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map(|t| t.key.clone()) else { return };
+        if let Some(i) = self.hunks(&key).iter().position(|h| h.has_line(line)) {
+            self.show_peek(g, key, i);
+        }
+    }
+
+    /// Alt+F5 / Shift+Alt+F5 (and the palette): the next / previous change from
+    /// the peek or the cursor, wrapping around, shown in the peek.
+    pub fn peek_step(&mut self, d: isize) {
+        let Some((g, key, line)) = self.active_text() else { return };
+        let n = self.hunks(&key).len();
+        if n == 0 {
+            self.msg = "No changes".into();
+            return;
+        }
+        let i = match self.peek.as_ref().filter(|p| p.key == key && p.group == g) {
+            Some(p) => (p.hunk as isize + d).rem_euclid(n as isize) as usize,
+            None if d > 0 => self.hunks(&key).iter().position(|h| h.mark_line() > line).unwrap_or(0),
+            None => self.hunks(&key).iter().rposition(|h| h.mark_line() < line).unwrap_or(n - 1),
+        };
+        self.show_peek(g, key, i);
+    }
+
+    /// Revert: the hunk's lines become the index version again, in the buffer
+    /// (one undo step; not a git operation).
+    /// The peek's hunk still describes the buffer (the diff runs 200 ms after an
+    /// edit): else re-diff now and ask again, rather than act on moved lines.
+    fn peek_fresh(&mut self) -> bool {
+        let Some(pk) = self.peek.as_ref() else { return false };
+        let ver = match self.docs.get(&pk.key) {
+            Some(Doc::Text(b)) => b.version(),
+            _ => return false,
+        };
+        if self.qdiff.get(&pk.key).is_some_and(|q| q.ver == Some(ver)) {
+            return true;
+        }
+        self.update_qdiff();
+        self.msg = "Changes moved, try again".into();
+        false
+    }
+
+    fn peek_revert(&mut self) {
+        if !self.peek_fresh() {
+            return;
+        }
+        let Some(pk) = self.peek.clone() else { return };
+        let Some(q) = self.qdiff.get(&pk.key) else { return };
+        if !q.base_utf8 {
+            self.msg = "the index version is not UTF-8: Revert is disabled".into();
+            return;
+        }
+        let (Some(base), Some(h)) = (q.base.as_ref(), q.hunks.get(pk.hunk).cloned()) else { return };
+        let with = base[h.base.clone()].to_vec();
+        let Some(tab) = self.groups.get_mut(pk.group).and_then(|grp| grp.tabs.iter_mut().find(|t| t.key == pk.key)) else { return };
+        let ok = match self.docs.get_mut(&pk.key) {
+            Some(Doc::Text(b)) => b.replace_lines(&mut tab.view, h.cur.start, h.cur.end, &with),
+            _ => false,
+        };
+        if ok {
+            tab.preview = false;
+            self.msg = "reverted the change".into();
+            self.update_qdiff();
+            self.schedule_backup();
+        } else {
+            self.msg = "read-only: cannot revert".into();
+        }
+    }
+
+    /// The one place hunk staging will go: hc-git's `gitops::stage_hunk(root, path, hunk)`
+    /// once that backend is merged. Until then the Stage button explains itself.
+    fn stage_hunk(&mut self) -> Result<(), String> {
+        Err("Stage hunk arrives with the git backend".into())
+    }
+
+    fn peek_button(&mut self, b: PeekBtn) {
+        match b {
+            PeekBtn::Stage => {
+                if !self.peek_fresh() {
+                    return;
+                }
+                if let Err(e) = self.stage_hunk() {
+                    self.msg = e;
+                }
+            }
+            PeekBtn::Revert => self.peek_revert(),
+            PeekBtn::Prev => self.peek_step(-1),
+            PeekBtn::Next => self.peek_step(1),
+            PeekBtn::Close => self.peek = None,
         }
     }
 
@@ -1224,10 +1428,12 @@ impl App {
             self.loading.remove(&key);
             if let Load::Base(blob) = load {
                 let doc = key.trim_start_matches("base:").to_string();
-                let base: Option<Vec<String>> = blob.map(|b| String::from_utf8_lossy(&b).lines().map(String::from).collect());
+                // Decoded exactly as the buffer is, so Revert writes the index's own lines.
+                let utf8 = blob.as_ref().is_none_or(|b| std::str::from_utf8(b).is_ok());
+                let base: Option<Vec<String>> = blob.map(|b| editor::split_lines(&String::from_utf8_lossy(&b)).0);
                 // Focus and view switches refetch the index: an unchanged one changes nothing.
                 if self.docs.contains_key(&doc) && self.qdiff.get(&doc).is_none_or(|q| q.base != base) {
-                    self.qdiff.insert(doc, QDiff { base, ..Default::default() });
+                    self.qdiff.insert(doc, QDiff { base, base_utf8: utf8, ..Default::default() });
                     self.qdiff_due.get_or_insert(Instant::now() + QDIFF_DEBOUNCE);
                 }
                 continue;
@@ -1420,9 +1626,13 @@ impl App {
             .groups
             .get(self.ag)
             .map_or((20, 80), |g| (g.text.height.max(1) as usize, g.text.width.max(1) as usize));
+        // Rows the peek zone takes above the cursor are not text rows.
+        let zone = self.ui.groups.get(self.ag).and_then(|g| g.zone).map_or(0, |(_, zh)| zh as usize);
+        let before = self.peek.as_ref().filter(|p| p.group == self.ag).and_then(|p| self.qdiff.get(&p.key)?.hunks.get(p.hunk)).map(Hunk::peek_before);
         let Some((b, tab)) = self.ed() else { return };
         let v = &mut tab.view;
         let c = b.clamp(v.cursor);
+        let h = if before.is_some_and(|l| c.line >= l) { h.saturating_sub(zone).max(1) } else { h };
         if c.line < v.scroll {
             v.scroll = c.line;
         } else if c.line >= v.scroll + h {
@@ -2097,6 +2307,9 @@ impl App {
             KeyCode::F(2) => return self.show_side(Side::Scm, false),
             KeyCode::F(4) => return self.show_side(Side::Search, true),
             KeyCode::F(3) => return self.find_step(if shift { -1 } else { 1 }),
+            // VS Code's Go to Next/Previous Change (Alt+F5); F7 where Alt+F5 does not arrive.
+            KeyCode::F(5) if alt => return self.peek_step(if shift { -1 } else { 1 }),
+            KeyCode::F(7) => return self.peek_step(if shift { -1 } else { 1 }),
             KeyCode::Char(c @ '1'..='4') if alt => {
                 let s = [Side::Explorer, Side::Scm, Side::History, Side::Search][c as usize - '1' as usize];
                 return self.show_side(s, s == Side::Search);
@@ -2261,6 +2474,10 @@ impl App {
         if ctrl && k.code == KeyCode::Char('v') {
             let text = clipboard_get().unwrap_or_else(|| self.clip.clone());
             return self.paste_text(&text);
+        }
+        if k.code == KeyCode::Esc && self.peek.is_some() {
+            self.peek = None;
+            return;
         }
         if k.code == KeyCode::Esc && self.find.is_some() {
             self.find = None;
@@ -2435,6 +2652,8 @@ impl App {
                     self.ui.side_list.contains(q)
                         || self.ui.groups.iter().any(|g| g.tabbar.contains(q))
                         || self.ui.scrollbars.iter().any(|s| s.track.contains(q))
+                        || self.ui.minimaps.iter().any(|m| m.area.contains(q))
+                        || self.ui.peek_zone.contains(q)
                 };
                 return old != Some(p) && (watched(p) || old.is_some_and(watched));
             }
@@ -2482,6 +2701,16 @@ impl App {
         }
         if let Some(sb) = self.ui.scrollbars.iter().find(|s| s.track.contains(p)).copied() {
             return self.scrollbar_click(sb, p);
+        }
+        if let Some(&(_, b)) = self.ui.peek_btns.iter().find(|(r, _)| r.contains(p)) {
+            return self.peek_button(b);
+        }
+        if self.ui.peek_zone.contains(p) {
+            self.focus = Focus::Editor;
+            return;
+        }
+        if let Some(m) = self.ui.minimaps.iter().find(|m| m.area.contains(p)).copied() {
+            return self.minimap_click(m, p);
         }
         if let Some(&(_, b)) = self.ui.find_btns.iter().find(|(r, _)| r.contains(p)) {
             return self.find_button(b);
@@ -2539,6 +2768,15 @@ impl App {
             if gh.area.contains(p) {
                 self.ag = g;
                 self.focus = Focus::Editor;
+                // A quick-diff marker opens the peek on its change (VS Code).
+                if gh.marks_x == Some(p.x) {
+                    if let Some(line) = self.line_at(g, p.y) {
+                        let marked = self.groups[g].tabs.get(self.groups[g].active).and_then(|t| self.qdiff.get(&t.key)).and_then(|q| q.marks.get(line).copied().flatten());
+                        if marked.is_some() {
+                            return self.peek_at_line(g, line);
+                        }
+                    }
+                }
                 if !gh.tabbar.contains(p) {
                     let pos = self.pos_at(g, p);
                     if let (Some(pos), Some((b, tab))) = (pos, self.ed()) {
@@ -2553,6 +2791,23 @@ impl App {
                 }
                 return self.find_refresh();
             }
+        }
+    }
+
+    /// A click on the minimap: on the slider it starts a drag, elsewhere it
+    /// scrolls so the clicked line is centred (VS Code).
+    fn minimap_click(&mut self, m: MiniHit, p: Position) {
+        let row = p.y - m.area.y;
+        let (top, len) = m.mini.slider(m.scroll);
+        self.ag = m.group;
+        self.focus = Focus::Editor;
+        if (top..top + len).contains(&row) {
+            self.drag = Drag::Minimap(m, row - top);
+        } else {
+            self.set_scroll(ScrollTarget::Editor(m.group), m.mini.click_scroll(m.scroll, row));
+            // Keep dragging from here, as VS Code does after a jump.
+            let (top, _) = m.mini.slider(self.scroll_of(ScrollTarget::Editor(m.group)));
+            self.drag = Drag::Minimap(m, row.saturating_sub(top));
         }
     }
 
@@ -2613,9 +2868,27 @@ impl App {
         let grp = self.groups.get(g)?;
         let tab = grp.tabs.get(grp.active)?;
         let Some(Doc::Text(b)) = self.docs.get(&tab.key) else { return None };
-        let line = (tab.view.scroll + p.y.saturating_sub(gh.text.y) as usize).min(b.lines.len() - 1);
+        let line = self.line_at(g, p.y)?;
         let x = tab.view.hscroll + p.x.saturating_sub(gh.text.x) as usize;
         Some(Pos::new(line, editor::byte_at_display(&b.lines[line], x)))
+    }
+
+    /// The buffer line drawn on screen row `y` of group `g`: rows below the peek
+    /// zone are shifted down by its height; a row inside it is no line.
+    fn line_at(&self, g: usize, y: u16) -> Option<usize> {
+        let gh = self.ui.groups.get(g)?;
+        let grp = self.groups.get(g)?;
+        let tab = grp.tabs.get(grp.active)?;
+        let Some(Doc::Text(b)) = self.docs.get(&tab.key) else { return None };
+        let mut row = y.saturating_sub(gh.text.y);
+        if let Some((zy, zh)) = gh.zone {
+            if y >= zy + zh {
+                row -= zh;
+            } else if y >= zy {
+                return None;
+            }
+        }
+        Some((tab.view.scroll + row as usize).min(b.lines.len() - 1))
     }
 
     /// Where a dragged file would land: the group under the cursor and which part.
@@ -2651,6 +2924,11 @@ impl App {
                 if *active {
                     self.drop = self.drop_target(p);
                 }
+            }
+            Drag::Minimap(m, grab) => {
+                let (m, grab) = (*m, *grab);
+                let off = m.mini.drag_scroll(p.y as i32 - m.area.y as i32 - grab as i32);
+                self.set_scroll(ScrollTarget::Editor(m.group), off);
             }
             Drag::Scroll(sb, grab) => {
                 let (sb, grab) = (*sb, *grab);
@@ -2707,6 +2985,13 @@ impl App {
     fn wheel(&mut self, p: Position, d: isize) {
         if let Some(q) = self.quick.as_mut() {
             q.sel = (q.sel as isize + d).clamp(0, (q.items.len() as isize - 1).max(0)) as usize;
+            return;
+        }
+        if self.ui.peek_zone.contains(p) {
+            let max = self.ui.peek_max;
+            if let Some(pk) = self.peek.as_mut() {
+                pk.scroll = (pk.scroll.min(max) as isize + d).clamp(0, max as isize) as usize;
+            }
             return;
         }
         // Over an editor's scrollbar the wheel scrolls that editor.
@@ -3196,7 +3481,8 @@ mod tests {
         // Editor scrollbar: a click under the slider pages down, dragging it scrolls.
         screen(&mut app, &mut t);
         let sb = *app.ui.scrollbars.iter().find(|s| s.target == ScrollTarget::Editor(0)).unwrap();
-        assert_eq!(sb.track.x, app.ui.groups[0].text.right() + 1, "one blank column right of the text");
+        let mm = app.ui.minimaps[0].area;
+        assert_eq!((mm.x, sb.track.x), (app.ui.groups[0].text.right(), mm.right() + 1), "text, minimap, a blank column, the scrollbar");
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sb.track.x, sb.track.bottom() - 1);
         assert_eq!(app.groups[0].tabs[0].view.scroll, sb.page);
         screen(&mut app, &mut t);
@@ -3307,10 +3593,14 @@ mod tests {
             let mut app = App::new(root.clone(), None);
             app.settings.compact = compact;
             app.settings.spacing = sp;
+            app.settings.rulers = vec![(2, None), (90, None)];
             app.refresh();
             app.open_file(0, "src/main.rs", false);
+            wait(&mut app);
             app.focus = Focus::Editor;
             typ(&mut app, "x"); // dirty: the quit dialog has something to ask
+            app.update_qdiff();
+            app.peek_step(1); // the peek zone open on that change, the minimap on
             for w in 30..=40 {
                 for h in 5..=18 {
                     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -3343,9 +3633,351 @@ mod tests {
                     });
                     draw(&mut app);
                     app.prompt = None;
+                    assert!(app.peek.is_some(), "{w}x{h}");
+                    app.hover = Some(Position::new(w - 3, 3)); // over the minimap: slider shown
+                    draw(&mut app);
+                    app.hover = None;
                 }
             }
         }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A committed 100-line file with three changes in the buffer: line 5
+    /// modified, a line added after 20, line 40 deleted.
+    fn changed_file(tag: &str) -> (PathBuf, App) {
+        let root = repo(tag);
+        let base: Vec<String> = (1..=100).map(|i| format!("int line_{i} = {i};")).collect();
+        fs::write(root.join("long.c"), base.join("\n") + "\n").unwrap();
+        let g = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&root).args(args).output().unwrap().status.success());
+        g(&["add", "long.c"]);
+        g(&["commit", "-q", "-m", "long"]);
+        let mut cur = base.clone();
+        cur[4] = "int line_5 = 50;".into();
+        cur.insert(20, "int added = 1;".into());
+        cur.remove(40); // base line 40 (index 39) is now gone: index 40 after the insert
+        fs::write(root.join("long.c"), cur.join("\n") + "\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "long.c", false);
+        wait(&mut app);
+        app.update_qdiff();
+        assert_eq!(app.qdiff["file:long.c"].hunks.len(), 3);
+        (root, app)
+    }
+
+    #[test]
+    fn minimap_draws_git_lane_find_and_slider_and_scrolls() {
+        let (root, mut app) = changed_file("mini");
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let m = app.ui.minimaps[0];
+        let buf = t.backend().buffer();
+        // Git lane: the modified line 5 (index 4) on its row, in minimapGutter.modifiedBackground.
+        let row = m.mini.row_of(m.scroll, 4).unwrap();
+        let lane = &buf[(m.area.x, m.area.y + row)];
+        assert_eq!((lane.symbol(), lane.fg), ("▎", crate::theme::P.mini_modified));
+        // Half blocks coloured by the text, nothing past it; no slider until the mouse is over it.
+        assert_eq!(buf[(m.area.x + 1, m.area.y)].symbol(), "▀");
+        assert_ne!(buf[(m.area.x + 1, m.area.y)].fg, crate::theme::P.mini_bg, "line 1 has text");
+        assert_eq!(buf[(m.area.right() - 1, m.area.y)].fg, crate::theme::P.mini_bg, "past the text: background");
+        // A find match colours its slot's empty part with minimap.findMatchHighlight.
+        app.open_find(false);
+        typ(&mut app, "line_9 ");
+        app.focus = Focus::Editor;
+        screen(&mut app, &mut t);
+        let m = app.ui.minimaps[0];
+        let r9 = m.mini.row_of(m.scroll, 8).unwrap();
+        let c = &t.backend().buffer()[(m.area.right() - 1, m.area.y + r9)];
+        assert_eq!(c.fg, crate::theme::P.mini_find, "line 9 (index 8) is the upper half of its row");
+        // Mouseover shows the slider (VS Code's showSlider default).
+        app.find = None;
+        app.hover = Some(Position::new(m.area.x + 2, m.area.bottom() - 1));
+        screen(&mut app, &mut t);
+        let top = &t.backend().buffer()[(m.area.right() - 1, m.area.y)];
+        assert_ne!(top.bg, crate::theme::P.mini_bg, "slider over the viewport rows");
+        // Click below the slider: the clicked line is centred.
+        let m = app.ui.minimaps[0];
+        let y = m.area.bottom() - 1;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), m.area.x + 3, y);
+        let want = m.mini.click_scroll(m.scroll, y - m.area.y);
+        assert!(want > 0);
+        assert_eq!(app.groups[0].tabs[0].view.scroll, want);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), m.area.x + 3, y);
+        // Drag the slider back to the top.
+        screen(&mut app, &mut t);
+        let m = app.ui.minimaps[0];
+        let (top, _) = m.mini.slider(m.scroll);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), m.area.x + 3, m.area.y + top);
+        assert!(matches!(app.drag, Drag::Minimap(..)));
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), m.area.x + 3, m.area.y);
+        assert_eq!(app.groups[0].tabs[0].view.scroll, 0);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), m.area.x + 3, m.area.y);
+        // renderCharacters (braille) on the left side: the gutter moves right of it.
+        app.settings.minimap.render_characters = true;
+        app.settings.minimap.left = true;
+        screen(&mut app, &mut t);
+        let m = app.ui.minimaps[0];
+        assert_eq!(m.area.x, app.ui.groups[0].area.x);
+        assert!(app.ui.groups[0].marks_x.unwrap() > m.area.right(), "gutter right of the minimap");
+        let c = t.backend().buffer()[(m.area.x + 1, m.area.y)].symbol().chars().next().unwrap();
+        assert!(('\u{2800}'..='\u{28ff}').contains(&c), "braille {c:?}");
+        app.settings.minimap = crate::minimap::Cfg::default();
+        // Toggle from the palette; too narrow an editor hides it.
+        app.run_command(Cmd::ToggleMinimap);
+        screen(&mut app, &mut t);
+        assert!(app.ui.minimaps.is_empty());
+        app.run_command(Cmd::ToggleMinimap);
+        let mut narrow = Terminal::new(TestBackend::new(70, 20)).unwrap();
+        screen(&mut app, &mut narrow);
+        assert!(app.ui.minimaps.is_empty(), "text under 40 + 4 columns: hidden");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn peek_opens_from_the_gutter_shifts_rows_navigates_and_reverts() {
+        let (root, mut app) = changed_file("peek");
+        let mut t = Terminal::new(TestBackend::new(120, 34)).unwrap();
+        screen(&mut app, &mut t);
+        let gh = app.ui.groups[0].clone();
+        // Click the blue marker of line 5 (row 4).
+        let mx = gh.marks_x.unwrap();
+        assert_eq!(t.backend().buffer()[(mx, gh.text.y + 4)].symbol(), crate::theme::icons().gutter_bar);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), mx, gh.text.y + 4);
+        assert_eq!(app.peek.as_ref().map(|p| p.hunk), Some(0));
+        let s = screen(&mut app, &mut t);
+        assert!(s.contains("long.c") && s.contains("1 of 3 changes"), "{s}");
+        // The zone sits right below the hunk; the lines below it are shifted down.
+        let gh = app.ui.groups[0].clone();
+        let (zy, zh) = gh.zone.unwrap();
+        let scroll = app.groups[0].tabs[0].view.scroll;
+        assert_eq!(zy, gh.text.y + (5 - scroll) as u16, "below line 5");
+        assert!(s.contains("int line_5 = 5;") && s.contains("int line_5 = 50;"), "base and buffer lines");
+        assert_eq!(app.line_at(0, zy), None, "a zone row is no line");
+        assert_eq!(app.line_at(0, zy + zh), Some(5), "the row under the zone is line 6");
+        let (x, y) = cell_of(&t, "int line_7 ", 4);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+        assert_eq!(app.groups[0].tabs[0].view.cursor, Pos::new(6, 4), "clicks below the zone land on the shifted line");
+        // ↓ / ↑ move between changes and wrap around.
+        app.peek_button(PeekBtn::Prev);
+        assert_eq!(app.peek.as_ref().unwrap().hunk, 2, "wraps to the last");
+        app.peek_button(PeekBtn::Next);
+        assert_eq!(app.peek.as_ref().unwrap().hunk, 0, "and back to the first");
+        key(&mut app, KeyCode::F(5), KeyModifiers::ALT);
+        assert_eq!(app.peek.as_ref().unwrap().hunk, 1, "Alt+F5: next change");
+        key(&mut app, KeyCode::F(7), KeyModifiers::SHIFT);
+        assert_eq!(app.peek.as_ref().unwrap().hunk, 0, "Shift+F7: previous");
+        // Stage waits for the git backend.
+        screen(&mut app, &mut t);
+        let stage = app.ui.peek_btns.iter().find(|(_, b)| *b == PeekBtn::Stage).unwrap().0;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), stage.x, stage.y);
+        assert!(app.msg.contains("arrives with the git backend"), "{}", app.msg);
+        // Revert (clicked where drawn) puts back the index line as one undo step.
+        let revert = app.ui.peek_btns.iter().find(|(_, b)| *b == PeekBtn::Revert).unwrap().0;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), revert.x + 1, revert.y);
+        assert_eq!(app.ed().unwrap().0.lines[4], "int line_5 = 5;");
+        assert_eq!(app.qdiff["file:long.c"].hunks.len(), 2, "that change is gone");
+        assert_eq!(app.peek.as_ref().unwrap().hunk, 0, "the peek moves on to the next change");
+        app.focus = Focus::Editor;
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(app.ed().unwrap().0.lines[4], "int line_5 = 50;", "one undo restores the edit");
+        // A Revert faster than the 200 ms re-diff must not act on moved lines.
+        app.show_peek(0, "file:long.c".into(), 0);
+        {
+            let (b, tab) = app.ed().unwrap();
+            b.move_to(&mut tab.view, Pos::new(0, 0), false);
+        }
+        let original = app.ed().unwrap().0.text();
+        typ(&mut app, "\n"); // pushes the hunk down one line; no update_qdiff yet
+        let before = app.ed().unwrap().0.text();
+        app.peek_button(PeekBtn::Revert);
+        assert_eq!(app.ed().unwrap().0.text(), before, "stale hunk: nothing reverted");
+        assert_eq!(app.msg, "Changes moved, try again");
+        // Re-diffed now: change 1 of 4 is the new empty line, and Revert takes it out.
+        assert_eq!(app.qdiff["file:long.c"].hunks.len(), 4);
+        app.peek_button(PeekBtn::Revert);
+        assert_eq!(app.ed().unwrap().0.text(), original);
+        // Esc closes the peek.
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.peek.is_none());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn revert_uses_the_index_bytes_and_refuses_non_utf8() {
+        let root = repo("revb");
+        let git = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&root).args(args).output().unwrap().status.success());
+        // CRLF file with a lone \r inside a line: Revert must give back exactly those lines.
+        fs::write(root.join("crlf.txt"), "a\r\nb\rc\r\nd\r\n").unwrap();
+        fs::write(root.join("bad.txt"), b"x\xff\ny\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "b"]);
+        fs::write(root.join("crlf.txt"), "a\r\nCHANGED\r\nd\r\n").unwrap();
+        fs::write(root.join("bad.txt"), "x\nY\n").unwrap(); // valid UTF-8 now
+        let mut app = App::new(root.clone(), None);
+        for f in ["crlf.txt", "bad.txt"] {
+            app.open_file(0, f, false);
+        }
+        wait(&mut app);
+        app.update_qdiff();
+        app.show_peek(0, "file:crlf.txt".into(), 0);
+        app.peek_button(PeekBtn::Revert);
+        let b = match app.docs.get("file:crlf.txt") { Some(Doc::Text(b)) => b, _ => unreachable!() };
+        assert_eq!(b.text(), "a\r\nb\rc\r\nd\r\n", "the index line with its lone \\r");
+        app.show_peek(0, "file:bad.txt".into(), 0);
+        app.peek_button(PeekBtn::Revert);
+        assert!(app.msg.contains("not UTF-8"), "{}", app.msg);
+        let b = match app.docs.get("file:bad.txt") { Some(Doc::Text(b)) => b, _ => unreachable!() };
+        assert_eq!(b.text(), "x\nY\n", "nothing written");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn peek_beside_a_left_minimap_and_below_a_long_hunk() {
+        let (root, mut app) = changed_file("peekl");
+        app.settings.minimap.left = true;
+        let mut t = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        screen(&mut app, &mut t);
+        app.peek_step(1);
+        let s = screen(&mut app, &mut t);
+        let m = app.ui.minimaps[0].area;
+        let z = app.ui.peek_zone;
+        assert!(z.x >= m.right() && z.intersection(m).is_empty(), "zone {z:?} clear of the left minimap {m:?}");
+        assert!(s.contains(" of 3 changes"), "title visible: {s}");
+        // The minimap still takes clicks on the zone's rows.
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), m.x + 2, z.y + 1);
+        assert!(matches!(app.drag, Drag::Minimap(..)) || app.groups[0].tabs[0].view.scroll > 0);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), m.x + 2, z.y + 1);
+        // A 40-line hunk in a 20-row view: the zone and its buttons are still on screen.
+        let base: Vec<String> = (1..=100).map(|i| format!("int line_{i} = {i};")).collect();
+        let mut cur = base.clone();
+        for k in 0..40 {
+            cur.insert(50, format!("int new_{k};"));
+        }
+        fs::write(root.join("long.c"), cur.join("\n") + "\n").unwrap();
+        app.settings.minimap.left = false;
+        app.refresh();
+        wait(&mut app);
+        app.update_qdiff();
+        let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        screen(&mut app, &mut t);
+        let i = app.qdiff["file:long.c"].hunks.iter().position(|h| h.cur.len() == 40).unwrap();
+        app.show_peek(0, "file:long.c".into(), i);
+        screen(&mut app, &mut t);
+        assert!(app.ui.groups[0].zone.is_some(), "zone drawn below the long hunk");
+        let close = app.ui.peek_btns.iter().find(|(_, b)| *b == PeekBtn::Close).expect("buttons").0;
+        assert_eq!(app.groups[0].tabs[0].view.cursor.line, 89, "cursor on the hunk's last line");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), close.x, close.y);
+        assert!(app.peek.is_none());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn peek_title_keeps_its_buttons_on_narrow_editors() {
+        let (root, mut app) = changed_file("peekw");
+        app.side_visible = false;
+        let ic = crate::theme::icons();
+        for w in [40u16, 50, 60, 72, 120] {
+            let mut t = Terminal::new(TestBackend::new(w, 30)).unwrap();
+            app.peek = None;
+            screen(&mut app, &mut t);
+            app.peek_step(1);
+            let s = screen(&mut app, &mut t);
+            let zone = app.ui.peek_zone;
+            let gh = app.ui.groups[0].clone();
+            assert_eq!(zone.right(), gh.text.right(), "{w}: the zone ends at the text, not under the minimap");
+            for (b, glyph) in [(PeekBtn::Prev, ic.up), (PeekBtn::Next, ic.down), (PeekBtn::Close, ic.close)] {
+                let r = app.ui.peek_btns.iter().find(|(_, x)| *x == b).map(|(r, _)| *r).unwrap_or_else(|| panic!("{w}: {b:?} missing"));
+                assert!(zone.contains(r.as_position()), "{w}: {b:?} inside the zone");
+                assert_eq!(t.backend().buffer()[(r.x, r.y)].symbol(), glyph, "{w}: {b:?} drawn where it is hit");
+            }
+            let title: String = s.lines().find(|l| l.contains(ic.close)).unwrap_or("").to_string();
+            if gh.text.width >= 60 {
+                assert!(s.contains(" of 3 changes"), "{w}: room for the count: {title}");
+            }
+            let close = app.ui.peek_btns.iter().find(|(_, x)| *x == PeekBtn::Close).unwrap().0;
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), close.x, close.y);
+            assert!(app.peek.is_none(), "{w}: × closes");
+        }
+        assert_eq!(crate::ui::fit_left("drivers/net/sample.c", 9), "…sample.c");
+        // Never Stage without Revert, at any width.
+        for w in 30..=80u16 {
+            let mut t = Terminal::new(TestBackend::new(w, 30)).unwrap();
+            app.peek = None;
+            screen(&mut app, &mut t);
+            app.peek_step(1);
+            screen(&mut app, &mut t);
+            let has = |b: PeekBtn| app.ui.peek_btns.iter().any(|(_, x)| *x == b);
+            assert!(!has(PeekBtn::Stage) || has(PeekBtn::Revert), "{w}: Stage without Revert");
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rulers_sit_after_n_columns_behind_the_text() {
+        let root = repo("rulers");
+        // Ruler at 10: tabs expand to 4, CJK is 2 wide.
+        let text = "\t\tab\n中文中文中\n中文中文中文\n0123456789X\n0123456789\nnext\n";
+        fs::write(root.join("r.txt"), text).unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.settings.rulers = vec![(10, None), (4, Some(crate::theme::Rgba(255, 0, 0, 255)))];
+        app.settings.minimap.enabled = false;
+        app.minimap_on = false;
+        app.open_file(0, "r.txt", false);
+        app.focus = Focus::Editor;
+        let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        screen(&mut app, &mut t);
+        let tx = app.ui.groups[0].text.x;
+        let ty = app.ui.groups[0].text.y;
+        let g = crate::theme::icons().guide;
+        let at = |t: &Terminal<TestBackend>, col: u16, row: u16| {
+            let c = &t.backend().buffer()[(tx + col, ty + row)];
+            (c.symbol().to_string(), c.fg)
+        };
+        let grey = crate::theme::P.ruler;
+        assert_eq!(at(&t, 10, 0), (g.to_string(), grey), "after two tabs and 'ab' (10 columns)");
+        assert_eq!(at(&t, 10, 1), (g.to_string(), grey), "after five CJK chars (10 columns)");
+        assert_ne!(at(&t, 10, 2).0, g, "the 6th CJK char covers column 10");
+        assert_eq!(at(&t, 10, 3).0, "X", "never over text");
+        assert_eq!(at(&t, 10, 8), (g.to_string(), grey), "below the last line too");
+        assert_eq!(at(&t, 4, 5), (g.to_string(), Color::Rgb(255, 0, 0)), "its own colour (row 5: 'next' is 4 wide)");
+        assert_eq!(at(&t, 4, 3).0, "4", "under text on the other rows");
+        // A selection's end-of-line cell on column 10 hides the ruler.
+        {
+            let (b, tab) = app.ed().unwrap();
+            b.move_to(&mut tab.view, Pos::new(4, 0), false);
+            b.move_to(&mut tab.view, Pos::new(5, 2), true);
+        }
+        screen(&mut app, &mut t);
+        assert_ne!(at(&t, 10, 4).0, g, "selected: no ruler");
+        // Horizontal scroll moves it with the text.
+        app.groups[0].tabs[0].view.hscroll = 3;
+        app.groups[0].tabs[0].view.anchor = None;
+        screen(&mut app, &mut t);
+        assert_eq!(at(&t, 7, 8).0, g);
+        app.groups[0].tabs[0].view.hscroll = 0;
+        // Toggle off for the session, and [] disables.
+        app.run_command(Cmd::ToggleRulers);
+        screen(&mut app, &mut t);
+        assert_ne!(at(&t, 10, 8).0, g);
+        app.run_command(Cmd::ToggleRulers);
+        app.settings.rulers.clear();
+        screen(&mut app, &mut t);
+        assert_ne!(at(&t, 10, 8).0, g);
+        // Both sides of the diff editor: commit, change a line, open the diff.
+        let git = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&root).args(args).output().unwrap().status.success());
+        git(&["add", "r.txt"]);
+        git(&["commit", "-q", "-m", "r"]);
+        fs::write(root.join("r.txt"), text.replace("next", "changed")).unwrap();
+        app.settings.rulers = vec![(12, None)];
+        app.refresh();
+        let i = app.scm_files.iter().position(|f| f.path == "r.txt").unwrap();
+        app.open_diff(i, false);
+        wait(&mut app);
+        let s = screen(&mut app, &mut t);
+        let row: Vec<&str> = s.lines().filter(|l| l.matches("0123456789").count() == 2 && !l.contains('X')).collect();
+        assert_eq!(row.len(), 1, "{s}");
+        assert_eq!(row[0].matches(g).count(), 2, "a ruler on each side: {:?}", row[0]);
         fs::remove_dir_all(&root).unwrap();
     }
 

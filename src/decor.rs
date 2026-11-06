@@ -190,26 +190,90 @@ pub enum Mark {
     Deleted,
 }
 
-/// VS Code's dirty-diff decorations: the buffer against the index version.
-pub fn quick_diff(base: &[String], cur: &[String]) -> Vec<Option<Mark>> {
+/// One change between the index version (`base` lines) and the buffer (`cur` lines).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hunk {
+    pub base: std::ops::Range<usize>,
+    pub cur: std::ops::Range<usize>,
+}
+
+impl Hunk {
+    /// The buffer line whose gutter shows this hunk's mark.
+    pub fn mark_line(&self) -> usize {
+        if self.cur.is_empty() {
+            self.cur.start.saturating_sub(1)
+        } else {
+            self.cur.start
+        }
+    }
+
+    /// Whether a gutter mark on `line` belongs to this hunk.
+    pub fn has_line(&self, line: usize) -> bool {
+        self.cur.contains(&line) || (self.cur.is_empty() && line == self.mark_line())
+    }
+
+    /// The peek opens below the hunk: before this buffer line (== lines.len() at the end).
+    pub fn peek_before(&self) -> usize {
+        self.cur.end
+    }
+}
+
+/// VS Code's dirty-diff decorations (one mark per buffer line) and the hunks
+/// behind them: the buffer against the index version.
+pub fn quick_diff(base: &[String], cur: &[String]) -> (Vec<Option<Mark>>, Vec<Hunk>) {
     let a: Vec<&str> = base.iter().map(String::as_str).collect();
     let b: Vec<&str> = cur.iter().map(String::as_str).collect();
     let mut marks = vec![None; cur.len()];
+    let mut hunks = Vec::new();
     let ops = capture_diff_slices_deadline(Algorithm::Myers, &a, &b, Some(Instant::now() + Duration::from_millis(200)));
     for op in ops {
-        let (tag, _, rb) = op.as_tag_tuple();
+        let (tag, ra, rb) = op.as_tag_tuple();
         match tag {
-            DiffTag::Equal => {}
-            DiffTag::Insert => rb.for_each(|i| marks[i] = Some(Mark::Added)),
-            DiffTag::Replace => rb.for_each(|i| marks[i] = Some(Mark::Modified)),
+            DiffTag::Equal => continue,
+            DiffTag::Insert => rb.clone().for_each(|i| marks[i] = Some(Mark::Added)),
+            DiffTag::Replace => rb.clone().for_each(|i| marks[i] = Some(Mark::Modified)),
             DiffTag::Delete => {
                 if let Some(m) = marks.get_mut(rb.start.saturating_sub(1)) {
                     m.get_or_insert(Mark::Deleted);
                 }
             }
         }
+        hunks.push(Hunk { base: ra, cur: rb });
     }
-    marks
+    (marks, hunks)
+}
+
+/// Byte ranges that differ word by word between an old and a new line (the
+/// peek's word highlights).
+pub fn word_changes(old: &str, new: &str) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+    // Drawn per row per frame: long lines get no word highlights, and a deadline bounds the rest.
+    if old.len() > 2048 || new.len() > 2048 {
+        return (Vec::new(), Vec::new());
+    }
+    let d = similar::TextDiff::configure().deadline(Instant::now() + Duration::from_millis(5)).diff_words(old, new);
+    let pre = |it: &mut dyn Iterator<Item = usize>| {
+        let mut v = vec![0];
+        for len in it {
+            v.push(v.last().copied().unwrap_or(0) + len);
+        }
+        v
+    };
+    let po = pre(&mut d.iter_old_slices().map(str::len));
+    let pn = pre(&mut d.iter_new_slices().map(str::len));
+    let (mut o, mut n) = (Vec::new(), Vec::new());
+    for op in d.ops() {
+        let (tag, ro, rn) = op.as_tag_tuple();
+        if tag == DiffTag::Equal {
+            continue;
+        }
+        if !ro.is_empty() {
+            o.push(po[ro.start]..po[ro.end]);
+        }
+        if !rn.is_empty() {
+            n.push(pn[rn.start]..pn[rn.end]);
+        }
+    }
+    (o, n)
 }
 
 /// Scrollbar slider (first row, rows) on a `track` of rows, for a viewport of
@@ -303,12 +367,19 @@ mod tests {
     fn quick_diff_marks_added_modified_deleted() {
         let base = s(&["a", "b", "c", "d", "e"]);
         let cur = s(&["a", "B", "c", "new", "d"]);
+        let (marks, hunks) = quick_diff(&base, &cur);
+        assert_eq!(marks, vec![None, Some(Mark::Modified), None, Some(Mark::Added), Some(Mark::Deleted)]);
         assert_eq!(
-            quick_diff(&base, &cur),
-            vec![None, Some(Mark::Modified), None, Some(Mark::Added), Some(Mark::Deleted)]
+            hunks,
+            vec![Hunk { base: 1..2, cur: 1..2 }, Hunk { base: 3..3, cur: 3..4 }, Hunk { base: 4..5, cur: 5..5 }]
         );
-        assert_eq!(quick_diff(&base, &s(&["b", "c", "d", "e"]))[0], Some(Mark::Deleted), "deleted at the top");
-        assert!(quick_diff(&base, &base).iter().all(Option::is_none));
+        assert!(hunks[2].has_line(4) && !hunks[2].has_line(5), "a deletion's mark sits on the line above");
+        assert_eq!(hunks[2].peek_before(), 5);
+        assert_eq!(quick_diff(&base, &s(&["b", "c", "d", "e"])).0[0], Some(Mark::Deleted), "deleted at the top");
+        let (m, h) = quick_diff(&base, &base);
+        assert!(m.iter().all(Option::is_none) && h.is_empty());
+        let (o, n) = word_changes("let x = 1;", "let y = 1;");
+        assert_eq!((o.len(), o[0].clone(), n.len(), n[0].clone()), (1, 4..5, 1, 4..5), "the changed word: x / y");
     }
 
     #[test]

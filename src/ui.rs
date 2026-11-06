@@ -3,15 +3,16 @@
 //! Every clickable area is recorded in `app.ui` from the rect actually drawn,
 //! so mouse targets stay exact in both densities.
 
-use crate::decor::{self, Guides, Mark, Paint, Rainbow};
+use crate::decor::{self, Guides, Hunk, Mark, Paint, Rainbow};
+use crate::minimap::{self, Mini};
 use crate::diff::Kind;
 use crate::editor::{self, Buffer, View};
 use crate::git::Section;
 use crate::icons::{file_icon, folder_icon};
 use crate::settings::Spacing;
 use crate::panel::{
-    base, App, DiffDoc, Doc, Drag, Find, FindBtn, Focus, GroupHit, HRow, Hits, ScmAct, ScrollHit, ScrollTarget, Side,
-    SRow, Zone, COMMANDS, SIDES,
+    base, App, DiffDoc, Doc, Drag, Find, FindBtn, Focus, GroupHit, HRow, Hits, MiniHit, PeekBtn, ScmAct, ScrollHit,
+    ScrollTarget, Side, SRow, Zone, COMMANDS, SIDES,
 };
 use crate::theme::{git_color, icons, Rgba, P};
 use ratatui::prelude::*;
@@ -65,6 +66,25 @@ fn row(f: &mut Frame, r: Rect, bg: Color, spans: Vec<Span<'static>>) {
 
 fn width(spans: &[Span]) -> u16 {
     spans.iter().map(|s| s.width() as u16).sum()
+}
+
+/// Keep the end of `s` in `w` cells: "…/net/sample.c".
+pub fn fit_left(s: &str, w: usize) -> String {
+    if s.width() <= w {
+        return s.to_string();
+    }
+    let keep: String = s
+        .chars()
+        .rev()
+        .scan(0, |n, c| {
+            *n += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            (*n < w).then_some(c)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("…{keep}")
 }
 
 /// `n` spaces: the blank cells after an icon, inside a button, at an edge.
@@ -792,6 +812,12 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
     let editor_focus = focused_group && app.focus == Focus::Editor;
     let target = ScrollTarget::Editor(g);
     let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
+    // editor.rulers with their colours resolved (none while toggled off).
+    let rulers: Vec<(usize, Color)> = if app.rulers_on {
+        app.settings.rulers.iter().map(|(c, col)| (*c, col.map_or(P.ruler, |x| x.over(P.editor_bg)))).collect()
+    } else {
+        Vec::new()
+    };
     let slider_c = slider_color(app, track, target);
     let sb = match app.docs.get_mut(&key) {
         None => {
@@ -801,7 +827,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
         }
         Some(Doc::Diff(d)) => {
             let view = &mut app.groups[g].tabs[active].view;
-            let sb = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy));
+            let sb = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), &rulers);
             gh.text = body;
             sb
         }
@@ -809,6 +835,18 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
             let view = &mut app.groups[g].tabs[active].view;
             let lang = lang_id(b.syntax_name());
             let rb = &app.settings.rainbow;
+            let qd = app.qdiff.get(&key);
+            let peek = app.peek.as_ref().filter(|p| p.group == g && p.key == key).and_then(|p| {
+                let q = qd?;
+                Some(PeekDraw {
+                    hunk: q.hunks.get(p.hunk)?,
+                    base: q.base.as_deref()?,
+                    index: p.hunk,
+                    count: q.hunks.len(),
+                    file: base(key.trim_start_matches("file:")).to_string(),
+                    scroll: p.scroll,
+                })
+            });
             let deco = Deco {
                 comfy: lay.comfy,
                 gap: lay.s.editor_padding,
@@ -819,10 +857,26 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
                 ruler: app.ruler_on,
                 find: if focused_group { app.find.as_ref() } else { None },
                 slider: slider_c,
+                minimap: app.minimap_on.then_some(app.settings.minimap),
+                hover: app.hover,
+                mini_drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
+                peek,
+                rulers: &rulers,
             };
-            let (text, sb) = text_editor(f, b, view, body, focused_group, editor_focus, &deco);
-            gh.text = text;
-            sb
+            let out = text_editor(f, b, view, body, focused_group, editor_focus, &deco);
+            gh.text = out.text;
+            gh.marks_x = out.marks_x;
+            gh.zone = out.zone.map(|z| (z.y, z.height));
+            if let Some((area, mini)) = out.mini {
+                app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.scroll });
+            }
+            if let Some(z) = out.zone {
+                app.ui.peek_zone = z;
+                app.ui.peek_body = out.peek_body;
+                app.ui.peek_max = out.peek_max;
+                app.ui.peek_btns = out.peek_btns;
+            }
+            out.sb
         }
     };
     if let Some(mut sb) = sb {
@@ -928,6 +982,51 @@ struct Deco<'a> {
     ruler: bool,
     find: Option<&'a Find>,
     slider: Rgba,
+    minimap: Option<minimap::Cfg>,
+    hover: Option<Position>,
+    /// This editor's minimap slider is being dragged.
+    mini_drag: bool,
+    peek: Option<PeekDraw<'a>>,
+    rulers: &'a [(usize, Color)],
+}
+
+/// editor.rulers on one row: the cell at display column N (0-based), so the
+/// line marks "after N characters", moved with horizontal scroll and drawn only
+/// in a blank cell on the row's own background (never over text, a selection or
+/// a find match, as VS Code draws them behind the text).
+fn draw_rulers(f: &mut Frame, tr: Rect, hscroll: usize, rulers: &[(usize, Color)], line_bg: Color) {
+    for &(col, fg) in rulers {
+        if col < hscroll || col >= hscroll + tr.width as usize {
+            continue;
+        }
+        let x = tr.x + (col - hscroll) as u16;
+        let cell = &mut f.buffer_mut()[(x, tr.y)];
+        if cell.symbol() == " " && cell.bg == line_bg {
+            cell.set_symbol(icons().guide).set_fg(fg);
+        }
+    }
+}
+
+/// The quick-diff peek of one hunk, drawn as a zone below it.
+struct PeekDraw<'a> {
+    hunk: &'a Hunk,
+    base: &'a [String],
+    index: usize,
+    count: usize,
+    file: String,
+    scroll: usize,
+}
+
+/// What `text_editor` laid out, for hit-testing.
+struct EdOut {
+    text: Rect,
+    sb: Option<ScrollHit>,
+    mini: Option<(Rect, Mini)>,
+    marks_x: Option<u16>,
+    zone: Option<Rect>,
+    peek_btns: Vec<(Rect, PeekBtn)>,
+    peek_body: Rect,
+    peek_max: usize,
 }
 
 /// Put `glyph` in a cell that is still blank (indent guides never cover text).
@@ -938,7 +1037,8 @@ fn mark_blank(f: &mut Frame, x: u16, y: u16, glyph: &str, fg: Color) {
     }
 }
 
-/// Returns the text rect (right of the gutter, left of the scrollbar) and the scrollbar.
+/// Lays out [minimap?][gutter][text][minimap?][blank][scrollbar] and draws the
+/// text, its decorations and the peek zone below its hunk.
 fn text_editor(
     f: &mut Frame,
     b: &mut Buffer,
@@ -947,16 +1047,18 @@ fn text_editor(
     group_focus: bool,
     editor_focus: bool,
     d: &Deco,
-) -> (Rect, Option<ScrollHit>) {
+) -> EdOut {
     b.clamp_view(v);
     let mut area = area;
+    let mut out = EdOut { text: area, sb: None, mini: None, marks_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0 };
     if let Some(ro) = &b.readonly {
         let banner = Rect::new(area.x, area.y, area.width, 1);
         let banner_text = format!(" {}{}{ro}", icons().lock, sp(d.icon_gap));
         row(f, banner, P.widget_bg, vec![Span::styled(banner_text, Style::new().fg(P.git_modified))]);
         area = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+        out.text = area;
         if b.binary {
-            return (area, None);
+            return out;
         }
     }
     let ic = icons();
@@ -966,7 +1068,13 @@ fn text_editor(
     let pad = u16::from(d.comfy);
     let nums = pad + digits + if d.comfy { d.gap } else { 0 };
     let gutter = nums + 1 + d.gap;
-    let text = Rect::new(area.x + gutter, area.y, area.width.saturating_sub(gutter + 1 + pad), area.height);
+    let base_text = area.width.saturating_sub(gutter + 1 + pad);
+    let mw = d.minimap.map_or(0, |m| minimap::width(base_text, area.width, m.max_column, m.min_text));
+    let left = d.minimap.is_some_and(|m| m.left);
+    let gx = area.x + if left { mw } else { 0 };
+    let text = Rect::new(gx + gutter, area.y, area.width.saturating_sub(gutter + 1 + pad + mw), area.height);
+    out.text = text;
+    out.marks_x = Some(gx + nums);
     let h = area.height as usize;
     b.highlight_upto(v.scroll + h);
     let c = b.clamp(v.cursor);
@@ -976,25 +1084,42 @@ fn text_editor(
     let guides = d.guides.then(|| Guides::new(&b.lines, tab));
     let active = guides.as_ref().and_then(|g| g.active(c.line));
     let visible = |col: usize| (col >= v.hscroll && col < v.hscroll + text.width as usize).then(|| text.x + (col - v.hscroll) as u16);
-    for k in 0..h {
-        let i = v.scroll + k;
+    // The peek zone sits before line `before` when that place is on screen.
+    let zone = d.peek.as_ref().filter(|p| p.hunk.peek_before() >= v.scroll && p.hunk.peek_before() <= v.scroll + h).map(|p| {
+        let body = p.hunk.base.len() + p.hunk.cur.len();
+        (p.hunk.peek_before(), (2 + body as u16).min((area.height / 3).max(4)).min(area.height))
+    });
+    let (mut y, mut i) = (area.y, v.scroll);
+    let mut cursor_y = None;
+    while y < area.bottom() {
+        if let Some((before, zh)) = zone {
+            if out.zone.is_none() && i == before {
+                // The gutter and the text only: a left minimap stays beside it.
+                let zr = Rect::new(gx, y, text.right().saturating_sub(gx), zh.min(area.bottom() - y)).intersection(area);
+                out.zone = Some(zr);
+                y += zr.height;
+                continue;
+            }
+        }
         if i >= b.lines.len() {
             break;
         }
-        let y = area.y + k as u16;
+        if i == c.line {
+            cursor_y = Some(y);
+        }
         let cur_line = i == c.line && sel.is_none();
         let bg = if cur_line { P.cur_line } else { P.editor_bg };
         let nr_st = Style::new().fg(if i == c.line { P.line_nr_active } else { P.line_nr }).bg(P.editor_bg);
         let p = sp(pad);
         let after = sp(nums - pad - digits);
-        f.render_widget(Span::styled(format!("{p}{:>w$}{after}", i + 1, w = digits as usize), nr_st), Rect::new(area.x, y, nums, 1));
+        f.render_widget(Span::styled(format!("{p}{:>w$}{after}", i + 1, w = digits as usize), nr_st), Rect::new(gx, y, nums, 1));
         let (mark, mfg) = match d.marks.get(i).copied().flatten() {
             Some(Mark::Added) => (ic.gutter_bar, P.gutter_added),
             Some(Mark::Modified) => (ic.gutter_bar, P.gutter_modified),
             Some(Mark::Deleted) => (ic.gutter_del, P.gutter_deleted),
             None => (" ", P.editor_fg),
         };
-        f.render_widget(Span::styled(mark, Style::new().fg(mfg).bg(P.editor_bg)), Rect::new(area.x + nums, y, 1, 1));
+        f.render_widget(Span::styled(mark, Style::new().fg(mfg).bg(P.editor_bg)), Rect::new(gx + nums, y, 1, 1));
         let line = &b.lines[i];
         let mut overlays: Vec<(usize, usize, Color)> = Vec::new();
         let mut thin: Vec<(usize, Color)> = Vec::new();
@@ -1041,17 +1166,42 @@ fn text_editor(
                 mark_blank(f, x, y, ic.guide, col);
             }
         }
+        draw_rulers(f, tr, v.hscroll, d.rulers, bg);
+        i += 1;
+        y += 1;
+    }
+    // Rulers run the full height, below the last line too (the peek zone clears its rows).
+    for ry in y..area.bottom() {
+        draw_rulers(f, Rect::new(text.x, ry, text.width, 1), v.hscroll, d.rulers, P.editor_bg);
+    }
+    if let (Some(zr), Some(pk)) = (out.zone, d.peek.as_ref()) {
+        draw_peek(f, zr, gx, gutter, text.x, pk, &b.lines, d, &mut out);
     }
     if editor_focus {
         let x = editor::display_col(&b.lines[c.line], c.col);
-        if c.line >= v.scroll && c.line < v.scroll + h && x >= v.hscroll && x < v.hscroll + text.width as usize {
-            f.set_cursor_position((text.x + (x - v.hscroll) as u16, area.y + (c.line - v.scroll) as u16));
+        if let Some(cy) = cursor_y.filter(|_| x >= v.hscroll && x < v.hscroll + text.width as usize) {
+            f.set_cursor_position((text.x + (x - v.hscroll) as u16, cy));
         }
+    }
+    if let Some(cfg) = d.minimap.filter(|_| mw > 0) {
+        let mr = Rect::new(if left { area.x } else { text.right() }, area.y, mw, area.height);
+        let hovered = d.hover.is_some_and(|p| mr.contains(p));
+        let slider = (cfg.slider_always || hovered || d.mini_drag).then(|| {
+            if d.mini_drag {
+                P.mini_slider_active
+            } else if hovered {
+                P.mini_slider_hover
+            } else {
+                P.mini_slider
+            }
+        });
+        let mini = draw_minimap(f, b, v, mr, &cfg, d, slider);
+        out.mini = Some((mr, mini));
     }
     // Vertical scrollbar with VS Code's overview-ruler marks under the slider.
     let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
     if track.height == 0 || area.width < gutter + 2 {
-        return (text, None);
+        return out;
     }
     let n = b.lines.len();
     let max_off = n.saturating_sub(1);
@@ -1085,11 +1235,244 @@ fn text_editor(
             }
         }
     }
-    (text, Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off, page: h.max(1) }))
+    out.sb = Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off, page: h.max(1) });
+    out
+}
+
+/// The minimap in `r`: a git lane, then half-block (or braille) cells coloured by
+/// the dominant token colour of the lines they cover; find matches, the
+/// selection and (when shown) the slider on top.
+fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap::Cfg, d: &Deco, slider: Option<Rgba>) -> Mini {
+    let n = b.lines.len();
+    let view = r.height as usize; // the editor shows as many rows as the minimap is tall
+    let braille = cfg.render_characters;
+    let slots = if braille { 4 } else { 2 };
+    let mini = Mini::new(r.height, n, view, slots, cfg.size);
+    let start = mini.start(v.scroll);
+    let end = (start + r.height as usize * mini.lines_per_row()).min(n);
+    // Only lines near the viewport are tokenised for the minimap; farther ones (fill and
+    // fit on a long file) are sampled in the editor colour, not tokenised on every edit.
+    b.highlight_upto(end.min(v.scroll + 2 * view));
+    let cols = r.width.saturating_sub(1) as usize;
+    let cpc = minimap::chars_per_col(r.width, cfg.max_column);
+    let sel = v.selection();
+    let finds: Vec<usize> = d.find.map_or(Vec::new(), |fd| fd.matches.iter().map(|(a, _)| a.line).collect());
+    let tab = editor::tab();
+    let ascii = crate::theme::ascii();
+    // At most 4 sampled lines per slot: a squeezed huge file stays cheap.
+    let slot_lines = |l0: usize, l1: usize| -> Vec<usize> {
+        let l1 = l1.min(n);
+        if l1 <= l0 {
+            return Vec::new();
+        }
+        let step = (l1 - l0).div_ceil(4).max(1);
+        (l0..l1).step_by(step).collect()
+    };
+    let slot_bg = |lines: &[usize]| {
+        if lines.iter().any(|l| finds.binary_search(l).is_ok()) {
+            P.mini_find
+        } else if sel.is_some_and(|(a, e)| lines.iter().any(|l| (a.line..=e.line).contains(l))) {
+            P.mini_sel
+        } else {
+            P.mini_bg
+        }
+    };
+    let ink = |s: &minimap::Sample, under: Color| {
+        s.color.map(|c| {
+            let rgb = match c {
+                Color::Rgb(r, g, b) => (r, g, b),
+                _ => (0xCC, 0xCC, 0xCC),
+            };
+            Rgba(rgb.0, rgb.1, rgb.2, ((0.35 + 0.65 * s.density) * 255.0) as u8).over(under)
+        })
+    };
+    for row in 0..r.height {
+        let y = r.y + row;
+        let l0 = mini.slot_line(v.scroll, row, 0);
+        // Git lane: the strongest mark among the row's lines.
+        let lane = (l0..(l0 + mini.lines_per_row()).min(n))
+            .filter_map(|l| d.marks.get(l).copied().flatten())
+            .max_by_key(|m| match m {
+                Mark::Modified => 3,
+                Mark::Added => 2,
+                Mark::Deleted => 1,
+            });
+        let (lg, lc) = match lane {
+            Some(Mark::Added) => (ic_lane(ascii), P.mini_added),
+            Some(Mark::Modified) => (ic_lane(ascii), P.mini_modified),
+            Some(Mark::Deleted) => (ic_lane(ascii), P.mini_deleted),
+            None => (" ", P.mini_bg),
+        };
+        let cell = &mut f.buffer_mut()[(r.x, y)];
+        cell.set_symbol(lg).set_fg(lc).set_bg(P.mini_bg);
+        let slot_samples: Vec<(Vec<usize>, Vec<minimap::Sample>)> = (0..slots)
+            .map(|k| {
+                let ls = slot_lines(mini.slot_line(v.scroll, row, k), mini.slot_line(v.scroll, row, k) + mini.lps);
+                let (dcols, dcpc) = if braille { (cols * 2, cpc.div_ceil(2)) } else { (cols, cpc) };
+                let samples = minimap::sample(ls.iter().map(|&l| (b.lines[l].as_str(), b.segs(l))), dcols, dcpc, P.editor_fg, tab);
+                (ls, samples)
+            })
+            .collect();
+        // Slot backgrounds (find, selection) are per row, not per column.
+        let bgs: Vec<Color> = slot_samples.iter().map(|(l, _)| slot_bg(l)).collect();
+        let cell_bg = {
+            let all: Vec<usize> = slot_samples.iter().flat_map(|(l, _)| l.iter().copied()).collect();
+            slot_bg(&all)
+        };
+        for col in 0..cols {
+            let x = r.x + 1 + col as u16;
+            let cell = &mut f.buffer_mut()[(x, y)];
+            if braille {
+                let mut on = [[false; 2]; 4];
+                let mut ink_s = None;
+                for (k, (_, s)) in slot_samples.iter().enumerate() {
+                    for dc in 0..2 {
+                        let sm = &s[col * 2 + dc];
+                        on[k][dc] = sm.color.is_some();
+                        if ink_s.is_none_or(|i: minimap::Sample| sm.density > i.density) && sm.color.is_some() {
+                            ink_s = Some(*sm);
+                        }
+                    }
+                }
+                let bg = cell_bg;
+                let fg = ink_s.and_then(|s| ink(&s, bg)).unwrap_or(bg);
+                cell.set_char(minimap::braille(on)).set_fg(fg).set_bg(bg);
+            } else {
+                let (b0, b1) = (bgs[0], bgs[1]);
+                let up = ink(&slot_samples[0].1[col], b0).unwrap_or(b0);
+                let down = ink(&slot_samples[1].1[col], b1).unwrap_or(b1);
+                if ascii {
+                    // No half blocks (ambiguous width): the denser half colours the cell.
+                    let pick = if slot_samples[0].1[col].density >= slot_samples[1].1[col].density { up } else { down };
+                    cell.set_symbol(" ").set_bg(pick);
+                } else {
+                    cell.set_symbol("▀").set_fg(up).set_bg(down);
+                }
+            }
+        }
+    }
+    if let Some(sc) = slider {
+        let (top, len) = mini.slider(v.scroll);
+        let buf = f.buffer_mut();
+        for y in r.y + top..(r.y + top + len).min(r.bottom()) {
+            for x in r.x..r.right() {
+                let cell = &mut buf[(x, y)];
+                let (fg, bg) = (cell.fg, cell.bg);
+                cell.set_fg(sc.over(fg)).set_bg(sc.over(bg));
+            }
+        }
+    }
+    mini
+}
+
+fn ic_lane(ascii: bool) -> &'static str {
+    if ascii {
+        "|"
+    } else {
+        "▎"
+    }
+}
+
+/// The peek zone: a title row (file, N of M changes, Stage / Revert / ↑ / ↓ / ×),
+/// the hunk's index lines on removed-line red and buffer lines on inserted-line
+/// green with word highlights, and a bottom border in peekView.border.
+#[allow(clippy::too_many_arguments)]
+fn draw_peek(f: &mut Frame, zr: Rect, gx: u16, gutter: u16, tx: u16, pk: &PeekDraw, lines: &[String], d: &Deco, out: &mut EdOut) {
+    let zr = zr.intersection(f.area());
+    let tx = tx.min(zr.right());
+    f.render_widget(Clear, zr);
+    fill(f, zr, P.editor_bg);
+    let ic = icons();
+    let title = Rect::new(zr.x, zr.y, zr.width, 1);
+    fill(f, title, P.peek_title_bg);
+    let label = Style::new().fg(P.peek_title_fg).bg(P.peek_title_bg).bold();
+    let desc = Style::new().fg(P.peek_desc_fg).bg(P.peek_title_bg);
+    // Laid out right to left by priority: ↑ ↓ × always, then Revert, Stage, "N of M
+    // changes", and the file name (cut from the left) gets what is left.
+    let gap = d.icon_gap;
+    let mut btns: Vec<(String, PeekBtn, bool)> = vec![
+        (ic.up.into(), PeekBtn::Prev, true),
+        (ic.down.into(), PeekBtn::Next, true),
+        (ic.close.into(), PeekBtn::Close, true),
+    ];
+    let mut room = zr.width.saturating_sub(1 + btns.iter().map(|(t, _, _)| t.width() as u16 + gap).sum::<u16>());
+    // Stage waits for the git backend (drawn dimmed).
+    for (t, b, on) in [(" Revert ", PeekBtn::Revert, true), (" Stage ", PeekBtn::Stage, false)] {
+        let w = t.width() as u16 + gap;
+        if room < w {
+            break; // never a lower-priority button without the higher one
+        }
+        room -= w;
+        btns.insert(0, (t.into(), b, on));
+    }
+    let count = format!("  —  {} of {} changes", pk.index + 1, pk.count);
+    let count = if (count.width() as u16) <= room { count } else { String::new() };
+    room = room.saturating_sub(count.width() as u16);
+    let name = if room >= 2 { fit_left(&pk.file, room as usize) } else { String::new() };
+    f.render_widget(Line::from(vec![Span::styled(format!(" {name}"), label), Span::styled(count, desc)]), title);
+    let total: u16 = btns.iter().map(|(t, _, _)| t.width() as u16 + gap).sum();
+    let mut x = zr.right().saturating_sub(total);
+    for (t, b, enabled) in btns {
+        let w = t.width() as u16;
+        let r = Rect::new(x, zr.y, w, 1).intersection(zr);
+        let st = if !enabled {
+            desc.add_modifier(Modifier::DIM)
+        } else if matches!(b, PeekBtn::Stage | PeekBtn::Revert) {
+            Style::new().fg(P.button_fg).bg(P.button_bg)
+        } else {
+            Style::new().fg(P.peek_title_fg).bg(P.peek_title_bg)
+        };
+        if !r.is_empty() {
+            f.render_widget(Span::styled(t, st), r);
+            out.peek_btns.push((r, b));
+        }
+        x += w + gap;
+    }
+    // Body: removed (index) rows, then added (buffer) rows.
+    let h = pk.hunk;
+    let (nb, nc) = (h.base.len(), h.cur.len());
+    let body = Rect::new(zr.x, zr.y + 1, zr.width, zr.height.saturating_sub(2));
+    out.peek_body = body;
+    out.peek_max = (nb + nc).saturating_sub(body.height as usize);
+    let scroll = pk.scroll.min(out.peek_max);
+    let pairs = nb.min(nc);
+    for k in 0..body.height as usize {
+        let r = scroll + k;
+        if r >= nb + nc {
+            break;
+        }
+        let y = body.y + k as u16;
+        let (removed, idx) = if r < nb { (true, r) } else { (false, r - nb) };
+        let (text, no, line_bg, word) = if removed {
+            (pk.base[h.base.start + idx].as_str(), h.base.start + idx + 1, P.diff_del_line, P.diff_del_text)
+        } else {
+            (lines.get(h.cur.start + idx).map_or("", String::as_str), h.cur.start + idx + 1, P.diff_ins_line, P.diff_ins_text)
+        };
+        let rr = Rect::new(zr.x, y, zr.width, 1);
+        fill(f, rr, line_bg);
+        let sign = if removed { "-" } else { "+" };
+        let num = format!("{:>w$} {sign}", no, w = gutter.saturating_sub(4).max(1) as usize);
+        f.render_widget(Span::styled(num, Style::new().fg(P.line_nr).bg(line_bg)), Rect::new(gx, y, gutter, 1).intersection(rr));
+        let words = if idx < pairs {
+            let (o, n) = decor::word_changes(&pk.base[h.base.start + idx], lines.get(h.cur.start + idx).map_or("", String::as_str));
+            if removed { o } else { n }
+        } else {
+            Vec::new()
+        };
+        let overlays: Vec<(usize, usize, Color)> = words.into_iter().map(|w| (w.start, w.end, word.over(line_bg))).collect();
+        let tr = Rect::new(tx, y, zr.right().saturating_sub(tx), 1);
+        f.render_widget(render_line(text, None, &overlays, None, 0, tr.width as usize, Style::new().fg(P.editor_fg).bg(line_bg)), tr);
+    }
+    if zr.height >= 2 {
+        let by = zr.bottom() - 1;
+        let border = "─".repeat(zr.width as usize);
+        f.render_widget(Span::styled(border, Style::new().fg(P.peek_border).bg(P.editor_bg)), Rect::new(zr.x, by, zr.width, 1));
+    }
 }
 
 /// `blank`: columns kept empty between the text and the scrollbar.
-fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect, slider: Rgba, blank: u16) -> Option<ScrollHit> {
+#[allow(clippy::too_many_arguments)]
+fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect, slider: Rgba, blank: u16, rulers: &[(usize, Color)]) -> Option<ScrollHit> {
     if let Some(note) = &d.note {
         f.render_widget(Paragraph::new(note.as_str()).style(Style::new().fg(P.dim)), area);
         return None;
@@ -1133,6 +1516,7 @@ fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect, slider: Rgba,
                     f.render_widget(g, Rect::new(sr.x, y, gw.min(sr.width), 1));
                     let tr = Rect::new(sr.x + gw.min(sr.width), y, sr.width.saturating_sub(gw), 1);
                     f.render_widget(render_line(text, None, &[], None, v.hscroll, tr.width as usize, Style::new().fg(P.editor_fg).bg(bg)), tr);
+                    draw_rulers(f, tr, v.hscroll, rulers, bg);
                 }
             }
         }

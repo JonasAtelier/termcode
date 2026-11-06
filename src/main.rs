@@ -8,6 +8,7 @@ mod decor;
 mod diff;
 mod editor;
 mod git;
+mod minimap;
 mod icons;
 mod panel;
 mod parse;
