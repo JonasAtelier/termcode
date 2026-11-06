@@ -434,7 +434,7 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
     let step = 1 + gap;
     let cap = if app.settings.sticky { app.settings.sticky_max.min(list.height as usize * 2 / 5 / step as usize) } else { 0 };
     let s = app.side as usize;
-    let pinned = crate::decor::sticky(&app.side_depths(), app.off[s], cap);
+    let pinned = app.pinned(app.off[s], cap, search_rows, scm_rows);
     app.ui.sticky_cap = cap;
     app.ui.sticky = pinned.clone();
     let Some(last) = pinned.len().checked_sub(1) else { return };

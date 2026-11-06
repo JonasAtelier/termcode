@@ -480,6 +480,9 @@ pub struct App {
     pub peek: Option<Peek>,
     pub qdiff: HashMap<String, QDiff>,
     qdiff_due: Option<Instant>,
+    /// Each Explorer row's parent folder row (usize::MAX at the top), for sticky
+    /// scroll; empty until needed and after the tree changes.
+    tree_parents: std::cell::RefCell<Vec<usize>>,
     /// Go to Definition / Peek / References state.
     pub nav: crate::navui::Nav,
     /// Source Control view, Timeline, hover card and commit dialog state.
@@ -761,6 +764,7 @@ impl App {
             peek: None,
             qdiff: HashMap::new(),
             qdiff_due: None,
+            tree_parents: Default::default(),
             nav: Default::default(),
             gitui: crate::scm::GitUi::new(&saved),
         };
@@ -1375,6 +1379,7 @@ impl App {
         if !dir {
             return;
         }
+        self.tree_parents.get_mut().clear();
         if open {
             let end = (i + 1..self.tree.len()).find(|&j| self.tree[j].depth <= depth).unwrap_or(self.tree.len());
             self.tree.drain(i + 1..end);
@@ -1389,6 +1394,7 @@ impl App {
         self.refresh();
         let open: Vec<String> = self.tree.iter().filter(|n| n.open).map(|n| n.path.clone()).collect();
         self.tree = self.read_dir("", 0);
+        self.tree_parents.get_mut().clear();
         let mut i = 0;
         while i < self.tree.len() {
             if open.contains(&self.tree[i].path) {
@@ -2235,20 +2241,61 @@ impl App {
         self.focus = Focus::Editor;
     }
 
-    /// Tree depth of each sidebar row, for sticky scroll: Explorer folders over their
-    /// contents, Search file groups over their hits, the CHANGES sections (Merge,
-    /// Staged, Changes headers) over their files.
-    pub fn side_depths(&self) -> Vec<usize> {
-        match self.side {
-            Side::Explorer => self.tree.iter().map(|n| n.depth).collect(),
-            Side::Search => self.search_rows().iter().map(|r| matches!(r, HRow::Hit(_)) as usize).collect(),
-            Side::Scm => self.scm_rows().iter().map(|r| matches!(r, SRow::File(_)) as usize).collect(),
+    /// The depth-`k` folder holding Explorer row `i`, by parent links rebuilt once
+    /// per tree change (O(rows)); then O(depth) a call, however far the folder is.
+    fn tree_ancestor(&self, i: usize, k: usize) -> Option<usize> {
+        if self.tree.get(i)?.depth <= k {
+            return None;
         }
+        let mut up = self.tree_parents.borrow_mut();
+        if up.len() != self.tree.len() {
+            up.clear();
+            let mut open: Vec<usize> = Vec::new();
+            for (j, n) in self.tree.iter().enumerate() {
+                while open.last().is_some_and(|&o| self.tree[o].depth >= n.depth) {
+                    open.pop();
+                }
+                up.push(open.last().copied().unwrap_or(usize::MAX));
+                open.push(j);
+            }
+        }
+        let mut a = i;
+        // Links point backwards, so this ends even on a stale list.
+        while self.tree[a].depth > k {
+            a = up.get(a).copied().filter(|&p| p < a)?;
+        }
+        (self.tree[a].depth == k).then_some(a)
+    }
+
+    /// Sticky scroll's pinned rows for the sidebar scrolled to `off`: Explorer folders
+    /// over their contents, Search file groups over their hits, the CHANGES sections
+    /// (Merge, Staged, Changes headers) over their files. `search` / `scm`: that
+    /// view's rows, as the frame built them for drawing.
+    pub fn pinned(&self, off: usize, cap: usize, search: &[HRow], scm: &[SRow]) -> Vec<usize> {
+        match self.side {
+            Side::Explorer => decor::sticky(|i, k| self.tree_ancestor(i, k), off, cap),
+            Side::Search => decor::sticky(|i, k| decor::walk_back(|j| search.get(j).map(|r| matches!(r, HRow::Hit(_)) as usize), i, k), off, cap),
+            Side::Scm => decor::sticky(|i, k| decor::walk_back(|j| scm.get(j).map(|r| matches!(r, SRow::File(_)) as usize), i, k), off, cap),
+        }
+    }
+
+    /// `pinned` for key handling, which has no rows built.
+    fn pinned_now(&self, off: usize) -> Vec<usize> {
+        let (search, scm) = match self.side {
+            Side::Explorer => (Vec::new(), Vec::new()),
+            Side::Search => (self.search_rows(), Vec::new()),
+            Side::Scm => (Vec::new(), self.scm_rows()),
+        };
+        self.pinned(off, self.ui.sticky_cap, &search, &scm)
     }
 
     /// The scroll offset that shows item `i` right under its pinned ancestors.
     fn under_pinned(&self, i: usize) -> usize {
-        let depth = self.side_depths().get(i).copied().unwrap_or(0);
+        let depth = match self.side {
+            Side::Explorer => self.tree.get(i).map_or(0, |n| n.depth),
+            Side::Search => matches!(self.search_rows().get(i), Some(HRow::Hit(_))) as usize,
+            Side::Scm => matches!(self.scm_rows().get(i), Some(SRow::File(_))) as usize,
+        };
         i - depth.min(self.ui.sticky_cap).min(i)
     }
 
@@ -2284,7 +2331,7 @@ impl App {
             self.off[s] = self.sel[s] + 1 - h;
         }
         // A row under the sticky rows is hidden: show it just below its pinned folders.
-        if self.sel[s] < self.off[s] + decor::sticky(&self.side_depths(), self.off[s], self.ui.sticky_cap).len() {
+        if self.sel[s] < self.off[s] + self.pinned_now(self.off[s]).len() {
             self.off[s] = self.under_pinned(self.sel[s]);
         }
     }
@@ -4820,5 +4867,115 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 3, y);
         assert_eq!((app.off[1], app.sel[1]), (g, g), "the group's header back on top");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The Explorer's parent links find the same folders as walking back, and follow
+    /// the tree when it changes.
+    #[test]
+    fn explorer_parent_links_match_walking_back() {
+        let (d, mut app) = deep_tree("links");
+        let check = |app: &App, tag: &str| {
+            for i in 0..app.tree.len() {
+                for k in 0..4 {
+                    let walked = decor::walk_back(|j| app.tree.get(j).map(|n| n.depth), i, k);
+                    assert_eq!(app.tree_ancestor(i, k), walked, "{tag}: row {i}, depth {k}");
+                }
+            }
+        };
+        check(&app, "expanded");
+        let sh = at(&app, "arch/sh");
+        app.toggle(sh);
+        check(&app, "sh collapsed");
+        let x86 = at(&app, "arch/x86");
+        app.toggle(x86);
+        app.toggle(sh);
+        check(&app, "x86 and sh expanded");
+        app.reload_all();
+        check(&app, "reloaded");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Tiny terminals scrolled into a sticky state: drawing, the wheel and a click on
+    /// the sticky row never panic, and it stays inside the list.
+    #[test]
+    fn tiny_terminals_scrolled_into_a_sticky_state() {
+        let (d, mut app) = deep_tree("tiny");
+        let (arch, b10) = (at(&app, "arch"), at(&app, "arch/sh/boards/b10.c"));
+        app.settings.sticky_max = 3;
+        let mut stuck = 0;
+        for h in 1..=12 {
+            for w in [1, 6, 12, 24, 40] {
+                let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+                app.side = Side::Explorer;
+                app.off[0] = b10;
+                screen(&mut app, &mut t);
+                let l = app.ui.side_list;
+                if app.ui.sticky.is_empty() {
+                    continue;
+                }
+                stuck += 1;
+                assert_eq!(app.ui.sticky[0], arch, "{w}x{h}");
+                assert!(app.ui.sticky.len() <= l.height as usize * 2 / 5 && l.bottom() <= h, "{w}x{h}: {l:?}");
+                mouse(&mut app, MouseEventKind::ScrollDown, l.x, l.y);
+                screen(&mut app, &mut t);
+                mouse(&mut app, MouseEventKind::Down(MouseButton::Left), l.x, l.y);
+                mouse(&mut app, MouseEventKind::Up(MouseButton::Left), l.x, l.y);
+                screen(&mut app, &mut t);
+            }
+        }
+        assert!(stuck > 0, "some tiny size is in a sticky state");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Frame time over big lists, sticky scroll on and off. Read only:
+    /// `HERDR_CODE_BIG_TREE=<kernel tree> cargo test --release -- --ignored --nocapture frame_time`
+    /// expands its drivers/ in full; Search gets 5000 synthetic hits.
+    #[test]
+    #[ignore]
+    fn frame_time_with_big_lists() {
+        let Some(root) = std::env::var_os("HERDR_CODE_BIG_TREE").map(PathBuf::from) else { return };
+        let mut app = App::new(root.canonicalize().unwrap(), None);
+        let d = at(&app, "drivers");
+        app.toggle(d);
+        let mut j = d + 1;
+        while j < app.tree.len() && app.tree[j].depth > app.tree[d].depth {
+            if app.tree[j].dir && !app.tree[j].open {
+                app.toggle(j);
+            }
+            j += 1;
+        }
+        let mut t = Terminal::new(TestBackend::new(200, 60)).unwrap();
+        let mut frame = |app: &mut App, label: &str| {
+            for on in [true, false] {
+                app.settings.sticky = on;
+                t.draw(|f| crate::ui::draw(app, f)).unwrap();
+                let start = Instant::now();
+                for _ in 0..40 {
+                    t.draw(|f| crate::ui::draw(app, f)).unwrap();
+                }
+                eprintln!("{label}, sticky {}: {:?}/frame", if on { "on " } else { "off" }, start.elapsed() / 40);
+            }
+            // As a frame does it: the rows are built for drawing anyway.
+            let (search, off) = (app.search_rows(), app.off[app.side as usize]);
+            app.tree_parents.get_mut().clear(); // as after a tree change
+            let start = Instant::now();
+            std::hint::black_box(app.pinned(off, 1, &search, &[]));
+            let first = start.elapsed();
+            let start = Instant::now();
+            for _ in 0..200 {
+                std::hint::black_box(app.pinned(off, 1, &search, &[]));
+            }
+            eprintln!("{label}, the sticky rows alone: {:?} (first call after a tree change {first:?})", start.elapsed() / 200);
+        };
+        // Deep at the end of drivers/: the farthest walk back to the drivers row.
+        app.off[0] = j.saturating_sub(5);
+        let label = format!("Explorer, {} rows, off {}", app.tree.len(), app.off[0]);
+        frame(&mut app, &label);
+        app.hits = (0..5000).map(|i| Hit { path: "big.c".into(), line: i + 1, col: 1, text: format!("needle {i}") }).collect();
+        (app.side, app.query, app.off[1]) = (Side::Search, "needle".into(), 4990);
+        frame(&mut app, "Search, 1 file x 5000 hits, off 4990");
+        app.hits = (0..5000).map(|i| Hit { path: format!("dir/f{:03}.c", i / 10), line: i + 1, col: 1, text: format!("needle {i}") }).collect();
+        app.off[1] = 5400;
+        frame(&mut app, "Search, 500 files x 10 hits, off 5400");
     }
 }
