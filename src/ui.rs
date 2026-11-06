@@ -259,7 +259,7 @@ fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let x = r.x + (r.width.saturating_sub(t.width() as u16)) / 2;
     f.render_widget(Span::styled(t, st), Rect::new(x, r.y, r.right().saturating_sub(x), 1));
     app.ui.close = Rect::new(r.right().saturating_sub(w + tp), r.y, w, 1);
-    f.render_widget(Span::styled(close, Style::new().fg(P.title_fg).bg(P.title_bg)), app.ui.close);
+    f.render_widget(Span::styled(close, Style::new().fg(P.status_err_fg).bg(P.status_err_bg)), app.ui.close);
 }
 
 fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
