@@ -80,19 +80,8 @@ pub fn parse_log_line(s: &str) -> Option<Commit> {
     })
 }
 
-/// Find the session whose API socket is `socket` in `herdr session list --json`.
-pub fn session_for_socket(json: &str, socket: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v["sessions"]
-        .as_array()?
-        .iter()
-        .find(|s| s["socket_path"].as_str() == Some(socket))
-        .and_then(|s| s["name"].as_str())
-        .map(String::from)
-}
-
-/// Lock file stem for one (session, worktree root) pair. FNV-1a: stable across
-/// builds, unlike `DefaultHasher`.
+/// File name stem for a (scope, path) pair: launch locks, hot-exit backups.
+/// FNV-1a: stable across builds, unlike `DefaultHasher`.
 pub fn lock_key(session: &str, root: &str) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in session.bytes().chain([0]).chain(root.bytes()) {
@@ -100,12 +89,6 @@ pub fn lock_key(session: &str, root: &str) -> String {
         h = h.wrapping_mul(0x0100_0000_01b3);
     }
     format!("{h:016x}")
-}
-
-/// Parent pid from `/proc/<pid>/stat`. The comm field may itself contain `) `,
-/// so split at the last `)`: what follows is ` state ppid ...`.
-pub fn stat_ppid(stat: &str) -> Option<u64> {
-    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// Quick-open rank, lower is better, VS Code-like tiers: exact file name, file
@@ -193,17 +176,6 @@ mod tests {
     }
 
     #[test]
-    fn session_lookup_by_socket() {
-        let json = r#"{"sessions":[
-            {"name":"default","default":true,"running":true,"socket_path":"/h/.config/herdr/herdr.sock","session_dir":"/h"},
-            {"name":"work","default":false,"running":true,"socket_path":"/h/.config/herdr/sessions/work/herdr.sock","session_dir":"/w"}]}"#;
-        assert_eq!(session_for_socket(json, "/h/.config/herdr/herdr.sock").as_deref(), Some("default"));
-        assert_eq!(session_for_socket(json, "/h/.config/herdr/sessions/work/herdr.sock").as_deref(), Some("work"));
-        assert_eq!(session_for_socket(json, "/tmp/other.sock"), None);
-        assert_eq!(session_for_socket("not json", "/x"), None);
-    }
-
-    #[test]
     fn lock_key_is_stable_and_distinct() {
         assert_eq!(lock_key("default", "/r"), lock_key("default", "/r"));
         assert_ne!(lock_key("default", "/r"), lock_key("work", "/r"));
@@ -211,13 +183,6 @@ mod tests {
         // The separator keeps ("ab","c") and ("a","bc") apart.
         assert_ne!(lock_key("ab", "c"), lock_key("a", "bc"));
         assert_eq!(lock_key("default", "/r").len(), 16);
-    }
-
-    #[test]
-    fn stat_ppid_survives_odd_comm() {
-        assert_eq!(stat_ppid("4242 (herdr) S 4100 4242 4100 0 -1"), Some(4100));
-        assert_eq!(stat_ppid("7 (a) b (c)) R 99 7 7"), Some(99));
-        assert_eq!(stat_ppid("garbage"), None);
     }
 
     #[test]

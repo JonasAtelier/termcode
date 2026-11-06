@@ -2,6 +2,7 @@
 //! split and the write actions. Every call is argv with `--` before paths.
 
 use crate::parse::StatusEntry;
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -62,6 +63,30 @@ pub fn decoration(e: &StatusEntry) -> Option<char> {
     } else {
         Some(e.x)
     }
+}
+
+/// VS Code's decoration propagation: a folder takes the strongest decoration
+/// below it (conflict over changes over untracked).
+pub fn folder_marks<'a>(files: impl IntoIterator<Item = (&'a str, char)>) -> HashMap<String, char> {
+    fn rank(c: char) -> u8 {
+        match c {
+            '!' => 3,
+            'U' | '?' => 1,
+            _ => 2,
+        }
+    }
+    let mut dirs: HashMap<String, char> = HashMap::new();
+    for (path, c) in files {
+        let mut p = path;
+        while let Some((dir, _)) = p.rsplit_once('/') {
+            let d = dirs.entry(dir.to_string()).or_insert(c);
+            if rank(c) > rank(*d) {
+                *d = c;
+            }
+            p = dir;
+        }
+    }
+    dirs
 }
 
 /// `git -C root`, with paths after `--` taken literally: a file named `*.txt`
@@ -133,17 +158,28 @@ pub fn commit(root: &Path, message: &str) -> Result<String, String> {
     run(root, &["commit", "-q", "-m", message])
 }
 
-/// Up to 1 MB of `git <args>` stdout, ignoring the exit code.
+/// Up to 1 MB of `git <args>` stdout, ignoring the exit code. Past the cap the
+/// pipe is closed, so git stops at its next write (EPIPE); no signal is sent.
 pub fn capped(root: &Path, args: &[&str]) -> Vec<u8> {
     let mut buf = Vec::new();
     if let Ok(mut c) = cmd(root).args(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
         if let Some(o) = c.stdout.take() {
             let _ = o.take(CAP).read_to_end(&mut buf);
         }
-        let _ = c.kill();
         let _ = c.wait();
     }
     buf
+}
+
+/// A blob (`:0:path` = the index), or None when git has no such object or it
+/// is over 1 MB.
+pub fn blob(root: &Path, spec: &str) -> Option<Vec<u8>> {
+    let mut c = cmd(root).args(["cat-file", "blob", spec]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut buf = Vec::new();
+    // The pipe closes at the end of this statement, so an oversized blob ends git.
+    let read = c.stdout.take().map(|o| o.take(CAP + 1).read_to_end(&mut buf));
+    let ok = c.wait().is_ok_and(|s| s.success());
+    (ok && read.is_some_and(|r| r.is_ok()) && buf.len() as u64 <= CAP).then_some(buf)
 }
 
 fn show(root: &Path, spec: &str) -> Vec<u8> {
@@ -196,6 +232,16 @@ mod tests {
         let e = parse_porcelain_z(b"MM x\0");
         assert_eq!(decoration(&e[0]), Some('M'));
         assert_eq!(decoration(&parse_porcelain_z(b"A  y\0")[0]), Some('A'));
+    }
+
+    #[test]
+    fn folders_take_the_strongest_decoration_below() {
+        let m = folder_marks([("a/b/x.c", 'U'), ("a/b/y.c", 'M'), ("a/z.c", '!'), ("top.c", 'M'), ("c/d/n.txt", 'U')]);
+        assert_eq!(m.get("a/b"), Some(&'M'), "modified beats untracked");
+        assert_eq!(m.get("a"), Some(&'!'), "a conflict wins");
+        assert_eq!(m.get("c"), Some(&'U'));
+        assert_eq!(m.get("c/d"), Some(&'U'));
+        assert_eq!(m.len(), 4, "files at the top level decorate no folder");
     }
 
     #[test]

@@ -1,0 +1,328 @@
+//! Editor decorations computed from text, kept pure for testing: indent rainbow
+//! (oderwat.indent-rainbow's algorithm and defaults), indent guides, quick-diff
+//! gutter marks, and scrollbar geometry.
+
+use crate::theme::Rgba;
+use fancy_regex::Regex;
+use similar::{capture_diff_slices_deadline, Algorithm, DiffTag};
+use std::time::{Duration, Instant};
+
+/// `indentRainbow.*` settings.
+#[derive(Clone, Debug)]
+pub struct Rainbow {
+    pub enabled: bool,
+    pub colors: Vec<Rgba>,
+    pub error: Rgba,
+    pub tabmix: Option<Rgba>,
+    /// indicatorStyle "light": a thin line at each level instead of a background.
+    pub light: bool,
+    pub included: Vec<String>,
+    pub excluded: Vec<String>,
+    pub ignore_errors: Vec<String>,
+    pub ignore_lines: Vec<Regex>,
+}
+
+impl Default for Rainbow {
+    fn default() -> Rainbow {
+        let c = |s| Rgba::parse(s).unwrap_or(Rgba(0, 0, 0, 0));
+        Rainbow {
+            enabled: true,
+            colors: ["rgba(255,255,64,0.07)", "rgba(127,255,127,0.07)", "rgba(255,127,255,0.07)", "rgba(79,236,236,0.07)"]
+                .into_iter()
+                .map(c)
+                .collect(),
+            error: c("rgba(128,32,32,0.6)"),
+            tabmix: Some(c("rgba(128,32,96,0.6)")),
+            light: false,
+            included: Vec::new(),
+            excluded: vec!["plaintext".into()],
+            ignore_errors: vec!["markdown".into()],
+            ignore_lines: ["/[ \t]* [*]/g", "/[ \t]+[/]{2}/g"].iter().filter_map(|p| js_regex(p).ok()).collect(),
+        }
+    }
+}
+
+impl Rainbow {
+    /// Whether the rainbow draws for a VS Code language id.
+    pub fn applies(&self, lang: &str) -> bool {
+        self.enabled
+            && !self.colors.is_empty()
+            && (self.included.is_empty() || self.included.iter().any(|l| l == lang))
+            && !self.excluded.iter().any(|l| l == lang)
+    }
+
+    pub fn skip_errors(&self, lang: &str) -> bool {
+        self.ignore_errors.iter().any(|l| l == lang || l == "*")
+    }
+
+    /// Paint for one line (`skip_all`: the language ignores errors).
+    pub fn line(&self, line: &str, tab: usize, skip_all: bool) -> Vec<(usize, usize, Paint)> {
+        let skip = skip_all || self.ignore_lines.iter().any(|r| r.is_match(line).unwrap_or(false));
+        rainbow_line(line, tab, skip, self.tabmix.is_some())
+    }
+}
+
+/// A JS regex literal from settings ("/pat/flags", or a bare pattern) as a Rust regex.
+pub fn js_regex(s: &str) -> Result<Regex, String> {
+    let (pat, flags) = match s.strip_prefix('/').and_then(|r| r.rsplit_once('/')) {
+        Some((p, f)) if f.chars().all(|c| matches!(c, 'g' | 'i' | 'm' | 's' | 'u' | 'y')) => (p, f),
+        _ => (s, ""),
+    };
+    let inline: String = flags.chars().filter(|c| matches!(c, 'i' | 'm' | 's')).collect();
+    let full = if inline.is_empty() { pat.to_string() } else { format!("(?{inline}){pat}") };
+    // A runaway pattern gives up (no match) instead of stalling a frame.
+    fancy_regex::RegexBuilder::new(&full)
+        .backtrack_limit(10_000)
+        .build()
+        .map_err(|e| format!("indentRainbow.ignoreLinePatterns {s:?} skipped: {e}"))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Paint {
+    /// Indent level n (colour n % colors.len()).
+    Level(usize),
+    Error,
+    Tabmix,
+}
+
+/// indent-rainbow's updateDecorations for one line, as byte ranges: the leading
+/// whitespace is an error when its width (each tab counted as `tab` spaces) is
+/// not a multiple of `tab`; otherwise each level is a tab or `tab` characters
+/// (the last may run into the text, as the extension does), tab-mixed when the
+/// indentation holds both tabs and spaces.
+pub fn rainbow_line(line: &str, tab: usize, skip: bool, tabmix: bool) -> Vec<(usize, usize, Paint)> {
+    let tab = tab.max(1);
+    let ws = line.bytes().take_while(|b| *b == b' ' || *b == b'\t').count();
+    if ws == 0 {
+        return Vec::new();
+    }
+    let m = &line.as_bytes()[..ws];
+    let width: usize = m.iter().map(|b| if *b == b'\t' { tab } else { 1 }).sum();
+    if !skip && !width.is_multiple_of(tab) {
+        return vec![(0, ws, Paint::Error)];
+    }
+    let mixed = !skip && tabmix && m.contains(&b'\t') && m.contains(&b' ');
+    // Character n as a byte offset (the extension counts characters).
+    let at = |n: usize| if n <= ws { n } else { line.char_indices().nth(n).map_or(line.len(), |(i, _)| i) };
+    let (mut out, mut n, mut level) = (Vec::new(), 0, 0);
+    while n < ws {
+        let s = n;
+        n += if m[n] == b'\t' { 1 } else { tab };
+        out.push((s, at(n), if mixed { Paint::Tabmix } else { Paint::Level(level) }));
+        level += 1;
+    }
+    out
+}
+
+/// Leading indentation in display columns; None for a blank line.
+pub fn indent_cols(line: &str, tab: usize) -> Option<usize> {
+    let mut x = 0;
+    for c in line.chars() {
+        match c {
+            ' ' => x += 1,
+            '\t' => x = (x / tab + 1) * tab,
+            _ => return Some(x),
+        }
+    }
+    None
+}
+
+/// Indent level of each line for the guides. A blank line takes VS Code's
+/// rule from the content lines around it (`_getIndentLevelForWhitespaceLine`).
+pub struct Guides<'a> {
+    lines: &'a [String],
+    tab: usize,
+}
+
+/// How far the guides look for a content line or the cursor's block (keeps a frame cheap).
+const SCAN: usize = 1000;
+const NEAR: usize = 200;
+
+impl<'a> Guides<'a> {
+    pub fn new(lines: &'a [String], tab: usize) -> Guides<'a> {
+        Guides { lines, tab: tab.max(1) }
+    }
+
+    fn content(&self, i: usize) -> Option<usize> {
+        indent_cols(&self.lines[i], self.tab).map(|c| c.div_ceil(self.tab))
+    }
+
+    pub fn level(&self, i: usize) -> usize {
+        if let Some(l) = self.content(i) {
+            return l;
+        }
+        let above = (i.saturating_sub(NEAR)..i).rev().find_map(|j| self.content(j));
+        let below = (i + 1..self.lines.len().min(i + 1 + NEAR)).find_map(|j| self.content(j));
+        match (above, below) {
+            (Some(a), Some(b)) if a < b => a + 1,
+            (Some(a), Some(b)) if a == b => b,
+            (Some(_), Some(b)) => b + 1,
+            _ => 0,
+        }
+    }
+
+    /// The guide VS Code highlights for the cursor line: (level index, first, last line).
+    pub fn active(&self, cur: usize) -> Option<(usize, usize, usize)> {
+        if cur >= self.lines.len() {
+            return None;
+        }
+        let l = self.level(cur);
+        let next = if cur + 1 < self.lines.len() { self.level(cur + 1) } else { 0 };
+        let (k, start) = if next > l {
+            (l, cur + 1) // the cursor line opens a block: its body's guide
+        } else if l > 0 {
+            let up = (cur.saturating_sub(SCAN)..cur).rev().take_while(|&j| self.level(j) >= l).last().unwrap_or(cur);
+            (l - 1, up)
+        } else {
+            return None;
+        };
+        let end = (start..self.lines.len().min(start + SCAN)).take_while(|&j| self.level(j) > k).last()?;
+        Some((k, start, end))
+    }
+}
+
+/// Quick-diff gutter mark for one buffer line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mark {
+    Added,
+    Modified,
+    /// Lines were deleted just below this one (above it for line 0).
+    Deleted,
+}
+
+/// VS Code's dirty-diff decorations: the buffer against the index version.
+pub fn quick_diff(base: &[String], cur: &[String]) -> Vec<Option<Mark>> {
+    let a: Vec<&str> = base.iter().map(String::as_str).collect();
+    let b: Vec<&str> = cur.iter().map(String::as_str).collect();
+    let mut marks = vec![None; cur.len()];
+    let ops = capture_diff_slices_deadline(Algorithm::Myers, &a, &b, Some(Instant::now() + Duration::from_millis(200)));
+    for op in ops {
+        let (tag, _, rb) = op.as_tag_tuple();
+        match tag {
+            DiffTag::Equal => {}
+            DiffTag::Insert => rb.for_each(|i| marks[i] = Some(Mark::Added)),
+            DiffTag::Replace => rb.for_each(|i| marks[i] = Some(Mark::Modified)),
+            DiffTag::Delete => {
+                if let Some(m) = marks.get_mut(rb.start.saturating_sub(1)) {
+                    m.get_or_insert(Mark::Deleted);
+                }
+            }
+        }
+    }
+    marks
+}
+
+/// Scrollbar slider (first row, rows) on a `track` of rows, for a viewport of
+/// `view` rows at `off` (0..=max_off) over `total` rows of content.
+pub fn slider(track: u16, total: usize, view: usize, off: usize, max_off: usize) -> (u16, u16) {
+    if track == 0 {
+        return (0, 0);
+    }
+    if max_off == 0 || total == 0 {
+        return (0, track);
+    }
+    let len = ((track as usize * view) as f64 / total as f64).round().clamp(1.0, track as f64) as u16;
+    let free = (track - len) as usize;
+    let start = ((free * off.min(max_off)) as f64 / max_off as f64).round() as u16;
+    (start.min(track - len), len)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TrackHit {
+    PageUp,
+    PageDown,
+    /// On the slider, `n` rows below its top (kept while dragging).
+    Slider(u16),
+}
+
+/// A click at track row `y` (0-based) with the slider at (start, len).
+pub fn track_hit(y: u16, (start, len): (u16, u16)) -> TrackHit {
+    if y < start {
+        TrackHit::PageUp
+    } else if y >= start + len {
+        TrackHit::PageDown
+    } else {
+        TrackHit::Slider(y - start)
+    }
+}
+
+/// Scroll offset for a slider dragged so that its grab point is at row `y`.
+pub fn drag_offset(y: i32, grab: u16, track: u16, len: u16, max_off: usize) -> usize {
+    let free = track.saturating_sub(len) as i32;
+    if free == 0 {
+        return 0;
+    }
+    let top = (y - grab as i32).clamp(0, free);
+    ((top as f64 * max_off as f64) / free as f64).round() as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn rainbow_levels_errors_tabmix_and_ignored_lines() {
+        use Paint::*;
+        assert_eq!(rainbow_line("        x", 4, false, true), vec![(0, 4, Level(0)), (4, 8, Level(1))]);
+        assert_eq!(rainbow_line("\t\tx", 4, false, true), vec![(0, 1, Level(0)), (1, 2, Level(1))]);
+        assert_eq!(rainbow_line("   x", 4, false, true), vec![(0, 3, Error)], "3 spaces with tabSize 4");
+        assert_eq!(rainbow_line("    \tx", 4, false, true), vec![(0, 4, Tabmix), (4, 5, Tabmix)]);
+        assert_eq!(rainbow_line("    \tx", 4, false, false), vec![(0, 4, Level(0)), (4, 5, Level(1))]);
+        // Skipped (ignored line or language): no error, levels run into the text.
+        assert_eq!(rainbow_line("   x", 4, true, true), vec![(0, 4, Level(0))]);
+        assert_eq!(rainbow_line("x", 4, false, true), vec![]);
+        assert_eq!(rainbow_line("    ", 4, false, true), vec![(0, 4, Level(0))], "blank lines too");
+        let r = Rainbow::default();
+        assert_eq!(r.line("     * comment", 4, false), vec![(0, 4, Level(0)), (4, 8, Level(1))], "` *` line is ignored");
+        assert_eq!(r.line("   // note", 4, false), vec![(0, 4, Level(0))], "`  //` line is ignored");
+        assert_eq!(r.line("   x = 1;", 4, false), vec![(0, 3, Error)]);
+        assert!(r.applies("c") && !r.applies("plaintext"));
+        assert!(r.skip_errors("markdown") && !r.skip_errors("c"));
+        assert_eq!(r.colors[0], Rgba(255, 255, 64, 18));
+        assert!(js_regex("/[a/").is_err());
+        assert!(js_regex("/ABC/i").unwrap().is_match("abc").unwrap());
+    }
+
+    #[test]
+    fn guides_follow_vscode_blank_line_rules() {
+        let l = s(&["fn f() {", "    a();", "", "    if x {", "        b();", "", "    }", "}", "", "g();"]);
+        let g = Guides::new(&l, 4);
+        let levels: Vec<usize> = (0..l.len()).map(|i| g.level(i)).collect();
+        assert_eq!(levels, vec![0, 1, 1, 1, 2, 2, 1, 0, 0, 0]);
+        assert_eq!(g.active(4), Some((1, 4, 5)), "inside the if block");
+        assert_eq!(g.active(3), Some((1, 4, 5)), "on the line opening it");
+        assert_eq!(g.active(1), Some((0, 1, 6)));
+        assert_eq!(g.active(9), None);
+    }
+
+    #[test]
+    fn quick_diff_marks_added_modified_deleted() {
+        let base = s(&["a", "b", "c", "d", "e"]);
+        let cur = s(&["a", "B", "c", "new", "d"]);
+        assert_eq!(
+            quick_diff(&base, &cur),
+            vec![None, Some(Mark::Modified), None, Some(Mark::Added), Some(Mark::Deleted)]
+        );
+        assert_eq!(quick_diff(&base, &s(&["b", "c", "d", "e"]))[0], Some(Mark::Deleted), "deleted at the top");
+        assert!(quick_diff(&base, &base).iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn slider_geometry_and_hits() {
+        assert_eq!(slider(10, 100, 10, 0, 90), (0, 1));
+        assert_eq!(slider(10, 100, 10, 90, 90), (9, 1));
+        assert_eq!(slider(10, 20, 10, 5, 10), (3, 5));
+        assert_eq!(slider(10, 5, 10, 0, 0), (0, 10), "nothing to scroll: full track");
+        let s = slider(10, 20, 10, 5, 10);
+        assert_eq!(track_hit(0, s), TrackHit::PageUp);
+        assert_eq!(track_hit(4, s), TrackHit::Slider(1));
+        assert_eq!(track_hit(8, s), TrackHit::PageDown);
+        assert_eq!(drag_offset(6, 1, 10, 5, 10), 10);
+        assert_eq!(drag_offset(1, 1, 10, 5, 10), 0);
+        assert_eq!(drag_offset(4, 1, 10, 5, 10), 6);
+    }
+}

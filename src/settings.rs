@@ -1,0 +1,599 @@
+//! settings.json in VS Code's format (JSONC: comments and trailing commas) from
+//! `$HERDR_PLUGIN_CONFIG_DIR`. A missing file means the defaults; a bad one is
+//! an error the panel shows while it keeps the last good settings.
+
+use crate::decor::{js_regex, Rainbow};
+use crate::icons::FileIcons;
+use crate::theme::{self, jsonc_to_json, Rgba};
+use serde_json::{Map, Value};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// The id the embedded cpptools theme has in VS Code.
+pub const EMBEDDED_ID: &str = "Visual Studio Dark - C++";
+
+/// `herdr-code.spacing`. The density gives the defaults; each key overrides one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spacing {
+    /// Sidebar columns until the divider is dragged (a drag is persisted).
+    pub sidebar_width: u16,
+    /// Inner left/right padding of sidebar rows and inputs.
+    pub sidebar_padding: u16,
+    /// Blank rows between sidebar sections and headers.
+    pub section_gap: u16,
+    /// Columns between the line number and the quick-diff marker (comfortable) and
+    /// between the marker and the code; 2 or more also leaves a blank row under the tab bar.
+    pub editor_padding: u16,
+    /// Spaces each side of a tab label.
+    pub tab_padding: u16,
+    /// Spaces between status bar items.
+    pub status_gap: u16,
+    /// Activity bar columns (icons centred).
+    pub activity_width: u16,
+    /// Blank rows between sidebar list items (0 or 1).
+    pub list_gap: u16,
+    /// Horizontal and vertical padding inside framed popups and dialogs.
+    pub popup_padding: (u16, u16),
+    /// Blank cells after an icon before its label (at least 1: a non-Mono Nerd
+    /// Font icon can overflow its cell).
+    pub icon_gap: u16,
+    /// Cells per tree depth level.
+    pub tree_indent: u16,
+    /// Left/right padding in the title bar.
+    pub title_padding: u16,
+    /// Spaces inside buttons (Close, Restore, Save, …).
+    pub button_padding: u16,
+    /// Horizontal padding inside the find/replace widget.
+    pub find_padding: u16,
+    /// Left/right edge padding of the status bar.
+    pub status_padding: u16,
+}
+
+impl Spacing {
+    pub const COMFORTABLE: Spacing = Spacing {
+        sidebar_width: 36,
+        sidebar_padding: 2,
+        section_gap: 1,
+        editor_padding: 2,
+        tab_padding: 2,
+        status_gap: 3,
+        activity_width: 5,
+        list_gap: 0,
+        popup_padding: (3, 1),
+        icon_gap: 2,
+        tree_indent: 2,
+        title_padding: 2,
+        button_padding: 2,
+        find_padding: 1,
+        status_padding: 2,
+    };
+    /// The original tight layout.
+    pub const COMPACT: Spacing = Spacing {
+        sidebar_width: 30,
+        sidebar_padding: 0,
+        section_gap: 0,
+        editor_padding: 1,
+        tab_padding: 1,
+        status_gap: 3,
+        activity_width: 3,
+        list_gap: 0,
+        popup_padding: (0, 0),
+        icon_gap: 1,
+        tree_indent: 2,
+        title_padding: 1,
+        button_padding: 1,
+        find_padding: 0,
+        status_padding: 1,
+    };
+
+    /// `base` with the keys `v` sets, each clamped to a usable range.
+    pub fn parse(base: Spacing, v: &Value) -> Spacing {
+        let n = |k: &str, lo: u16, hi: u16, d: u16| v[k].as_u64().map_or(d, |x| x.clamp(lo as u64, hi as u64) as u16);
+        let pp = &v["popupPadding"];
+        Spacing {
+            sidebar_width: n("sidebarWidth", 12, 200, base.sidebar_width),
+            sidebar_padding: n("sidebarPadding", 0, 4, base.sidebar_padding),
+            section_gap: n("sectionGap", 0, 3, base.section_gap),
+            editor_padding: n("editorPadding", 1, 8, base.editor_padding),
+            tab_padding: n("tabPadding", 0, 4, base.tab_padding),
+            status_gap: n("statusBarGap", 1, 8, base.status_gap),
+            activity_width: n("activityBarWidth", 2, 9, base.activity_width),
+            list_gap: n("listItemGap", 0, 1, base.list_gap),
+            popup_padding: (
+                pp[0].as_u64().map_or(base.popup_padding.0, |x| x.min(8) as u16),
+                pp[1].as_u64().map_or(base.popup_padding.1, |x| x.min(4) as u16),
+            ),
+            icon_gap: n("iconGap", 1, 4, base.icon_gap),
+            tree_indent: n("treeIndent", 0, 8, base.tree_indent),
+            title_padding: n("titleBarPadding", 0, 6, base.title_padding),
+            button_padding: n("buttonPadding", 0, 4, base.button_padding),
+            find_padding: n("findWidgetPadding", 0, 3, base.find_padding),
+            status_padding: n("statusBarPadding", 0, 6, base.status_padding),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Settings {
+    /// `workbench.density: "compact"`: the original tight layout, no popup frames.
+    pub compact: bool,
+    pub spacing: Spacing,
+    pub ascii_icons: bool,
+    pub file_icons: FileIcons,
+    pub rainbow: Rainbow,
+    pub guides: bool,
+    pub tab_size: usize,
+    pub follow_vscode: bool,
+    pub theme: ThemeData,
+    /// Parts that were skipped (a bad regex): shown, the rest still applies.
+    pub warnings: Vec<String>,
+}
+
+/// A resolved colour theme with the customizations folded in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThemeData {
+    /// VS Code theme JSON (merged through `include`): colors, tokenColors, semanticTokenColors.
+    pub json: Value,
+    /// Token colour customizations, applied after the theme's rules.
+    pub extra_rules: Vec<Value>,
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings {
+            compact: false,
+            spacing: Spacing::COMFORTABLE,
+            ascii_icons: false,
+            file_icons: FileIcons::default(),
+            rainbow: Rainbow::default(),
+            guides: true,
+            tab_size: 4,
+            follow_vscode: false,
+            theme: ThemeData { json: theme::embedded_theme().clone(), extra_rules: Vec::new() },
+            warnings: Vec::new(),
+        }
+    }
+}
+
+fn home() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+}
+
+/// `$HERDR_PLUGIN_CONFIG_DIR/settings.json`.
+pub fn path() -> PathBuf {
+    std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".config/herdr/plugins/config/jonas.herdr-code"))
+        .join("settings.json")
+}
+
+/// VS Code's user settings, for `herdr-code.followVSCode`.
+pub fn vscode_path() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".config"))
+        .join("Code/User/settings.json")
+}
+
+/// Where VS Code themes can live: the built-in extensions, then the user's.
+pub fn theme_dirs() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = [
+        "/snap/code/current/usr/share/code/resources/app/extensions",
+        "/usr/share/code/resources/app/extensions",
+        "/opt/visual-studio-code/resources/app/extensions",
+        "/usr/lib/code/extensions",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+    v.push(home().join(".vscode/extensions"));
+    v.retain(|d| d.is_dir());
+    v
+}
+
+/// JSONC text to an object; an empty file is `{}` as in VS Code.
+pub fn parse_jsonc(text: &str) -> Result<Map<String, Value>, String> {
+    let json = jsonc_to_json(text);
+    if json.trim().is_empty() {
+        return Ok(Map::new());
+    }
+    match serde_json::from_str(&json).map_err(|e| e.to_string())? {
+        Value::Object(m) => Ok(m),
+        _ => Err("the top level must be an object".into()),
+    }
+}
+
+fn read_jsonc(path: &Path) -> Result<Option<Map<String, Value>>, String> {
+    use std::io::Read;
+    let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let f = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(err(&e)),
+    };
+    let mut text = String::new();
+    f.take(crate::editor::MAX_BYTES + 1).read_to_string(&mut text).map_err(|e| err(&e))?;
+    if text.len() as u64 > crate::editor::MAX_BYTES {
+        return Err(err(&"larger than 1 MB"));
+    }
+    parse_jsonc(&text).map(Some).map_err(|e| err(&e))
+}
+
+/// Read and resolve the settings file (and VS Code's, when followed).
+pub fn load(path: &Path) -> Result<Settings, String> {
+    let user = read_jsonc(path)?.unwrap_or_default();
+    let vscode = if user.get("herdr-code.followVSCode").and_then(Value::as_bool) == Some(true) {
+        Some(read_jsonc(&vscode_path())?.unwrap_or_default())
+    } else {
+        None
+    };
+    from_maps(&user, vscode.as_ref(), &theme_dirs())
+}
+
+pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>, dirs: &[PathBuf]) -> Result<Settings, String> {
+    let d = Settings::default();
+    // With followVSCode, VS Code's theme keys win where it sets them.
+    let tkey = |k: &str| vscode.and_then(|v| v.get(k)).or_else(|| user.get(k));
+    let sel = tkey("workbench.colorTheme").and_then(Value::as_str);
+    let mut json = resolve_theme(sel, dirs)?;
+    let names: Vec<String> =
+        [sel.unwrap_or(EMBEDDED_ID).to_string(), json["name"].as_str().unwrap_or("").to_string()].into();
+    customize_colors(&mut json, tkey("workbench.colorCustomizations"), &names);
+    let extra_rules = token_rules(tkey("editor.tokenColorCustomizations"), &names);
+    let g = |k: &str| user.get(k);
+    let (rainbow, warnings) = rainbow(user);
+    let compact = g("workbench.density").and_then(Value::as_str) == Some("compact");
+    let base = if compact { Spacing::COMPACT } else { Spacing::COMFORTABLE };
+    Ok(Settings {
+        compact,
+        spacing: Spacing::parse(base, g("herdr-code.spacing").unwrap_or(&Value::Null)),
+        ascii_icons: g("herdr-code.icons").and_then(Value::as_str) == Some("ascii"),
+        file_icons: g("herdr-code.fileIcons").map(FileIcons::parse).unwrap_or_default(),
+        rainbow,
+        guides: g("editor.guides.indentation").and_then(Value::as_bool).unwrap_or(d.guides),
+        tab_size: g("editor.tabSize").and_then(Value::as_u64).filter(|n| (1..=16).contains(n)).map_or(d.tab_size, |n| n as usize),
+        follow_vscode: vscode.is_some(),
+        theme: ThemeData { json, extra_rules },
+        warnings,
+    })
+}
+
+/// `indentRainbow.*`; a pattern that does not compile is skipped with a warning.
+fn rainbow(user: &Map<String, Value>) -> (Rainbow, Vec<String>) {
+    let mut r = Rainbow::default();
+    let g = |k: &str| user.get(&format!("indentRainbow.{k}"));
+    let strings = |v: &Value| v.as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect::<Vec<_>>());
+    if let Some(b) = g("enabled").and_then(Value::as_bool) {
+        r.enabled = b;
+    }
+    if let Some(c) = g("colors").and_then(strings) {
+        r.colors = c.iter().filter_map(|c| Rgba::parse(c)).collect();
+    }
+    if let Some(c) = g("errorColor").and_then(Value::as_str) {
+        // The extension falls back to a fainter red for an empty value.
+        r.error = Rgba::parse(c).or_else(|| Rgba::parse("rgba(128,32,32,0.3)")).unwrap_or(r.error);
+    }
+    if let Some(c) = g("tabmixColor").and_then(Value::as_str) {
+        r.tabmix = Rgba::parse(c); // "" turns tab-mix marking off
+    }
+    if let Some(s) = g("indicatorStyle").and_then(Value::as_str) {
+        r.light = s == "light";
+    }
+    for (k, dst) in [("includedLanguages", &mut r.included), ("excludedLanguages", &mut r.excluded), ("ignoreErrorLanguages", &mut r.ignore_errors)] {
+        if let Some(v) = g(k).and_then(strings) {
+            *dst = v;
+        }
+    }
+    let mut warnings = Vec::new();
+    if let Some(p) = g("ignoreLinePatterns").and_then(strings) {
+        r.ignore_lines = p
+            .iter()
+            .filter_map(|p| js_regex(p).map_err(|e| warnings.push(e)).ok())
+            .collect();
+    }
+    (r, warnings)
+}
+
+/// `workbench.colorTheme`: empty means the embedded theme; an absolute path is a
+/// theme file; otherwise a theme id (or label) contributed by a VS Code
+/// extension's package.json.
+pub fn resolve_theme(sel: Option<&str>, dirs: &[PathBuf]) -> Result<Value, String> {
+    let Some(sel) = sel.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(theme::embedded_theme().clone());
+    };
+    if sel.starts_with('/') {
+        return load_theme_file(Path::new(sel), 0);
+    }
+    // VS Code migrates the old built-in ids ("Default Dark Modern" -> "Dark Modern").
+    let wanted = [Some(sel), sel.strip_prefix("Default ")];
+    let hit = |s: Option<&str>| s.is_some() && wanted.contains(&s);
+    for dir in dirs {
+        let Ok(rd) = fs::read_dir(dir) else { continue };
+        let mut exts: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        exts.sort();
+        for ext in exts {
+            let Ok(text) = fs::read_to_string(ext.join("package.json")) else { continue };
+            if !text.contains("\"themes\"") {
+                continue;
+            }
+            let Ok(pkg) = serde_json::from_str::<Value>(&text) else { continue };
+            // Built-in labels are "%key%" placeholders into package.nls.json.
+            let nls: Value = fs::read_to_string(ext.join("package.nls.json"))
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default();
+            for t in pkg["contributes"]["themes"].as_array().into_iter().flatten() {
+                let label = t["label"].as_str().map(|l| match l.strip_prefix('%').and_then(|k| k.strip_suffix('%')) {
+                    Some(k) => nls[k].as_str().unwrap_or(l),
+                    None => l,
+                });
+                let id = t["id"].as_str().or(label);
+                if hit(id) || hit(label) {
+                    let p = t["path"].as_str().ok_or_else(|| format!("theme {sel:?} has no path"))?;
+                    return load_theme_file(&ext.join(p), 0);
+                }
+            }
+        }
+    }
+    if sel == EMBEDDED_ID {
+        return Ok(theme::embedded_theme().clone());
+    }
+    Err(format!("workbench.colorTheme: no installed theme {sel:?}"))
+}
+
+/// A theme file with its `include` chain merged: the included theme first,
+/// this file's colours over it and its token rules after it.
+pub fn load_theme_file(path: &Path, depth: u8) -> Result<Value, String> {
+    if depth > 8 {
+        return Err(format!("{}: theme include chain too deep", path.display()));
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut v: Value = serde_json::from_str(&jsonc_to_json(&text)).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !v["tokenColors"].is_array() {
+        v["tokenColors"] = Value::Array(Vec::new()); // a .tmTheme path is not supported
+    }
+    let Some(inc) = v["include"].as_str().map(String::from) else { return Ok(v) };
+    let mut base = load_theme_file(&path.parent().unwrap_or(Path::new("/")).join(inc), depth + 1)?;
+    for key in ["colors", "semanticTokenColors"] {
+        if let (Some(b), Some(own)) = (base[key].as_object_mut(), v[key].as_object()) {
+            b.extend(own.clone());
+        } else if v[key].is_object() {
+            base[key] = v[key].clone();
+        }
+    }
+    if let (Some(b), Some(own)) = (base["tokenColors"].as_array_mut(), v["tokenColors"].as_array()) {
+        b.extend(own.iter().cloned());
+    }
+    if v["name"].is_string() {
+        base["name"] = v["name"].clone();
+    }
+    Ok(base)
+}
+
+/// Is `k` a theme-scoped block (`"[Theme Name]"`) for one of `names`?
+fn scoped_for(k: &str, names: &[String]) -> Option<bool> {
+    let inner = k.strip_prefix('[')?.strip_suffix(']')?;
+    Some(inner.split("][").any(|n| n == "*" || names.iter().any(|m| m == n)))
+}
+
+fn customize_colors(theme: &mut Value, cust: Option<&Value>, names: &[String]) {
+    let Some(cust) = cust.and_then(Value::as_object) else { return };
+    if !theme["colors"].is_object() {
+        theme["colors"] = Value::Object(Map::new());
+    }
+    let mut apply = |m: &Map<String, Value>| {
+        for (k, v) in m {
+            if v.is_string() && !k.starts_with('[') {
+                theme["colors"][k] = v.clone();
+            }
+        }
+    };
+    apply(cust);
+    for (k, v) in cust {
+        if scoped_for(k, names) == Some(true) {
+            if let Some(m) = v.as_object() {
+                apply(m);
+            }
+        }
+    }
+}
+
+/// `editor.tokenColorCustomizations` as TextMate rules: VS Code's shorthand
+/// groups, then `textMateRules`, then theme-scoped blocks.
+fn token_rules(cust: Option<&Value>, names: &[String]) -> Vec<Value> {
+    const GROUPS: &[(&str, &str)] = &[
+        ("comments", "comment, punctuation.definition.comment"),
+        ("strings", "string, meta.embedded.assembly"),
+        ("keywords", "keyword - keyword.operator, keyword.control, storage, storage.type"),
+        ("numbers", "constant.numeric"),
+        ("types", "entity.name.type, entity.name.class, support.type, support.class"),
+        ("functions", "entity.name.function, support.function"),
+        ("variables", "variable, entity.name.variable"),
+    ];
+    fn one(m: &Map<String, Value>, out: &mut Vec<Value>) {
+        for (g, scope) in GROUPS {
+            let settings = match m.get(*g) {
+                Some(Value::String(c)) => serde_json::json!({ "foreground": c }),
+                Some(o @ Value::Object(_)) => o.clone(),
+                _ => continue,
+            };
+            out.push(serde_json::json!({ "scope": scope, "settings": settings }));
+        }
+        out.extend(m.get("textMateRules").and_then(Value::as_array).into_iter().flatten().cloned());
+    }
+    let mut out = Vec::new();
+    let Some(cust) = cust.and_then(Value::as_object) else { return out };
+    one(cust, &mut out);
+    for (k, v) in cust {
+        if scoped_for(k, names) == Some(true) {
+            if let Some(m) = v.as_object() {
+                one(m, &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// What "Preferences: Open Settings (JSON)" writes when there is no file yet.
+pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.json format (comments and
+// trailing commas are fine). Saving applies them; a broken file is reported in
+// the status bar and the last good settings stay. Every key is in README.md.
+{
+    // "workbench.colorTheme": "Visual Studio Dark - C++",   // a theme id, label or absolute path
+    // "herdr-code.followVSCode": false,   // take the theme and its customizations from VS Code
+    // "workbench.colorCustomizations": { "statusBar.background": "#007ACC" },
+    // "editor.tokenColorCustomizations": {
+    //     "comments": "#6A9955",
+    //     "textMateRules": [{ "scope": "keyword.control", "settings": { "foreground": "#C586C0" } }],
+    // },
+    // "workbench.density": "comfortable",   // or "compact"
+    // "herdr-code.spacing": {   // overrides the density's values, one key at a time
+    //     "sidebarWidth": 36, "sidebarPadding": 2, "sectionGap": 1, "editorPadding": 2,
+    //     "tabPadding": 2, "statusBarGap": 3, "activityBarWidth": 5, "listItemGap": 0,
+    //     "popupPadding": [3, 1], "iconGap": 2, "treeIndent": 2, "titleBarPadding": 2,
+    //     "buttonPadding": 2, "findWidgetPadding": 1, "statusBarPadding": 2,
+    // },
+    // "herdr-code.icons": "nerd",           // or "ascii"
+    // "herdr-code.fileIcons": {
+    //     "extensions": { "c": { "glyph": "", "color": "#519ABA" } },
+    //     "fileNames": { "Kconfig": { "glyph": "" } },
+    //     "folderNames": { "drivers": { "color": "#E2C08D" } },
+    //     "folder": { "glyph": "" },
+    //     "folderOpen": { "glyph": "" },
+    // },
+    // "indentRainbow.enabled": true,
+    // "indentRainbow.indicatorStyle": "classic",   // or "light"
+    // "editor.guides.indentation": true,
+    // "editor.tabSize": 4,
+}
+"##;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("herdr-code-set-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn jsonc_settings_and_defaults() {
+        let m = parse_jsonc("// c\n{ \"workbench.density\": \"compact\", /* x */ \"editor.tabSize\": 2, }\n").unwrap();
+        let s = from_maps(&m, None, &[]).unwrap();
+        assert!(s.compact);
+        assert_eq!(s.spacing, Spacing::COMPACT);
+        assert_eq!(s.tab_size, 2);
+        let m = parse_jsonc(r#"{"herdr-code.spacing": {"listItemGap": 1, "sidebarWidth": 500, "popupPadding": [5]}}"#).unwrap();
+        let sp = from_maps(&m, None, &[]).unwrap().spacing;
+        assert_eq!((sp.list_gap, sp.sidebar_width, sp.popup_padding), (1, 200, (5, 1)), "clamped; unset keys keep the density's");
+        assert_eq!(sp.tab_padding, Spacing::COMFORTABLE.tab_padding);
+        assert!(s.guides && s.rainbow.enabled && !s.ascii_icons);
+        assert!(parse_jsonc("").unwrap().is_empty(), "empty file = {{}}");
+        assert!(parse_jsonc("// only a comment\n").unwrap().is_empty());
+        let e = parse_jsonc("{\n  \"a\": 1\n  \"b\": 2\n}").unwrap_err();
+        assert!(e.contains("line 3"), "{e}");
+        assert!(parse_jsonc("[1]").is_err());
+        let d = tmp("missing");
+        let s = load(&d.join("settings.json")).unwrap();
+        assert_eq!(s.theme.json, *theme::embedded_theme(), "missing file = defaults");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn theme_id_resolves_through_an_include_chain() {
+        let d = tmp("theme");
+        let ext = d.join("me.themes-1.0.0");
+        fs::create_dir_all(ext.join("themes")).unwrap();
+        fs::write(
+            ext.join("package.json"),
+            r#"{"contributes":{"themes":[{"id":"My Dark","label":"%myLabel%","path":"./themes/my.json"}]}}"#,
+        )
+        .unwrap();
+        fs::write(ext.join("package.nls.json"), r#"{"myLabel": "My Dark (label)"}"#).unwrap();
+        fs::write(
+            ext.join("themes/base.json"),
+            "{ // base\n \"colors\": {\"editor.background\": \"#111111\", \"editor.foreground\": \"#222222\"},\n \"tokenColors\": [{\"scope\": \"comment\", \"settings\": {\"foreground\": \"#00ff00\"}}] }",
+        )
+        .unwrap();
+        fs::write(
+            ext.join("themes/my.json"),
+            r##"{"name": "My", "include": "./base.json", "colors": {"editor.foreground": "#333333",},
+               "tokenColors": [{"scope": "string", "settings": {"foreground": "#ff0000"}}]}"##,
+        )
+        .unwrap();
+        for sel in ["My Dark", "My Dark (label)", "Default My Dark"] {
+            let t = resolve_theme(Some(sel), std::slice::from_ref(&d)).unwrap();
+            assert_eq!(t["colors"]["editor.background"], "#111111", "from the include");
+            assert_eq!(t["colors"]["editor.foreground"], "#333333", "own colour wins");
+            let scopes: Vec<&str> = t["tokenColors"].as_array().unwrap().iter().map(|r| r["scope"].as_str().unwrap()).collect();
+            assert_eq!(scopes, ["comment", "string"], "included rules first");
+        }
+        assert!(resolve_theme(Some("Nope"), std::slice::from_ref(&d)).unwrap_err().contains("Nope"));
+        let abs = ext.join("themes/my.json");
+        assert_eq!(resolve_theme(Some(abs.to_str().unwrap()), &[]).unwrap()["name"], "My");
+        assert_eq!(resolve_theme(Some(EMBEDDED_ID), &[]).unwrap(), *theme::embedded_theme());
+        // An include loop is an error, not a hang.
+        fs::write(d.join("loop.json"), r#"{"include": "./loop.json"}"#).unwrap();
+        assert!(load_theme_file(&d.join("loop.json"), 0).unwrap_err().contains("too deep"));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn customizations_override_colours_and_tokens() {
+        let m = parse_jsonc(
+            r##"{
+            "workbench.colorCustomizations": {
+                "statusBar.background": "#123456",
+                "[Some Other Theme]": { "sideBar.background": "#000001" },
+                "[Visual Studio Dark - C++]": { "activityBar.background": "#654321" },
+            },
+            "editor.tokenColorCustomizations": {
+                "comments": "#abcdef",
+                "textMateRules": [{ "scope": "keyword.control", "settings": { "foreground": "#010203" } }],
+            },
+        }"##,
+        )
+        .unwrap();
+        let s = from_maps(&m, None, &[]).unwrap();
+        let pal = theme::build_pal(s.theme.json["colors"].as_object().unwrap());
+        use ratatui::style::Color;
+        assert_eq!(pal.status_bg, Color::Rgb(0x12, 0x34, 0x56));
+        assert_eq!(pal.activity_bg, Color::Rgb(0x65, 0x43, 0x21), "scoped to the active theme");
+        assert_eq!(pal.sidebar_bg, Color::Rgb(0x25, 0x25, 0x26), "scoped to another theme: ignored");
+        let syn = theme::build_syntax(&s.theme.json, &s.theme.extra_rules);
+        let h = syntect::highlighting::Highlighter::new(&syn.theme);
+        let fg = |sc: &str| {
+            let c = h.style_for_stack(&[syntect::parsing::Scope::new(sc).unwrap()]).foreground;
+            (c.r, c.g, c.b)
+        };
+        assert_eq!(fg("comment.line"), (0xAB, 0xCD, 0xEF));
+        assert_eq!(fg("keyword.control"), (1, 2, 3));
+        assert_eq!(fg("string"), (0xCE, 0x91, 0x78), "untouched rules stay");
+        // followVSCode: VS Code's theme keys win.
+        let vs = parse_jsonc(r##"{"workbench.colorCustomizations": {"statusBar.background": "#0000ff"}}"##).unwrap();
+        let s = from_maps(&m, Some(&vs), &[]).unwrap();
+        assert_eq!(s.theme.json["colors"]["statusBar.background"], "#0000ff");
+        assert!(s.follow_vscode);
+    }
+
+    #[test]
+    fn rainbow_keys_and_bad_patterns() {
+        let m = parse_jsonc(
+            r#"{"indentRainbow.colors": ["rgba(1,2,3,0.5)"], "indentRainbow.tabmixColor": "",
+                "indentRainbow.indicatorStyle": "light", "indentRainbow.excludedLanguages": ["c"]}"#,
+        )
+        .unwrap();
+        let r = from_maps(&m, None, &[]).unwrap().rainbow;
+        assert_eq!(r.colors, vec![Rgba(1, 2, 3, 128)]);
+        assert!(r.tabmix.is_none() && r.light && !r.applies("c") && r.applies("rust"));
+        let bad = parse_jsonc(r#"{"indentRainbow.ignoreLinePatterns": ["/(/", "/x/"]}"#).unwrap();
+        let s = from_maps(&bad, None, &[]).unwrap();
+        assert_eq!(s.rainbow.ignore_lines.len(), 1, "the bad pattern is skipped, the good one kept");
+        assert!(s.warnings[0].contains("skipped"), "{:?}", s.warnings);
+    }
+}

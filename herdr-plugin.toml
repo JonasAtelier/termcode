@@ -2,12 +2,12 @@ id = "jonas.herdr-code"
 name = "herdr-code"
 version = "0.1.0"
 min_herdr_version = "0.9.1"
-description = "Second window on the same session with a read-only code and git panel for the current repo"
+description = "VS Code-like editor and git panel for the current repo, as a tab in the current workspace"
 platforms = ["linux"]
 
 [[actions]]
 id = "open"
-title = "Open Code window for this pane's repo"
+title = "Open a Code tab for this pane's repo"
 contexts = ["pane"]
 command = ["herdr-code"]
 

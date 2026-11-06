@@ -2,7 +2,7 @@
 name = "herdr-code"
 version = "0.1.0"
 edition = "2021"
-description = "herdr plugin: a second window with a VS Code-like editor and git panel for the current repo"
+description = "herdr plugin: a VS Code-like editor and git panel for the current repo, as a herdr tab"
 publish = false
 
 [dependencies]
@@ -11,6 +11,8 @@ ratatui = "0.29"
 serde_json = "1"
 # Line alignment for the side-by-side diff editor.
 similar = "3"
+# JS-style regexes from indentRainbow.ignoreLinePatterns; already in the tree via syntect.
+fancy-regex = "0.16"
 # Cell widths for CJK/wide characters in cursor and column math (already in the tree via ratatui).
 unicode-width = "0.2"
 # Pure-Rust regex backend (fancy-regex); no onig/C build.

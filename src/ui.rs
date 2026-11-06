@@ -1,16 +1,38 @@
 //! Drawing, VS Code layout: title bar, activity bar, resizable sidebar, editor
 //! groups (tabs, text or side-by-side diff, find widget), status bar, popups.
-//! Every clickable area is recorded in `app.ui` for the mouse handler.
+//! Every clickable area is recorded in `app.ui` from the rect actually drawn,
+//! so mouse targets stay exact in both densities.
 
+use crate::decor::{self, Guides, Mark, Paint, Rainbow};
 use crate::diff::Kind;
 use crate::editor::{self, Buffer, View};
 use crate::git::Section;
-use crate::panel::{base, App, Doc, DiffDoc, FindBtn, Focus, GroupHit, HRow, Hits, ScmAct, Side, SRow, Zone, SIDES};
-use crate::theme::{git_color, icons, P};
+use crate::icons::{file_icon, folder_icon};
+use crate::settings::Spacing;
+use crate::panel::{
+    base, App, DiffDoc, Doc, Drag, Find, FindBtn, Focus, GroupHit, HRow, Hits, ScmAct, ScrollHit, ScrollTarget, Side,
+    SRow, Zone, COMMANDS, SIDES,
+};
+use crate::theme::{git_color, icons, Rgba, P};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use syntect::highlighting::{FontStyle, Style as SStyle};
 use unicode_width::UnicodeWidthStr;
+
+/// `workbench.density` plus `herdr-code.spacing`: comfortable (default) frames
+/// popups and pads the gutter; compact is the original tight layout.
+#[derive(Clone, Copy)]
+struct Lay {
+    comfy: bool,
+    s: Spacing,
+    /// Inner horizontal padding of sidebar rows and inputs.
+    pad: u16,
+}
+
+fn lay(app: &App) -> Lay {
+    let s = app.settings.spacing;
+    Lay { comfy: !app.settings.compact, s, pad: s.sidebar_padding }
+}
 
 /// Truncate to `w` display cells with an ellipsis.
 fn fit(s: &str, w: usize) -> String {
@@ -45,8 +67,85 @@ fn width(spans: &[Span]) -> u16 {
     spans.iter().map(|s| s.width() as u16).sum()
 }
 
+/// `n` spaces: the blank cells after an icon, inside a button, at an edge.
+fn sp(n: u16) -> String {
+    " ".repeat(n as usize)
+}
+
+fn inset(r: Rect, pad: u16) -> Rect {
+    Rect::new(r.x + pad, r.y, r.width.saturating_sub(2 * pad), r.height)
+}
+
+/// A popup frame: rounded border with 2x1 padding (comfortable only).
+fn popup_block(bg: Color, fg: Color, (h, v): (u16, u16)) -> Block<'static> {
+    let b = Block::bordered()
+        .border_style(Style::new().fg(P.widget_border).bg(bg))
+        .style(Style::new().bg(bg).fg(fg))
+        .padding(Padding::new(h, h, v, v));
+    if crate::theme::ascii() {
+        let s = icons().border;
+        b.border_set(symbols::border::Set {
+            top_left: s[0],
+            top_right: s[1],
+            bottom_left: s[2],
+            bottom_right: s[3],
+            horizontal_top: s[4],
+            horizontal_bottom: s[4],
+            vertical_left: s[5],
+            vertical_right: s[5],
+        })
+    } else {
+        b.border_type(BorderType::Rounded)
+    }
+}
+
+/// The worktree's parent directory for the Explorer header: `~` for $HOME, and
+/// cut from the left at a folder boundary (`…/work/fetched`) to fit `width` cells.
+pub fn parent_label(root: &std::path::Path, home: Option<&std::path::Path>, width: usize) -> String {
+    let parent = root.parent().unwrap_or(root);
+    let full = match home.and_then(|h| parent.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => parent.display().to_string(),
+    };
+    if full.width() <= width {
+        return full;
+    }
+    // Drop leading folders until "…/rest" fits; the last folder alone may still be cut.
+    let mut rest = full.as_str();
+    while let Some((_, tail)) = rest.split_once('/') {
+        rest = tail;
+        if rest.width() + 2 <= width {
+            return format!("…/{rest}");
+        }
+    }
+    let keep: String = rest.chars().rev().scan(0, |w, c| {
+        *w += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        (*w < width).then_some(c)
+    }).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("…{keep}")
+}
+
+/// VS Code language id for a syntect syntax name (indent-rainbow's language lists).
+pub fn lang_id(name: &str) -> String {
+    match name {
+        "Plain Text" => "plaintext",
+        "C++" => "cpp",
+        "C#" => "csharp",
+        "Objective-C" => "objective-c",
+        "Objective-C++" => "objective-cpp",
+        "Markdown" | "MultiMarkdown" => "markdown",
+        "Bourne Again Shell (bash)" | "Shell-Unix-Generic" => "shellscript",
+        "Git Commit" => "git-commit",
+        "JavaScript" | "JavaScript (Babel)" => "javascript",
+        n => return n.to_lowercase().replace(' ', ""),
+    }
+    .into()
+}
+
 pub fn draw(app: &mut App, f: &mut Frame) {
     app.ui = Hits::default();
+    let lay = lay(app);
     let area = f.area();
     f.render_widget(Block::new().style(Style::new().bg(P.editor_bg).fg(P.editor_fg)), area);
     if area.height < 5 || area.width < 30 {
@@ -55,25 +154,27 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let title = Rect::new(area.x, area.y, area.width, 1);
     let status = Rect::new(area.x, area.bottom() - 1, area.width, 1);
     let body = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
-    title_bar(app, f, title);
-    status_bar(app, f, status);
-    let act = Rect::new(body.x, body.y, 3, body.height);
+    title_bar(app, f, title, lay);
+    status_bar(app, f, status, lay);
+    let aw = lay.s.activity_width.min(body.width / 4);
+    let act = Rect::new(body.x, body.y, aw, body.height);
     activity_bar(app, f, act);
     let mut x = act.right();
     if app.side_visible {
-        let max = body.width.saturating_sub(3 + 1 + 20).max(12);
-        let w = app.side_w.clamp(12, max);
-        sidebar(app, f, Rect::new(x, body.y, w, body.height));
+        let max = body.width.saturating_sub(aw + 1 + 20).max(12);
+        let w = app.side_w.unwrap_or(lay.s.sidebar_width).clamp(12, max);
+        app.ui.sidebar = Rect::new(x, body.y, w, body.height);
+        sidebar(app, f, app.ui.sidebar, lay);
         x += w;
         let d = Rect::new(x, body.y, 1, body.height);
         app.ui.divider = d;
         let lines: Vec<Line> = (0..d.height).map(|_| Line::raw("│")).collect();
-        f.render_widget(Paragraph::new(lines).style(Style::new().fg(P.widget_border).bg(P.sidebar_bg)), d);
+        f.render_widget(Paragraph::new(lines).style(Style::new().fg(P.group_border).bg(P.sidebar_bg)), d);
         x += 1;
     }
     let ed = Rect::new(x, body.y, body.right().saturating_sub(x), body.height);
     app.ui.editor_area = ed;
-    editor_area(app, f, ed);
+    editor_area(app, f, ed, lay);
     if let Some((g, zone)) = app.drop {
         if let Some(gh) = app.ui.groups.get(g) {
             let a = gh.area;
@@ -86,14 +187,14 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         }
     }
     if app.quick.is_some() {
-        quick(app, f, area);
+        quick(app, f, area, lay);
     }
     if app.prompt.is_some() {
-        prompt(app, f, area);
+        prompt(app, f, area, lay);
     }
 }
 
-fn title_bar(app: &mut App, f: &mut Frame, r: Rect) {
+fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let active = app
         .groups
         .get(app.ag)
@@ -103,24 +204,31 @@ fn title_bar(app: &mut App, f: &mut Frame, r: Rect) {
         Some(t) => format!("{t} — {} — herdr-code", app.repo),
         None => format!("{} — herdr-code", app.repo),
     };
-    let st = Style::new().fg(P.sidebar_fg).bg(P.title_bg);
+    let st = Style::new().fg(P.title_fg).bg(P.title_bg);
     fill(f, r, P.title_bg);
-    let t = fit(&text, r.width.saturating_sub(12) as usize);
+    let (tp, bp) = (lay.s.title_padding, lay.s.button_padding);
+    let close = format!("{}{}{}Close{}", sp(bp), icons().close, sp(lay.s.icon_gap), sp(bp));
+    let w = close.width() as u16;
+    let t = fit(&text, r.width.saturating_sub(2 * (w + tp) + 2) as usize);
     let x = r.x + (r.width.saturating_sub(t.width() as u16)) / 2;
     f.render_widget(Span::styled(t, st), Rect::new(x, r.y, r.right().saturating_sub(x), 1));
-    let close = format!(" {} Close ", icons().close);
-    let w = close.width() as u16;
-    app.ui.close = Rect::new(r.right().saturating_sub(w), r.y, w, 1);
-    f.render_widget(Span::styled(close, Style::new().fg(Color::White).bg(P.git_deleted)), app.ui.close);
+    app.ui.close = Rect::new(r.right().saturating_sub(w + tp), r.y, w, 1);
+    f.render_widget(Span::styled(close, Style::new().fg(P.status_err_fg).bg(P.status_err_bg)), app.ui.close);
 }
 
-fn status_bar(app: &mut App, f: &mut Frame, r: Rect) {
+fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let st = Style::new().fg(P.status_fg).bg(P.status_bg);
     fill(f, r, P.status_bg);
-    let left = vec![
-        Span::styled(format!(" {} {} ", icons().branch, app.branch), st),
-        Span::styled(format!(" {}", app.msg), st),
-    ];
+    let edge = sp(lay.s.status_padding);
+    let sep = sp(lay.s.status_gap);
+    let branch_gap = if icons().branch.is_empty() { String::new() } else { sp(lay.s.icon_gap) };
+    let mut left = vec![Span::styled(format!("{edge}{}{branch_gap}{}", icons().branch, app.branch), st)];
+    if let Some(e) = &app.settings_err {
+        left.push(Span::styled(sep.clone(), st));
+        let err = Style::new().fg(P.status_err_fg).bg(P.status_err_bg);
+        left.push(Span::styled(format!(" settings.json: {} ", fit(e, (r.width / 2) as usize)), err));
+    }
+    left.push(Span::styled(format!("{sep}{}", app.msg), st));
     let mut right = Vec::new();
     if let Some(Doc::Text(b)) = app.groups.get(app.ag).and_then(|g| g.tabs.get(g.active)).and_then(|t| app.docs.get(&t.key)) {
         let v = &app.groups[app.ag].tabs[app.groups[app.ag].active].view;
@@ -130,12 +238,15 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect) {
         if let Some(sel) = b.selected_text(v) {
             s.push_str(&format!(" ({} selected)", sel.chars().count()));
         }
-        let indent = if b.indent == "\t" { "Tab Size: 4".to_string() } else { format!("Spaces: {}", b.indent.len()) };
-        let enc = if b.readonly.is_some() && !b.binary { format!("{} Read-only", icons().lock) } else { "UTF-8".into() };
-        right.push(Span::styled(
-            format!("{s}   {indent}   {enc}   {}   {} ", if b.crlf { "CRLF" } else { "LF" }, b.syntax_name()),
-            st,
-        ));
+        let indent = if b.indent == "\t" { format!("Tab Size: {}", editor::tab()) } else { format!("Spaces: {}", b.indent.len()) };
+        let enc = if b.readonly.is_some() && !b.binary {
+            format!("{}{}Read-only", icons().lock, sp(lay.s.icon_gap))
+        } else {
+            "UTF-8".into()
+        };
+        let eol = if b.crlf { "CRLF" } else { "LF" };
+        let items = [s, indent, enc, eol.to_string(), b.syntax_name().to_string()];
+        right.push(Span::styled(format!("{}{edge}", items.join(&sep)), st));
     }
     f.render_widget(Line::from(left), r);
     let w = width(&right);
@@ -160,15 +271,15 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
         let fg = if active { P.activity_fg } else { P.activity_inactive };
         let bar = if active { "▎" } else { " " };
         let rr = Rect::new(r.x, y, r.width, 1);
-        f.render_widget(
-            Line::from(vec![Span::styled(bar, Style::new().fg(P.activity_fg)), Span::styled(icon, Style::new().fg(fg))]),
-            rr,
-        );
+        // The marker at the left edge, the icon centred in the column.
+        let ix = r.x + (r.width / 2).max(1);
+        f.render_widget(Span::styled(bar, Style::new().fg(P.activity_border)), rr);
+        f.render_widget(Span::styled(icon, Style::new().fg(fg)), Rect::new(ix, y, 1, 1));
         if *s == Side::Scm && !app.scm_files.is_empty() && y + 1 < r.bottom() {
             let n = app.scm_files.len().min(99).to_string();
             f.render_widget(
-                Span::styled(n, Style::new().fg(Color::White).bg(P.status_bg)),
-                Rect::new(r.x + 1, y + 1, 2, 1),
+                Span::styled(n, Style::new().fg(P.activity_badge_fg).bg(P.activity_badge_bg)),
+                Rect::new(ix, y + 1, 2.min(r.right() - ix), 1),
             );
         }
         app.ui.activity.push((rr, *s));
@@ -176,14 +287,43 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
 }
 
 /// Sidebar title row with right-aligned action icons.
-fn side_title(app: &mut App, f: &mut Frame, r: Rect, title: &str) {
-    row(f, r, P.sidebar_bg, vec![Span::styled(format!("  {title}"), Style::new().fg(P.sidebar_title))]);
-    let rr = Rect::new(r.right().saturating_sub(3), r.y, 2, 1);
-    f.render_widget(Span::styled(icons().refresh, Style::new().fg(P.sidebar_fg)), rr);
+fn side_title(app: &mut App, f: &mut Frame, r: Rect, title: &str, lay: Lay) {
+    let indent = " ".repeat((lay.pad as usize + 1).max(2));
+    row(f, r, P.sidebar_bg, vec![Span::styled(format!("{indent}{title}"), Style::new().fg(P.sidebar_title))]);
+    let rr = Rect::new(r.right().saturating_sub(2 + lay.pad.max(1)), r.y, 2, 1);
+    f.render_widget(Span::styled(icons().refresh, Style::new().fg(P.icon_fg)), rr);
     app.ui.find_btns.push((rr, FindBtn::Refresh));
 }
 
-fn sidebar(app: &mut App, f: &mut Frame, r: Rect) {
+/// A slim scrollbar slider over `track`, composited over what is drawn there.
+#[allow(clippy::too_many_arguments)]
+fn scrollbar(app: &mut App, f: &mut Frame, track: Rect, target: ScrollTarget, total: usize, view: usize, off: usize, max_off: usize) {
+    let s = decor::slider(track.height, total, view, off, max_off);
+    paint_slider(f, track, s, slider_color(app, track, target));
+    app.ui.scrollbars.push(ScrollHit { track, target, slider: s, max_off, page: view.max(1) });
+}
+
+fn slider_color(app: &App, track: Rect, target: ScrollTarget) -> Rgba {
+    if matches!(app.drag, Drag::Scroll(sb, _) if sb.target == target) {
+        P.slider_active
+    } else if app.hover.is_some_and(|p| track.contains(p)) {
+        P.slider_hover
+    } else {
+        P.slider
+    }
+}
+
+fn paint_slider(f: &mut Frame, track: Rect, (start, len): (u16, u16), c: Rgba) {
+    let track = track.intersection(f.area());
+    let buf = f.buffer_mut();
+    for y in track.y + start..(track.y + start + len).min(track.bottom()) {
+        let cell = &mut buf[(track.x, y)];
+        let under = cell.bg;
+        cell.set_bg(c.over(under));
+    }
+}
+
+fn sidebar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     fill(f, r, P.sidebar_bg);
     let title = match app.side {
         Side::Explorer => "EXPLORER",
@@ -191,17 +331,30 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect) {
         Side::Scm => "SOURCE CONTROL",
         Side::History => "HISTORY",
     };
-    side_title(app, f, Rect::new(r.x, r.y, r.width, 1), title);
-    let mut y = r.y + 1;
+    side_title(app, f, Rect::new(r.x, r.y, r.width, 1), title, lay);
+    let mut y = r.y + 1 + lay.s.section_gap;
     let ic = icons();
+    // Inputs and buttons line up with the rows' padding (at least one cell).
+    let m = lay.pad.max(1);
+    let field = |y: u16, h: u16| Rect::new(r.x + m, y, r.width.saturating_sub(2 * m), h);
     match app.side {
         Side::Explorer => {
-            let hdr = format!("{} {}", ic.chev_down, app.repo.to_uppercase());
-            row(f, Rect::new(r.x, y, r.width, 1), P.sidebar_bg, vec![Span::styled(hdr, Style::new().fg(P.sidebar_fg).bold())]);
-            y += 1;
+            let hr = Rect::new(r.x, y, r.width, 1);
+            fill(f, hr, P.section_bg);
+            let hdr = format!("{}{}{}", ic.chev_down, sp(lay.s.icon_gap), app.repo.to_uppercase());
+            row(f, inset(hr, lay.pad), P.section_bg, vec![Span::styled(hdr, Style::new().fg(P.section_fg).bold())]);
+            // Line 2: where the worktree lives, under the name. Not a tree row.
+            let pr = Rect::new(r.x, y + 1, r.width, 1);
+            fill(f, pr, P.section_bg);
+            let indent = 1 + lay.s.icon_gap as usize;
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            let room = (inset(pr, lay.pad).width as usize).saturating_sub(indent + 1);
+            let parent = parent_label(&app.root, home.as_deref(), room);
+            row(f, inset(pr, lay.pad), P.section_bg, vec![Span::styled(format!("{}{parent}", " ".repeat(indent)), Style::new().fg(P.dim))]);
+            y += 2;
         }
         Side::Search => {
-            let inp = Rect::new(r.x + 1, y, r.width.saturating_sub(2), 1);
+            let inp = field(y, 1);
             let focused = app.focus == crate::panel::Focus::SearchInput;
             input(f, inp, &app.query, "Search", focused);
             app.ui.side_input = inp;
@@ -210,7 +363,7 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect) {
             let mut tx = inp.right().saturating_sub(6);
             for (icon, on, b) in toggles {
                 let tr = Rect::new(tx, y, 1, 1);
-                let st = if on { Style::new().fg(Color::White).bg(P.focus_border) } else { Style::new().fg(P.sidebar_fg).bg(P.input_bg) };
+                let st = if on { Style::new().fg(P.option_fg).bg(P.option_bg) } else { Style::new().fg(P.input_fg).bg(P.input_bg) };
                 f.render_widget(Span::styled(icon, st), tr);
                 app.ui.find_btns.push((tr, b));
                 tx += 2;
@@ -222,16 +375,16 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect) {
             y += 1;
             let files = app.search_rows().len() - app.hits.len();
             let summary = if app.hits.is_empty() { String::new() } else { format!("{} results in {files} files", app.hits.len()) };
-            row(f, Rect::new(r.x, y, r.width, 1), P.sidebar_bg, vec![Span::styled(format!("  {summary}"), Style::new().fg(P.dim))]);
+            row(f, inset(Rect::new(r.x, y, r.width, 1), lay.pad), P.sidebar_bg, vec![Span::styled(format!("  {summary}"), Style::new().fg(P.dim))]);
             y += 1;
         }
         Side::Scm => {
             let lines = app.commit_msg.split('\n').count().clamp(1, 5) as u16;
-            let inp = Rect::new(r.x + 1, y, r.width.saturating_sub(2), lines);
+            let inp = field(y, lines);
             let focused = app.focus == Focus::CommitInput;
             fill(f, inp, P.input_bg);
             if app.commit_msg.is_empty() {
-                let ph = format!("Message (Alt+Enter to commit on '{}')", app.branch);
+                let ph = format!(" Message (Alt+Enter to commit on '{}')", app.branch);
                 f.render_widget(Span::styled(fit(&ph, inp.width as usize - 1), Style::new().fg(P.placeholder)), inp);
             } else {
                 let shown: Vec<Line> = app
@@ -253,20 +406,20 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect) {
             }
             app.ui.side_input = inp;
             y += lines;
-            let btn = Rect::new(r.x + 1, y, r.width.saturating_sub(2), 1);
-            let label = format!("{} Commit", ic.check);
+            let btn = field(y, 1);
+            let label = format!("{}{}Commit", ic.check, sp(lay.s.icon_gap));
             fill(f, btn, P.button_bg);
             let bx = btn.x + btn.width.saturating_sub(label.width() as u16) / 2;
             f.render_widget(Span::styled(label, Style::new().fg(P.button_fg).bg(P.button_bg)), Rect::new(bx, y, btn.right() - bx, 1));
             app.ui.commit_btn = btn;
-            y += 2;
+            y += 1 + lay.s.section_gap.max(1); // blank rows between the commit box and the changes
         }
         Side::History => {
             let t = match &app.history_path {
                 Some(p) => format!("  {} (Esc: all)", fit(p, r.width as usize - 12)),
                 None => "  all commits".into(),
             };
-            row(f, Rect::new(r.x, y, r.width, 1), P.sidebar_bg, vec![Span::styled(t, Style::new().fg(P.dim))]);
+            row(f, inset(Rect::new(r.x, y, r.width, 1), lay.pad), P.sidebar_bg, vec![Span::styled(t, Style::new().fg(P.dim))]);
             y += 1;
         }
     }
@@ -274,21 +427,30 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect) {
     app.ui.side_list = list;
     let s = app.side as usize;
     let n = app.side_count();
+    // Item k sits on row k * step; the rows between are blank (listItemGap).
+    let step = 1 + lay.s.list_gap;
+    let h = (list.height as usize).div_ceil(step as usize);
+    app.ui.side_rows = h;
+    app.ui.side_gap = lay.s.list_gap;
     app.sel[s] = app.sel[s].min(n.saturating_sub(1));
     app.off[s] = app.off[s].min(n.saturating_sub(1));
-    let hover_row = app.hover.filter(|p| list.contains(*p)).map(|p| app.off[s] + (p.y - list.y) as usize);
+    let hover_row = app.hover.filter(|p| list.contains(*p)).and_then(|p| app.ui.side_item(p.y, app.off[s]));
     let scm_rows = if app.side == Side::Scm { app.scm_rows() } else { Vec::new() };
     let search_rows = if app.side == Side::Search { app.search_rows() } else { Vec::new() };
-    for k in 0..list.height as usize {
+    for k in 0..h {
         let i = app.off[s] + k;
         if i >= n {
             if i == 0 && app.side == Side::Search && app.query.is_empty() {
-                row(f, Rect::new(list.x, list.y, list.width, 1), P.sidebar_bg, vec![Span::styled("  Type and press Enter (F4/Alt+4)", Style::new().fg(P.dim))]);
+                let hint = Span::styled("  Type and press Enter (F4/Alt+4)", Style::new().fg(P.dim));
+                row(f, inset(Rect::new(list.x, list.y, list.width, 1), lay.pad), P.sidebar_bg, vec![hint]);
             }
             break;
         }
-        let rr = Rect::new(list.x, list.y + k as u16, list.width, 1);
-        let bg = if i == app.sel[s] && app.focus == Focus::Side {
+        let rr = Rect::new(list.x, list.y + k as u16 * step, list.width, 1);
+        let gap = matches!(scm_rows.get(i), Some(SRow::Gap));
+        let bg = if gap {
+            P.sidebar_bg
+        } else if i == app.sel[s] && app.focus == Focus::Side {
             P.list_active_bg
         } else if i == app.sel[s] {
             P.list_inactive_bg
@@ -297,25 +459,31 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect) {
         } else {
             P.sidebar_bg
         };
+        fill(f, rr, bg);
+        let ir = inset(rr, lay.pad);
         let hot = i == app.sel[s] || hover_row == Some(i);
         match app.side {
-            Side::Explorer => explorer_row(app, f, rr, bg, i),
-            Side::Search => search_row(app, f, rr, bg, &search_rows[i]),
-            Side::Scm => scm_row(app, f, rr, bg, &scm_rows[i], hot),
+            Side::Explorer => explorer_row(app, f, ir, bg, i),
+            Side::Search => search_row(app, f, ir, bg, &search_rows[i]),
+            Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hot),
             Side::History => {
                 let c = &app.commits[i];
                 row(
                     f,
-                    rr,
+                    ir,
                     bg,
                     vec![
                         Span::styled(format!(" {} ", c.short), Style::new().fg(P.dim)),
-                        Span::styled(fit(&c.subject, (rr.width as usize).saturating_sub(10)), Style::new().fg(P.sidebar_fg)),
+                        Span::styled(fit(&c.subject, (ir.width as usize).saturating_sub(10)), Style::new().fg(P.sidebar_fg)),
                         Span::styled(format!("  {} · {}", c.author, c.date), Style::new().fg(P.dim)),
                     ],
                 );
             }
         }
+    }
+    if n > h && h > 0 {
+        let track = Rect::new(list.right() - 1, list.y, 1, list.height);
+        scrollbar(app, f, track, ScrollTarget::Side, n, h, app.off[s], n - h);
     }
 }
 
@@ -326,26 +494,45 @@ fn right(f: &mut Frame, r: Rect, spans: Vec<Span<'static>>) -> u16 {
     r.right() - w
 }
 
+fn badge(n: usize) -> Span<'static> {
+    Span::styled(format!(" {n} "), Style::new().fg(P.badge_fg).bg(P.badge_bg))
+}
+
 fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) {
     let n = &app.tree[i];
     let ic = icons();
+    let fi = &app.settings.file_icons;
     let mark = if n.dir { app.dirty_dirs.get(&n.path).copied() } else { app.marks.get(&n.path).copied() };
     let fg = mark.map_or(P.sidebar_fg, git_color);
-    let (chev, icon) = match (n.dir, n.open) {
-        (true, true) => (ic.chev_down, ic.folder_open),
-        (true, false) => (ic.chev_right, ic.folder),
-        _ => (" ", ic.file),
+    let (chev, (glyph, gfg)) = if n.dir {
+        (if n.open { ic.chev_down } else { ic.chev_right }, folder_icon(&n.name, n.open, fi))
+    } else {
+        (" ", file_icon(&n.name, fi))
     };
-    let indent = "  ".repeat(n.depth);
+    let s = app.settings.spacing;
+    let indent = sp(s.tree_indent * n.depth as u16);
+    let gap = sp(s.icon_gap);
+    // VS Code: a folder holding changes gets the colour and a dot; a file its letter.
     let right_spans = match mark {
-        Some(c) if n.dir => vec![Span::styled(format!("{} ", ic.dirty), Style::new().fg(git_color(c)))],
+        Some(c) if n.dir => vec![Span::styled(format!("{} ", ic.folder_dot), Style::new().fg(git_color(c)))],
         Some(c) => vec![Span::styled(format!("{c} "), Style::new().fg(git_color(c)))],
         None => vec![],
     };
     let rw = width(&right_spans) as usize;
-    let lead = format!(" {indent}{chev} {icon} ");
-    let name = fit(&n.name, (r.width as usize).saturating_sub(lead.width() + rw + 1));
-    row(f, r, bg, vec![Span::styled(lead, Style::new().fg(P.sidebar_fg)), Span::styled(name, Style::new().fg(fg))]);
+    // [indent][twistie][gap][icon][gap][name]: an icon is laid out as one cell.
+    let lead = format!(" {indent}{chev}{gap}");
+    let name = fit(&n.name, (r.width as usize).saturating_sub(lead.width() + 1 + gap.len() + rw + 1));
+    row(
+        f,
+        r,
+        bg,
+        vec![
+            Span::styled(lead, Style::new().fg(P.icon_fg)),
+            Span::styled(glyph, Style::new().fg(gfg)),
+            Span::raw(gap),
+            Span::styled(name, Style::new().fg(fg)),
+        ],
+    );
     if !right_spans.is_empty() {
         right(f, r, right_spans);
     }
@@ -353,20 +540,24 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) {
 
 fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
     let ic = icons();
+    let g = app.settings.spacing.icon_gap;
     match hr {
         HRow::File(p, n) => {
             let dir = p.rsplit_once('/').map_or("", |(d, _)| d);
+            let (glyph, gfg) = file_icon(base(p), &app.settings.file_icons);
             row(
                 f,
                 r,
                 bg,
                 vec![
-                    Span::styled(format!(" {} {} ", ic.chev_down, ic.file), Style::new().fg(P.sidebar_fg)),
+                    Span::styled(format!(" {}{}", ic.chev_down, sp(g)), Style::new().fg(P.icon_fg)),
+                    Span::styled(glyph, Style::new().fg(gfg)),
+                    Span::raw(sp(g)),
                     Span::styled(base(p).to_string(), Style::new().fg(P.sidebar_fg)),
                     Span::styled(format!(" {dir}"), Style::new().fg(P.dim)),
                 ],
             );
-            right(f, r, vec![Span::styled(format!(" {n} "), Style::new().fg(Color::White).bg(P.list_inactive_bg))]);
+            right(f, r, vec![badge(*n)]);
         }
         HRow::Hit(h) => {
             let h = &app.hits[*h];
@@ -382,7 +573,7 @@ fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
                 r,
                 bg,
                 vec![
-                    Span::raw("     "),
+                    Span::raw(sp(3 + 2 * g)), // under the file name
                     Span::styled(clean(&keep), Style::new().fg(P.sidebar_fg)),
                     Span::styled(clean(m), Style::new().fg(P.sidebar_fg).bg(P.find_other)),
                     Span::styled(clean(z), Style::new().fg(P.sidebar_fg)),
@@ -394,10 +585,12 @@ fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
 
 fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: bool) {
     let ic = icons();
+    let g = app.settings.spacing.icon_gap;
     match sr {
+        SRow::Gap => {}
         SRow::Head(sec, n) => {
             let label = if *sec == Section::Staged { "Staged Changes" } else { "Changes" };
-            row(f, r, bg, vec![Span::styled(format!(" {} {label}", ic.chev_down), Style::new().fg(P.sidebar_fg).bold())]);
+            row(f, r, bg, vec![Span::styled(format!(" {}{}{label}", ic.chev_down, sp(g)), Style::new().fg(P.sidebar_fg).bold())]);
             let acts: Vec<(&str, ScmAct)> = if *sec == Section::Staged {
                 vec![(ic.remove, ScmAct::UnstageAll)]
             } else {
@@ -405,9 +598,9 @@ fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: boo
             };
             let mut spans = Vec::new();
             for (icon, _) in &acts {
-                spans.push(Span::styled(format!("{icon} "), Style::new().fg(P.sidebar_fg)));
+                spans.push(Span::styled(format!("{icon} "), Style::new().fg(P.icon_fg)));
             }
-            spans.push(Span::styled(format!(" {n} "), Style::new().fg(Color::White).bg(P.list_inactive_bg)));
+            spans.push(badge(*n));
             let x0 = right(f, r, spans);
             for (k, (_, a)) in acts.into_iter().enumerate() {
                 app.ui.scm_btns.push((Rect::new(x0 + 2 * k as u16, r.y, 1, 1), a));
@@ -427,7 +620,7 @@ fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: boo
             let mut spans = Vec::new();
             if hot {
                 for (icon, _) in &acts {
-                    spans.push(Span::styled(format!("{icon} "), Style::new().fg(P.sidebar_fg)));
+                    spans.push(Span::styled(format!("{icon} "), Style::new().fg(P.icon_fg)));
                 }
             }
             spans.push(Span::styled(format!(" {letter} "), Style::new().fg(git_color(letter))));
@@ -437,7 +630,10 @@ fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: boo
             if deleted {
                 name_st = name_st.add_modifier(Modifier::CROSSED_OUT);
             }
-            let avail = (r.width as usize).saturating_sub(rw + 5);
+            let (glyph, gfg) = file_icon(base(&file.path), &app.settings.file_icons);
+            // The icon lines up under the section label, the name after the gap.
+            let lead = 2 + g as usize;
+            let avail = (r.width as usize).saturating_sub(rw + lead + 1 + g as usize + 1);
             let name = fit(base(&file.path), avail);
             let dir = fit(&dir, avail.saturating_sub(name.width() + 1));
             row(
@@ -445,7 +641,9 @@ fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: boo
                 r,
                 bg,
                 vec![
-                    Span::styled(format!("   {} ", ic.file), Style::new().fg(P.sidebar_fg)),
+                    Span::raw(" ".repeat(lead)),
+                    Span::styled(glyph, Style::new().fg(gfg)),
+                    Span::raw(sp(g)),
                     Span::styled(name, name_st),
                     Span::styled(format!(" {dir}"), Style::new().fg(P.dim)),
                 ],
@@ -483,24 +681,34 @@ fn input(f: &mut Frame, r: Rect, text: &str, placeholder: &str, focused: bool) {
     }
 }
 
-fn editor_area(app: &mut App, f: &mut Frame, r: Rect) {
+fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let n = app.groups.len().max(1) as u16;
     let gw = r.width.saturating_sub(n - 1) / n;
     let mut x = r.x;
     for g in 0..app.groups.len() {
         let w = if g + 1 == app.groups.len() { r.right().saturating_sub(x) } else { gw };
         let area = Rect::new(x, r.y, w, r.height);
-        group(app, f, g, area);
+        group(app, f, g, area, lay);
         x += w;
         if g + 1 < app.groups.len() {
             let lines: Vec<Line> = (0..r.height).map(|_| Line::raw("│")).collect();
-            f.render_widget(Paragraph::new(lines).style(Style::new().fg(P.widget_border).bg(P.editor_bg)), Rect::new(x, r.y, 1, r.height));
+            f.render_widget(Paragraph::new(lines).style(Style::new().fg(P.group_border).bg(P.editor_bg)), Rect::new(x, r.y, 1, r.height));
             x += 1;
         }
     }
 }
 
-fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect) {
+/// The file icon a tab shows for its document key.
+fn tab_icon(app: &App, key: &str) -> (String, Color) {
+    let path = match key.split_once(':') {
+        Some(("file", p)) => p,
+        Some(("diff", rest)) => rest.split_once(':').map_or(rest, |(_, p)| p),
+        _ => return (icons().history.to_string(), P.icon_fg),
+    };
+    file_icon(base(path), &app.settings.file_icons)
+}
+
+fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
     let mut gh = GroupHit { area, ..Default::default() };
     let tabbar = Rect::new(area.x, area.y, area.width, 1);
     gh.tabbar = tabbar;
@@ -511,12 +719,17 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect) {
     let split = Rect::new(tabbar.right().saturating_sub(3), tabbar.y, 2, 1);
     let mut x = tabbar.x;
     let hover = app.hover;
+    let edge = sp(lay.s.tab_padding);
+    let gap = sp(lay.s.icon_gap);
     for (i, t) in app.groups[g].tabs.iter().enumerate() {
         let title = app.tab_title(&t.key);
+        let (glyph, gfg) = tab_icon(app, &t.key);
         let dirty = matches!(app.docs.get(&t.key), Some(Doc::Text(b)) if b.dirty());
         let active = i == app.groups[g].active;
-        let label = format!(" {} {} ", ic.file, fit(&title, 30));
-        let w = label.width() as u16 + 2;
+        // [edge][icon][gap][title][gap][close or dirty][edge]
+        let label = format!("{edge}{glyph}{gap}{}{gap}", fit(&title, 30));
+        let tail_w = 1 + edge.len() as u16;
+        let w = label.width() as u16 + tail_w;
         if x + w > split.x {
             break;
         }
@@ -530,23 +743,42 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect) {
             st = st.add_modifier(Modifier::ITALIC);
         }
         let tr = Rect::new(x, tabbar.y, w, 1);
-        let xr = Rect::new(x + w - 2, tabbar.y, 1, 1);
+        let xr = Rect::new(x + w - tail_w, tabbar.y, 1, 1);
         let hovered = hover.is_some_and(|p| tr.contains(p));
         let tail = if dirty && !hovered { ic.dirty } else if active || hovered { ic.close } else { " " };
-        row(f, tr, bg, vec![Span::styled(label, st), Span::styled(format!("{tail} "), Style::new().fg(fg).bg(bg))]);
-        gh.tabs.push((Rect::new(x, tabbar.y, w - 2, 1), xr));
-        x += w + 1;
+        let lead = edge.to_string();
+        let name = label[lead.len() + glyph.len()..].to_string();
+        row(
+            f,
+            tr,
+            bg,
+            vec![
+                Span::styled(lead, st),
+                Span::styled(glyph, Style::new().fg(gfg).bg(bg)),
+                Span::styled(name, st),
+                Span::styled(format!("{tail}{edge}"), Style::new().fg(fg).bg(bg)),
+            ],
+        );
+        gh.tabs.push((Rect::new(x, tabbar.y, w - tail_w, 1), xr));
+        x += w;
+        if x < split.x {
+            fill(f, Rect::new(x, tabbar.y, 1, 1), P.tab_border);
+        }
+        x += 1;
     }
     if app.groups.len() < crate::panel::MAX_GROUPS && !app.groups[g].tabs.is_empty() {
-        f.render_widget(Span::styled(ic.split, Style::new().fg(P.sidebar_fg)), split);
+        f.render_widget(Span::styled(ic.split, Style::new().fg(P.icon_fg)), split);
         app.ui.split_btns.push((split, g));
     }
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    // editorPadding of 2 or more also leaves a blank row under the tab bar.
+    let top = 1 + u16::from(lay.s.editor_padding >= 2);
+    let body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
     let active = app.groups[g].active;
     let Some(key) = app.groups[g].tabs.get(active).map(|t| t.key.clone()) else {
         let lines = vec![
             Line::raw(""),
             Line::styled("Open a file from the Explorer", Style::new().fg(P.dim)),
+            Line::styled("Command Palette     F1", Style::new().fg(P.dim)),
             Line::styled("Quick Open          Ctrl+P", Style::new().fg(P.dim)),
             Line::styled("Search in files     F4 / Alt+4", Style::new().fg(P.dim)),
             Line::styled("Source Control      F2 / Alt+2", Style::new().fg(P.dim)),
@@ -558,26 +790,49 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect) {
         return;
     };
     let editor_focus = focused_group && app.focus == Focus::Editor;
-    match app.docs.get_mut(&key) {
+    let target = ScrollTarget::Editor(g);
+    let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
+    let slider_c = slider_color(app, track, target);
+    let sb = match app.docs.get_mut(&key) {
         None => {
             f.render_widget(Paragraph::new("Loading…").style(Style::new().fg(P.dim)), body);
             gh.text = body;
+            None
         }
         Some(Doc::Diff(d)) => {
             let view = &mut app.groups[g].tabs[active].view;
-            diff_view(f, d, view, body);
+            let sb = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy));
             gh.text = body;
+            sb
         }
         Some(Doc::Text(b)) => {
             let view = &mut app.groups[g].tabs[active].view;
-            let find = if focused_group { app.find.as_ref() } else { None };
-            gh.text = text_editor(f, b, view, body, focused_group, editor_focus, find);
+            let lang = lang_id(b.syntax_name());
+            let rb = &app.settings.rainbow;
+            let deco = Deco {
+                comfy: lay.comfy,
+                gap: lay.s.editor_padding,
+                icon_gap: lay.s.icon_gap,
+                marks: app.qdiff.get(&key).map_or(&[][..], |q| &q.marks),
+                rainbow: (app.rainbow_on && rb.applies(&lang)).then(|| (rb, rb.skip_errors(&lang))),
+                guides: app.guides_on,
+                ruler: app.ruler_on,
+                find: if focused_group { app.find.as_ref() } else { None },
+                slider: slider_c,
+            };
+            let (text, sb) = text_editor(f, b, view, body, focused_group, editor_focus, &deco);
+            gh.text = text;
+            sb
         }
+    };
+    if let Some(mut sb) = sb {
+        sb.target = target;
+        app.ui.scrollbars.push(sb);
     }
     app.ui.groups.push(gh);
     if focused_group && app.find.is_some() {
         let text = app.ui.groups[g].text;
-        find_widget(app, f, text);
+        find_widget(app, f, text, lay);
     }
 }
 
@@ -660,7 +915,30 @@ fn render_line(
     Line::from(spans)
 }
 
-/// Returns the text rect (right of the gutter).
+/// What an editor draws besides the text.
+struct Deco<'a> {
+    comfy: bool,
+    /// Columns between the line number and the marker (comfortable), and the marker and the code.
+    gap: u16,
+    icon_gap: u16,
+    marks: &'a [Option<Mark>],
+    /// indent-rainbow settings, and whether this language skips its error colour.
+    rainbow: Option<(&'a Rainbow, bool)>,
+    guides: bool,
+    ruler: bool,
+    find: Option<&'a Find>,
+    slider: Rgba,
+}
+
+/// Put `glyph` in a cell that is still blank (indent guides never cover text).
+fn mark_blank(f: &mut Frame, x: u16, y: u16, glyph: &str, fg: Color) {
+    let cell = &mut f.buffer_mut()[(x, y)];
+    if cell.symbol() == " " {
+        cell.set_symbol(glyph).set_fg(fg);
+    }
+}
+
+/// Returns the text rect (right of the gutter, left of the scrollbar) and the scrollbar.
 fn text_editor(
     f: &mut Frame,
     b: &mut Buffer,
@@ -668,26 +946,36 @@ fn text_editor(
     area: Rect,
     group_focus: bool,
     editor_focus: bool,
-    find: Option<&crate::panel::Find>,
-) -> Rect {
+    d: &Deco,
+) -> (Rect, Option<ScrollHit>) {
     b.clamp_view(v);
     let mut area = area;
     if let Some(ro) = &b.readonly {
         let banner = Rect::new(area.x, area.y, area.width, 1);
-        row(f, banner, P.widget_bg, vec![Span::styled(format!(" {} {ro}", icons().lock), Style::new().fg(P.git_modified))]);
+        let banner_text = format!(" {}{}{ro}", icons().lock, sp(d.icon_gap));
+        row(f, banner, P.widget_bg, vec![Span::styled(banner_text, Style::new().fg(P.git_modified))]);
         area = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
         if b.binary {
-            return area;
+            return (area, None);
         }
     }
+    let ic = icons();
     let digits = b.lines.len().to_string().len().max(3) as u16;
-    let gutter = digits + 2;
-    let text = Rect::new(area.x + gutter, area.y, area.width.saturating_sub(gutter), area.height);
+    // Comfortable: [1][number][gap][marker][gap] text [blank][scrollbar];
+    // compact: [number][marker][gap] text [scrollbar].
+    let pad = u16::from(d.comfy);
+    let nums = pad + digits + if d.comfy { d.gap } else { 0 };
+    let gutter = nums + 1 + d.gap;
+    let text = Rect::new(area.x + gutter, area.y, area.width.saturating_sub(gutter + 1 + pad), area.height);
     let h = area.height as usize;
     b.highlight_upto(v.scroll + h);
     let c = b.clamp(v.cursor);
     let sel = v.selection();
     let sel_bg = if group_focus { P.selection } else { P.sel_inactive };
+    let tab = editor::tab();
+    let guides = d.guides.then(|| Guides::new(&b.lines, tab));
+    let active = guides.as_ref().and_then(|g| g.active(c.line));
+    let visible = |col: usize| (col >= v.hscroll && col < v.hscroll + text.width as usize).then(|| text.x + (col - v.hscroll) as u16);
     for k in 0..h {
         let i = v.scroll + k;
         if i >= b.lines.len() {
@@ -697,10 +985,30 @@ fn text_editor(
         let cur_line = i == c.line && sel.is_none();
         let bg = if cur_line { P.cur_line } else { P.editor_bg };
         let nr_st = Style::new().fg(if i == c.line { P.line_nr_active } else { P.line_nr }).bg(P.editor_bg);
-        f.render_widget(Span::styled(format!("{:>w$}  ", i + 1, w = digits as usize), nr_st), Rect::new(area.x, y, gutter, 1));
+        let p = sp(pad);
+        let after = sp(nums - pad - digits);
+        f.render_widget(Span::styled(format!("{p}{:>w$}{after}", i + 1, w = digits as usize), nr_st), Rect::new(area.x, y, nums, 1));
+        let (mark, mfg) = match d.marks.get(i).copied().flatten() {
+            Some(Mark::Added) => (ic.gutter_bar, P.gutter_added),
+            Some(Mark::Modified) => (ic.gutter_bar, P.gutter_modified),
+            Some(Mark::Deleted) => (ic.gutter_del, P.gutter_deleted),
+            None => (" ", P.editor_fg),
+        };
+        f.render_widget(Span::styled(mark, Style::new().fg(mfg).bg(P.editor_bg)), Rect::new(area.x + nums, y, 1, 1));
         let line = &b.lines[i];
         let mut overlays: Vec<(usize, usize, Color)> = Vec::new();
-        if let Some(fd) = find {
+        let mut thin: Vec<(usize, Color)> = Vec::new();
+        if let Some((rb, skip)) = d.rainbow {
+            for (s, e, paint) in rb.line(line, tab, skip) {
+                match paint {
+                    Paint::Level(n) if rb.light => thin.push((s, rb.colors[n % rb.colors.len()].over(bg))),
+                    Paint::Level(n) => overlays.push((s, e, rb.colors[n % rb.colors.len()].over(bg))),
+                    Paint::Error => overlays.push((s, e, rb.error.over(bg))),
+                    Paint::Tabmix => overlays.push((s, e, rb.tabmix.unwrap_or(rb.error).over(bg))),
+                }
+            }
+        }
+        if let Some(fd) = d.find {
             for (n, (a, e)) in fd.matches.iter().enumerate().filter(|(_, (a, _))| a.line == i) {
                 overlays.push((a.col, e.col, if fd.cur == Some(n) { P.find_match } else { P.find_other }));
             }
@@ -720,6 +1028,19 @@ fn text_editor(
         fill(f, tr, bg);
         let l = render_line(line, b.segs(i), &overlays, eol, v.hscroll, text.width as usize, Style::new().fg(P.editor_fg).bg(bg));
         f.render_widget(l, tr);
+        if let Some(g) = &guides {
+            for lvl in 0..g.level(i) {
+                let on = active.is_some_and(|(ak, a, e)| ak == lvl && (a..=e).contains(&i));
+                if let Some(x) = visible(lvl * tab) {
+                    mark_blank(f, x, y, ic.guide, if on { P.guide_active } else { P.guide });
+                }
+            }
+        }
+        for (s, col) in thin {
+            if let Some(x) = visible(editor::display_col(line, s)) {
+                mark_blank(f, x, y, ic.guide, col);
+            }
+        }
     }
     if editor_focus {
         let x = editor::display_col(&b.lines[c.line], c.col);
@@ -727,19 +1048,59 @@ fn text_editor(
             f.set_cursor_position((text.x + (x - v.hscroll) as u16, area.y + (c.line - v.scroll) as u16));
         }
     }
-    text
+    // Vertical scrollbar with VS Code's overview-ruler marks under the slider.
+    let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
+    if track.height == 0 || area.width < gutter + 2 {
+        return (text, None);
+    }
+    let n = b.lines.len();
+    let max_off = n.saturating_sub(1);
+    let s = decor::slider(track.height, n + h.saturating_sub(1), h, v.scroll, max_off);
+    paint_slider(f, track, s, d.slider);
+    if d.ruler {
+        let th = track.height as usize;
+        let row_of = |line: usize| (line * th / n.max(1)).min(th - 1);
+        let mut lanes: Vec<Option<(u8, &str, Color)>> = vec![None; th];
+        let mut put = |r: usize, prio: u8, g: &'static str, c: Color| {
+            if lanes[r].is_none_or(|(p, _, _)| p <= prio) {
+                lanes[r] = Some((prio, g, c));
+            }
+        };
+        for (i, m) in d.marks.iter().enumerate().take(n) {
+            let c = match m {
+                Some(Mark::Added) => P.ruler_added,
+                Some(Mark::Modified) => P.ruler_modified,
+                Some(Mark::Deleted) => P.ruler_deleted,
+                None => continue,
+            };
+            put(row_of(i), 1, ic.lane_left, c);
+        }
+        for (a, _) in d.find.map_or(&[][..], |fd| &fd.matches[..]) {
+            put(row_of(a.line), 2, ic.lane_right, P.ruler_find);
+        }
+        put(row_of(c.line), 3, ic.lane_cursor, P.cursor);
+        for (r, lane) in lanes.into_iter().enumerate() {
+            if let Some((_, g, col)) = lane {
+                f.buffer_mut()[(track.x, track.y + r as u16)].set_symbol(g).set_fg(col);
+            }
+        }
+    }
+    (text, Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off, page: h.max(1) }))
 }
 
-fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect) {
+/// `blank`: columns kept empty between the text and the scrollbar.
+fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect, slider: Rgba, blank: u16) -> Option<ScrollHit> {
     if let Some(note) = &d.note {
         f.render_widget(Paragraph::new(note.as_str()).style(Style::new().fg(P.dim)), area);
-        return;
+        return None;
     }
     v.scroll = v.scroll.min(d.rows.len().saturating_sub(1));
+    let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
+    let area = Rect::new(area.x, area.y, area.width.saturating_sub(1 + blank), area.height);
     let half = area.width.saturating_sub(1) / 2;
     let sides = [Rect::new(area.x, area.y, half, area.height), Rect::new(area.x + half + 1, area.y, area.width - half - 1, area.height)];
     let sep: Vec<Line> = (0..area.height).map(|_| Line::raw("│")).collect();
-    f.render_widget(Paragraph::new(sep).style(Style::new().fg(P.widget_border)), Rect::new(area.x + half, area.y, 1, area.height));
+    f.render_widget(Paragraph::new(sep).style(Style::new().fg(P.group_border)), Rect::new(area.x + half, area.y, 1, area.height));
     let digits = d.rows.len().to_string().len().max(3) as u16;
     for (k, r) in d.rows.iter().skip(v.scroll).take(area.height as usize).enumerate() {
         let y = area.y + k as u16;
@@ -776,31 +1137,50 @@ fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect) {
             }
         }
     }
+    let (n, h) = (d.rows.len(), track.height as usize);
+    if h == 0 {
+        return None;
+    }
+    let s = decor::slider(track.height, n + h - 1, h, v.scroll, n.saturating_sub(1));
+    paint_slider(f, track, s, slider);
+    Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h })
 }
 
-fn find_widget(app: &mut App, f: &mut Frame, text: Rect) {
+fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     let Some(fd) = app.find.as_ref() else { return };
     let ic = icons();
     let rows = if fd.replace.is_some() { 2 } else { 1 };
-    let w = 52.min(text.width);
-    if w < 30 || text.height < 3 {
+    // Comfortable: a rounded frame with findWidgetPadding inside, one cell off the scrollbar.
+    let fp = lay.s.find_padding;
+    let (bw, bh) = if lay.comfy { (2 + 2 * fp, 2) } else { (0, 0) };
+    let off = u16::from(lay.comfy);
+    let ig = if lay.comfy { lay.s.icon_gap } else { 1 };
+    let w = 52.min(text.width.saturating_sub(bw + off));
+    if w < 30 || text.height < rows + bh + 1 {
         return;
     }
-    let r = Rect::new(text.right() - w, text.y, w, rows);
+    let outer = Rect::new(text.right() - off - w - bw, text.y, w + bw, rows + bh).intersection(f.area());
+    if lay.comfy {
+        f.render_widget(Clear, outer);
+        let frame = popup_block(P.widget_bg, P.widget_fg, (fp, 0));
+        f.render_widget(frame, outer);
+    }
+    let r = Rect::new(outer.x + bw / 2, outer.y + bh / 2, w, rows).intersection(outer);
     fill(f, r, P.widget_bg);
-    let iw = w - 26;
+    // [toggle][gap][input…][count][up][ ][down][ ][close][ ]
+    let iw = w - 25 - ig;
     // Row 1: [>] [query  Aa ab] "N of M" [↑][↓][×]
     let toggle = Rect::new(r.x, r.y, 1, rows);
     f.render_widget(
-        Span::styled(if fd.replace.is_some() { ic.chev_down } else { ic.chev_right }, Style::new().fg(P.sidebar_fg)),
+        Span::styled(if fd.replace.is_some() { ic.chev_down } else { ic.chev_right }, Style::new().fg(P.icon_fg)),
         Rect::new(toggle.x, r.y, 1, 1),
     );
-    let q = Rect::new(r.x + 2, r.y, iw, 1);
+    let q = Rect::new(r.x + 1 + ig, r.y, iw, 1);
     input(f, q, &fd.query, "Find", app.focus == Focus::Find && fd.field == 0);
     let mut btns = vec![(toggle, FindBtn::ToggleReplace)];
     for (k, (icon, on, b)) in [(ic.case, fd.case, FindBtn::Case), (ic.word, fd.word, FindBtn::Word)].into_iter().enumerate() {
         let tr = Rect::new(q.right() - 4 + 2 * k as u16, r.y, 1, 1);
-        let st = if on { Style::new().fg(Color::White).bg(P.focus_border) } else { Style::new().fg(P.sidebar_fg).bg(P.input_bg) };
+        let st = if on { Style::new().fg(P.option_fg).bg(P.option_bg) } else { Style::new().fg(P.input_fg).bg(P.input_bg) };
         f.render_widget(Span::styled(icon, st), tr);
         btns.push((tr, b));
     }
@@ -810,47 +1190,66 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect) {
         (n, Some(c)) => format!("{} of {n}", c + 1),
         (n, None) => format!("? of {n}"),
     };
-    f.render_widget(Span::styled(format!(" {count}"), Style::new().fg(P.sidebar_fg)), Rect::new(q.right(), r.y, 13, 1));
+    let count_st = Style::new().fg(if count == "No results" { P.error_fg } else { P.widget_fg });
+    f.render_widget(Span::styled(format!(" {count}"), count_st), Rect::new(q.right(), r.y, 13, 1));
     let bx = r.right() - 7;
     for (k, (icon, b)) in [(ic.up, FindBtn::Prev), (ic.down, FindBtn::Next), (ic.close, FindBtn::Close)].into_iter().enumerate() {
         let br = Rect::new(bx + 2 * k as u16, r.y, 1, 1);
-        f.render_widget(Span::styled(icon, Style::new().fg(P.sidebar_fg)), br);
+        f.render_widget(Span::styled(icon, Style::new().fg(P.icon_fg)), br);
         btns.push((br, b));
     }
     app.ui.find_inputs.push((q, 0));
     if let Some(rep) = &fd.replace {
-        let rq = Rect::new(r.x + 2, r.y + 1, iw, 1);
+        let rq = Rect::new(q.x, r.y + 1, iw, 1);
         input(f, rq, rep, "Replace", app.focus == Focus::Find && fd.field == 1);
         app.ui.find_inputs.push((rq, 1));
         for (k, (icon, b)) in [(ic.replace, FindBtn::ReplaceOne), (ic.replace_all, FindBtn::ReplaceAll)].into_iter().enumerate() {
             let br = Rect::new(rq.right() + 2 + 2 * k as u16, rq.y, 1, 1);
-            f.render_widget(Span::styled(icon, Style::new().fg(P.sidebar_fg)), br);
+            f.render_widget(Span::styled(icon, Style::new().fg(P.icon_fg)), br);
             btns.push((br, b));
         }
     }
     if app.focus == Focus::Find {
         let (field, s) = if fd.field == 1 { (1, fd.replace.as_deref().unwrap_or("")) } else { (0, fd.query.as_str()) };
-        let cx = r.x + 3 + (s.width() as u16).min(iw.saturating_sub(6));
+        let cx = q.x + 1 + (s.width() as u16).min(iw.saturating_sub(6));
         f.set_cursor_position((cx, r.y + field));
     }
     app.ui.find_btns.extend(btns);
 }
 
+/// A `w`x`h` rect centred in `area` (`top`: one row below its top), always inside it.
 fn centered(area: Rect, w: u16, h: u16, top: bool) -> Rect {
-    let (w, h) = (w.min(area.width), h.min(area.height));
+    let (w, h) = (w.min(area.width), h.min(area.height.saturating_sub(u16::from(top))));
     let y = if top { area.y + 1 } else { area.y + (area.height - h) / 2 };
-    Rect::new(area.x + (area.width - w) / 2, y, w, h)
+    Rect::new(area.x + (area.width - w) / 2, y, w, h).intersection(area)
 }
 
-fn quick(app: &mut App, f: &mut Frame, area: Rect) {
+fn quick(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
+    let fi = app.settings.file_icons.clone();
+    let drag = match app.drag {
+        Drag::Scroll(sb, _) => Some(sb.target),
+        _ => None,
+    };
+    let hover = app.hover;
     let Some(q) = app.quick.as_mut() else { return };
-    let pop = centered(area, (area.width * 6 / 10).max(40), (area.height * 6 / 10).max(6), true);
+    let (ph, pv) = lay.s.popup_padding;
+    let extra = if lay.comfy { 3 + 2 * pv } else { 0 };
+    let pop = centered(area, (area.width * 6 / 10).max(40), (area.height * 6 / 10).max(6 + extra), true);
     f.render_widget(Clear, pop);
-    fill(f, pop, P.widget_bg);
-    let inp = Rect::new(pop.x + 1, pop.y, pop.width - 2, 1);
-    input(f, inp, &q.query, "Search files by name", true);
-    f.set_cursor_position((inp.x + 1 + (q.query.width() as u16).min(inp.width - 2), inp.y));
-    let list = Rect::new(pop.x, pop.y + 1, pop.width, pop.height - 1);
+    let (inp, list) = if lay.comfy {
+        let block = popup_block(P.quick_bg, P.quick_fg, (ph, pv));
+        let inner = block.inner(pop);
+        f.render_widget(block, pop);
+        let inp = Rect::new(inner.x, inner.y, inner.width, 1).intersection(pop);
+        (inp, Rect::new(inner.x, inner.y + 2, inner.width, inner.height.saturating_sub(2)).intersection(pop))
+    } else {
+        f.buffer_mut().set_style(pop, Style::new().bg(P.quick_bg).fg(P.quick_fg));
+        let inp = Rect::new(pop.x + 1, pop.y, pop.width.saturating_sub(2), 1).intersection(pop);
+        (inp, Rect::new(pop.x, pop.y + 1, pop.width, pop.height.saturating_sub(1)).intersection(pop))
+    };
+    let ph = if q.commands { "Type the name of a command to run" } else { "Search files by name" };
+    input(f, inp, &q.query, ph, true);
+    f.set_cursor_position((inp.x + 1 + (q.query.width() as u16).min(inp.width.saturating_sub(2)), inp.y));
     let lh = list.height.max(1) as usize;
     if q.sel < q.off {
         q.off = q.sel;
@@ -859,46 +1258,115 @@ fn quick(app: &mut App, f: &mut Frame, area: Rect) {
     }
     for (k, item) in q.items.iter().skip(q.off).take(lh).enumerate() {
         let rr = Rect::new(list.x, list.y + k as u16, list.width, 1);
-        let bg = if q.off + k == q.sel { P.list_active_bg } else { P.widget_bg };
+        let on = q.off + k == q.sel;
+        let (bg, fg) = if on { (P.quick_sel_bg, P.quick_sel_fg) } else { (P.quick_bg, P.quick_fg) };
+        if q.commands {
+            row(f, rr, bg, vec![Span::styled(format!(" {item}"), Style::new().fg(fg))]);
+            if let Some(c) = COMMANDS.iter().find(|c| c.0 == item).filter(|c| !c.2.is_empty()) {
+                right(f, rr, vec![Span::styled(format!("{} ", c.2), Style::new().fg(P.dim))]);
+            }
+            continue;
+        }
         let dir = item.rsplit_once('/').map_or("", |(d, _)| d);
+        let (glyph, gfg) = file_icon(base(item), &fi);
         row(
             f,
             rr,
             bg,
             vec![
-                Span::styled(format!(" {} ", icons().file), Style::new().fg(P.sidebar_fg)),
-                Span::styled(base(item).to_string(), Style::new().fg(P.sidebar_fg)),
+                Span::raw(" "),
+                Span::styled(glyph, Style::new().fg(gfg)),
+                Span::raw(sp(lay.s.icon_gap)),
+                Span::styled(base(item).to_string(), Style::new().fg(fg)),
                 Span::styled(format!("  {dir}"), Style::new().fg(P.dim)),
             ],
         );
     }
+    let (n, off) = (q.items.len(), q.off);
     app.ui.quick = pop;
     app.ui.quick_list = list;
+    if n > lh {
+        // In the padding, one blank column off the rows when there is room;
+        // compact: over the rows' last column.
+        let x = if lay.comfy { list.right() + u16::from(lay.s.popup_padding.0 >= 2) } else { list.right() - 1 };
+        let track = Rect::new(x, list.y, 1, list.height);
+        let s = decor::slider(track.height, n, lh, off, n - lh);
+        let c = if drag == Some(ScrollTarget::Quick) {
+            P.slider_active
+        } else if hover.is_some_and(|p| track.contains(p)) {
+            P.slider_hover
+        } else {
+            P.slider
+        };
+        paint_slider(f, track, s, c);
+        app.ui.scrollbars.push(ScrollHit { track, target: ScrollTarget::Quick, slider: s, max_off: n - lh, page: lh });
+    }
 }
 
-fn prompt(app: &mut App, f: &mut Frame, area: Rect) {
+fn prompt(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
     let Some(p) = app.prompt.as_ref() else { return };
-    let w = p.text.iter().map(|t| t.width()).max().unwrap_or(20).max(36) as u16 + 4;
-    let h = p.text.len() as u16 + 4;
-    let r = centered(area, w, h, false);
-    f.render_widget(Clear, r);
-    fill(f, r, P.widget_bg);
-    let lines: Vec<Line> = p.text.iter().enumerate().map(|(k, t)| {
-        let st = if k == 0 { Style::new().fg(Color::White).bold() } else { Style::new().fg(P.sidebar_fg) };
-        Line::styled(format!(" {t}"), st)
-    }).collect();
-    f.render_widget(Paragraph::new(lines), Rect::new(r.x + 1, r.y + 1, r.width - 2, p.text.len() as u16));
-    let mut x = r.right() - 1;
-    let y = r.bottom() - 2;
+    let bp = lay.s.button_padding;
+    // Wide enough for the text and for the button row.
+    let buttons: usize = p.buttons.iter().map(|(l, _)| l.width() + 2 * bp as usize + 2).sum();
+    let cw = p.text.iter().map(|t| t.width()).max().unwrap_or(20).max(36).max(buttons) as u16 + 2;
+    let (r, body, by) = if lay.comfy {
+        // Border, popupPadding, the text, a blank row, the buttons.
+        let (ph, pv) = lay.s.popup_padding;
+        let r = centered(area, cw + 2 + 2 * ph, p.text.len() as u16 + 4 + 2 * pv, false);
+        f.render_widget(Clear, r);
+        let block = popup_block(P.widget_bg, P.widget_fg, (ph, pv));
+        let inner = block.inner(r);
+        f.render_widget(block, r);
+        (r, inner, inner.bottom().saturating_sub(1))
+    } else {
+        let r = centered(area, cw + 2, p.text.len() as u16 + 4, false);
+        f.render_widget(Clear, r);
+        f.buffer_mut().set_style(r, Style::new().bg(P.widget_bg).fg(P.widget_fg));
+        (r, Rect::new(r.x + 1, r.y + 1, r.width - 2, p.text.len() as u16), r.bottom() - 2)
+    };
+    let lines: Vec<Line> = p
+        .text
+        .iter()
+        .enumerate()
+        .map(|(k, t)| {
+            let st = if k == 0 { Style::new().fg(P.widget_fg).bold() } else { Style::new().fg(P.widget_fg) };
+            Line::styled(if lay.comfy { t.clone() } else { format!(" {t}") }, st)
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), Rect::new(body.x, body.y, body.width, p.text.len() as u16).intersection(r));
+    let gap = 1 + u16::from(lay.comfy);
+    let mut x = if lay.comfy { body.right() + gap } else { r.right() - 1 };
     let mut btns = Vec::new();
     for (i, (label, _)) in p.buttons.iter().enumerate().rev() {
-        let t = format!(" {label} ");
+        let t = format!("{}{label}{}", sp(bp), sp(bp));
         let bw = t.width() as u16;
-        x = x.saturating_sub(bw + 1);
-        let bg = if i == p.sel { P.button_bg } else { P.input_bg };
-        let br = Rect::new(x, y, bw, 1);
-        f.render_widget(Span::styled(t, Style::new().fg(Color::White).bg(bg)), br);
+        x = x.saturating_sub(bw + gap);
+        let st = if i == p.sel { Style::new().fg(P.button_fg).bg(P.button_bg) } else { Style::new().fg(P.button2_fg).bg(P.button2_bg) };
+        // Too small a terminal: a button cut by the edge is drawn (and hit) only where visible.
+        let br = Rect::new(x, by, bw, 1).intersection(r);
+        if br.is_empty() {
+            continue;
+        }
+        f.render_widget(Span::styled(t, st), br);
         btns.push((br, i));
     }
     app.ui.prompt_btns = btns;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parent_label;
+    use std::path::Path;
+
+    #[test]
+    fn parent_folder_label_abbreviates_home_and_cuts_from_the_left() {
+        let home = Some(Path::new("/home/user"));
+        let root = Path::new("/home/user/work/fetched/linux_5_10");
+        assert_eq!(parent_label(root, home, 40), "~/work/fetched");
+        assert_eq!(parent_label(root, home, 12), "…/fetched", "nearest folders kept");
+        assert_eq!(parent_label(root, home, 6), "…tched", "one folder too long: cut by characters");
+        assert_eq!(parent_label(Path::new("/home/user/repo"), home, 40), "~");
+        assert_eq!(parent_label(Path::new("/tmp/x/repo"), home, 40), "/tmp/x");
+        assert_eq!(parent_label(Path::new("/srv/a/b/c/d/repo"), None, 9), "…/a/b/c/d", "cut at a folder boundary");
+    }
 }

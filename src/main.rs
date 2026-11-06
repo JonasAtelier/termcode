@@ -1,51 +1,49 @@
-//! herdr-code: open a second terminal window on the caller's herdr session that
-//! shows a VS Code-like editor and git panel for the caller's repo or worktree.
+//! herdr-code: a VS Code-like editor and git panel for the caller's repo or
+//! worktree, as a tab in the caller's herdr workspace.
 //!
-//!   herdr-code                                  launcher (shell in a herdr pane, or plugin action)
-//!   herdr-code attach --root R --session S      runs inside the new window
-//!   herdr-code panel                            the TUI, a plugin `[[panes]]` entrypoint
+//!   herdr-code         launcher: a shell in a herdr pane, or the plugin action
+//!   herdr-code panel   the TUI, the plugin's `[[panes]]` entrypoint
 
+mod decor;
 mod diff;
 mod editor;
 mod git;
+mod icons;
 mod panel;
 mod parse;
+mod semantic;
+mod settings;
 mod theme;
 mod ui;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::env;
 use std::fs;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::FileExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::time::{Duration, Instant};
 
 const PLUGIN_ID: &str = "jonas.herdr-code";
-const USAGE: &str = "usage: herdr-code | herdr-code attach --root DIR --session NAME | herdr-code panel";
+/// herdr labels a plugin pane with its `[[panes]]` title.
+const PANE_LABEL: &str = "Code";
+const USAGE: &str = "usage: herdr-code | herdr-code panel";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         None => launch(),
-        Some("attach") => attach(&args[1..]),
         Some("panel") => panel::run(),
         Some("-h" | "--help") => {
             println!("{USAGE}");
             Ok(())
         }
-        Some(other) => Err(format!("unknown command {other:?}\n{USAGE}")),
+        Some(other) => Err(format!("unknown argument {other:?}\n{USAGE}")),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("herdr-code: {e}");
-            if args.first().map(String::as_str) == Some("attach") {
-                // The window closes when attach exits; keep the error readable.
-                eprintln!("press Enter to close");
-                let _ = std::io::stdin().read_line(&mut String::new());
-            }
             ExitCode::FAILURE
         }
     }
@@ -71,36 +69,9 @@ fn herdr_bin() -> String {
     env::var("HERDR_BIN_PATH").unwrap_or_else(|_| "herdr".into())
 }
 
-/// Remove the pane identity herdr injects, so a client started from here is not
-/// refused as nested (src/main.rs should_block_nested) and nothing targets the caller's pane.
-fn clean_env(cmd: &mut Command) {
-    const STRIP: &[&str] = &[
-        "HERDR_ENV",
-        "HERDR_PANE_ID",
-        "HERDR_TAB_ID",
-        "HERDR_WORKSPACE_ID",
-        "HERDR_SOCKET_PATH",
-        "HERDR_CLIENT_SOCKET_PATH",
-        "HERDR_SESSION",
-    ];
-    for (k, _) in env::vars_os() {
-        if let Some(k) = k.to_str() {
-            if STRIP.contains(&k) || k.starts_with("HERDR_PLUGIN_") {
-                cmd.env_remove(k);
-            }
-        }
-    }
-}
-
-/// Run `herdr [--session S] args...` and return stdout. With a session the
-/// inherited herdr env is stripped so `--session` alone picks the server.
-fn herdr_raw(session: Option<&str>, args: &[&str]) -> Result<String, String> {
-    let mut cmd = Command::new(herdr_bin());
-    if let Some(s) = session {
-        cmd.args(["--session", s]);
-        clean_env(&mut cmd);
-    }
-    let out = cmd
+/// Run `herdr args...` against the caller's server (HERDR_SOCKET_PATH); stdout.
+fn herdr_raw(args: &[&str]) -> Result<String, String> {
+    let out = Command::new(herdr_bin())
         .args(args)
         .stdin(Stdio::null())
         .output()
@@ -113,28 +84,24 @@ fn herdr_raw(session: Option<&str>, args: &[&str]) -> Result<String, String> {
     Ok(stdout)
 }
 
-fn herdr(session: Option<&str>, args: &[&str]) -> Result<Value, String> {
-    let out = herdr_raw(session, args)?;
+fn herdr(args: &[&str]) -> Result<Value, String> {
+    let out = herdr_raw(args)?;
     serde_json::from_str(&out).map_err(|e| format!("herdr {}: bad JSON: {e}", args.join(" ")))
 }
 
-fn lock_path(session: &str, root: &Path) -> PathBuf {
+/// Lock file for one find-or-create, keyed by session socket, workspace and root.
+fn lock_path(scope: &str, root: &Path) -> PathBuf {
     let base = env::var_os("XDG_STATE_HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env::var_os("HOME").unwrap_or_default()).join(".local/state"));
-    let key = parse::lock_key(session, &root.to_string_lossy());
-    base.join("herdr-code").join(format!("{key}.json"))
+    let key = parse::lock_key(scope, &root.to_string_lossy());
+    base.join("herdr-code").join(format!("launch-{key}.lock"))
 }
 
-pub fn read_lock(path: &Path) -> Option<Value> {
-    serde_json::from_slice(&fs::read(path).ok()?).ok()
-}
-
-/// Open (creating) the lock file and take a non-blocking exclusive flock.
-/// `Some(file)` while held; the kernel releases it when the file is dropped or
-/// the process dies, so a crash never leaves a stale lock. std opens files
-/// O_CLOEXEC, so spawned children do not inherit it.
+/// Open (creating) `path` and take a non-blocking exclusive flock. `Some(file)`
+/// while held; the kernel releases it when the file is dropped or the process
+/// dies, so a crash never leaves a stale lock. std opens files O_CLOEXEC.
 pub fn try_lock(path: &Path) -> Result<Option<fs::File>, String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -151,201 +118,121 @@ pub fn try_lock(path: &Path) -> Result<Option<fs::File>, String> {
     Ok(held.then_some(f))
 }
 
-/// Replace the lock file's data (it stays the flock target; never deleted).
-fn write_lock(f: &fs::File, v: &Value) {
-    let _ = f.set_len(0);
-    let _ = f.write_all_at(v.to_string().as_bytes(), 0);
+/// `try_lock`, retried for up to `wait`.
+pub fn lock_wait(path: &Path, wait: Duration) -> Result<fs::File, String> {
+    let start = Instant::now();
+    loop {
+        if let Some(f) = try_lock(path)? {
+            return Ok(f);
+        }
+        if start.elapsed() >= wait {
+            return Err(format!("{} stayed locked", path.display()));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
+/// Our pane for `root` in `herdr pane list` output: labelled "Code", with the
+/// worktree root as its cwd. Returns (tab_id, pane_id).
+fn find_code_pane(list: &Value, root: &Path) -> Option<(String, String)> {
+    let same = |c: &Value| c.as_str().is_some_and(|c| Path::new(c) == root || fs::canonicalize(c).is_ok_and(|p| p == root));
+    list["result"]["panes"]
+        .as_array()?
+        .iter()
+        .find(|p| p["label"].as_str() == Some(PANE_LABEL) && (same(&p["cwd"]) || same(&p["foreground_cwd"])))
+        .and_then(|p| Some((p["tab_id"].as_str()?.to_string(), p["pane_id"].as_str()?.to_string())))
+}
+
+/// `herdr plugin pane open` for a new Code tab. The CLI focuses by default
+/// (focus = true unless `--no-focus`), which would make the new tab the
+/// workspace's active tab; `--no-focus` leaves every client and the active tab alone.
+fn open_args<'a>(ws: &'a str, root: &'a str) -> Vec<&'a str> {
+    vec![
+        "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "panel", "--placement", "tab", "--workspace", ws,
+        "--cwd", root, "--no-focus",
+    ]
+}
+
+/// Find or open the Code tab for the caller's worktree in the caller's workspace,
+/// without focusing anything: herdr 0.9.1 can only focus a tab for every client
+/// attached to the session (`tab focus`), and other clients must not move. Even the
+/// workspace's active tab stays as it was; the user clicks the new tab.
 fn launch() -> Result<(), String> {
     let socket = env::var("HERDR_SOCKET_PATH")
         .map_err(|_| "run herdr-code from a shell inside a herdr pane (HERDR_SOCKET_PATH is not set)")?;
+    let ws = env::var("HERDR_WORKSPACE_ID").map_err(|_| "HERDR_WORKSPACE_ID is not set")?;
     // A plugin action runs in the plugin dir; follow the invoking pane instead.
     let cwd = if env::var_os("HERDR_PLUGIN_ACTION_ID").is_some() {
         let pane = env::var("HERDR_PANE_ID").map_err(|_| "plugin action has no HERDR_PANE_ID")?;
-        let v = herdr(None, &["pane", "get", &pane])?;
+        let v = herdr(&["pane", "get", &pane])?;
         let p = &v["result"]["pane"];
-        PathBuf::from(
-            p["foreground_cwd"]
-                .as_str()
-                .or(p["cwd"].as_str())
-                .ok_or("pane get: no cwd")?,
-        )
+        PathBuf::from(p["foreground_cwd"].as_str().or(p["cwd"].as_str()).ok_or("pane get: no cwd")?)
     } else {
         env::current_dir().map_err(|e| e.to_string())?
     };
-    let root = repo_root(&cwd)
-        .ok_or_else(|| format!("{} is not inside a git repository", cwd.display()))?;
-    let sessions = herdr_raw(None, &["session", "list", "--json"])?;
-    let session = parse::session_for_socket(&sessions, &socket)
-        .ok_or_else(|| format!("no herdr session uses socket {socket}"))?;
-
-    // Probe only: the attach in the new window takes and holds the lock.
-    let lock = lock_path(&session, &root);
-    let open = try_lock(&lock)?.is_none();
-    if open {
-        let ws = read_lock(&lock).and_then(|l| l["workspace_id"].as_str().map(String::from));
-        println!(
-            "herdr-code: already open for {} (workspace {}). Raising the existing window is not supported; switch to it manually.",
-            root.display(),
-            ws.as_deref().unwrap_or("?")
-        );
-        return Ok(());
+    let root = repo_root(&cwd).ok_or_else(|| format!("{} is not inside a git repository", cwd.display()))?;
+    let root_s = root.to_string_lossy().into_owned();
+    // Find-or-create under a lock: two launches at once still make one tab.
+    let _held = lock_wait(&lock_path(&format!("{socket}\0{ws}"), &root), Duration::from_secs(5))?;
+    let panes = herdr(&["pane", "list", "--workspace", &ws])?;
+    let name = root.file_name().map_or(root_s.clone(), |n| n.to_string_lossy().into_owned());
+    let label = format!("Code: {name}");
+    if find_code_pane(&panes, &root).is_none() {
+        let v = herdr(&open_args(&ws, &root_s))?;
+        let tab = v["result"]["plugin_pane"]["pane"]["tab_id"].as_str().ok_or("plugin pane open: no tab_id")?;
+        // Cosmetic: the tab still works under herdr's default label.
+        let _ = herdr_raw(&["tab", "rename", tab, &label]);
     }
-
-    let mut argv: Vec<String> = match env::var("HERDR_CODE_TERMINAL") {
-        Ok(t) if !t.trim().is_empty() => t.split_whitespace().map(String::from).collect(),
-        _ => vec!["ptyxis".into(), "--new-window".into(), "--".into()],
-    };
-    // Absolute path: the terminal may spawn the command with its own PATH.
-    let exe = env::current_exe().map_err(|e| e.to_string())?;
-    argv.extend([
-        exe.to_string_lossy().into_owned(),
-        "attach".into(),
-        "--root".into(),
-        root.to_string_lossy().into_owned(),
-        "--session".into(),
-        session.clone(),
-    ]);
-    let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..])
-        .current_dir(&root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    clean_env(&mut cmd);
-    // SAFETY: setsid is async-signal-safe; detaches the terminal from this pane's session.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    cmd.spawn()
-        .map_err(|e| format!("cannot start terminal {:?}: {e}", argv[0]))?;
-    println!("herdr-code: opening a Code window for {} (session {session})", root.display());
+    println!("Code tab ready: click '{label}' in the tab bar");
     Ok(())
 }
 
-extern "C" fn on_signal(_: libc::c_int) {}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn attach(args: &[String]) -> Result<(), String> {
-    // First thing: survive the window closing (HUP), Ctrl+C (INT) and TERM until
-    // cleanup has run. A handler, unlike SIG_IGN, is reset to default in exec'd children.
-    for sig in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
-        // SAFETY: installs a no-op handler; no shared state.
-        unsafe {
-            libc::signal(sig, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
-        }
+    #[test]
+    fn opens_the_tab_without_focus() {
+        let a = open_args("w1", "/r");
+        assert!(a.contains(&"--no-focus") && !a.contains(&"--focus"), "{a:?}");
+        assert_eq!(&a[a.len() - 3..], ["--cwd", "/r", "--no-focus"]);
     }
-    let (mut root, mut session) = (None, None);
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--root" => root = it.next().cloned(),
-            "--session" => session = it.next().cloned(),
-            _ => return Err(format!("unknown argument {a:?}\n{USAGE}")),
-        }
+
+    #[test]
+    fn finds_only_our_pane_for_this_root() {
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let r = root.to_string_lossy();
+        let list = serde_json::json!({ "result": { "panes": [
+            { "pane_id": "p1", "tab_id": "t1", "label": "Code", "cwd": "/elsewhere" },
+            { "pane_id": "p2", "tab_id": "t2", "cwd": r },
+            { "pane_id": "p3", "tab_id": "t3", "label": "Code", "cwd": "/x", "foreground_cwd": r },
+        ]}});
+        assert_eq!(find_code_pane(&list, &root), Some(("t3".into(), "p3".into())));
+        assert_eq!(find_code_pane(&serde_json::json!({}), &root), None);
     }
-    let (root, session) = (root.ok_or("missing --root")?, session.ok_or("missing --session")?);
-    let s = Some(session.as_str());
-    let name = Path::new(&root)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| root.clone());
-    let label = format!("Code: {name}");
-    let lock = lock_path(&session, Path::new(&root));
-    // Held until this process exits: one window per (session, worktree). Retry
-    // ~500 ms so a launcher's brief probe of the same lock cannot bounce us.
-    let mut lockf = None;
-    for _ in 0..25 {
-        lockf = try_lock(&lock)?;
-        if lockf.is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let Some(lockf) = lockf else {
-        println!("herdr-code: already open for {root}");
-        return Ok(());
-    };
 
-    // Reuse a workspace a crashed run left behind, but only if it still carries
-    // our label. Matching on label alone could hijack another repo with the same dir name.
-    let prev = read_lock(&lock).and_then(|l| l["workspace_id"].as_str().map(String::from));
-    let list = herdr(s, &["workspace", "list"])?;
-    let existing = prev.filter(|id| {
-        list["result"]["workspaces"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|w| w["workspace_id"].as_str() == Some(id) && w["label"].as_str() == Some(&label))
-    });
-    let ws = match existing {
-        Some(id) => id,
-        None => herdr(s, &["workspace", "create", "--no-focus", "--cwd", &root, "--label", &label])?
-            ["result"]["workspace"]["workspace_id"]
-            .as_str()
-            .ok_or("workspace create: no workspace_id")?
-            .to_string(),
-    };
-    // Record W at once, so a crash from here on can still find it next time.
-    let mut state = json!({
-        "attach_pid": std::process::id(),
-        "workspace_id": ws,
-        "session": session,
-        "root": root,
-    });
-    write_lock(&lockf, &state);
-
-    let res = run_window(s, &session, &root, &ws, &lock, &lockf, &mut state);
-    // Whatever happened after W existed, take it down again. No printing on this
-    // path: the window may already be gone (EIO on the tty).
-    let _ = herdr(s, &["workspace", "close", &ws]);
-    write_lock(&lockf, &json!({ "session": session, "root": root }));
-    res
-}
-
-/// Open the panel in `ws`, run this window's herdr client until it exits.
-fn run_window(
-    s: Option<&str>,
-    session: &str,
-    root: &str,
-    ws: &str,
-    lock: &Path,
-    lockf: &fs::File,
-    state: &mut Value,
-) -> Result<(), String> {
-    // plugin.pane.open --focus moves the server's active workspace to `ws` without
-    // moving attached clients (it is not a "public focus" method), so the client we
-    // start next lands on `ws`. Nothing else runs between the two.
-    let lock_env = format!("HERDR_CODE_LOCK={}", lock.display());
-    let opened = herdr(
-        s,
-        &[
-            "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "panel",
-            "--placement", "tab", "--workspace", ws, "--cwd", root, "--env", &lock_env, "--focus",
-        ],
-    )?;
-    let panel_tab = opened["result"]["plugin_pane"]["pane"]["tab_id"]
-        .as_str()
-        .ok_or("plugin pane open: no tab_id")?
-        .to_string();
-    let mut cmd = Command::new(herdr_bin());
-    cmd.args(["--session", session]);
-    clean_env(&mut cmd);
-    let mut client = cmd.spawn().map_err(|e| format!("cannot start herdr client: {e}"))?;
-    state["client_pid"] = json!(client.id());
-    write_lock(lockf, state);
-
-    // Exactly one fresh panel: drop the shell from `workspace create` and stale panels.
-    if let Ok(tabs) = herdr(s, &["tab", "list", "--workspace", ws]) {
-        for id in tabs["result"]["tabs"].as_array().into_iter().flatten().filter_map(|t| t["tab_id"].as_str()) {
-            if id != panel_tab {
-                let _ = herdr(s, &["tab", "close", id]);
+    /// The panel and launcher never signal another process: the identifiers
+    /// kill, killpg, raise, sigqueue and pthread_kill appear nowhere in code
+    /// (comments aside), whether as `libc::…`, a `use libc::{…}` import, a
+    /// `Child` method or a command name. Incoming handlers (libc::signal) are fine.
+    #[test]
+    fn no_code_sends_signals() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let forbidden = [["ki", "ll"].concat(), ["ki", "llpg"].concat(), ["rai", "se"].concat(), ["sig", "queue"].concat(), ["pthread_k", "ill"].concat()];
+        let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        for e in fs::read_dir(&dir).unwrap().flatten() {
+            let text = fs::read_to_string(e.path()).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("").as_bytes();
+                for f in &forbidden {
+                    let hit = (0..code.len().saturating_sub(f.len() - 1)).any(|i| {
+                        code[i..].starts_with(f.as_bytes())
+                            && (i == 0 || !word(code[i - 1]))
+                            && code.get(i + f.len()).is_none_or(|b| !word(*b))
+                    });
+                    assert!(!hit, "{}:{}: {f:?} in {line:?}", e.path().display(), n + 1);
+                }
             }
         }
     }
-    let _ = client.wait();
-    Ok(())
 }

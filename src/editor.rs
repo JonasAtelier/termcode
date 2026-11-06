@@ -1,23 +1,33 @@
 //! Text buffer with VS Code-style editing. The buffer (model) is shared by every
 //! tab showing the file; each tab keeps its own `View` (cursor, selection, scroll).
 
-use crate::theme;
+use crate::{semantic, theme};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
 /// Typing pauses longer than this start a new undo step (VS Code-like).
 const UNDO_PAUSE: Duration = Duration::from_secs(1);
-use syntect::highlighting::{HighlightIterator, HighlightState, Highlighter, Style as SStyle};
+use syntect::highlighting::{Color as SColor, HighlightState, Highlighter, RangedHighlightIterator, Style as SStyle};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use unicode_width::UnicodeWidthChar;
 
 pub const MAX_BYTES: u64 = 1 << 20;
 pub const MAX_LINES: usize = 20_000;
-pub const TAB: usize = 4;
+static TAB: AtomicUsize = AtomicUsize::new(4);
+
+/// `editor.tabSize`: tab stops, the indent unit for space-indented files, guides.
+pub fn tab() -> usize {
+    TAB.load(Ordering::Relaxed)
+}
+
+pub fn set_tab(n: usize) {
+    TAB.store(n.clamp(1, 16), Ordering::Relaxed);
+}
 /// Lines longer than this are not highlighted (minified code); state carries over unchanged.
 const HL_MAX_LINE: usize = 4000;
 
@@ -75,9 +85,11 @@ struct Group {
 struct Hl {
     syntax: &'static SyntaxReference,
     /// `states[i]` is the parser state at the start of line i (valid prefix).
-    states: Vec<(ParseState, HighlightState)>,
+    states: Vec<(ParseState, HighlightState, semantic::Ctx)>,
     /// Highlighted segments `(end byte, style)` per line (valid prefix).
     segs: Vec<Vec<(usize, SStyle)>>,
+    /// `theme::Syntax::gen` the cache was built with.
+    gen: u64,
 }
 
 pub struct Buffer {
@@ -111,15 +123,17 @@ pub fn syntaxes() -> &'static SyntaxSet {
     S.get_or_init(SyntaxSet::load_defaults_nonewlines)
 }
 
-fn highlighter() -> &'static Highlighter<'static> {
-    static H: OnceLock<Highlighter<'static>> = OnceLock::new();
-    H.get_or_init(|| Highlighter::new(theme::syntax_theme()))
-}
+/// Text the grammar does not colour: the editor foreground.
+const PLAIN: SStyle = SStyle {
+    foreground: SColor { r: 0, g: 0, b: 0, a: 0 },
+    background: SColor { r: 0, g: 0, b: 0, a: 0 },
+    font_style: syntect::highlighting::FontStyle::empty(),
+};
 
 /// Advance a display column over `c` (tabs to the next stop, wide chars = 2).
 pub fn advance(x: usize, c: char) -> usize {
     match c {
-        '\t' => (x / TAB + 1) * TAB,
+        '\t' => (x / tab() + 1) * tab(),
         c if c.is_control() => x + 1,
         c => x + c.width().unwrap_or(0),
     }
@@ -179,7 +193,7 @@ impl Buffer {
             binary: false,
             mtime: None,
             mode: None,
-            indent: " ".repeat(TAB),
+            indent: " ".repeat(tab()),
             lang: "Plain Text".into(),
             disk_changed: false,
             armed_mtime: None,
@@ -259,8 +273,13 @@ impl Buffer {
     fn set_syntax(&mut self, syn: Option<&'static SyntaxReference>) {
         let syn = syn.unwrap_or_else(|| syntaxes().find_syntax_plain_text());
         self.lang = syn.name.clone();
-        let start = (ParseState::new(syn), HighlightState::new(highlighter(), ScopeStack::new()));
-        self.hl = Some(Hl { syntax: syn, states: vec![start], segs: Vec::new() });
+        let look = theme::syntax();
+        let start = (
+            ParseState::new(syn),
+            HighlightState::new(&Highlighter::new(&look.theme), ScopeStack::new()),
+            semantic::Ctx::default(),
+        );
+        self.hl = Some(Hl { syntax: syn, states: vec![start], segs: Vec::new(), gen: look.gen });
     }
 
     fn set_text(&mut self, text: &str) {
@@ -281,7 +300,7 @@ impl Buffer {
             .collect();
         let tabs = self.lines.iter().take(2000).filter(|l| l.starts_with('\t')).count();
         let spaces = self.lines.iter().take(2000).filter(|l| l.starts_with(' ')).count();
-        self.indent = if tabs > spaces { "\t".into() } else { " ".repeat(TAB) };
+        self.indent = if tabs > spaces { "\t".into() } else { " ".repeat(tab()) };
     }
 
     /// The file content as it would be written.
@@ -347,33 +366,42 @@ impl Buffer {
         }
     }
 
-    /// Highlight lines up to `upto` (exclusive), resuming from the cached state.
+    /// Highlight lines up to `upto` (exclusive), resuming from the cached state:
+    /// grammar scopes renamed to VS Code's (`semantic::alias`), themed, then the
+    /// semantic pass for C/C++/Rust identifiers.
     pub fn highlight_upto(&mut self, upto: usize) {
         let Some(h) = &mut self.hl else { return };
+        let look = theme::syntax();
+        let hl = Highlighter::new(&look.theme);
+        if h.gen != look.gen {
+            // A settings reload swapped the theme: recolour from the top.
+            h.gen = look.gen;
+            h.segs.clear();
+            h.states.truncate(1);
+            h.states[0] = (ParseState::new(h.syntax), HighlightState::new(&hl, ScopeStack::new()), Default::default());
+        }
+        let lang = semantic::lang(&h.syntax.name);
         let upto = upto.min(self.lines.len());
         while h.segs.len() < upto {
             let i = h.segs.len();
-            let (mut ps, mut hs) = h.states[i].clone();
+            let (mut ps, mut hs, mut ctx) = h.states[i].clone();
             let line = &self.lines[i];
-            let plain = vec![(line.len(), SStyle::default())];
+            let plain = vec![(line.len(), PLAIN)];
             let segs = if line.len() > HL_MAX_LINE {
                 plain
             } else {
                 match ps.parse_line(line, syntaxes()) {
-                    Ok(ops) => {
-                        let mut end = 0;
-                        HighlightIterator::new(&mut hs, &ops, line, highlighter())
-                            .map(|(st, t)| {
-                                end += t.len();
-                                (end, st)
-                            })
-                            .collect()
+                    Ok(mut ops) => {
+                        semantic::alias_ops(&mut ops);
+                        let start = hs.path.clone();
+                        let pieces = RangedHighlightIterator::new(&mut hs, &ops, line, &hl).map(|(st, _, r)| (r.end, st)).collect();
+                        semantic::refine(lang, line, &ops, start, pieces, &mut ctx, &look.sem)
                     }
                     Err(_) => plain,
                 }
             };
             h.segs.push(segs);
-            h.states.push((ps, hs));
+            h.states.push((ps, hs, ctx));
         }
     }
 
@@ -629,7 +657,7 @@ impl Buffer {
             let unit = if self.indent == "\t" {
                 "\t".to_string()
             } else {
-                " ".repeat(TAB - display_col(&self.lines[c.line], c.col) % TAB)
+                " ".repeat(tab() - display_col(&self.lines[c.line], c.col) % tab())
             };
             return self.insert_kind(v, &unit, Kind::Other);
         };
@@ -655,7 +683,7 @@ impl Buffer {
         self.begin(v, Kind::Other);
         for l in first..=last.min(self.lines.len() - 1) {
             let line = &self.lines[l];
-            let n = if line.starts_with('\t') { 1 } else { line.bytes().take(TAB).take_while(|b| *b == b' ').count() };
+            let n = if line.starts_with('\t') { 1 } else { line.bytes().take(tab()).take_while(|b| *b == b' ').count() };
             if n > 0 {
                 self.do_del(Pos::new(l, 0), Pos::new(l, n));
                 for p in std::iter::once(&mut v.cursor).chain(v.anchor.as_mut()) {
@@ -956,21 +984,28 @@ impl Buffer {
         self.crlf = rec["crlf"].as_bool().unwrap_or(self.crlf);
         self.final_newline = rec["final_newline"].as_bool().unwrap_or(self.final_newline);
         // The edits are based on the old disk version: if the file changed since,
-        // the normal external-change refusal must fire on the next save.
-        self.mtime = rec["base_mtime"].as_str().and_then(|s| s.parse::<u128>().ok()).map(|n| {
+        // the normal external-change refusal must fire on the next save. A record
+        // without base_mtime cannot prove anything, so it counts as stale: the
+        // epoch never matches the disk, and the first save refuses.
+        let base = rec["base_mtime"].as_str().and_then(|s| s.parse::<u128>().ok());
+        self.mtime = Some(base.map_or(SystemTime::UNIX_EPOCH, |n| {
             SystemTime::UNIX_EPOCH + Duration::new((n / 1_000_000_000) as u64, (n % 1_000_000_000) as u32)
-        });
+        }));
         true
     }
 
-    /// Did the file on disk change after the version the backup's edits were made on?
+    /// Did the file on disk change after the version the backup's edits were
+    /// made on? A record without `base_mtime` is always stale.
     pub fn backup_is_stale(rec: &serde_json::Value, path: &Path) -> bool {
         let now = fs::metadata(path)
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
             .map(|d| d.as_nanos().to_string());
-        rec["base_mtime"].as_str().map(String::from) != now
+        match rec["base_mtime"].as_str() {
+            Some(base) => Some(base) != now.as_deref(),
+            None => true,
+        }
     }
 
     /// Compare with the disk: reload a clean buffer, flag a dirty one.
@@ -1002,13 +1037,17 @@ pub fn backup_file(dir: &Path, scope: &str, file: &Path) -> PathBuf {
 pub fn write_backup(dir: &Path, scope: &str, b: &Buffer) -> std::io::Result<()> {
     let (Some(mut rec), Some(path)) = (b.backup_record(), b.path.as_ref()) else { return Ok(()) };
     rec["scope"] = scope.into();
+    write_record(dir, &backup_file(dir, scope, path), &rec)
+}
+
+/// Write a backup record to `dst` in `dir`: temp file, fsync, rename; 0600 in a 0700 dir.
+pub fn write_record(dir: &Path, dst: &Path, rec: &serde_json::Value) -> std::io::Result<()> {
     std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o700).create(dir)?;
-    let dst = backup_file(dir, scope, path);
     let tmp = dst.with_extension("tmp");
     let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
     f.write_all(rec.to_string().as_bytes())?;
     f.sync_all()?;
-    fs::rename(&tmp, &dst)
+    fs::rename(&tmp, dst)
 }
 
 pub fn read_backup(dir: &Path, scope: &str, file: &Path) -> Option<serde_json::Value> {
@@ -1082,6 +1121,23 @@ mod tests {
         assert_eq!(fs::read_to_string(&p).unwrap(), "agent\n");
         b2.save().unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap(), "mine base\n");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn backup_without_base_mtime_is_stale_and_save_refuses_once() {
+        let d = tmpdir("nobase");
+        let p = d.join("f.txt");
+        fs::write(&p, "disk\n").unwrap();
+        let rec = serde_json::json!({ "path": p, "text": "mine", "crlf": false, "final_newline": true });
+        assert!(Buffer::backup_is_stale(&rec, &p));
+        let mut b = Buffer::open(&p);
+        let mut v = View::default();
+        assert!(b.restore_backup(&mut v, &rec));
+        assert!(b.save().is_err(), "nothing proves the disk is the base: refuse once");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "disk\n");
+        b.save().unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "mine\n");
         fs::remove_dir_all(&d).unwrap();
     }
 

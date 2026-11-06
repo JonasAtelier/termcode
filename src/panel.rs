@@ -2,10 +2,13 @@
 //! (Explorer / Search / Source Control / History), editor groups with preview
 //! tabs, find widget, prompts. Drawing lives in ui.rs.
 
+use crate::decor::{self, Mark, TrackHit};
 use crate::diff;
 use crate::editor::{self, Buffer, Pos, View};
 use crate::git::{self, ScmFile, Section};
 use crate::parse::{self, Commit, Hit, StatusEntry};
+use crate::settings::{self, Settings, ThemeData};
+use crate::theme;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
@@ -19,11 +22,15 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const PAGE: usize = 200;
+/// A file's (mtime, length), or None when it does not exist.
+type Stamp = Option<(SystemTime, u64)>;
+/// Quick-diff recompute delay after an edit.
+const QDIFF_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const MAX_HITS: usize = 5_000;
 pub const MAX_GROUPS: usize = 3;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -121,9 +128,75 @@ pub struct Prompt {
 
 pub struct Quick {
     pub query: String,
+    /// File paths, or command labels in the command palette.
     pub items: Vec<String>,
     pub sel: usize,
     pub off: usize,
+    /// F1 command palette rather than Quick Open.
+    pub commands: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Cmd {
+    OpenSettings,
+    ToggleRainbow,
+    ToggleRuler,
+    ToggleGuides,
+    ToggleSidebar,
+    QuickOpen,
+    Save,
+    ReloadSettings,
+}
+
+/// The F1 command palette: label, command, key hint.
+pub const COMMANDS: &[(&str, Cmd, &str)] = &[
+    ("Preferences: Open Settings (JSON)", Cmd::OpenSettings, ""),
+    ("View: Toggle Indent Rainbow", Cmd::ToggleRainbow, ""),
+    ("View: Toggle Minimap Ruler", Cmd::ToggleRuler, ""),
+    ("View: Toggle Indent Guides", Cmd::ToggleGuides, ""),
+    ("View: Toggle Primary Side Bar Visibility", Cmd::ToggleSidebar, ""),
+    ("Go to File...", Cmd::QuickOpen, "Ctrl+P"),
+    ("File: Save", Cmd::Save, "Ctrl+S"),
+    ("Developer: Reload Settings", Cmd::ReloadSettings, ""),
+];
+
+/// Commands matching `q`, best tier first, palette order within a tier.
+pub fn filter_commands(q: &str) -> Vec<String> {
+    let mut v: Vec<(usize, usize, &str)> = COMMANDS
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| parse::match_score(c.0, q).map(|s| (s / 100_000, i, c.0)))
+        .collect();
+    v.sort();
+    v.into_iter().map(|(_, _, l)| l.to_string()).collect()
+}
+
+/// Something with a scrollbar.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ScrollTarget {
+    Editor(usize),
+    Side,
+    Quick,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ScrollHit {
+    pub track: Rect,
+    pub target: ScrollTarget,
+    /// Slider (first row, rows) within the track.
+    pub slider: (u16, u16),
+    pub max_off: usize,
+    pub page: usize,
+}
+
+/// Quick diff of one open file against its index version.
+#[derive(Default)]
+pub struct QDiff {
+    /// None: the file is not in the index (untracked, outside the repo).
+    pub base: Option<Vec<String>>,
+    pub marks: Vec<Option<Mark>>,
+    /// Buffer version the marks are for.
+    ver: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -138,6 +211,8 @@ pub enum Drag {
     Divider,
     File { rel: String, from: Position, active: bool },
     Select(usize),
+    /// Scrollbar slider grabbed `grab` rows below its top.
+    Scroll(ScrollHit, u16),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -172,6 +247,8 @@ pub enum FindBtn {
 pub enum SRow {
     Head(Section, usize),
     File(usize),
+    /// Blank row between sections (comfortable density).
+    Gap,
 }
 
 /// Search result rows.
@@ -199,6 +276,20 @@ pub struct Hits {
     pub split_btns: Vec<(Rect, usize)>,
     pub quick: Rect,
     pub quick_list: Rect,
+    pub scrollbars: Vec<ScrollHit>,
+    /// The sidebar, and how its list was laid out: items that fit, blank rows between items.
+    pub sidebar: Rect,
+    pub side_rows: usize,
+    pub side_gap: u16,
+}
+
+impl Hits {
+    /// The sidebar list item drawn at screen row `y` (None on a gap row).
+    pub fn side_item(&self, y: u16, off: usize) -> Option<usize> {
+        let rel = y.checked_sub(self.side_list.y)?;
+        let step = 1 + self.side_gap;
+        (rel % step == 0 && rel < self.side_list.height).then(|| off + (rel / step) as usize)
+    }
 }
 
 #[derive(Default, Clone)]
@@ -214,6 +305,8 @@ pub struct GroupHit {
 enum Load {
     Diff(DiffDoc),
     Show(String),
+    /// Quick-diff base (the index blob) for a `file:` document.
+    Base(Option<Vec<u8>>),
     Cancelled,
 }
 
@@ -223,7 +316,8 @@ pub struct App {
     pub branch: String,
     pub side: Side,
     pub side_visible: bool,
-    pub side_w: u16,
+    /// Dragged sidebar width; None = `herdr-code.spacing.sidebarWidth`.
+    pub side_w: Option<u16>,
     layout_file: Option<PathBuf>,
     pub focus: Focus,
     pub status: Vec<StatusEntry>,
@@ -241,6 +335,12 @@ pub struct App {
     pub s_opts: (bool, bool, bool),
     pub hits: Vec<Hit>,
     pub search: Option<Child>,
+    /// Tells the running search's reader thread to stop.
+    search_stop: Arc<AtomicBool>,
+    /// rg processes not yet reaped (running or abandoned).
+    live_rg: Arc<AtomicUsize>,
+    /// A search waits until fewer than MAX_LIVE_RG rg processes are left.
+    pub queued_search: Option<(String, (bool, bool, bool))>,
     gen: u64,
     tx: mpsc::SyncSender<(u64, Option<Hit>)>,
     rx: mpsc::Receiver<(u64, Option<Hit>)>,
@@ -276,6 +376,21 @@ pub struct App {
     pub msg: String,
     pub quit: bool,
     pub ui: Hits,
+    pub settings: Settings,
+    /// settings.json; None in tests unless set.
+    pub settings_file: Option<PathBuf>,
+    /// mtimes of settings.json (and VS Code's, when followed) at the last load.
+    settings_stamp: Option<(Stamp, Stamp)>,
+    /// The last load failed: shown in the status bar until a good save.
+    pub settings_err: Option<String>,
+    /// The theme last installed, so an unrelated settings change does not recolour.
+    installed: ThemeData,
+    /// Command-palette toggles, reset from settings.json on each load.
+    pub rainbow_on: bool,
+    pub guides_on: bool,
+    pub ruler_on: bool,
+    pub qdiff: HashMap<String, QDiff>,
+    qdiff_due: Option<Instant>,
 }
 
 pub fn run() -> Result<(), String> {
@@ -283,6 +398,8 @@ pub fn run() -> Result<(), String> {
     let root = crate::repo_root(&cwd)
         .ok_or_else(|| format!("{} is not inside a git repository", cwd.display()))?;
     let mut app = App::new(root, Some(layout_path()));
+    app.settings_file = Some(settings::path());
+    app.check_settings();
     // herdr closes a pane with HUP, then TERM, then KILL 500 ms later: catch the
     // first two so unsaved edits are flushed to the backup directory in time.
     for sig in [libc::SIGHUP, libc::SIGTERM] {
@@ -303,15 +420,12 @@ pub fn run() -> Result<(), String> {
     // Every exit path (quit, signal, error, panic) leaves unsaved edits on disk.
     app.sync_backups();
     restore();
-    app.kill_search();
+    app.stop_search();
+    // Quitting just ends this process: herdr then closes the tab. Nothing here
+    // signals or closes anything else.
     match res {
         Err(panic) => std::panic::resume_unwind(panic),
-        Ok(r) => {
-            if app.quit {
-                close_window();
-            }
-            r.map_err(|e| e.to_string())
-        }
+        Ok(r) => r.map_err(|e| e.to_string()),
     }
 }
 
@@ -345,27 +459,6 @@ fn restore() {
         cursor::Show
     );
     let _ = terminal::disable_raw_mode();
-}
-
-/// Detach this window's herdr client; the attach wrapper then closes the
-/// workspace and the terminal window. Never touches other clients or the server.
-fn close_window() {
-    let Ok(lock) = std::env::var("HERDR_CODE_LOCK") else { return };
-    let Some(l) = crate::read_lock(Path::new(&lock)) else { return };
-    if l["workspace_id"].as_str() != std::env::var("HERDR_WORKSPACE_ID").ok().as_deref() {
-        return;
-    }
-    let (Some(client), Some(attach)) = (l["client_pid"].as_u64(), l["attach_pid"].as_u64()) else {
-        return;
-    };
-    // Only a live child of this window's attach wrapper (guards against stale data / pid reuse).
-    let ppid = fs::read_to_string(format!("/proc/{client}/stat")).ok().and_then(|s| parse::stat_ppid(&s));
-    if ppid == Some(attach) {
-        // SAFETY: plain kill(2) on a pid just verified to be the wrapper's client.
-        unsafe {
-            libc::kill(client as libc::pid_t, libc::SIGHUP);
-        }
-    }
 }
 
 fn layout_path() -> PathBuf {
@@ -425,14 +518,31 @@ fn clipboard_get() -> Option<String> {
                 }
                 Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
                 _ => {
-                    let _ = c.kill();
-                    let _ = c.wait();
+                    reap(c, None);
                     break;
                 }
             }
         }
     }
     None
+}
+
+/// Abandoned rg processes allowed to run at once; a newer search waits for one to end.
+const MAX_LIVE_RG: usize = 2;
+
+/// Wait for a child we gave up on, off the UI thread (no zombie, no signal).
+/// Its pipes are closed first: a child blocked on a full pipe then gets EPIPE
+/// and exits instead of keeping the reaper waiting forever. `live` counts it out.
+fn reap(mut c: Child, live: Option<Arc<AtomicUsize>>) -> std::thread::JoinHandle<()> {
+    drop(c.stdin.take());
+    drop(c.stdout.take());
+    drop(c.stderr.take());
+    std::thread::spawn(move || {
+        let _ = c.wait();
+        if let Some(n) = live {
+            n.fetch_sub(1, Ordering::SeqCst);
+        }
+    })
 }
 
 fn filter(files: &[String], q: &str) -> Vec<String> {
@@ -443,14 +553,6 @@ fn filter(files: &[String], q: &str) -> Vec<String> {
 
 pub fn base(rel: &str) -> &str {
     rel.rsplit('/').next().unwrap_or(rel)
-}
-
-fn rank(c: char) -> u8 {
-    match c {
-        '!' => 3,
-        'U' => 1,
-        _ => 2,
-    }
 }
 
 impl App {
@@ -469,7 +571,11 @@ impl App {
             branch: String::new(),
             side: Side::Explorer,
             side_visible: saved["sidebar_visible"].as_bool().unwrap_or(true),
-            side_w: saved["sidebar_width"].as_u64().map_or(30, |w| w.clamp(12, 200) as u16),
+            // Only a dragged width is kept (older files saved the default too).
+            side_w: saved["sidebar_width"]
+                .as_u64()
+                .filter(|_| saved["sidebar_dragged"] == true)
+                .map(|w| w.clamp(12, 200) as u16),
             layout_file,
             focus: Focus::Side,
             status: Vec::new(),
@@ -485,6 +591,9 @@ impl App {
             s_opts: (false, false, false),
             hits: Vec::new(),
             search: None,
+            search_stop: Arc::new(AtomicBool::new(false)),
+            live_rg: Arc::new(AtomicUsize::new(0)),
+            queued_search: None,
             gen: 0,
             tx,
             rx,
@@ -516,8 +625,19 @@ impl App {
             msg: String::new(),
             quit: false,
             ui: Hits::default(),
+            settings: Settings::default(),
+            settings_file: None,
+            settings_stamp: None,
+            settings_err: None,
+            installed: Settings::default().theme,
+            rainbow_on: true,
+            guides_on: true,
+            ruler_on: true,
+            qdiff: HashMap::new(),
+            qdiff_due: None,
         };
         a.backup_dir = a.layout_file.as_ref().and_then(|p| p.parent()).map(|d| d.join("backup"));
+        a.migrate_backups();
         a.refresh();
         a.tree = a.read_dir("", 0);
         let pending = a.pending_backups();
@@ -525,6 +645,172 @@ impl App {
             a.msg = format!("{pending} file(s) have unsaved changes from a closed session; open one to restore");
         }
         a
+    }
+
+    /// Backups from before records carried a session `scope` are invisible to
+    /// every session. Move this worktree's under the current session's key,
+    /// once; one whose new name is taken stays where it is (never deleted).
+    fn migrate_backups(&self) {
+        let Some(dir) = &self.backup_dir else { return };
+        if !dir.is_dir() {
+            return;
+        }
+        // Two panels starting at once: one migrates, the other then finds nothing to do.
+        let Ok(_held) = crate::lock_wait(&dir.join(".migrate.lock"), Duration::from_secs(2)) else { return };
+        for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let old = e.path();
+            if old.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(mut rec) = fs::read(&old).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
+                continue;
+            };
+            let Some(file) = rec["path"].as_str().map(PathBuf::from) else { continue };
+            if rec.get("scope").is_some() || !file.starts_with(&self.root) {
+                continue;
+            }
+            let dst = editor::backup_file(dir, &self.backup_scope, &file);
+            // Move (rename) the record under this session's name, then add its scope
+            // in place; a crash in between is finished by the next start (dst == old).
+            if dst != old && (dst.exists() || fs::rename(&old, &dst).is_err()) {
+                continue;
+            }
+            rec["scope"] = self.backup_scope.clone().into();
+            let _ = editor::write_record(dir, &dst, &rec);
+        }
+    }
+
+    /// Reload settings.json when it (or VS Code's, when followed) changed on disk.
+    pub fn check_settings(&mut self) {
+        let Some(path) = self.settings_file.clone() else { return };
+        let mtime = |p: &Path| fs::metadata(p).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
+        let stamp = (mtime(&path), self.settings.follow_vscode.then(|| mtime(&settings::vscode_path())).flatten());
+        if self.settings_stamp == Some(stamp) {
+            return;
+        }
+        self.settings_stamp = Some(stamp);
+        match settings::load(&path) {
+            Ok(s) => {
+                if self.settings_err.take().is_some() {
+                    self.msg = "settings.json applied".into();
+                }
+                self.apply_settings(s);
+            }
+            Err(e) => {
+                self.msg = format!("settings.json not applied: {e}");
+                self.settings_err = Some(e);
+            }
+        }
+    }
+
+    pub fn apply_settings(&mut self, s: Settings) {
+        theme::set_ascii(s.ascii_icons);
+        editor::set_tab(s.tab_size);
+        if s.theme != self.installed {
+            let colors = s.theme.json["colors"].as_object().cloned().unwrap_or_default();
+            theme::install(theme::build_pal(&colors), theme::build_syntax(&s.theme.json, &s.theme.extra_rules));
+            self.installed = s.theme.clone();
+        }
+        self.rainbow_on = s.rainbow.enabled;
+        self.guides_on = s.guides;
+        if !s.warnings.is_empty() {
+            self.msg = format!("settings.json: {}", s.warnings.join("; "));
+        }
+        self.settings = s;
+    }
+
+    /// "Preferences: Open Settings (JSON)": the file, created from a commented template.
+    fn open_settings(&mut self) {
+        let Some(path) = self.settings_file.clone() else {
+            self.msg = "no settings file in this session".into();
+            return;
+        };
+        if !path.exists() {
+            let made = path.parent().map_or(Ok(()), fs::create_dir_all).and_then(|_| {
+                fs::OpenOptions::new().write(true).create_new(true).open(&path)?.write_all(settings::TEMPLATE.as_bytes())
+            });
+            if let Err(e) = made {
+                self.msg = format!("{}: {e}", path.display());
+                return;
+            }
+        }
+        self.open_file(self.ag, &path.to_string_lossy(), false);
+        self.focus = Focus::Editor;
+    }
+
+    fn run_command(&mut self, c: Cmd) {
+        let on_off = |b: bool| if b { "on" } else { "off" };
+        match c {
+            Cmd::OpenSettings => self.open_settings(),
+            Cmd::ToggleRainbow => {
+                self.rainbow_on = !self.rainbow_on;
+                self.msg = format!("indent rainbow {}", on_off(self.rainbow_on));
+            }
+            Cmd::ToggleRuler => {
+                self.ruler_on = !self.ruler_on;
+                self.msg = format!("minimap ruler {}", on_off(self.ruler_on));
+            }
+            Cmd::ToggleGuides => {
+                self.guides_on = !self.guides_on;
+                self.msg = format!("indent guides {}", on_off(self.guides_on));
+            }
+            Cmd::ToggleSidebar => {
+                self.side_visible = !self.side_visible;
+                if !self.side_visible && self.focus == Focus::Side {
+                    self.focus = Focus::Editor;
+                }
+                self.save_layout();
+            }
+            Cmd::QuickOpen => self.open_quick(),
+            Cmd::Save => self.save_active(),
+            Cmd::ReloadSettings => {
+                self.settings_stamp = None;
+                self.check_settings();
+                if self.settings_err.is_none() {
+                    self.msg = "settings reloaded".into();
+                }
+            }
+        }
+    }
+
+    // ---- quick diff ------------------------------------------------------------
+
+    /// Fetch the index version of every open file (after open, stage, focus...).
+    fn load_bases(&mut self) {
+        let keys: Vec<String> = self
+            .docs
+            .iter()
+            .filter(|(k, d)| k.starts_with("file:") && matches!(d, Doc::Text(b) if b.readonly.is_none()))
+            .map(|(k, _)| k.clone())
+            .collect();
+        self.qdiff.retain(|k, _| keys.contains(k));
+        for key in keys {
+            let rel = key["file:".len()..].to_string();
+            self.load(format!("base:{key}"), move |root| Load::Base(git::blob(&root, &format!(":0:{rel}"))));
+        }
+    }
+
+    /// Recompute the gutter marks of buffers edited since their last diff.
+    fn update_qdiff(&mut self) {
+        self.qdiff_due = None;
+        for (key, qd) in self.qdiff.iter_mut() {
+            let Some(Doc::Text(b)) = self.docs.get(key) else { continue };
+            if qd.ver == Some(b.version()) && qd.marks.len() == b.lines.len() {
+                continue;
+            }
+            qd.ver = Some(b.version());
+            qd.marks = match &qd.base {
+                Some(base) => decor::quick_diff(base, &b.lines),
+                None => Vec::new(),
+            };
+        }
+    }
+
+    fn schedule_qdiff(&mut self) {
+        let stale = self.qdiff.iter().any(|(k, q)| matches!(self.docs.get(k), Some(Doc::Text(b)) if q.ver != Some(b.version())));
+        if stale && self.qdiff_due.is_none() {
+            self.qdiff_due = Some(Instant::now() + QDIFF_DEBOUNCE);
+        }
     }
 
     /// Backups left by an earlier session for files in this worktree.
@@ -633,14 +919,21 @@ impl App {
             if self.backup_due.is_some_and(|t| Instant::now() >= t) {
                 self.sync_backups();
             }
+            if self.qdiff_due.is_some_and(|t| Instant::now() >= t) {
+                self.update_qdiff();
+                dirty = true;
+            }
             if dirty {
                 t.draw(|f| crate::ui::draw(self, f))?;
             }
             dirty = self.drain();
             // Wake often only while rg/git output streams in or a backup is pending,
             // so a HUP is noticed within 100 ms whenever there is something to save.
-            let busy = self.search.is_some() || !self.loading.is_empty() || self.backup_due.is_some();
-            let wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
+            let busy = self.search.is_some() || self.queued_search.is_some() || !self.loading.is_empty() || self.backup_due.is_some();
+            let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
+            if let Some(t) = self.qdiff_due {
+                wait = wait.min(t.saturating_duration_since(Instant::now()));
+            }
             let ev = match event::poll(wait).and_then(|ready| if ready { event::read().map(Some) } else { Ok(None) }) {
                 Ok(ev) => ev,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -666,6 +959,8 @@ impl App {
                 Event::Resize(..) => true,
                 _ => false,
             };
+            // Any edit (keys, paste, a Replace All click) re-diffs the gutter shortly after.
+            self.schedule_qdiff();
         }
         Ok(())
     }
@@ -696,20 +991,8 @@ impl App {
         self.status = parse::parse_porcelain_z(&raw);
         let (staged, changes) = git::split(&self.status);
         self.scm_files = staged.into_iter().chain(changes).collect();
-        self.marks.clear();
-        self.dirty_dirs.clear();
-        for e in &self.status {
-            let Some(c) = git::decoration(e) else { continue };
-            self.marks.insert(e.path.clone(), c);
-            let mut p = e.path.as_str();
-            while let Some((dir, _)) = p.rsplit_once('/') {
-                let d = self.dirty_dirs.entry(dir.to_string()).or_insert(c);
-                if rank(c) > rank(*d) {
-                    *d = c;
-                }
-                p = dir;
-            }
-        }
+        self.marks = self.status.iter().filter_map(|e| Some((e.path.clone(), git::decoration(e)?))).collect();
+        self.dirty_dirs = git::folder_marks(self.marks.iter().map(|(p, c)| (p.as_str(), *c)));
         let mut notes = Vec::new();
         for (key, doc) in self.docs.iter_mut() {
             if let Doc::Text(b) = doc {
@@ -723,6 +1006,9 @@ impl App {
         if !notes.is_empty() {
             self.msg = notes.join("; ");
         }
+        // Staging changes the index: the gutter compares against the new one.
+        self.load_bases();
+        self.check_settings();
         // Visible diff editors follow the new state.
         let visible: Vec<(String, ScmFile)> = self
             .groups
@@ -815,15 +1101,28 @@ impl App {
 
     // ---- search ------------------------------------------------------------------
 
+    /// Search for the query and toggles as they are now (Enter, a toggle, Refresh).
     pub fn start_search(&mut self) {
-        self.kill_search();
+        let req = (self.query.clone(), self.s_opts);
+        self.run_search(req);
+    }
+
+    fn run_search(&mut self, (query, (case, word, regex)): (String, (bool, bool, bool))) {
+        self.stop_search();
         self.hits.clear();
         self.sel[1] = 0;
         self.off[1] = 0;
-        if self.query.is_empty() {
+        self.queued_search = None;
+        if query.is_empty() {
             return;
         }
-        let (case, word, regex) = self.s_opts;
+        // Without kill, an abandoned rg runs until it ends: cap them, and run only
+        // the latest request, as submitted, once one has ended.
+        if self.live_rg.load(Ordering::SeqCst) >= MAX_LIVE_RG {
+            self.queued_search = Some((query, (case, word, regex)));
+            self.msg = "waiting for the previous search…".into();
+            return;
+        }
         let mut flags = vec![if case { "--case-sensitive" } else { "--ignore-case" }];
         if word {
             flags.push("--word-regexp");
@@ -835,7 +1134,7 @@ impl App {
             .args(["--null", "--line-number", "--column", "--no-heading", "--color", "never", "--max-columns", "300"])
             .args(flags)
             .arg("--")
-            .arg(&self.query)
+            .arg(&query)
             .current_dir(&self.root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -848,15 +1147,24 @@ impl App {
                 return;
             }
         };
-        let Some(out) = child.stdout.take() else { return };
+        self.live_rg.fetch_add(1, Ordering::SeqCst);
+        let Some(out) = child.stdout.take() else {
+            reap(child, Some(self.live_rg.clone()));
+            return;
+        };
         let (tx, gen) = (self.tx.clone(), self.gen);
+        let stop = Arc::new(AtomicBool::new(false));
+        self.search_stop = stop.clone();
         std::thread::spawn(move || {
             let mut sent = 0;
             for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
+                // Cancelled or past the cap: stop reading. Closing the pipe ends rg
+                // at its next write (EPIPE); no signal is sent.
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
                 let Some(h) = parse::parse_rg_line(&String::from_utf8_lossy(&line)) else { continue };
                 sent += 1;
-                // Past the cap stop reading: closing the pipe ends rg (EPIPE), and the
-                // UI kills it when the (MAX_HITS + 1)th hit arrives.
                 if tx.send((gen, Some(h))).is_err() || sent > MAX_HITS {
                     return;
                 }
@@ -864,14 +1172,16 @@ impl App {
             let _ = tx.send((gen, None));
         });
         self.search = Some(child);
-        self.msg = format!("searching {:?}…", self.query);
+        self.msg = format!("searching {query:?}…");
     }
 
-    pub fn kill_search(&mut self) {
+    /// Abandon the running search: its reader stops, rg exits on the closed
+    /// pipe (or when done) and is reaped in the background.
+    pub fn stop_search(&mut self) {
         self.gen += 1;
-        if let Some(mut c) = self.search.take() {
-            let _ = c.kill();
-            let _ = c.wait();
+        self.search_stop.store(true, Ordering::Relaxed);
+        if let Some(c) = self.search.take() {
+            reap(c, Some(self.live_rg.clone()));
         }
     }
 
@@ -885,14 +1195,19 @@ impl App {
             changed = true;
             match hit {
                 Some(_) if self.hits.len() >= MAX_HITS => {
-                    self.kill_search();
+                    self.stop_search();
                     self.msg = format!("{MAX_HITS}+ hits, search stopped");
                 }
                 Some(h) => self.hits.push(h),
                 None => {
                     // rg closed stdout, so it is exiting: wait (not kill) to keep its exit code.
                     self.gen += 1;
-                    let code = self.search.take().and_then(|mut c| c.wait().ok()).and_then(|s| s.code());
+                    let code = self.search.take().and_then(|mut c| {
+                        let st = c.wait().ok();
+                        self.live_rg.fetch_sub(1, Ordering::SeqCst);
+                        st
+                    });
+                    let code = code.and_then(|s| s.code());
                     let n = self.hits.len();
                     self.msg = match code {
                         Some(2) if n == 0 => "rg error (invalid pattern?)".into(),
@@ -907,6 +1222,16 @@ impl App {
                 continue;
             }
             self.loading.remove(&key);
+            if let Load::Base(blob) = load {
+                let doc = key.trim_start_matches("base:").to_string();
+                let base: Option<Vec<String>> = blob.map(|b| String::from_utf8_lossy(&b).lines().map(String::from).collect());
+                // Focus and view switches refetch the index: an unchanged one changes nothing.
+                if self.docs.contains_key(&doc) && self.qdiff.get(&doc).is_none_or(|q| q.base != base) {
+                    self.qdiff.insert(doc, QDiff { base, ..Default::default() });
+                    self.qdiff_due.get_or_insert(Instant::now() + QDIFF_DEBOUNCE);
+                }
+                continue;
+            }
             // A tab closed meanwhile does not resurrect its document.
             if !self.groups.iter().any(|g| g.tabs.iter().any(|t| t.key == key)) {
                 continue;
@@ -914,9 +1239,15 @@ impl App {
             let doc = match load {
                 Load::Diff(d) => Doc::Diff(d),
                 Load::Show(text) => Doc::Text(Buffer::from_text(&text, "Diff", "commit view")),
-                Load::Cancelled => continue,
+                Load::Base(_) | Load::Cancelled => continue,
             };
             self.docs.insert(key, doc);
+            changed = true;
+        }
+        if self.queued_search.is_some() && self.live_rg.load(Ordering::SeqCst) < MAX_LIVE_RG {
+            if let Some(req) = self.queued_search.take() {
+                self.run_search(req);
+            }
             changed = true;
         }
         changed
@@ -1006,6 +1337,7 @@ impl App {
         self.show_tab(g, key.clone(), preview);
         if fresh {
             self.offer_restore(&key);
+            self.load_bases();
         }
         self.find_refresh();
     }
@@ -1059,7 +1391,7 @@ impl App {
             Some(Doc::Diff(d)) => d.title.clone(),
             _ => match key.split_once(':') {
                 Some(("show", h)) => format!("commit {}", &h[..h.len().min(7)]),
-                Some(("diff", rest)) => base(rest).to_string(),
+                Some(("diff", rest)) => base(rest.split_once(':').map_or(rest, |(_, p)| p)).to_string(),
                 Some((_, rel)) => base(rel).to_string(),
                 None => key.to_string(),
             },
@@ -1177,6 +1509,8 @@ impl App {
             Ok(()) => format!("saved {}", base(&key)),
             Err(e) => e,
         };
+        // Saving settings.json in this editor applies it at once.
+        self.check_settings();
     }
 
     pub fn request_quit(&mut self) {
@@ -1427,6 +1761,9 @@ impl App {
             rows.push(SRow::Head(Section::Staged, staged));
             rows.extend((0..staged).map(SRow::File));
         }
+        if staged > 0 {
+            rows.extend((0..self.settings.spacing.section_gap).map(|_| SRow::Gap));
+        }
         rows.push(SRow::Head(Section::Changes, self.scm_files.len() - staged));
         rows.extend((staged..self.scm_files.len()).map(SRow::File));
         rows
@@ -1544,7 +1881,11 @@ impl App {
         if let Some(d) = p.parent() {
             let _ = fs::create_dir_all(d);
         }
-        let v = serde_json::json!({ "sidebar_width": self.side_w, "sidebar_visible": self.side_visible });
+        let mut v = serde_json::json!({ "sidebar_visible": self.side_visible });
+        if let Some(w) = self.side_w {
+            v["sidebar_width"] = w.into();
+            v["sidebar_dragged"] = true.into();
+        }
         let _ = fs::write(p, v.to_string());
     }
 
@@ -1617,7 +1958,17 @@ impl App {
         }
         let s = self.side as usize;
         self.sel[s] = (self.sel[s] as isize + d).clamp(0, n as isize - 1) as usize;
-        let h = self.ui.side_list.height.max(1) as usize;
+        if self.side == Side::Scm {
+            let rows = self.scm_rows();
+            let step = if d < 0 { -1 } else { 1 };
+            for _ in 0..rows.len() {
+                if !matches!(rows.get(self.sel[s]), Some(SRow::Gap)) {
+                    break;
+                }
+                self.sel[s] = (self.sel[s] as isize + step).clamp(0, n as isize - 1) as usize;
+            }
+        }
+        let h = self.ui.side_rows.max(1);
         if self.sel[s] < self.off[s] {
             self.off[s] = self.sel[s];
         } else if self.sel[s] >= self.off[s] + h {
@@ -1641,7 +1992,25 @@ impl App {
             self.files.dedup();
         }
         let items = filter(&self.files, "");
-        self.quick = Some(Quick { query: String::new(), items, sel: 0, off: 0 });
+        self.quick = Some(Quick { query: String::new(), items, sel: 0, off: 0, commands: false });
+    }
+
+    fn open_palette(&mut self) {
+        self.quick = Some(Quick { query: String::new(), items: filter_commands(""), sel: 0, off: 0, commands: true });
+    }
+
+    /// Enter or click on a Quick Open / palette row.
+    fn quick_pick(&mut self, i: usize) {
+        let Some(q) = self.quick.take() else { return };
+        let Some(item) = q.items.get(i).cloned() else { return };
+        if q.commands {
+            if let Some(c) = COMMANDS.iter().find(|c| c.0 == item) {
+                self.run_command(c.1);
+            }
+        } else {
+            self.open_file(self.ag, &item, false);
+            self.focus = Focus::Editor;
+        }
     }
 
     fn quick_key(&mut self, k: KeyEvent, modded: bool) {
@@ -1649,12 +2018,8 @@ impl App {
         match k.code {
             KeyCode::Esc => self.quick = None,
             KeyCode::Enter => {
-                let p = q.items.get(q.sel).cloned();
-                self.quick = None;
-                if let Some(p) = p {
-                    self.open_file(self.ag, &p, false);
-                    self.focus = Focus::Editor;
-                }
+                let i = q.sel;
+                self.quick_pick(i);
             }
             KeyCode::Up => q.sel = q.sel.saturating_sub(1),
             KeyCode::Down => q.sel = (q.sel + 1).min(q.items.len().saturating_sub(1)),
@@ -1666,7 +2031,7 @@ impl App {
                     }
                     _ => return,
                 }
-                q.items = filter(&self.files, &q.query);
+                q.items = if q.commands { filter_commands(&q.query) } else { filter(&self.files, &q.query) };
                 q.sel = 0;
             }
             _ => {}
@@ -1691,6 +2056,9 @@ impl App {
         }
         if ctrl && is('q') {
             return self.request_quit();
+        }
+        if ctrl && shift && is('p') {
+            return self.open_palette();
         }
         if ((ctrl && !shift) || alt) && is('p') {
             return self.open_quick();
@@ -1725,7 +2093,7 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::F(1) => return self.show_side(Side::Explorer, false),
+            KeyCode::F(1) => return self.open_palette(),
             KeyCode::F(2) => return self.show_side(Side::Scm, false),
             KeyCode::F(4) => return self.show_side(Side::Search, true),
             KeyCode::F(3) => return self.find_step(if shift { -1 } else { 1 }),
@@ -1813,8 +2181,9 @@ impl App {
                 self.start_search();
                 self.focus = Focus::Side;
             }
-            KeyCode::Esc if !commit && self.search.is_some() => {
-                self.kill_search();
+            KeyCode::Esc if !commit && (self.search.is_some() || self.queued_search.is_some()) => {
+                self.queued_search = None;
+                self.stop_search();
                 self.msg = "search cancelled".into();
             }
             KeyCode::Esc => self.focus = if commit { Focus::Editor } else { Focus::Side },
@@ -1829,7 +2198,7 @@ impl App {
     }
 
     fn side_key(&mut self, k: KeyEvent) {
-        let page = self.ui.side_list.height.max(1) as isize;
+        let page = self.ui.side_rows.max(1) as isize;
         let s = self.side as usize;
         match k.code {
             KeyCode::Up => self.move_side(-1),
@@ -2061,9 +2430,13 @@ impl App {
             MouseEventKind::ScrollUp => self.wheel(p, -3),
             MouseEventKind::ScrollDown => self.wheel(p, 3),
             MouseEventKind::Moved => {
-                let changed = self.hover != Some(p);
-                self.hover = Some(p);
-                return changed && (self.ui.side_list.contains(p) || self.ui.groups.iter().any(|g| g.tabbar.contains(p)));
+                let old = self.hover.replace(p);
+                let watched = |q: Position| {
+                    self.ui.side_list.contains(q)
+                        || self.ui.groups.iter().any(|g| g.tabbar.contains(q))
+                        || self.ui.scrollbars.iter().any(|s| s.track.contains(q))
+                };
+                return old != Some(p) && (watched(p) || old.is_some_and(watched));
             }
             _ => return false,
         }
@@ -2078,14 +2451,13 @@ impl App {
             }
             return;
         }
-        if let Some(q) = self.quick.as_mut() {
+        if let Some(q) = self.quick.as_ref() {
+            if let Some(sb) = self.ui.scrollbars.iter().find(|s| s.target == ScrollTarget::Quick && s.track.contains(p)).copied() {
+                return self.scrollbar_click(sb, p);
+            }
             if self.ui.quick_list.contains(p) {
                 let i = q.off + (p.y - self.ui.quick_list.y) as usize;
-                if let Some(f) = q.items.get(i).cloned() {
-                    self.quick = None;
-                    self.open_file(self.ag, &f, false);
-                    self.focus = Focus::Editor;
-                }
+                self.quick_pick(i);
             } else if !self.ui.quick.contains(p) {
                 self.quick = None;
             }
@@ -2107,6 +2479,9 @@ impl App {
         if self.ui.divider.contains(p) {
             self.drag = Drag::Divider;
             return;
+        }
+        if let Some(sb) = self.ui.scrollbars.iter().find(|s| s.track.contains(p)).copied() {
+            return self.scrollbar_click(sb, p);
         }
         if let Some(&(_, b)) = self.ui.find_btns.iter().find(|(r, _)| r.contains(p)) {
             return self.find_button(b);
@@ -2133,7 +2508,8 @@ impl App {
         }
         if self.ui.side_list.contains(p) {
             let s = self.side as usize;
-            let i = self.off[s] + (p.y - self.ui.side_list.y) as usize;
+            // A blank row between items selects nothing.
+            let Some(i) = self.ui.side_item(p.y, self.off[s]) else { return };
             if i < self.side_count() {
                 self.sel[s] = i;
                 self.focus = Focus::Side;
@@ -2180,6 +2556,57 @@ impl App {
         }
     }
 
+    fn scrollbar_click(&mut self, sb: ScrollHit, p: Position) {
+        let cur = self.scroll_of(sb.target);
+        match decor::track_hit(p.y - sb.track.y, sb.slider) {
+            TrackHit::PageUp => self.set_scroll(sb.target, cur.saturating_sub(sb.page)),
+            TrackHit::PageDown => self.set_scroll(sb.target, (cur + sb.page).min(sb.max_off)),
+            TrackHit::Slider(grab) => self.drag = Drag::Scroll(sb, grab),
+        }
+    }
+
+    fn scroll_of(&self, t: ScrollTarget) -> usize {
+        match t {
+            ScrollTarget::Editor(g) => self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map_or(0, |t| t.view.scroll),
+            ScrollTarget::Side => self.off[self.side as usize],
+            ScrollTarget::Quick => self.quick.as_ref().map_or(0, |q| q.off),
+        }
+    }
+
+    /// Scroll a list or editor to `off` (clamped where it is drawn).
+    fn set_scroll(&mut self, t: ScrollTarget, off: usize) {
+        match t {
+            ScrollTarget::Editor(g) => {
+                let max = {
+                    let grp = self.groups.get(g);
+                    match grp.and_then(|grp| grp.tabs.get(grp.active)).and_then(|t| self.docs.get(&t.key)) {
+                        Some(Doc::Text(b)) => b.lines.len(),
+                        Some(Doc::Diff(d)) => d.rows.len(),
+                        None => 0,
+                    }
+                };
+                if let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) {
+                    t.view.scroll = off.min(max.saturating_sub(1));
+                }
+            }
+            ScrollTarget::Side => {
+                let n = self.side_count();
+                let h = self.ui.side_rows;
+                self.off[self.side as usize] = off.min(n.saturating_sub(h));
+                if self.side == Side::History && off + h + 20 >= n {
+                    self.load_history(false);
+                }
+            }
+            ScrollTarget::Quick => {
+                let h = self.ui.quick_list.height.max(1) as usize;
+                if let Some(q) = self.quick.as_mut() {
+                    q.off = off.min(q.items.len().saturating_sub(h));
+                    q.sel = q.sel.clamp(q.off, q.off + h - 1).min(q.items.len().saturating_sub(1));
+                }
+            }
+        }
+    }
+
     /// Buffer position under screen cell `p` in group `g`'s text area.
     fn pos_at(&self, g: usize, p: Position) -> Option<Pos> {
         let gh = self.ui.groups.get(g)?;
@@ -2213,9 +2640,9 @@ impl App {
         match &mut self.drag {
             Drag::None => {}
             Drag::Divider => {
-                let start = self.ui.divider.x.saturating_sub(self.side_w);
+                let start = self.ui.sidebar.x;
                 let max = self.ui.editor_area.right().saturating_sub(start + 20).max(12);
-                self.side_w = p.x.saturating_sub(start).clamp(12, max);
+                self.side_w = Some(p.x.saturating_sub(start).clamp(12, max));
             }
             Drag::File { from, active, .. } => {
                 if !*active && (from.x.abs_diff(p.x) + from.y.abs_diff(p.y)) >= 2 {
@@ -2224,6 +2651,11 @@ impl App {
                 if *active {
                     self.drop = self.drop_target(p);
                 }
+            }
+            Drag::Scroll(sb, grab) => {
+                let (sb, grab) = (*sb, *grab);
+                let off = decor::drag_offset(p.y as i32 - sb.track.y as i32, grab, sb.track.height, sb.slider.1, sb.max_off);
+                self.set_scroll(sb.target, off);
             }
             Drag::Select(g) => {
                 let g = *g;
@@ -2277,10 +2709,17 @@ impl App {
             q.sel = (q.sel as isize + d).clamp(0, (q.items.len() as isize - 1).max(0)) as usize;
             return;
         }
+        // Over an editor's scrollbar the wheel scrolls that editor.
+        if let Some(sb) = self.ui.scrollbars.iter().find(|s| s.track.contains(p)).copied() {
+            if let ScrollTarget::Editor(_) = sb.target {
+                let cur = self.scroll_of(sb.target);
+                return self.set_scroll(sb.target, (cur as isize + d).max(0) as usize);
+            }
+        }
         if self.ui.side_list.contains(p) {
             let s = self.side as usize;
             let n = self.side_count();
-            let h = self.ui.side_list.height as usize;
+            let h = self.ui.side_rows;
             self.off[s] = (self.off[s] as isize + d).clamp(0, n.saturating_sub(h) as isize) as usize;
             if self.side == Side::History && self.off[s] + h + 20 >= n {
                 self.load_history(false);
@@ -2333,7 +2772,7 @@ mod tests {
     fn wait(app: &mut App) {
         for _ in 0..300 {
             app.drain();
-            if app.search.is_none() && app.loading.is_empty() {
+            if app.search.is_none() && app.queued_search.is_none() && app.loading.is_empty() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -2382,7 +2821,8 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(!app.groups[0].tabs[0].preview);
         let s = screen(&mut app, &mut t);
-        assert!(s.contains(&format!("main.rs {}", crate::theme::icons().dirty)) && s.contains("Ln 2, Col 1"), "{s}");
+        let gap = " ".repeat(app.settings.spacing.icon_gap as usize);
+        assert!(s.contains(&format!("main.rs{gap}{}", crate::theme::icons().dirty)) && s.contains("Ln 2, Col 1"), "{s}");
         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert!(fs::read_to_string(root.join("src/main.rs")).unwrap().starts_with("// hi\nfn main()"));
 
@@ -2541,6 +2981,448 @@ mod tests {
         for y in 1..19 {
             assert_eq!(b[(x, y)].symbol(), "│", "row {y}");
         }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    const SAMPLE_C: &str = "#include <stdio.h>\n#include \"mxl.h\"\n\n#define MAX_PORTS 8\n\nstruct mxl_priv {\n\tint port;\n};\n\n/* Set the port */\nstatic int mxl_set(struct mxl_priv *priv, int idx)\n{\n\tint ret = 0;\n\n\tif (idx >= MAX_PORTS)\n\t\treturn -EINVAL;\n\tpriv->port = idx;\n\tpr_info(\"port %d\\n\", idx);\n\treturn ret;\n}\n";
+
+    /// Screen cell of the `k`-th char of the first `needle` on screen.
+    fn cell_of(t: &Terminal<TestBackend>, needle: &str, k: usize) -> (u16, u16) {
+        let b = t.backend().buffer();
+        for y in 0..b.area.height {
+            let syms: Vec<&str> = (0..b.area.width).map(|x| b[(x, y)].symbol()).collect();
+            let line: String = syms.concat();
+            if let Some(i) = line.find(needle) {
+                let x = line[..i].chars().count() + k;
+                return (x as u16, y);
+            }
+        }
+        panic!("{needle:?} not on screen");
+    }
+
+    fn fg(t: &Terminal<TestBackend>, needle: &str, k: usize) -> Color {
+        let (x, y) = cell_of(t, needle, k);
+        t.backend().buffer()[(x, y)].fg
+    }
+
+    fn rgb(h: u32) -> Color {
+        Color::Rgb((h >> 16) as u8, (h >> 8) as u8, h as u8)
+    }
+
+    /// Every cell has an explicit truecolor fg and bg: nothing falls back to the
+    /// terminal's palette (Indexed, named ANSI colours such as White, or Reset).
+    fn assert_all_rgb(t: &Terminal<TestBackend>, what: &str) {
+        let b = t.backend().buffer();
+        for y in 0..b.area.height {
+            for x in 0..b.area.width {
+                let c = &b[(x, y)];
+                assert!(
+                    matches!(c.fg, Color::Rgb(..)) && matches!(c.bg, Color::Rgb(..)),
+                    "{what}: cell ({x},{y}) {:?} fg {:?} bg {:?}",
+                    c.symbol(),
+                    c.fg,
+                    c.bg
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn c_colours_match_vscode_cpptools_and_no_cell_uses_terminal_colours() {
+        let root = repo("colors");
+        fs::write(root.join("mxl.c"), SAMPLE_C).unwrap();
+        fs::write(root.join("README.md"), "changed\n").unwrap(); // a change: SCM badge and counts
+        let mut app = App::new(root.clone(), None);
+        app.refresh();
+        app.open_file(0, "mxl.c", false);
+        let mut t = Terminal::new(TestBackend::new(150, 40)).unwrap();
+        screen(&mut app, &mut t);
+        let golden = [
+            ("#include <stdio.h>", 0, 0x9A9A9A, "#include: keyword.control.directive"),
+            ("<stdio.h>", 0, 0xE8C9BB, "< : punctuation.definition.string"),
+            ("<stdio.h>", 1, 0xCE9178, "stdio.h: string"),
+            ("#define MAX_PORTS", 0, 0x9A9A9A, "#define"),
+            ("#define MAX_PORTS", 8, 0xBEB7FF, "MAX_PORTS in #define: macro"),
+            ("MAX_PORTS 8", 10, 0xB5CEA8, "8: number"),
+            ("struct mxl_priv {", 0, 0x569CD6, "struct: storage.type"),
+            ("struct mxl_priv {", 7, 0x4EC9B0, "mxl_priv: entity.name.type"),
+            ("int port;", 4, 0xDADADA, "struct member: property"),
+            ("/* Set the port */", 0, 0x57A64A, "comment"),
+            ("static int mxl_set", 0, 0x569CD6, "static: storage.modifier"),
+            ("static int mxl_set", 11, 0xDCDCAA, "mxl_set: function definition"),
+            ("struct mxl_priv *priv", 7, 0x4EC9B0, "type in a parameter list"),
+            ("*priv, int idx", 1, 0x9A9A9A, "priv in the parameter list: variable.parameter"),
+            ("int ret = 0;", 4, 0x9CDCFE, "local ret: variable"),
+            ("int ret = 0;", 10, 0xB5CEA8, "0: number"),
+            ("int ret = 0;", 11, 0xB4B4B4, "; : punctuation"),
+            ("if (idx >= MAX_PORTS)", 0, 0xD8A0DF, "if: control keyword"),
+            ("if (idx >= MAX_PORTS)", 4, 0x9A9A9A, "idx in the body: parameter"),
+            ("if (idx >= MAX_PORTS)", 11, 0xBEB7FF, "MAX_PORTS use: macro"),
+            ("return -EINVAL;", 8, 0xBEB7FF, "EINVAL: macro"),
+            ("priv->port = idx;", 0, 0x9A9A9A, "priv: parameter"),
+            ("priv->port = idx;", 6, 0xDADADA, "port: variable.other.property"),
+            ("pr_info(\"port", 0, 0xDCDCAA, "pr_info( : function"),
+            ("pr_info(\"port", 8, 0xE8C9BB, "quote punctuation"),
+            ("pr_info(\"port", 9, 0xCE9178, "string"),
+            ("return ret;", 7, 0x9CDCFE, "ret: variable"),
+        ];
+        let bad: Vec<String> = golden
+            .iter()
+            .filter(|(n, k, want, _)| fg(&t, n, *k) != rgb(*want))
+            .map(|(n, k, want, why)| format!("{why}: {n:?}[{k}] is {:?}, want #{want:06X}", fg(&t, n, *k)))
+            .collect();
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+        // Comfortable gutter: [1][number][gap][marker][gap] code, gap = editorPadding.
+        let (x, y) = cell_of(&t, "#define MAX_PORTS", 0);
+        let nx = x - 2 * app.settings.spacing.editor_padding - 2;
+        assert_eq!(t.backend().buffer()[(nx, y)].symbol(), "4");
+        assert_eq!(t.backend().buffer()[(nx, y)].fg, rgb(0x2B91AF));
+        assert_all_rgb(&t, "explorer + C editor");
+        // Every other view and popup, too.
+        app.show_side(Side::Scm, false);
+        screen(&mut app, &mut t);
+        assert_eq!(fg(&t, "Changes", 0), rgb(0xCCCCCC));
+        assert_all_rgb(&t, "source control");
+        app.query = "port".into();
+        app.start_search();
+        wait(&mut app);
+        app.show_side(Side::Search, false);
+        screen(&mut app, &mut t);
+        assert_all_rgb(&t, "search");
+        app.open_find(true);
+        screen(&mut app, &mut t);
+        assert_all_rgb(&t, "find widget");
+        app.find = None;
+        app.open_quick();
+        screen(&mut app, &mut t);
+        assert_all_rgb(&t, "quick open");
+        app.quick = None;
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        screen(&mut app, &mut t);
+        assert_all_rgb(&t, "command palette");
+        app.quick = None;
+        app.request_quit();
+        app.focus = Focus::Editor;
+        typ(&mut app, "x");
+        app.request_quit();
+        screen(&mut app, &mut t);
+        assert!(app.prompt.is_some());
+        assert_all_rgb(&t, "prompt");
+        // The compact layout draws its popups without a frame: same rule.
+        app.settings.compact = true;
+        screen(&mut app, &mut t);
+        assert_all_rgb(&t, "compact prompt");
+        app.prompt = None;
+        app.open_find(false);
+        app.open_quick();
+        screen(&mut app, &mut t);
+        assert_all_rgb(&t, "compact quick open over the find widget");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn settings_hot_reload_keeps_the_last_good_and_f1_opens_them() {
+        let root = repo("settings");
+        let cfg = root.join(".cfg/settings.json");
+        let mut app = App::new(root.clone(), None);
+        app.settings_file = Some(cfg.clone());
+        app.check_settings();
+        assert!(!app.settings.compact && app.settings_err.is_none(), "no file: defaults");
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        typ(&mut app, "open settings");
+        assert_eq!(app.quick.as_ref().unwrap().items[0], "Preferences: Open Settings (JSON)");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.quick.is_none() && cfg.exists(), "created from the template");
+        assert!(app.ed().unwrap().0.text().starts_with("// herdr-code settings"));
+        assert!(app.settings_err.is_none(), "the all-comments template is valid");
+        let set = |app: &mut App, text: &str| {
+            let (b, tab) = app.ed().unwrap();
+            b.select_all(&mut tab.view);
+            b.insert(&mut tab.view, text);
+            key(app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        };
+        set(&mut app, "{ \"workbench.density\": \"compact\", // ok\n}\n");
+        assert!(app.settings.compact, "saved in our editor: applied at once");
+        set(&mut app, "{ \"workbench.density\": \"comfortable\" oops }\n");
+        assert!(app.settings_err.is_some(), "{}", app.msg);
+        assert!(app.settings.compact, "a bad file keeps the last good settings");
+        let mut t = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        assert!(screen(&mut app, &mut t).contains("settings.json:"), "error in the status bar");
+        set(&mut app, "{ \"workbench.density\": \"comfortable\" }\n");
+        assert!(!app.settings.compact && app.settings_err.is_none());
+        // Palette toggles.
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        typ(&mut app, "rainbow");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.rainbow_on);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn gutter_follows_the_index_and_scrollbars_page_and_drag() {
+        let root = repo("qdiff");
+        let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        fs::write(root.join("long.txt"), &text).unwrap();
+        let g = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&root).args(args).output().unwrap().status.success());
+        g(&["add", "long.txt"]);
+        g(&["commit", "-q", "-m", "long"]);
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "long.txt", false);
+        wait(&mut app);
+        assert!(app.qdiff_due.is_some(), "the new base is diffed after the debounce, not on arrival");
+        app.focus = Focus::Editor;
+        typ(&mut app, "x");
+        app.update_qdiff();
+        let marks = &app.qdiff["file:long.txt"].marks;
+        assert_eq!(marks[0], Some(Mark::Modified));
+        assert!(marks[1..].iter().all(Option::is_none));
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let (x, y) = cell_of(&t, "xline 0", 0);
+        let mark = &t.backend().buffer()[(x - app.settings.spacing.editor_padding - 1, y)];
+        assert_eq!((mark.symbol(), mark.fg), (crate::theme::icons().gutter_bar, crate::theme::P.gutter_modified));
+        // Save and stage: the index now matches, so the marker goes away.
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        app.refresh();
+        let i = app.scm_files.iter().position(|f| f.path == "long.txt").unwrap();
+        app.scm_action(ScmAct::Stage(i));
+        wait(&mut app);
+        app.update_qdiff();
+        assert!(app.qdiff["file:long.txt"].marks.iter().all(Option::is_none), "staged: no markers");
+        // Another refresh fetches the same index: no new diff is scheduled.
+        app.refresh();
+        wait(&mut app);
+        assert!(app.qdiff_due.is_none());
+        // Editor scrollbar: a click under the slider pages down, dragging it scrolls.
+        screen(&mut app, &mut t);
+        let sb = *app.ui.scrollbars.iter().find(|s| s.target == ScrollTarget::Editor(0)).unwrap();
+        assert_eq!(sb.track.x, app.ui.groups[0].text.right() + 1, "one blank column right of the text");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sb.track.x, sb.track.bottom() - 1);
+        assert_eq!(app.groups[0].tabs[0].view.scroll, sb.page);
+        screen(&mut app, &mut t);
+        let sb = *app.ui.scrollbars.iter().find(|s| s.target == ScrollTarget::Editor(0)).unwrap();
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sb.track.x, sb.track.y + sb.slider.0);
+        assert!(matches!(app.drag, Drag::Scroll(..)));
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), sb.track.x, sb.track.bottom() + 5);
+        assert_eq!(app.groups[0].tabs[0].view.scroll, 99, "dragged to the end");
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sb.track.x, sb.track.bottom());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn hit_testing_matches_the_drawing_for_every_spacing() {
+        use crate::settings::Spacing;
+        let custom = Spacing::parse(
+            Spacing::COMFORTABLE,
+            &serde_json::json!({ "listItemGap": 1, "sidebarPadding": 3, "sidebarWidth": 40, "sectionGap": 2,
+                                  "editorPadding": 4, "tabPadding": 3, "activityBarWidth": 7, "statusBarGap": 5,
+                                  "iconGap": 3, "treeIndent": 4, "titleBarPadding": 3, "buttonPadding": 3 }),
+        );
+        for (tag, compact, sp) in [("hitf", false, Spacing::COMFORTABLE), ("hitc", true, Spacing::COMPACT), ("hitx", false, custom)] {
+            let root = repo(tag);
+            let mut app = App::new(root.clone(), None);
+            app.settings.compact = compact;
+            app.settings.spacing = sp;
+            let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+            screen(&mut app, &mut t);
+            assert_eq!(app.ui.divider.x - app.ui.sidebar.x, sp.sidebar_width, "{tag}: default width until dragged");
+            assert_eq!(app.ui.sidebar.x, sp.activity_width);
+            // The activity icon is drawn centred inside its hit rect.
+            let (ar, _) = app.ui.activity[2];
+            assert_eq!(t.backend().buffer()[(ar.x + ar.width / 2, ar.y)].symbol(), crate::theme::icons().scm, "{tag}");
+            // Explorer header: the worktree name, then its parent folder (not a tree row).
+            let (hx, hy) = cell_of(&t, &app.repo.to_uppercase(), 0);
+            let (px, py) = cell_of(&t, root.parent().unwrap().to_str().unwrap(), 0);
+            assert_eq!((px, py), (hx, hy + 1), "{tag}: line 2, aligned with the name");
+            assert_eq!(t.backend().buffer()[(px, py)].fg, crate::theme::P.dim, "{tag}");
+            assert_eq!(app.ui.side_list.y, py + 1, "{tag}: tree rows start below it");
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), px, py);
+            assert!(app.groups[0].tabs.is_empty() && app.sel[0] == 0, "{tag}: line 2 is not clickable");
+            let (x, y) = cell_of(&t, "README.md", 0);
+            // [icon][iconGap blanks][name]: the icon is one cell, then only blanks.
+            let buf = t.backend().buffer();
+            assert_ne!(buf[(x - sp.icon_gap - 1, y)].symbol(), " ", "{tag}: the file icon");
+            for k in 1..=sp.icon_gap {
+                assert_eq!(buf[(x - k, y)].symbol(), " ", "{tag}: gap after the icon");
+            }
+            if sp.list_gap > 0 {
+                // The blank row above README.md (below src/) hits nothing.
+                let (sel, n) = (app.sel[0], app.tree.len());
+                mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y - 1);
+                assert!(app.groups[0].tabs.is_empty() && app.sel[0] == sel && app.tree.len() == n, "{tag}");
+            }
+            // Click the README.md row where it is drawn.
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+            assert_eq!(app.groups[0].tabs[0].key, "file:README.md", "{tag}");
+            screen(&mut app, &mut t);
+            // A click on the drawn text puts the caret on that character.
+            let (x, y) = cell_of(&t, "hello", 2);
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+            assert_eq!(app.groups[0].tabs[0].view.cursor, Pos::new(0, 2), "{tag}");
+            screen(&mut app, &mut t);
+            // Its tab: [tabPadding][icon][iconGap][title][iconGap][close], close where drawn.
+            let (tr, xr) = app.ui.groups[0].tabs[0];
+            let buf = t.backend().buffer();
+            for k in 1..=sp.icon_gap {
+                assert_eq!(buf[(tr.x + sp.tab_padding + k, tr.y)].symbol(), " ", "{tag}: gap after the tab icon");
+                assert_eq!(buf[(xr.x - k, xr.y)].symbol(), " ", "{tag}: gap before the close button");
+            }
+            assert_eq!(buf[(xr.x, xr.y)].symbol(), crate::theme::icons().close, "{tag}");
+            // The title bar's Close button sits titleBarPadding from the edge.
+            assert_eq!(app.ui.close.right() + sp.title_padding, 120, "{tag}");
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), xr.x, xr.y);
+            assert!(app.groups[0].tabs.is_empty(), "{tag}");
+            // treeIndent: src/main.rs (depth 1) is drawn treeIndent cells right of README.md.
+            let (sx, sy) = cell_of(&t, "src", 0);
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sx, sy);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sx, sy);
+            screen(&mut app, &mut t);
+            let (rx, _) = cell_of(&t, "README.md", 0);
+            let (mx, my) = cell_of(&t, "main.rs", 0);
+            assert_eq!(mx - rx, sp.tree_indent, "{tag}");
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), mx, my);
+            assert_eq!(app.groups[0].tabs[0].key, "file:src/main.rs", "{tag}");
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    /// Popups, dialogs and the find widget on terminals from 30x5 to 40x18, in both
+    /// densities and with every spacing key at its maximum: nothing may draw
+    /// outside the buffer (that panics). `cargo test tiny` runs it.
+    #[test]
+    fn tiny_terminals_never_panic() {
+        use crate::settings::Spacing;
+        let root = repo("tiny");
+        fs::write(root.join("README.md"), "changed\n").unwrap();
+        let max = Spacing::parse(
+            Spacing::COMFORTABLE,
+            &serde_json::json!({ "sidebarWidth": 200, "sidebarPadding": 4, "sectionGap": 3, "editorPadding": 8,
+                "tabPadding": 4, "statusBarGap": 8, "activityBarWidth": 9, "listItemGap": 1, "popupPadding": [8, 4],
+                "iconGap": 4, "treeIndent": 8, "titleBarPadding": 6, "buttonPadding": 4, "findWidgetPadding": 3,
+                "statusBarPadding": 6 }),
+        );
+        for (compact, sp) in [(false, Spacing::COMFORTABLE), (true, Spacing::COMPACT), (false, max), (true, max)] {
+            let mut app = App::new(root.clone(), None);
+            app.settings.compact = compact;
+            app.settings.spacing = sp;
+            app.refresh();
+            app.open_file(0, "src/main.rs", false);
+            app.focus = Focus::Editor;
+            typ(&mut app, "x"); // dirty: the quit dialog has something to ask
+            for w in 30..=40 {
+                for h in 5..=18 {
+                    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+                    let mut draw = |app: &mut App| {
+                        t.draw(|f| crate::ui::draw(app, f)).unwrap();
+                    };
+                    for side in [Side::Explorer, Side::Scm, Side::Search] {
+                        app.side = side;
+                        draw(&mut app);
+                    }
+                    app.open_quick();
+                    draw(&mut app);
+                    app.quick = None;
+                    app.open_palette();
+                    draw(&mut app);
+                    app.quick = None;
+                    app.open_find(true);
+                    draw(&mut app);
+                    app.find = None;
+                    app.request_quit();
+                    draw(&mut app);
+                    let i = app.scm_files.iter().position(|f| f.path == "README.md").unwrap();
+                    app.prompt = None;
+                    app.scm_action(ScmAct::Discard(i));
+                    draw(&mut app);
+                    app.prompt = Some(Prompt {
+                        text: vec!["README.md has unsaved changes from a closed session.".into(), "Restore them?".into()],
+                        buttons: vec![("Restore".into(), PAct::RestoreBackup("file:README.md".into())), ("Discard Backup".into(), PAct::Cancel)],
+                        sel: 0,
+                    });
+                    draw(&mut app);
+                    app.prompt = None;
+                }
+            }
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn old_backups_without_a_session_move_under_this_one() {
+        let root = repo("migrate");
+        let state = root.join(".state");
+        let bak = state.join("backup");
+        fs::create_dir_all(&bak).unwrap();
+        let readme = root.join("README.md");
+        let rec = serde_json::json!({ "path": readme, "text": "old edit", "crlf": false, "final_newline": true });
+        fs::write(bak.join("legacy.json"), rec.to_string()).unwrap();
+        let other = serde_json::json!({ "path": "/elsewhere/x.txt", "text": "y" });
+        fs::write(bak.join("other.json"), other.to_string()).unwrap();
+        let app = App::new(root.clone(), Some(state.join("layout.json")));
+        let moved = editor::backup_file(&bak, &app.backup_scope, &readme);
+        assert!(moved.exists() && !bak.join("legacy.json").exists());
+        let v: serde_json::Value = serde_json::from_slice(&fs::read(&moved).unwrap()).unwrap();
+        assert_eq!((v["scope"].as_str(), v["text"].as_str()), (Some(app.backup_scope.as_str()), Some("old edit")));
+        assert!(bak.join("other.json").exists(), "another worktree's backup is left alone");
+        assert!(app.msg.contains("1 file(s)"), "{}", app.msg);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn reaping_closes_pipes_so_a_child_blocked_on_a_full_pipe_exits() {
+        // More than a pipe buffer (64 KiB) that nobody reads.
+        let c = Command::new("sh").args(["-c", "head -c 300000 /dev/zero"]).stdout(Stdio::piped()).spawn().unwrap();
+        let n = Arc::new(AtomicUsize::new(1));
+        let h = reap(c, Some(n.clone()));
+        for _ in 0..500 {
+            if h.is_finished() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(h.is_finished(), "the reaper still waits on a writer blocked on its pipe");
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn searches_queue_behind_abandoned_rg_processes() {
+        let root = repo("rgq");
+        let mut app = App::new(root.clone(), None);
+        app.query = "needle".into();
+        app.live_rg.store(MAX_LIVE_RG, Ordering::SeqCst); // two abandoned rg still running
+        app.start_search();
+        assert!(app.search.is_none() && app.queued_search.is_some());
+        assert!(app.msg.contains("waiting for the previous search"), "{}", app.msg);
+        // Esc cancels the queued request.
+        app.focus = Focus::SearchInput;
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.queued_search.is_none() && app.msg == "search cancelled");
+        // The latest submitted request runs, with its query as submitted: text typed
+        // afterwards without Enter is not searched.
+        app.query = "fn main".into();
+        app.start_search();
+        app.query = "needle".into(); // typed, not submitted
+        app.drain();
+        assert!(app.queued_search.is_some(), "still two live");
+        app.live_rg.store(MAX_LIVE_RG - 1, Ordering::SeqCst); // one of them ended
+        app.drain();
+        assert!(app.queued_search.is_none() && app.search.is_some());
+        wait(&mut app);
+        assert!(!app.hits.is_empty() && app.hits.iter().all(|h| h.text.contains("fn main")), "{:?}", app.hits);
+        assert_eq!(app.live_rg.load(Ordering::SeqCst), MAX_LIVE_RG - 1, "finished rg counted out");
+        // A cancelled search is counted out once rg ends.
+        app.live_rg.store(0, Ordering::SeqCst);
+        app.start_search();
+        app.stop_search();
+        for _ in 0..300 {
+            if app.live_rg.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.live_rg.load(Ordering::SeqCst), 0);
         fs::remove_dir_all(&root).unwrap();
     }
 
