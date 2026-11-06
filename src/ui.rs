@@ -48,10 +48,13 @@ fn lay(app: &App) -> Lay {
     Lay { comfy: !app.settings.compact, s, pad: s.sidebar_padding }
 }
 
-/// Truncate to `w` display cells with an ellipsis.
+/// Truncate to `w` display cells with an ellipsis (none in 0 cells; no blank before it).
 pub(crate) fn fit(s: &str, w: usize) -> String {
     if s.width() <= w {
         return s.to_string();
+    }
+    if w == 0 {
+        return String::new();
     }
     let mut out = String::new();
     let mut used = 0;
@@ -63,8 +66,36 @@ pub(crate) fn fit(s: &str, w: usize) -> String {
         out.push(c);
         used += cw;
     }
+    out.truncate(out.trim_end().len());
     out.push('…');
     out
+}
+
+/// A row's text in `room` cells: `main` cut with one "…", then `extra` (the dim author or
+/// folder, with its leading blank) only while `main` is whole and a few cells of it fit.
+/// Never "name… …" or "subject……".
+pub(crate) fn fit_pair(main: &str, extra: &str, room: usize) -> (String, String) {
+    let m = fit(main, room);
+    let left = room.saturating_sub(m.width());
+    let x = if m.len() == main.len() && left >= 4 { fit(extra, left) } else { String::new() };
+    (m, x)
+}
+
+/// Cells a row's text keeps in `w` left of its right-aligned `meta` (time, badges, +N):
+/// two blank cells between them at least. The meta's own leading blanks count, a
+/// badge's padding (it has a background) does not.
+pub(crate) fn room_before(meta: &[Span], w: usize) -> usize {
+    let mut blank = 0;
+    for s in meta {
+        let t = s.content.as_ref();
+        let lead = if s.style.bg.is_some() { 0 } else { t.len() - t.trim_start().len() };
+        blank += lead;
+        if lead < t.len() {
+            break;
+        }
+    }
+    let gap = if meta.is_empty() { 0 } else { 2usize.saturating_sub(blank) };
+    w.saturating_sub(width(meta) as usize + gap)
 }
 
 pub(crate) fn fill(f: &mut Frame, r: Rect, bg: Color) {
@@ -669,8 +700,11 @@ fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
     let g = crate::blocks::icon_gap(app.settings.spacing.icon_gap);
     match hr {
         HRow::File(p, n) => {
-            let dir = p.rsplit_once('/').map_or("", |(d, _)| d);
+            let dir = p.rsplit_once('/').map_or(String::new(), |(d, _)| format!(" {d}"));
             let (glyph, gfg) = file_icon(base(p), &app.settings.file_icons);
+            let count = vec![badge(*n)];
+            let room = room_before(&count, (r.width as usize).saturating_sub(3 + 2 * g as usize));
+            let (name, dir) = fit_pair(base(p), &dir, room);
             row(
                 f,
                 r,
@@ -679,11 +713,11 @@ fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
                     Span::styled(format!(" {}{}", ic.chev_down, sp(g)), Style::new().fg(P.icon_fg)),
                     Span::styled(glyph, Style::new().fg(gfg)),
                     Span::raw(sp(g)),
-                    Span::styled(base(p).to_string(), Style::new().fg(P.sidebar_fg)),
-                    Span::styled(format!(" {dir}"), Style::new().fg(P.dim)),
+                    Span::styled(name, Style::new().fg(P.sidebar_fg)),
+                    Span::styled(dir, Style::new().fg(P.dim)),
                 ],
             );
-            right(f, r, vec![badge(*n)]);
+            right(f, r, count);
         }
         HRow::Hit(h) => {
             let h = &app.hits[*h];
@@ -755,7 +789,6 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
                 }
             }
             spans.push(Span::styled(format!(" {letter} "), Style::new().fg(git_color(letter))));
-            let rw = width(&spans) as usize;
             let deleted = letter == 'D';
             let mut name_st = Style::new().fg(git_color(letter));
             if deleted {
@@ -764,9 +797,8 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
             let (glyph, gfg) = file_icon(base(&file.path), &app.settings.file_icons);
             // The icon lines up under the section label, the name after the gap.
             let lead = 2 + g as usize;
-            let avail = (r.width as usize).saturating_sub(rw + lead + 1 + g as usize + 1);
-            let name = fit(base(&file.path), avail);
-            let dir = fit(&dir, avail.saturating_sub(name.width() + 1));
+            let avail = room_before(&spans, (r.width as usize).saturating_sub(lead + 1 + g as usize));
+            let (name, dir) = fit_pair(base(&file.path), &if dir.is_empty() { dir } else { format!(" {dir}") }, avail);
             row(
                 f,
                 r,
@@ -776,7 +808,7 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
                     Span::styled(glyph, Style::new().fg(gfg)),
                     Span::raw(sp(g)),
                     Span::styled(name, name_st),
-                    Span::styled(format!(" {dir}"), Style::new().fg(P.dim)),
+                    Span::styled(dir, Style::new().fg(P.dim)),
                 ],
             );
             let x0 = right(f, r, spans);

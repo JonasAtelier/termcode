@@ -14,7 +14,7 @@ use crate::gitops::{self, Commit, FileChange, FileCommit, Hover, Page, RefLabel,
 use crate::graph::{GraphRow, Lanes};
 use crate::panel::{base, App, DiffDoc, Doc, Focus, SRow, ScrollTarget, Side};
 use crate::theme::{git_color, icons, Rgba, P};
-use crate::ui::{fill, fit, inset, popup_block, right, row, scm_row, scrollbar, sp, width};
+use crate::ui::{fill, fit, fit_pair, inset, popup_block, right, room_before, row, scm_row, scrollbar, sp, width};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::Clear;
@@ -22,8 +22,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use unicode_width::UnicodeWidthStr;
 
-/// Cells a commit subject keeps before its ref badges collapse into `+N`.
+/// Cells a commit subject keeps before its ref badges collapse into `+N` (and before a
+/// TIMELINE time shortens to "1h").
 const SUBJECT_MIN: usize = 20;
+/// Cells a subject keeps before the short time goes too.
+const SUBJECT_FLOOR: usize = 12;
 
 /// How long the pointer rests on a commit before its card opens.
 pub const HOVER: Duration = Duration::from_millis(500);
@@ -430,8 +433,15 @@ pub fn badges(refs: &[RefLabel], pal: &Pal, budget: usize) -> Vec<Span<'static>>
         // Room kept for the "+N" the refs after this one may need.
         let more = if rest > 1 { format!(" +{}", rest - 1).width() } else { 0 };
         if k == 0 && matches!(r, RefLabel::Current(_) | RefLabel::Head) {
-            // Never collapsed: cut to the budget instead (keeping room for "+N").
-            text = fit(&text, budget.saturating_sub(1 + more).max(4));
+            // Shrunk before it collapses (keeping room for "+N"): the icon goes first, then
+            // the name is cut, to 3 letters at least ("mai…"); under that it is a +N too.
+            let room = budget.saturating_sub(1 + more);
+            if text.width() > room {
+                text = format!(" {name} ");
+            }
+            if text.width() > room && room >= 5 {
+                text = fit(&text, room);
+            }
         }
         if used + 1 + text.width() + more > budget {
             let plus = format!(" +{rest}");
@@ -451,19 +461,28 @@ pub fn badges(refs: &[RefLabel], pal: &Pal, budget: usize) -> Vec<Span<'static>>
 
 /// VS Code's `fromNow` with full words: "now", "5 minutes ago", "1 year ago".
 pub fn ago(t: i64, now: i64) -> String {
+    ago_unit(t, now).map_or("now".into(), |(n, unit, _)| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" }))
+}
+
+/// `ago` in a few cells, for a narrow row: "now", "5m", "1h", "3d", "2w", "4mo", "1y".
+pub fn ago_short(t: i64, now: i64) -> String {
+    ago_unit(t, now).map_or("now".into(), |(n, _, u)| format!("{n}{u}"))
+}
+
+/// (count, unit, short unit) of the time since `t`; None under 30 s ("now").
+fn ago_unit(t: i64, now: i64) -> Option<(i64, &'static str, &'static str)> {
     let s = (now - t).max(0);
     if s < 30 {
-        return "now".into();
+        return None;
     }
-    let (n, unit) = match s {
-        s if s < 3600 => ((s / 60).max(1), "minute"),
-        s if s < 86_400 => (s / 3600, "hour"),
-        s if s < 7 * 86_400 => (s / 86_400, "day"),
-        s if s < 30 * 86_400 => (s / (7 * 86_400), "week"),
-        s if s < 365 * 86_400 => (s / (30 * 86_400), "month"),
-        s => (s / (365 * 86_400), "year"),
-    };
-    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+    Some(match s {
+        s if s < 3600 => ((s / 60).max(1), "minute", "m"),
+        s if s < 86_400 => (s / 3600, "hour", "h"),
+        s if s < 7 * 86_400 => (s / 86_400, "day", "d"),
+        s if s < 30 * 86_400 => (s / (7 * 86_400), "week", "w"),
+        s if s < 365 * 86_400 => (s / (30 * 86_400), "month", "mo"),
+        s => (s / (365 * 86_400), "year", "y"),
+    })
 }
 
 pub fn now() -> i64 {
@@ -1157,12 +1176,12 @@ fn pane_header(app: &mut App, f: &mut Frame, r: Rect, title: &str, open: bool, h
     }
     let chev = if open { ic.chev_down } else { ic.chev_right };
     let fg = if focused { P.focus_border } else { P.section_fg };
-    let mut spans = vec![Span::styled(format!(" {chev}{}{title}", sp(crate::blocks::icon_gap(s.icon_gap))), Style::new().fg(fg).bold())];
-    if !extra.is_empty() {
-        spans.push(Span::styled(format!(" {extra}"), Style::new().fg(P.dim)));
-    }
     let ir = inset(r, s.sidebar_padding);
-    row(f, ir, P.section_bg, spans);
+    // As in the rows: cut once with "…"; the dim file name only while the title is whole.
+    let head = format!(" {chev}{}{title}", sp(crate::blocks::icon_gap(s.icon_gap)));
+    let extra = if extra.is_empty() { String::new() } else { format!(" {extra}") };
+    let (head, extra) = fit_pair(&head, &extra, ir.width as usize);
+    row(f, ir, P.section_bg, vec![Span::styled(head, Style::new().fg(fg).bold()), Span::styled(extra, Style::new().fg(P.dim))]);
     app.gitui.hits.areas.push((r, hit));
 }
 
@@ -1342,21 +1361,20 @@ fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: 
         spans.push(Span::styled(glyph.to_string(), Style::new().fg(pal.lane(cell.color))));
     }
     spans.push(Span::raw(" "));
-    // The subject keeps at least ~20 cells; the badges get the rest before they collapse.
+    // The subject keeps at least ~20 cells and 2 blank ones after it; the badges get the
+    // rest before they collapse into +N, then go.
     let info = if hot { 2 } else { 0 };
     let keep = c.subject.width().min(SUBJECT_MIN);
-    let budget = (r.width as usize).saturating_sub(width(&spans) as usize + keep + info + 1);
-    let mut rs = badges(&c.refs, pal, budget);
+    let avail = (r.width as usize).saturating_sub(width(&spans) as usize);
+    let mut rs = badges(&c.refs, pal, avail.saturating_sub(keep + 2 + info));
     if hot {
         rs.push(Span::styled(format!(" {}", info_icon()), Style::new().fg(P.icon_fg)));
     }
-    let room = (r.width as usize).saturating_sub(width(&spans) as usize + width(&rs) as usize + 1);
-    let subject = fit(&c.subject, room);
     let mut st = Style::new().fg(P.sidebar_fg);
     if head {
         st = st.bold();
     }
-    let author = fit(&format!(" {}", c.author_name), room.saturating_sub(subject.width()));
+    let (subject, author) = fit_pair(&c.subject, &format!(" {}", c.author_name), room_before(&rs, avail));
     spans.push(Span::styled(subject, st));
     spans.push(Span::styled(author, Style::new().fg(P.dim)));
     let hash = c.hash.clone();
@@ -1373,15 +1391,14 @@ fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: 
 fn file_row(app: &App, f: &mut Frame, r: Rect, bg: Color, indent: usize, fc: &FileChange) {
     let (glyph, gfg) = crate::icons::file_icon(base(&fc.path), &app.settings.file_icons);
     let g = crate::blocks::icon_gap(app.settings.spacing.icon_gap);
-    let dir = fc.path.rsplit_once('/').map_or("", |(d, _)| d);
-    let letter = Span::styled(format!(" {} ", fc.status), Style::new().fg(git_color(fc.status)));
-    let room = (r.width as usize).saturating_sub(indent + 1 + g as usize + 4);
-    let name = fit(base(&fc.path), room);
+    let dir = fc.path.rsplit_once('/').map_or(String::new(), |(d, _)| format!(" {d}"));
+    let letter = vec![Span::styled(format!(" {} ", fc.status), Style::new().fg(git_color(fc.status)))];
+    let room = room_before(&letter, (r.width as usize).saturating_sub(indent + 1 + g as usize));
+    let (name, dir) = fit_pair(base(&fc.path), &dir, room);
     let mut name_st = Style::new().fg(git_color(fc.status));
     if fc.status == 'D' {
         name_st = name_st.add_modifier(Modifier::CROSSED_OUT);
     }
-    let dir = fit(dir, room.saturating_sub(name.width() + 1));
     row(
         f,
         r,
@@ -1391,10 +1408,10 @@ fn file_row(app: &App, f: &mut Frame, r: Rect, bg: Color, indent: usize, fc: &Fi
             Span::styled(glyph, Style::new().fg(gfg)),
             Span::raw(sp(g)),
             Span::styled(name, name_st),
-            Span::styled(format!(" {dir}"), Style::new().fg(P.dim)),
+            Span::styled(dir, Style::new().fg(P.dim)),
         ],
     );
-    right(f, r, vec![letter]);
+    right(f, r, letter);
 }
 
 /// The Explorer split: the tree above, TIMELINE (header, and list when open) below.
@@ -1449,11 +1466,15 @@ pub fn draw_timeline(app: &mut App, f: &mut Frame, r: Rect) {
             app.gitui.hits.areas.push((rr, Hit::TimelineMore));
             continue;
         };
-        let when = ago(it.commit.author_time, now);
-        let rs = vec![Span::styled(format!("{when} "), Style::new().fg(P.dim))];
-        let room = (ir.width as usize).saturating_sub(width(&rs) as usize + 4);
-        let subject = fit(&it.commit.subject, room);
-        let author = fit(&format!(" {}", it.commit.author_name), room.saturating_sub(subject.width()));
+        // The time gives way first: "1 hour ago" while the subject keeps ~20 cells, then
+        // "1h" while it keeps 12, then none.
+        let (avail, sw, t) = ((ir.width as usize).saturating_sub(3), it.commit.subject.width(), it.commit.author_time);
+        let rs = [(ago(t, now), SUBJECT_MIN), (ago_short(t, now), SUBJECT_FLOOR)]
+            .into_iter()
+            .map(|(s, keep)| (vec![Span::styled(format!("{s} "), Style::new().fg(P.dim))], keep))
+            .find(|(m, keep)| room_before(m, avail) >= sw.min(*keep))
+            .map_or(Vec::new(), |(m, _)| m);
+        let (subject, author) = fit_pair(&it.commit.subject, &format!(" {}", it.commit.author_name), room_before(&rs, avail));
         let dot = if crate::theme::ascii() { "o" } else { "\u{eafc}" };
         row(f, ir, bg, vec![Span::styled(format!(" {dot} "), Style::new().fg(P.icon_fg)), Span::styled(subject, Style::new().fg(P.sidebar_fg)), Span::styled(author, Style::new().fg(P.dim))]);
         right(f, ir, rs);
@@ -1721,6 +1742,62 @@ pub(crate) mod ui_tests {
 
     pub(crate) fn term() -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(120, 40)).unwrap()
+    }
+
+    /// Sidebars of 30, 36 and 50 columns (GRAPH, TIMELINE, Changes, search results): a
+    /// row's text is cut with one "…" and two blank cells follow it before any right-
+    /// aligned meta; a TIMELINE time shortens to "1h" first.
+    #[test]
+    fn narrow_rows_cut_once_and_keep_a_gap_before_the_meta() {
+        let file = "src/a/rather/deep/folder/with_a_long_file_name.rs";
+        let (t, r) = repo(
+            "narrow",
+            &format!(
+                "mkdir -p src/a/rather/deep/folder; echo needle > {file}; git add .; \
+                 GIT_AUTHOR_DATE=\"@$(($(date +%s) - 3700)) +0000\" git commit -qm 'herdr-code: tighter rows for the narrow sidebar layout'; \
+                 git tag v1.0.0; git branch feature-with-a-long-name; echo needle again >> {file}"
+            ),
+        );
+        let mut app = app(&t, &r);
+        let mut tm = term();
+        app.open_file(0, file, false);
+        app.query = "needle".into();
+        app.start_search();
+        for w in [30u16, 36, 50] {
+            app.side_w = Some(w);
+            let mut seen = String::new();
+            for side in [Side::Explorer, Side::Scm, Side::Search] {
+                app.show_side(side, false);
+                // Drawing asks for the graph and the timeline: draw, let them land, twice.
+                for _ in 0..2 {
+                    screen(&mut app, &mut tm);
+                    for _ in 0..300 {
+                        if app.search.is_none() && app.queued_search.is_none() {
+                            break;
+                        }
+                        app.drain();
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    settle(&mut app);
+                }
+                let s = screen(&mut app, &mut tm);
+                let sb = app.ui.sidebar;
+                for row in s.lines().skip(sb.y as usize).take(sb.height as usize) {
+                    let row: String = row.chars().skip(sb.x as usize).take(sb.width as usize).collect();
+                    for (i, _) in row.match_indices('…') {
+                        let next: Vec<char> = row[i + '…'.len_utf8()..].chars().take(2).collect();
+                        assert!(next.iter().all(|&c| c == ' ' || ('\u{2500}'..='\u{257f}').contains(&c)), "width {w}, {side:?}: {row:?}");
+                    }
+                    seen += &row;
+                    seen.push('\n');
+                }
+            }
+            assert!(seen.contains("herdr-code: tight") && seen.contains("with_a_long") && seen.contains("needle again"), "width {w}:\n{seen}");
+            let hdr = seen.lines().find(|l| l.contains("TIMELINE")).unwrap_or("");
+            assert!(hdr.contains("with_a_long_file_name.rs") || hdr.contains("with_a_lo") && hdr.contains('…'), "width {w}: header {hdr:?}");
+            let time = if w == 50 { "  1 hour ago" } else { "  1h" };
+            assert!(seen.contains(time), "width {w}: TIMELINE shows {time:?}\n{seen}");
+        }
     }
 
     #[test]
