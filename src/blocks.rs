@@ -1,8 +1,9 @@
 //! Block boundaries, `herdr-code.blocks.style`: "cards" frames each block (the activity
 //! bar, each sidebar section, each editor group) with rounded corners and leaves a 1-cell
-//! gutter of workbench background between them; "lines" draws one shared line between
-//! blocks, joined with ├ ┤ ┬ ┴ ┼ where they meet; "none" is the flat look. The title and
-//! status bars stay flat rows.
+//! gutter of workbench background between side-by-side cards, while stacked cards share
+//! one border row (`├──┤`: a row is about twice as tall as a column is wide); "lines"
+//! draws one shared line between blocks, joined with ├ ┤ ┬ ┴ ┼ where they meet; "none" is
+//! the flat look. The title and status bars stay flat rows.
 //!
 //! Frames come from the rects the layout hands out, and every hit rect is recorded from
 //! the inside a block was drawn in, so hit-testing follows the frames by construction.
@@ -101,11 +102,15 @@ pub fn card(st: BlockStyle, f: &mut Frame, r: Rect, bg: Color, focused: bool) ->
 }
 
 /// Two blocks stacked in `top` and `bottom` (adjacent rows): what goes between them per
-/// style. Cards: a gutter row (taken from `top`). Lines: a shared line row (from `top`)
-/// running from column `x0` to `x1`, the vertical lines either side. None: nothing.
+/// style. Cards: one shared border row, `top` reaching down over `bottom`'s top edge (draw
+/// `bottom` after `top`, then `seam`). Lines: a shared line row (from `top`) running from
+/// column `x0` to `x1`, the vertical lines either side. None: nothing.
 pub fn stack(st: BlockStyle, top: Rect, bottom: Rect, x0: u16, x1: u16) -> (Rect, Rect) {
     if bottom.is_empty() || st == BlockStyle::None || top.height < 2 {
         return (top, bottom);
+    }
+    if st == BlockStyle::Cards {
+        return (Rect { height: top.height + 1, ..top }, bottom);
     }
     let top = Rect { height: top.height - 1, ..top };
     if st == BlockStyle::Lines {
@@ -114,14 +119,41 @@ pub fn stack(st: BlockStyle, top: Rect, bottom: Rect, x0: u16, x1: u16) -> (Rect
     (top, bottom)
 }
 
+/// The row two cards `stack`ed share: ├ and ┤ at its ends, in the focused card's border
+/// colour when `top` is focused (the bottom card drew the row last).
+pub fn seam(st: BlockStyle, f: &mut Frame, top: Rect, bottom: Rect, top_focused: bool) {
+    let (top, bottom) = (top.intersection(f.area()), bottom.intersection(f.area()));
+    if st != BlockStyle::Cards || top.width < 4 || top.height < 3 || bottom.height < 3 || top.bottom() != bottom.y + 1 {
+        return;
+    }
+    let ascii = crate::theme::ascii();
+    let buf = f.buffer_mut();
+    if top_focused {
+        for x in top.x..top.right() {
+            buf[(x, bottom.y)].set_fg(border(true));
+        }
+    }
+    buf[(top.x, bottom.y)].set_symbol(glyph(U | D | R, ascii));
+    buf[(top.right() - 1, bottom.y)].set_symbol(glyph(U | D | L, ascii));
+}
+
 thread_local! {
     /// This frame's lines: (x0, y0, x1, y1), vertical or horizontal, inclusive.
     static LINES: RefCell<Vec<(u16, u16, u16, u16)>> = const { RefCell::new(Vec::new()) };
+    /// Line cells under the pointer or being dragged (a sash), lit in `finish`.
+    static HOT: RefCell<Vec<Rect>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Starts a frame's lines ("lines" style).
+/// Starts a frame's lines ("lines" style) and sashes.
 pub fn begin() {
     LINES.with(|l| l.borrow_mut().clear());
+    HOT.with(|h| h.borrow_mut().clear());
+}
+
+/// A shared line used as a splitter, hovered or dragged: `finish` draws it in
+/// `sash.hoverBorder`, as VS Code does.
+pub fn hot(r: Rect) {
+    HOT.with(|h| h.borrow_mut().push(r));
 }
 
 pub fn vline(x: u16, y0: u16, y1: u16) {
@@ -158,12 +190,11 @@ fn glyph(m: u8, ascii: bool) -> &'static str {
     }
 }
 
-/// Draws this frame's lines, each cell joined to its neighbours' directions.
+/// Draws this frame's lines, each cell joined to its neighbours' directions, then lights
+/// the hot ones.
 pub fn finish(f: &mut Frame) {
     let segs = LINES.with(|l| std::mem::take(&mut *l.borrow_mut()));
-    if segs.is_empty() {
-        return;
-    }
+    let hot = HOT.with(|h| std::mem::take(&mut *h.borrow_mut()));
     let mut cells: std::collections::HashMap<(u16, u16), u8> = std::collections::HashMap::new();
     for (x0, y0, x1, y1) in segs {
         if x0 == x1 {
@@ -185,6 +216,9 @@ pub fn finish(f: &mut Frame) {
             let m = if m == U || m == D { U | D } else if m == L || m == R { L | R } else { m };
             buf[(x, y)].set_symbol(glyph(m, ascii)).set_fg(fg);
         }
+    }
+    for p in hot.iter().flat_map(|r| r.intersection(area).positions()) {
+        buf[p].set_fg(P.sash_hover);
     }
 }
 

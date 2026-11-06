@@ -79,8 +79,9 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
   Nerd Font. `"herdr-code.icons": "ascii"` or `HERDR_CODE_ICONS=0` (always wins) gives plain
   ASCII. The sidebar width and visibility are kept in `$HERDR_PLUGIN_STATE_DIR/layout.json`.
 - Blocks: the activity bar, each sidebar section and each editor group are rounded cards with a
-  1-cell gutter between them (`herdr-code.blocks.style`); the borders are `editorGroup.border`,
-  the focused block's a little lighter. Each icon keeps a blank cell after it, room for a
+  1-cell gutter between them side by side, while stacked sections share one border row (`├─┤`)
+  (`herdr-code.blocks.style`); the borders are `editorGroup.border`, the focused block's a
+  little lighter. Each icon keeps a blank cell after it, room for a
   non-Mono Nerd Font glyph. Activity bar items are 3 rows tall (2 in compact), the icon
   centred: the active one has `activityBar.activeBorder` down its left edge over a subtle
   `activityBar.activeBackground`, a hovered one turns from `inactiveForeground` to `foreground`.
@@ -168,7 +169,8 @@ unsaved buffer asks to save first: Save & Stage / Cancel); Revert edits the buff
 ## Source Control
 
 One view, VS Code's: the CHANGES pane over the GRAPH pane. Click a header to collapse it;
-drag the GRAPH header to move the split (kept in layout.json).
+drag the GRAPH header, or the line above it (lit in `sash.hoverBorder` on hover), to move the
+split (kept in layout.json).
 
 - CHANGES: an **Add commit** button, then Merge Changes (conflicts), Staged Changes and
   Changes (untracked files as `U`). Row actions open, stage `+`, unstage `−`, discard `↶`
@@ -253,7 +255,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `workbench.density` | `"comfortable"` | `"compact"` is the original tight layout (no padding, no popup frames) |
 | `herdr-code.spacing` | see below | Each key overrides the density's value |
 | `herdr-code.icons` | `"nerd"` | `"ascii"`: no Nerd Font glyphs |
-| `herdr-code.blocks.style` | `"cards"` (compact: `"lines"`) | `"cards"`: rounded blocks with a gutter; `"lines"`: one shared line between blocks, joined (`├┤┬┴`); `"none"`: flat |
+| `herdr-code.blocks.style` | `"cards"` (compact: `"lines"`) | `"cards"`: rounded blocks, a gutter between side-by-side ones, one shared border between stacked ones; `"lines"`: one shared line between blocks, joined (`├┤┬┴`); `"none"`: flat |
 | `herdr-code.fileIcons` | `{}` | `extensions`, `fileNames`, `folderNames`: maps to `{ "glyph": "…", "color": "#rrggbb" }` (either half); `folder`, `folderOpen` |
 | `indentRainbow.enabled` | `true` | oderwat.indent-rainbow, same defaults |
 | `indentRainbow.colors` | the extension's four `rgba(…,0.07)` | Blended over the editor background |
@@ -286,7 +288,7 @@ the panel: the status bar shows the error and the last good settings stay.
 |---|---|---|---|
 | `sidebarWidth` | 36 | 30 | Sidebar content columns (a card adds its 2-cell frame) until you drag the divider (a dragged width is kept in layout.json) |
 | `sidebarPadding` | 2 | 0 | Left/right padding of sidebar rows and inputs |
-| `sectionGap` | 1 | 0 | Blank rows under the sidebar title and between SCM sections |
+| `sectionGap` | 1 | 0 | Blank rows under the sidebar title (not above a card) and between SCM sections |
 | `editorPadding` | 1 | 1 | Gutter gaps in editors, diffs and peeks: `number␠marker␠code` in comfortable (compact: `number marker␠code`); comfortable, or 2 or more, also leaves the blank row under the tab bar |
 | `tabPadding` | 2 | 1 | Spaces each side of a tab label |
 | `statusBarGap` | 3 | 3 | Spaces between status bar items |

@@ -149,7 +149,7 @@ struct HoverKey {
     scrollbar: Option<usize>,
     minimap: Option<usize>,
     peek: Option<usize>,
-    /// A commit-dialog splitter (sash.hoverBorder).
+    /// A commit-dialog splitter, or the GRAPH one (usize::MAX): sash.hoverBorder.
     sash: Option<usize>,
     /// An activity bar item (its icon lights up).
     activity: Option<usize>,
@@ -3285,7 +3285,9 @@ impl App {
             scrollbar: self.ui.scrollbars.iter().position(|sb| sb.track.contains(p)),
             minimap: self.ui.minimaps.iter().position(|m| m.area.contains(p)),
             peek: self.ui.peek_btns.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.peek_zone.contains(p).then_some(usize::MAX)),
-            sash: self.gitui.dlg.as_ref().and_then(|d| d.hits.sashes.iter().position(|r| r.contains(p))),
+            sash: self.gitui.dlg.as_ref().and_then(|d| d.hits.sashes.iter().position(|r| r.contains(p))).or_else(|| {
+                g.areas.iter().any(|(r, h)| *h == crate::scm::Hit::GraphSash && r.contains(p)).then_some(usize::MAX)
+            }),
             activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)),
         }
     }
@@ -4050,6 +4052,74 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Stacked cards share one border row (├──┤) in both densities: the Explorer over
+    /// TIMELINE and CHANGES over GRAPH, no gutter row, the first card right under the
+    /// view's title. The CHANGES/GRAPH line is the splitter, lit on hover.
+    #[test]
+    fn stacked_cards_share_one_border_and_the_graph_line_is_the_sash() {
+        use crate::blocks::BlockStyle;
+        use crate::settings::Spacing;
+        let root = repo("seam");
+        for compact in [false, true] {
+            let mut app = App::new(root.clone(), None);
+            app.settings.compact = compact;
+            app.settings.spacing = if compact { Spacing::COMPACT } else { Spacing::COMFORTABLE };
+            app.settings.blocks = BlockStyle::Cards;
+            app.open_file(0, "src/main.rs", false); // the Explorer shows TIMELINE under the tree
+            let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+            screen(&mut app, &mut t);
+            let (l, r) = (app.ui.sidebar.x, app.ui.divider.x - 1);
+            let b = t.backend().buffer().clone();
+            assert_eq!(b[(l, app.ui.sidebar.y + 1)].symbol(), "╭", "{compact}: no sectionGap row above the card");
+            let seams: Vec<u16> = (0..30).filter(|&y| b[(l, y)].symbol() == "├").collect();
+            assert_eq!(seams.len(), 1, "{compact}: one shared row, Explorer over TIMELINE");
+            let y = seams[0];
+            assert_eq!((b[(r, y)].symbol(), b[(l + 1, y)].symbol()), ("┤", "─"), "{compact}");
+            assert_eq!((b[(l, y - 1)].symbol(), b[(l, y + 1)].symbol()), ("│", "│"), "{compact}: no gutter, no second border");
+            // The focused card's colour wins on the shared row.
+            app.focus = Focus::Side;
+            screen(&mut app, &mut t);
+            assert_eq!(t.backend().buffer()[(l + 1, y)].fg, crate::blocks::border(true), "{compact}");
+
+            app.side = Side::Scm;
+            app.focus = Focus::Editor;
+            screen(&mut app, &mut t);
+            let (_, gy) = cell_of(&t, "GRAPH", 0);
+            let ly = gy - 1;
+            let b = t.backend().buffer();
+            assert_eq!((b[(l, ly)].symbol(), b[(l + 1, ly)].symbol(), b[(r, ly)].symbol()), ("├", "─", "┤"), "{compact}: CHANGES over GRAPH");
+            assert_eq!(b[(l, ly - 1)].symbol(), "│", "{compact}: no gutter row");
+            assert_eq!(b[(l + 1, ly)].fg, crate::blocks::border(false));
+            // Hovering the line lights it (and asks for a redraw); dragging it resizes.
+            assert!(app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: l + 3, row: ly, modifiers: KeyModifiers::NONE }));
+            screen(&mut app, &mut t);
+            assert_eq!(t.backend().buffer()[(l + 3, ly)].fg, crate::theme::P.sash_hover, "{compact}: sash.hoverBorder");
+            let ch = app.gitui.hits.changes.height;
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), l + 3, ly);
+            mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), l + 3, ly + 2);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), l + 3, ly + 2);
+            screen(&mut app, &mut t);
+            assert_eq!(app.gitui.hits.changes.height, ch + 2, "{compact}: the line follows the pointer");
+            // A click on the line (no drag) leaves GRAPH open; one on its header folds it.
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), l + 3, ly + 2);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), l + 3, ly + 2);
+            assert!(app.gitui.graph_open, "{compact}");
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), l + 3, ly + 3);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), l + 3, ly + 3);
+            assert!(!app.gitui.graph_open, "{compact}: the header still folds");
+            // However short the panel, a sash is only ever on a drawn shared row.
+            app.gitui.graph_open = true;
+            for h in 6..30 {
+                let mut t = Terminal::new(TestBackend::new(110, h)).unwrap();
+                screen(&mut app, &mut t);
+                for (a, _) in app.gitui.hits.areas.iter().filter(|(_, k)| *k == crate::scm::Hit::GraphSash) {
+                    assert_eq!(t.backend().buffer()[(l, a.y)].symbol(), "├", "{compact}: height {h}");
+                }
+            }
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn the_focused_card_is_a_little_lighter_never_blue() {
         let root = repo("focuscard");
@@ -4149,10 +4219,10 @@ mod tests {
             for y in 1..19 {
                 if st == BlockStyle::Cards {
                     // The divider is the gutter: blank on every row; beside it only the section
-                    // cards' right edges (the title row and the gutter between cards are blank).
+                    // cards' right edges (the title row is blank, stacked cards share a row).
                     assert_eq!(b[(x, y)].symbol(), " ", "{st:?} row {y}: the gutter");
                     let edge = b[(x - 1, y)].symbol();
-                    assert!(["│", "╮", "╯", " "].contains(&edge), "{st:?} row {y}: {edge:?} in the card edge");
+                    assert!(["│", "╮", "╯", "┤", " "].contains(&edge), "{st:?} row {y}: {edge:?} in the card edge");
                 } else {
                     // One straight line, joined where a section line meets it.
                     let s = b[(x, y)].symbol();

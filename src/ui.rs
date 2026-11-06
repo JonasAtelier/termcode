@@ -382,7 +382,8 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, lay: Lay) {
         Side::Scm => "SOURCE CONTROL",
     };
     side_title(app, f, Rect::new(col.x, col.y, col.width, 1), title, lay, bg);
-    let top = col.y + 1 + lay.s.section_gap;
+    // A card starts right under the title: no sectionGap rows against its border.
+    let top = col.y + 1 + if st == BlockStyle::Cards { 0 } else { lay.s.section_gap };
     if app.side == Side::Scm {
         return crate::scm::draw_scm(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
     }
@@ -480,6 +481,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, lay: Lay) {
     }
     if !timeline.is_empty() {
         let inner = crate::blocks::card(st, f, timeline, P.sidebar_bg, false);
+        crate::blocks::seam(st, f, main, timeline, focused);
         crate::scm::draw_timeline(app, f, inner);
     }
 }

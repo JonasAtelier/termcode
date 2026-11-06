@@ -87,6 +87,8 @@ pub struct Card {
 pub enum Hit {
     ChangesHead,
     GraphHead,
+    /// The line between CHANGES and GRAPH: the splitter (VS Code's sash).
+    GraphSash,
     /// GRAPH row (index into `graph_rows`).
     Graph(usize),
     /// The ⓘ at a commit row's end.
@@ -188,8 +190,10 @@ pub struct GitUi {
     pub dlg_split: commitdlg::Ratios,
     /// The commit message draft, also kept on disk (`commitdlg`).
     pub draft: Option<String>,
-    /// GRAPH header pressed at this row; whether it was dragged since.
-    drag: Option<(u16, bool)>,
+    /// GRAPH header (or its sash) pressed at this row; whether it was dragged since (a
+    /// sash press counts as one: releasing it never toggles GRAPH); the grabbed row's
+    /// distance below the CHANGES list's end.
+    drag: Option<(u16, bool, u16)>,
     pub hits: Hits,
     /// Running op, pickers, sync state, blame, notification (`gitcmds`).
     pub cmds: crate::gitcmds::State,
@@ -894,7 +898,8 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
             app.gitui.changes_open = !app.gitui.changes_open;
             save_layout(app);
         }
-        Hit::GraphHead => app.gitui.drag = Some((p.y, false)),
+        Hit::GraphHead => app.gitui.drag = Some((p.y, false, between(app.settings.blocks))),
+        Hit::GraphSash => app.gitui.drag = Some((p.y, true, 0)),
         Hit::Graph(i) => {
             app.focus = Focus::Side;
             app.gitui.graph_focus = true;
@@ -949,14 +954,10 @@ pub fn drop_drags(app: &mut App) {
     }
 }
 
-/// Rows between the CHANGES list and the GRAPH header: a card's bottom and top frame and
-/// the gutter (cards), the shared line (lines), none (none).
+/// Rows between the CHANGES list and the GRAPH header: the cards' shared border (cards),
+/// the shared line (lines), none (none).
 fn between(st: crate::blocks::BlockStyle) -> u16 {
-    match st {
-        crate::blocks::BlockStyle::Cards => 3,
-        crate::blocks::BlockStyle::Lines => 1,
-        crate::blocks::BlockStyle::None => 0,
-    }
+    u16::from(st != crate::blocks::BlockStyle::None)
 }
 
 /// Dragging the GRAPH header resizes the panes. True while that drag is on.
@@ -964,12 +965,12 @@ pub fn drag(app: &mut App, p: Position) -> bool {
     if commitdlg::drag(app, p) {
         return true;
     }
-    let Some((y0, moved)) = app.gitui.drag.as_mut() else { return false };
+    let Some((y0, moved, off)) = app.gitui.drag.as_mut() else { return false };
     if p.y != *y0 {
         *moved = true;
     }
     if *moved && app.gitui.changes_open && app.gitui.graph_open {
-        let top = app.gitui.hits.changes.y + between(app.settings.blocks);
+        let top = app.gitui.hits.changes.y + *off;
         app.gitui.split = Some(p.y.saturating_sub(top).max(1));
     }
     true
@@ -980,7 +981,7 @@ pub fn release(app: &mut App) -> bool {
     if commitdlg::release(app) {
         return true;
     }
-    let Some((_, moved)) = app.gitui.drag.take() else { return false };
+    let Some((_, moved, _)) = app.gitui.drag.take() else { return false };
     if !moved {
         app.gitui.graph_open = !app.gitui.graph_open;
     }
@@ -1178,7 +1179,7 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
         return;
     }
     let (co, go) = (app.gitui.changes_open, app.gitui.graph_open);
-    // CHANGES and GRAPH are two blocks: cards (2 frames and a gutter row), or a shared line.
+    // CHANGES and GRAPH are two blocks: cards (sharing one border row), or a shared line.
     let st = app.settings.blocks;
     let between = between(st);
     let frame = if st == crate::blocks::BlockStyle::Cards { 2 } else { 0 };
@@ -1194,14 +1195,25 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
     let gh = if go { body - ch } else { 0 };
     let keys = app.focus == Focus::Side;
     let gf = app.gitui.graph_focus;
-    // CHANGES block, the row between (gutter or line), then the GRAPH block.
-    let (h1, sep) = (1 + ch + frame, u16::from(st != crate::blocks::BlockStyle::None));
+    // CHANGES block (with its top frame), the line row (lines), then the GRAPH block; cards
+    // `stack` onto the GRAPH card's top edge.
+    let (h1, sep) = (1 + ch + frame / 2, u16::from(st == crate::blocks::BlockStyle::Lines));
     let gy = (r.y + h1 + sep).min(r.bottom());
     let gbot = Rect::new(r.x, gy, r.width, r.bottom() - gy);
     let ctop = Rect::new(r.x, r.y, r.width, (h1 + sep).min(r.height));
     let (ctop, gbot) = crate::blocks::stack(st, ctop, gbot, r.x.saturating_sub(1), r.right());
     let ci = crate::blocks::card(st, f, ctop, P.sidebar_bg, keys && !gf);
     let gi = crate::blocks::card(st, f, gbot, P.sidebar_bg, keys && gf);
+    crate::blocks::seam(st, f, ctop, gbot, keys && !gf);
+    // The line between is the splitter, lit while hovered or dragged.
+    // Cards: only above a framed GRAPH card (a tiny one falls back to unframed).
+    if co && go && (st == crate::blocks::BlockStyle::Lines || gi.y > gbot.y) && gi.y > r.y {
+        let sash = Rect::new(gi.x, gi.y - 1, gi.width, 1);
+        app.gitui.hits.areas.push((sash, Hit::GraphSash));
+        if app.gitui.drag.is_some_and(|d| d.2 == 0) || app.hover.is_some_and(|p| sash.contains(p)) {
+            crate::blocks::hot(sash);
+        }
+    }
     let chdr = Rect::new(ci.x, ci.y, ci.width, 1).intersection(ci);
     let crect = Rect::new(ci.x, ci.y + 1, ci.width, ch).intersection(ci);
     let ghdr = Rect::new(gi.x, gi.y, gi.width, 1).intersection(gi);
