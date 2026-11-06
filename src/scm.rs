@@ -790,6 +790,14 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
     true
 }
 
+/// Forget a drag whose release never arrived: the GRAPH header's, a dialog splitter's.
+pub fn drop_drags(app: &mut App) {
+    app.gitui.drag = None;
+    if let Some(d) = app.gitui.dlg.as_mut() {
+        d.drag = None;
+    }
+}
+
 /// Dragging the GRAPH header resizes the panes. True while that drag is on.
 pub fn drag(app: &mut App, p: Position) -> bool {
     if commitdlg::drag(app, p) {

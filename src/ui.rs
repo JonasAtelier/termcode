@@ -189,6 +189,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                 Zone::Left => Rect::new(a.x, a.y, a.width / 2, a.height),
                 Zone::Right => Rect::new(a.x + a.width / 2, a.y, a.width - a.width / 2, a.height),
                 Zone::Center => a,
+                Zone::Tab(_) => Rect::default(), // the tab bar draws its insertion marker
             };
             fill(f, r, P.drop_bg);
         }
@@ -725,7 +726,16 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
     let hover = app.hover;
     let edge = sp(lay.s.tab_padding);
     let gap = sp(lay.s.icon_gap);
+    // A dragged tab's slot in this bar: the cell before tab n, or after the last one.
+    let slot = match app.drop {
+        Some((dg, Zone::Tab(n))) if dg == g => Some(n),
+        _ => None,
+    };
+    let mut marker = None;
     for (i, t) in app.groups[g].tabs.iter().enumerate() {
+        if slot == Some(i) {
+            marker = Some(x.saturating_sub(u16::from(i > 0)));
+        }
         let title = app.tab_title(&t.key);
         let (glyph, gfg) = tab_icon(app, &t.key);
         let dirty = matches!(app.docs.get(&t.key), Some(Doc::Text(b)) if b.dirty());
@@ -769,6 +779,13 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
             fill(f, Rect::new(x, tabbar.y, 1, 1), P.tab_border);
         }
         x += 1;
+    }
+    if let Some(n) = slot.filter(|&n| n >= gh.tabs.len()) {
+        marker = Some(if n == 0 { tabbar.x } else { x - 1 });
+    }
+    if let Some(mx) = marker.filter(|&mx| mx < tabbar.right()) {
+        let st = Style::new().fg(P.tab_dnd_border).bg(P.tabs_bg);
+        f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▌" }, st), Rect::new(mx, tabbar.y, 1, 1));
     }
     if app.groups.len() < crate::panel::MAX_GROUPS && !app.groups[g].tabs.is_empty() {
         f.render_widget(Span::styled(ic.split, Style::new().fg(P.icon_fg)), split);

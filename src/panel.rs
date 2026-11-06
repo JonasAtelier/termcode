@@ -326,12 +326,16 @@ pub enum Zone {
     Left,
     Right,
     Center,
+    /// A dragged tab over a tab bar: inserted before tab n (n = the count: at the end).
+    Tab(usize),
 }
 
 pub enum Drag {
     None,
     Divider,
     File { rel: String, from: Position, active: bool },
+    /// Tab `i` of group `g` (VS Code's tab drag and drop); active once moved 2 cells.
+    Tab { g: usize, i: usize, from: Position, active: bool },
     Select(usize),
     /// Scrollbar slider grabbed `grab` rows below its top.
     Scroll(ScrollHit, u16),
@@ -2560,6 +2564,12 @@ impl App {
     // ---- keyboard --------------------------------------------------------------------------
 
     pub fn on_key(&mut self, k: KeyEvent) {
+        // Esc drops a file or tab drag where it is, before anything else sees the key.
+        if k.code == KeyCode::Esc && matches!(self.drag, Drag::File { active: true, .. } | Drag::Tab { active: true, .. }) {
+            self.drag = Drag::None;
+            self.drop = None;
+            return;
+        }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
@@ -3054,6 +3064,11 @@ impl App {
     }
 
     fn click(&mut self, p: Position, double: bool, shift: bool) {
+        // Every press starts afresh: a release the terminal never reported (outside
+        // the pane, a lost event) must not leave a sash, tab or file drag behind.
+        self.drag = Drag::None;
+        self.drop = None;
+        crate::scm::drop_drags(self);
         if let Some(pr) = self.prompt.as_ref() {
             if let Some(&(_, i)) = self.ui.prompt_btns.iter().find(|(r, _)| r.contains(p)) {
                 let act = pr.buttons[i].1.clone();
@@ -3160,6 +3175,7 @@ impl App {
                 if double {
                     self.groups[g].tabs[i].preview = false;
                 }
+                self.drag = Drag::Tab { g, i, from: p, active: false };
                 return self.find_refresh();
             }
             if gh.area.contains(p) {
@@ -3300,11 +3316,15 @@ impl App {
     }
 
     /// Where a dragged file would land: the group under the cursor and which part.
-    fn drop_target(&self, p: Position) -> Option<(usize, Zone)> {
+    /// `bar`: a tab bar takes the drop at a slot between its tabs (a dragged tab).
+    fn drop_target(&self, p: Position, bar: bool) -> Option<(usize, Zone)> {
         let can_split = self.groups.len() < MAX_GROUPS;
         self.ui.groups.iter().enumerate().find(|(_, g)| g.area.contains(p)).map(|(i, g)| {
             let rx = (p.x - g.area.x) as u32 * 10 / g.area.width.max(1) as u32;
-            let zone = if g.tabbar.contains(p) || !can_split {
+            let zone = if bar && g.tabbar.contains(p) {
+                // Before the first drawn tab whose middle is right of the pointer.
+                Zone::Tab(g.tabs.iter().take_while(|(r, x)| p.x >= (r.x + x.right()) / 2).count())
+            } else if g.tabbar.contains(p) || !can_split {
                 Zone::Center
             } else if rx < 3 {
                 Zone::Left
@@ -3333,7 +3353,16 @@ impl App {
                     *active = true;
                 }
                 if *active {
-                    self.drop = self.drop_target(p);
+                    self.drop = self.drop_target(p, false);
+                }
+            }
+            Drag::Tab { g, i, from, active } => {
+                if !*active && (from.x.abs_diff(p.x) + from.y.abs_diff(p.y)) >= 2 {
+                    *active = true;
+                }
+                if *active {
+                    let (g, i) = (*g, *i);
+                    self.drop = self.drop_target(p, true).filter(|&(t, z)| !self.tab_drop_is_noop(g, i, t, z));
                 }
             }
             Drag::Minimap(m, grab) => {
@@ -3380,7 +3409,7 @@ impl App {
             Drag::File { rel, active: true, .. } => {
                 if let Some((g, zone)) = self.drop.take() {
                     let target = match zone {
-                        Zone::Center => g,
+                        Zone::Center | Zone::Tab(_) => g,
                         Zone::Left | Zone::Right => {
                             let at = if zone == Zone::Left { g } else { g + 1 };
                             self.groups.insert(at, Group::default());
@@ -3391,9 +3420,72 @@ impl App {
                     self.focus = Focus::Editor;
                 }
             }
+            Drag::Tab { g, i, active: true, .. } => {
+                if let Some((t, zone)) = self.drop.take() {
+                    self.move_tab(g, i, t, zone);
+                }
+            }
             _ => {}
         }
         self.drop = None;
+    }
+
+    /// Dropping tab `i` of group `g` on (`t`, `zone`) changes nothing: its own
+    /// group's content, or a split off a group it is the only tab of.
+    fn tab_drop_is_noop(&self, g: usize, i: usize, t: usize, zone: Zone) -> bool {
+        let alone = self.groups.get(g).is_some_and(|grp| grp.tabs.len() == 1);
+        t == g && match zone {
+            Zone::Center => true,
+            Zone::Tab(k) => k == i || k == i + 1,
+            Zone::Left | Zone::Right => alone,
+        }
+    }
+
+    /// VS Code's tab drop: tab `i` of group `g` moves (pinned, with its view) into
+    /// group `t` at the tab-bar slot, after its active tab, or into a new group on
+    /// the `zone` side. The document is not touched: a dirty buffer keeps its
+    /// version, undo and backup. A group left empty closes.
+    fn move_tab(&mut self, g: usize, i: usize, t: usize, zone: Zone) {
+        if g >= self.groups.len() || t >= self.groups.len() || i >= self.groups[g].tabs.len() || self.tab_drop_is_noop(g, i, t, zone) {
+            return;
+        }
+        let mut tab = self.groups[g].tabs.remove(i);
+        tab.preview = false;
+        let src = &mut self.groups[g];
+        if i < src.active || src.active >= src.tabs.len() {
+            src.active = src.active.saturating_sub(1);
+        }
+        // (target group, slot in it, the source group after an insert before it)
+        let (mut dst, at, src) = match zone {
+            Zone::Left | Zone::Right => {
+                let at = if zone == Zone::Left { t } else { t + 1 };
+                self.groups.insert(at, Group::default());
+                (at, 0, if at <= g { g + 1 } else { g })
+            }
+            // A slot right of the tab's old place moved left by one when it left.
+            Zone::Tab(k) => (t, if t == g && k > i { k - 1 } else { k }, g),
+            Zone::Center => (t, self.groups[t].active + 1, g),
+        };
+        let grp = &mut self.groups[dst];
+        // Already open there (a split shows a file twice): that tab takes the focus.
+        grp.active = match grp.tabs.iter().position(|x| x.key == tab.key) {
+            Some(e) => e,
+            None => {
+                let at = at.min(grp.tabs.len());
+                grp.tabs.insert(at, tab);
+                at
+            }
+        };
+        if self.groups[src].tabs.is_empty() && self.groups.len() > 1 {
+            self.groups.remove(src);
+            if dst > src {
+                dst -= 1;
+            }
+        }
+        self.peek = None; // its group and lines are another editor's now
+        self.ag = dst;
+        self.focus = Focus::Editor;
+        self.find_refresh();
     }
 
     fn wheel(&mut self, p: Position, d: isize) {
@@ -4073,6 +4165,185 @@ mod tests {
                 }
             }
         }
+        // Tab drags to the corners, edges and middle: splits, moves and group closes.
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/main.rs", false);
+        app.open_file(0, "README.md", false);
+        wait(&mut app);
+        for w in 30..=40 {
+            for h in 5..=18 {
+                let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+                t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+                for (x, y) in [(0, 0), (w - 1, h - 1), (w - 1, 0), (0, h - 1), (w / 2, h / 2), (w - 3, h / 2)] {
+                    let Some(r) = app.ui.groups.iter().rev().find_map(|g| g.tabs.first()).map(|t| t.0) else { continue };
+                    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+                    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, y);
+                    t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+                    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+                    t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+                }
+            }
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Press on tab `i` of group `g`, drag through `via` (live hit rects), release on the last.
+    fn drag_tab(app: &mut App, t: &mut Terminal<TestBackend>, g: usize, i: usize, via: &[(u16, u16)]) {
+        screen(app, t);
+        let r = app.ui.groups[g].tabs[i].0;
+        mouse(app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+        for &(x, y) in via {
+            mouse(app, MouseEventKind::Drag(MouseButton::Left), x, y);
+            screen(app, t);
+        }
+        let &(x, y) = via.last().unwrap();
+        mouse(app, MouseEventKind::Up(MouseButton::Left), x, y);
+        screen(app, t);
+    }
+
+    fn tab_names(app: &App) -> Vec<Vec<String>> {
+        app.groups.iter().map(|g| g.tabs.iter().map(|t| base(t.key.trim_start_matches("file:")).to_string()).collect()).collect()
+    }
+
+    #[test]
+    fn tabs_drag_to_reorder_split_move_and_close_their_group() {
+        let root = repo("tabdnd");
+        fs::write(root.join("b.txt"), "b\n").unwrap();
+        fs::write(root.join("c.txt"), "c\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        for f in ["README.md", "b.txt", "c.txt"] {
+            app.open_file(0, f, false);
+        }
+        wait(&mut app);
+        let mut t = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let names = |v: &[&[&str]]| v.iter().map(|g| g.iter().map(|s| s.to_string()).collect()).collect::<Vec<Vec<String>>>();
+        // A click, or a press that moves under 2 cells, is a plain tab click.
+        let r = app.ui.groups[0].tabs[0].0;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), r.x + 2, r.y);
+        assert!(app.drop.is_none(), "no drop target under the threshold");
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x + 2, r.y);
+        assert_eq!((tab_names(&app), app.groups[0].active), (names(&[&["README.md", "b.txt", "c.txt"]]), 0));
+        // Reorder: c.txt onto README.md's left half; the slot marker shows while dragging.
+        let r0 = app.ui.groups[0].tabs[0].0;
+        screen(&mut app, &mut t);
+        let r2 = app.ui.groups[0].tabs[2].0;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r2.x + 1, r2.y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), r0.x + 1, r0.y);
+        assert_eq!(app.drop, Some((0, Zone::Tab(0))));
+        screen(&mut app, &mut t);
+        let m = &t.backend().buffer()[(r0.x, r0.y)];
+        assert_eq!((m.symbol(), m.fg), ("▌", crate::theme::P.tab_dnd_border), "insertion marker before the first tab");
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r0.x + 1, r0.y);
+        assert_eq!(tab_names(&app), names(&[&["c.txt", "README.md", "b.txt"]]));
+        assert_eq!(app.groups[0].active, 0, "the moved tab is active");
+        // Split right: b.txt onto the right part of the group, with the half overlay.
+        let a = app.ui.groups[0].area;
+        let right = (a.right() - 3, a.y + a.height / 2);
+        screen(&mut app, &mut t);
+        let rb = app.ui.groups[0].tabs[2].0;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), rb.x + 1, rb.y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), right.0, right.1);
+        screen(&mut app, &mut t);
+        assert_eq!(app.drop, Some((0, Zone::Right)));
+        assert_eq!(t.backend().buffer()[(a.right() - 2, a.y + 3)].bg, crate::theme::P.drop_bg, "the right half lights up");
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), right.0, right.1);
+        assert_eq!(tab_names(&app), names(&[&["c.txt", "README.md"], &["b.txt"]]));
+        assert_eq!(app.ag, 1);
+        // Into the other group at a slot: README.md before b.txt.
+        screen(&mut app, &mut t);
+        let rb = app.ui.groups[1].tabs[0].0;
+        drag_tab(&mut app, &mut t, 0, 1, &[(rb.x + 1, rb.y)]);
+        assert_eq!(tab_names(&app), names(&[&["c.txt"], &["README.md", "b.txt"]]));
+        // The last tab out closes its group: c.txt to the end of the other bar.
+        let bar = app.ui.groups[1].tabbar;
+        drag_tab(&mut app, &mut t, 0, 0, &[(bar.right() - 6, bar.y)]);
+        assert_eq!(tab_names(&app), names(&[&["README.md", "b.txt", "c.txt"]]));
+        assert_eq!((app.ag, app.groups[0].active), (0, 2));
+        // Split left; then a group's only tab onto its own sides or content: nothing.
+        let a = app.ui.groups[0].area;
+        drag_tab(&mut app, &mut t, 0, 1, &[(a.x + 2, a.y + a.height / 2)]);
+        assert_eq!(tab_names(&app), names(&[&["b.txt"], &["README.md", "c.txt"]]));
+        let a = app.ui.groups[0].area;
+        drag_tab(&mut app, &mut t, 0, 0, &[(a.x + 2, a.y + 5), (a.right() - 2, a.y + 5)]);
+        assert!(app.drop.is_none());
+        assert_eq!(tab_names(&app), names(&[&["b.txt"], &["README.md", "c.txt"]]));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_press_drops_drags_whose_release_never_came() {
+        let root = repo("stale");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/main.rs", false);
+        app.open_file(0, "README.md", false);
+        wait(&mut app);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let a = app.ui.groups[0].area;
+        let inside = (a.x + 5, 0); // the title bar: a press that starts nothing of its own
+        // A tab drag, then a press with no release in between: the next drag moves nothing.
+        let r = app.ui.groups[0].tabs[0].0;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), a.right() - 2, a.y + 5);
+        assert!(app.drop.is_some());
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), inside.0, inside.1);
+        assert!(app.drop.is_none());
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), a.right() - 2, a.y + 6);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), a.right() - 2, a.y + 6);
+        assert_eq!(app.groups.len(), 1, "no split from the stale tab drag");
+        // The same for an Explorer file drag.
+        app.show_side(Side::Explorer, false);
+        screen(&mut app, &mut t);
+        let row = app.ui.side_list.y + (app.tree.iter().position(|n| n.path == "README.md").unwrap() * (1 + app.ui.side_gap as usize)) as u16;
+        let sx = app.ui.side_list.x + 4;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sx, row);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), a.right() - 2, a.y + 5);
+        assert!(matches!(app.drag, Drag::File { active: true, .. }));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), inside.0, inside.1);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), a.right() - 2, a.y + 6);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), a.right() - 2, a.y + 6);
+        assert_eq!(app.groups.len(), 1, "no split from the stale file drag");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_moved_tab_keeps_its_dirty_buffer_and_preview_tabs_get_pinned_and_esc_cancels() {
+        let root = repo("tabdirty");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/main.rs", false);
+        app.open_file(0, "README.md", true); // a preview tab
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        typ(&mut app, "edited ");
+        let (ver, text) = match app.docs.get("file:README.md") {
+            Some(Doc::Text(b)) => (b.version(), b.text()),
+            _ => unreachable!(),
+        };
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        screen(&mut app, &mut t);
+        // Esc during a drag: no drop, nothing moves, the release does nothing.
+        let a = app.ui.groups[0].area;
+        let r = app.ui.groups[0].tabs[1].0;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), a.right() - 2, a.y + 5);
+        assert!(app.drop.is_some());
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.drop.is_none() && matches!(app.drag, Drag::None));
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), a.right() - 2, a.y + 5);
+        assert_eq!(app.groups.len(), 1);
+        // Split right with the dirty preview tab: the same buffer, pinned, undo intact.
+        drag_tab(&mut app, &mut t, 0, 1, &[(a.right() - 2, a.y + 5)]);
+        assert_eq!(tab_names(&app), vec![vec!["main.rs".to_string()], vec!["README.md".to_string()]]);
+        assert!(!app.groups[1].tabs[0].preview, "a moved preview tab is pinned");
+        let Some(Doc::Text(b)) = app.docs.get("file:README.md") else { unreachable!() };
+        assert_eq!((b.version(), b.text(), b.dirty()), (ver, text, true), "not reloaded");
+        for _ in 0..10 {
+            key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        }
+        let Some(Doc::Text(b)) = app.docs.get("file:README.md") else { unreachable!() };
+        assert_eq!((b.text(), b.dirty()), ("hello\n".to_string(), false), "undo history came along");
         fs::remove_dir_all(&root).unwrap();
     }
 

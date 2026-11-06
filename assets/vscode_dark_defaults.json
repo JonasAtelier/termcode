@@ -52,6 +52,7 @@
   "editorGroup.dropBackground": "#53595D80",
   "tab.activeBackground": "editor.background",
   "tab.activeForeground": "#FFFFFF",
+  "tab.dragAndDropBorder": "tab.activeForeground",
   "tab.unfocusedActiveForeground": ["tab.activeForeground", 0.5],
   "tab.inactiveBackground": "#2D2D2D",
   "tab.inactiveForeground": ["tab.activeForeground", 0.5],

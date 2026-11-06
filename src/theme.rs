@@ -138,6 +138,8 @@ pub struct Pal {
     pub tabs_bg: Color,
     pub tab_active_bg: Color,
     pub tab_active_fg: Color,
+    /// `tab.dragAndDropBorder`: where a dragged tab would go in a tab bar.
+    pub tab_dnd_border: Color,
     pub tab_unfocused_fg: Color,
     pub tab_inactive_bg: Color,
     pub tab_inactive_fg: Color,
@@ -271,6 +273,7 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         tabs_bg: on("editorGroupHeader.tabsBackground", sidebar_bg),
         tab_active_bg,
         tab_active_fg: on("tab.activeForeground", tab_active_bg),
+        tab_dnd_border: on("tab.dragAndDropBorder", editor_bg),
         tab_unfocused_fg: on("tab.unfocusedActiveForeground", tab_active_bg),
         tab_inactive_bg,
         tab_inactive_fg: on("tab.inactiveForeground", tab_inactive_bg),

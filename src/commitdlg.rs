@@ -961,6 +961,16 @@ mod tests {
         let got = drag(&mut app, &mut tm, 2, &[(x, 39), (x, 0)]);
         assert_eq!(got[0].4.height, 4);
         assert_eq!((got[1].2[0].height, got[1].2[1].height), (3, 3));
+        // A splitter press whose release never came: the next press forgets it.
+        let before = app.gitui.dlg_split;
+        let (s, ..) = hits(&app);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), mid(s[0]));
+        assert_eq!(app.gitui.dlg.as_ref().unwrap().drag, Some(Sash::Left));
+        let m = hits(&app).4;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), (m.x + 2, m.y));
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), (inner.x + 15, m.y));
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), (inner.x + 15, m.y));
+        assert_eq!(app.gitui.dlg_split, before, "the stale sash drag moved nothing");
         // Kept in layout.json: a restart reads the same ratios.
         let file = t.0.join("state/layout.json");
         let saved = fs::read_to_string(&file).unwrap();
