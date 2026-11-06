@@ -6637,6 +6637,45 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Tab drags through the real loop: pointer motion mixed in batches, drags never
+    /// coalesced, and a press that ends a batch still drops a drag whose release was lost.
+    #[test]
+    fn tab_drags_survive_the_batching_loop_and_a_held_press_drops_a_stale_one() {
+        let root = repo("tabstep");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/main.rs", false);
+        app.open_file(0, "README.md", false);
+        wait(&mut app);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut dirty = true;
+        let run = |app: &mut App, t: &mut Terminal<TestBackend>, dirty: &mut bool, evs: Vec<Event>| {
+            let mut q: std::collections::VecDeque<Event> = evs.into();
+            while !q.is_empty() || app.pending_ev.is_some() {
+                app.step(t, dirty, |_| Ok(q.pop_front())).unwrap();
+            }
+            app.step(t, dirty, |_| Ok(None)).unwrap();
+        };
+        run(&mut app, &mut t, &mut dirty, vec![]);
+        let (tab, a) = (app.ui.groups[0].tabs[1].0, app.ui.groups[0].area);
+        let (rx, ry) = (a.right() - 2, a.y + 5);
+        let moved = |x, y| mev(MouseEventKind::Moved, x, y);
+        let lmb = |k: fn(MouseButton) -> MouseEventKind, x, y| mev(k(MouseButton::Left), x, y);
+        // Motion, press, drags with motion between them, release: a split right.
+        let evs = vec![moved(tab.x, tab.y), moved(tab.x + 1, tab.y), lmb(MouseEventKind::Down, tab.x + 1, tab.y), lmb(MouseEventKind::Drag, tab.x + 9, ry), moved(rx, ry), lmb(MouseEventKind::Drag, rx, ry), lmb(MouseEventKind::Up, rx, ry)];
+        run(&mut app, &mut t, &mut dirty, evs);
+        assert_eq!(tab_names(&app), vec![vec!["main.rs".to_string()], vec!["README.md".to_string()]]);
+        // A drag whose release was lost, motion, then a press on the title bar inside that
+        // motion batch (held for the frame): the next drag splits nothing.
+        // README.md (group 1) towards group 0's left side would split there.
+        let tab = app.ui.groups[1].tabs[0].0;
+        let a = app.ui.groups[0].area;
+        let evs = vec![lmb(MouseEventKind::Down, tab.x + 1, tab.y), lmb(MouseEventKind::Drag, a.x + 2, a.y + 5), moved(a.x + 3, a.y + 5), moved(a.x + 4, a.y + 5), lmb(MouseEventKind::Down, a.x + 5, 0), lmb(MouseEventKind::Drag, a.x + 2, a.y + 6), lmb(MouseEventKind::Up, a.x + 2, a.y + 6)];
+        run(&mut app, &mut t, &mut dirty, evs);
+        assert_eq!(tab_names(&app), vec![vec!["main.rs".to_string()], vec!["README.md".to_string()]], "no split left from the stale drag");
+        assert!(app.drop.is_none() && matches!(app.drag, Drag::None));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     /// Plain motion asks for a frame only when what is drawn under the pointer changes.
     #[test]
     fn motion_redraws_only_when_the_hover_target_changes() {
