@@ -11,6 +11,7 @@ mod editor;
 mod git;
 mod minimap;
 mod icons;
+mod nav;
 mod panel;
 mod parse;
 mod semantic;
