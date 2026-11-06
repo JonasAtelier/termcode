@@ -119,6 +119,19 @@ pub(crate) fn popup_block(bg: Color, fg: Color, (h, v): (u16, u16)) -> Block<'st
     }
 }
 
+/// A splitter (VS Code's sash) filling `r`: `│` down a 1-column rect, else `─`,
+/// in `border` on `bg`, or in `sash.hoverBorder` while `hot` (hovered or dragged;
+/// a terminal cursor cannot change shape).
+pub(crate) fn sash(f: &mut Frame, r: Rect, hot: bool, border: Color, bg: Color) {
+    let (h, v) = if crate::theme::ascii() { (icons().border[4], icons().border[5]) } else { ("─", "│") };
+    let glyph = if r.width == 1 && r.height > 1 { v } else { h };
+    let fg = if hot { P.sash_hover } else { border };
+    let buf = f.buffer_mut();
+    for p in r.positions() {
+        buf[p].set_symbol(glyph).set_fg(fg).set_bg(bg);
+    }
+}
+
 /// VS Code language id for a syntect syntax name (indent-rainbow's language lists).
 pub fn lang_id(name: &str) -> String {
     match name {

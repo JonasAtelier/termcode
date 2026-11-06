@@ -173,6 +173,8 @@ pub struct GitUi {
     /// The commit under a resting pointer: hash, its row, since when.
     hover: Option<(String, Rect, Instant)>,
     pub dlg: Option<CommitDlg>,
+    /// The commit dialog's dragged splitters (layout.json `commit_dialog`).
+    pub dlg_split: commitdlg::Ratios,
     /// The commit message draft, also kept on disk (`commitdlg`).
     pub draft: Option<String>,
     /// GRAPH header pressed at this row; whether it was dragged since.
@@ -202,6 +204,7 @@ impl GitUi {
             card: None,
             hover: None,
             dlg: None,
+            dlg_split: commitdlg::SASHES.map(|k| s["commit_dialog"][k.name()].as_f64().filter(|f| (0.0..=1.0).contains(f))),
             draft: None,
             drag: None,
             hits: Hits::default(),
@@ -221,6 +224,11 @@ impl GitUi {
         });
         if let Some(s) = self.split {
             v["split"] = s.into();
+        }
+        let dlg: serde_json::Map<String, serde_json::Value> =
+            commitdlg::SASHES.iter().zip(self.dlg_split).filter_map(|(k, r)| Some((k.name().to_string(), r?.into()))).collect();
+        if !dlg.is_empty() {
+            v["commit_dialog"] = dlg.into();
         }
         v
     }
@@ -784,6 +792,9 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
 
 /// Dragging the GRAPH header resizes the panes. True while that drag is on.
 pub fn drag(app: &mut App, p: Position) -> bool {
+    if commitdlg::drag(app, p) {
+        return true;
+    }
     let Some((y0, moved)) = app.gitui.drag.as_mut() else { return false };
     if p.y != *y0 {
         *moved = true;
@@ -797,6 +808,9 @@ pub fn drag(app: &mut App, p: Position) -> bool {
 
 /// Releasing the GRAPH header: a click (no drag) collapses or expands it.
 pub fn release(app: &mut App) -> bool {
+    if commitdlg::release(app) {
+        return true;
+    }
     let Some((_, moved)) = app.gitui.drag.take() else { return false };
     if !moved {
         app.gitui.graph_open = !app.gitui.graph_open;

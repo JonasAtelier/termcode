@@ -168,6 +168,8 @@ pub struct Pal {
     pub widget_bg: Color,
     pub widget_fg: Color,
     pub widget_border: Color,
+    /// `sash.hoverBorder`: a splitter under the mouse or being dragged.
+    pub sash_hover: Color,
     pub focus_border: Color,
     pub quick_bg: Color,
     pub quick_fg: Color,
@@ -298,6 +300,7 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         widget_bg,
         widget_fg: on("editorWidget.foreground", widget_bg),
         widget_border: on("editorWidget.border", widget_bg),
+        sash_hover: on("sash.hoverBorder", widget_bg),
         focus_border: on("focusBorder", sidebar_bg),
         quick_bg,
         quick_fg: on("quickInput.foreground", quick_bg),

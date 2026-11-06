@@ -5,6 +5,7 @@
   "errorForeground": "#F48771",
   "icon.foreground": "#C5C5C5",
   "focusBorder": "#007FD4",
+  "sash.hoverBorder": "focusBorder",
   "editor.background": "#1E1E1E",
   "editor.foreground": "#BBBBBB",
   "editorLineNumber.foreground": "#858585",

@@ -3,6 +3,8 @@
 //! the right, and below them New Commit / Amend Last Commit, the message
 //! editor (subject hint at 50, ruler at 72) and [Rescan] [Sign Off] [Commit]
 //! [Commit & Push] [Cancel]. The draft survives Cancel, Esc and restarts.
+//! The splitters between the panes drag (VS Code's sashes); their positions
+//! are kept as ratios in layout.json, and a double click resets one.
 
 use crate::diff;
 use crate::editor::{self, Buffer, Pos, View};
@@ -11,7 +13,7 @@ use crate::gitops::{self, CommitOpts};
 use crate::panel::{App, DiffDoc, PAct, Prompt};
 use crate::scm::{GitAct, Msg as ScmMsg};
 use crate::theme::{git_color, P};
-use crate::ui::{centered, diff_view, fill, fit, popup_block, render_line, row, sp};
+use crate::ui::{centered, diff_view, fill, fit, popup_block, render_line, row, sash, sp};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::Clear;
@@ -44,6 +46,110 @@ pub enum Btn {
     Cancel,
 }
 
+/// The splitters: lists | diff, Unstaged / Staged, upper panes / message.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Sash {
+    Left,
+    Lists,
+    Message,
+}
+
+pub const SASHES: [Sash; 3] = [Sash::Left, Sash::Lists, Sash::Message];
+
+impl Sash {
+    /// Its key in layout.json's `scm.commit_dialog`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Sash::Left => "left",
+            Sash::Lists => "lists",
+            Sash::Message => "message",
+        }
+    }
+}
+
+/// What a drag must leave: file rows per list, diff columns, message rows, list columns.
+const MIN_LIST_ROWS: i32 = 3;
+const MIN_DIFF_W: i32 = 20;
+const MIN_MSG_H: i32 = 4;
+const MIN_LEFT_W: i32 = 12;
+/// A file pane: header, rows, buttons.
+const MIN_PANE: i32 = MIN_LIST_ROWS + 2;
+/// Unstaged, a splitter, Staged.
+const MIN_UPPER: i32 = 2 * MIN_PANE + 1;
+/// Fixed rows: the message splitter, the mode row, buttons, note.
+const FIXED_ROWS: i32 = 4;
+
+/// Splitter positions as fractions of their span (`SASHES` order); None: the default.
+pub type Ratios = [Option<f64>; 3];
+
+/// `a` of `total` cells near `want`, leaving `min_a` and `min_b`; with no room
+/// for both, shared in proportion to them (a drag then changes nothing).
+fn split(total: i32, want: i32, min_a: i32, min_b: i32) -> i32 {
+    let total = total.max(0);
+    if min_a + min_b > total {
+        return (total * min_a + (min_a + min_b) / 2) / (min_a + min_b);
+    }
+    want.clamp(min_a, total - min_b)
+}
+
+fn want(r: Option<f64>, total: i32, default: i32) -> i32 {
+    r.map_or(default, |f| (f * total as f64).round() as i32)
+}
+
+/// The dialog's panes inside `inner` for the splitter `ratios`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Geo {
+    pub unstaged: Rect,
+    pub staged: Rect,
+    pub diff: Rect,
+    pub mode: Rect,
+    pub msg: Rect,
+    pub buttons: Rect,
+    pub note: Rect,
+    pub sashes: [Rect; 3],
+}
+
+pub fn geometry(inner: Rect, ratios: Ratios) -> Geo {
+    let (w, h) = (inner.width as i32, inner.height as i32);
+    let rows = h - FIXED_ROWS;
+    let msg_h = split(rows, want(ratios[2], rows, (h / 3).clamp(1, 8)), MIN_MSG_H, MIN_UPPER);
+    let top_h = (rows - msg_h).max(0);
+    let lw = split(w - 1, want(ratios[0], w - 1, (w * 2 / 5).max(w.min(24))), MIN_LEFT_W, MIN_DIFF_W);
+    let avail = top_h - 1;
+    let un_h = split(avail, want(ratios[1], avail, avail.max(0) / 2), MIN_PANE, MIN_PANE);
+    let r = |x: i32, y: i32, rw: i32, rh: i32| Rect::new(inner.x + x as u16, inner.y + y as u16, rw.max(0) as u16, rh.max(0) as u16).intersection(inner);
+    let row_at = |y: i32| r(0, y, w, 1);
+    Geo {
+        unstaged: r(0, 0, lw, un_h),
+        staged: r(0, un_h + 1, lw, avail - un_h),
+        diff: r(lw + 1, 0, w - lw - 1, top_h),
+        mode: row_at(top_h + 1),
+        msg: r(0, top_h + 2, w, msg_h),
+        buttons: r(1, top_h + 2 + msg_h, w - 1, 1),
+        note: row_at(top_h + 3 + msg_h),
+        sashes: [r(lw, 0, 1, top_h), r(0, un_h, lw, avail.min(1)), row_at(top_h)],
+    }
+}
+
+/// The ratio that puts `s` at `p` (clamped as `geometry` draws it), to 3 places.
+pub fn ratio_at(inner: Rect, ratios: Ratios, s: Sash, p: Position) -> f64 {
+    let (w, h) = (inner.width as i32, inner.height as i32);
+    let (dx, dy) = (p.x as i32 - inner.x as i32, p.y as i32 - inner.y as i32);
+    let (a, total) = match s {
+        Sash::Left => (split(w - 1, dx, MIN_LEFT_W, MIN_DIFF_W), w - 1),
+        Sash::Lists => {
+            let g = geometry(inner, ratios);
+            let avail = g.sashes[0].height as i32 - 1;
+            (split(avail, dy, MIN_PANE, MIN_PANE), avail)
+        }
+        Sash::Message => {
+            let rows = h - FIXED_ROWS;
+            (split(rows, rows - dy, MIN_MSG_H, MIN_UPPER), rows)
+        }
+    };
+    (a as f64 / total.max(1) as f64 * 1000.0).round() / 1000.0
+}
+
 #[derive(Default)]
 pub struct DlgHits {
     pub btns: Vec<(Rect, Btn)>,
@@ -51,6 +157,9 @@ pub struct DlgHits {
     pub lists: [Rect; 2],
     pub msg: Rect,
     pub diff: Rect,
+    /// The dialog inside its border, and its splitters (`SASHES` order).
+    pub inner: Rect,
+    pub sashes: [Rect; 3],
 }
 
 pub enum Msg {
@@ -86,6 +195,8 @@ pub struct CommitDlg {
     pub note: String,
     pub busy: bool,
     pub hits: DlgHits,
+    /// The splitter being dragged.
+    pub drag: Option<Sash>,
 }
 
 fn editable(text: &str) -> (Buffer, View) {
@@ -140,6 +251,7 @@ pub fn open(app: &mut App) {
         note: String::new(),
         busy: false,
         hits: DlgHits::default(),
+        drag: None,
     });
     relist(app);
     if let Some(d) = app.gitui.dlg.as_mut() {
@@ -503,6 +615,14 @@ pub fn click(app: &mut App, p: Position, double: bool) {
     if d.busy {
         return;
     }
+    if let Some(i) = d.hits.sashes.iter().position(|r| r.contains(p)) {
+        if double {
+            app.gitui.dlg_split[i] = None; // back to the default
+            return app.save_layout();
+        }
+        d.drag = Some(SASHES[i]);
+        return;
+    }
     if let Some(&(_, b)) = d.hits.btns.iter().find(|(r, _)| r.contains(p)) {
         return button(app, b);
     }
@@ -531,6 +651,24 @@ pub fn click(app: &mut App, p: Position, double: bool) {
         d.view.anchor = None;
         d.view.want_x = None;
     }
+}
+
+/// Dragging a splitter: true while one is held.
+pub fn drag(app: &mut App, p: Position) -> bool {
+    let Some(d) = app.gitui.dlg.as_ref() else { return false };
+    let Some(s) = d.drag else { return false };
+    let r = ratio_at(d.hits.inner, app.gitui.dlg_split, s, p);
+    app.gitui.dlg_split[s as usize] = Some(r);
+    true
+}
+
+/// Releasing a splitter keeps its position in layout.json.
+pub fn release(app: &mut App) -> bool {
+    if app.gitui.dlg.as_mut().and_then(|d| d.drag.take()).is_none() {
+        return false;
+    }
+    app.save_layout();
+    true
 }
 
 pub fn wheel(app: &mut App, p: Position, delta: isize) {
@@ -610,6 +748,7 @@ fn file_pane(f: &mut Frame, d: &mut CommitDlg, k: usize, r: Rect, title: &str, b
 pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let pad = app.settings.spacing.button_padding.min(1);
     let comfy = !app.settings.compact;
+    let (ratios, hover) = (app.gitui.dlg_split, app.hover);
     let Some(d) = app.gitui.dlg.as_mut() else { return };
     d.hits = DlgHits::default();
     let outer = centered(area, area.width.saturating_sub(4).min(160), area.height.saturating_sub(2), false);
@@ -620,15 +759,16 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let block = popup_block(P.widget_bg, P.widget_fg, (1, 0)).title(" Commit ");
     let inner = block.inner(outer);
     f.render_widget(block, outer);
-    // Bottom: mode row, message, buttons, note.
-    let msg_h = (inner.height / 3).clamp(1, 8);
-    let top_h = inner.height.saturating_sub(msg_h + 3);
-    let lw = (inner.width * 2 / 5).max(inner.width.min(24));
-    let left = Rect::new(inner.x, inner.y, lw, top_h);
-    let diff = Rect::new(inner.x + lw + 1, inner.y, inner.width.saturating_sub(lw + 1), top_h);
-    let half = left.height / 2;
-    file_pane(f, d, 0, Rect::new(left.x, left.y, left.width, half), "Unstaged Changes", &[("Stage →", Btn::Stage, false), ("Stage Changed", Btn::StageChanged, false)], pad);
-    file_pane(f, d, 1, Rect::new(left.x, left.y + half, left.width, left.height - half), "Staged Changes (Will Commit)", &[("← Unstage", Btn::Unstage, false)], pad);
+    // Lists | diff over the message splitter, the mode row, message, buttons, note.
+    let g = geometry(inner, ratios);
+    let diff = g.diff;
+    d.hits.inner = inner;
+    d.hits.sashes = g.sashes;
+    for (s, r) in SASHES.into_iter().zip(g.sashes) {
+        sash(f, r, d.drag == Some(s) || hover.is_some_and(|p| r.contains(p)), P.widget_border, P.widget_bg);
+    }
+    file_pane(f, d, 0, g.unstaged, "Unstaged Changes", &[("Stage →", Btn::Stage, false), ("Stage Changed", Btn::StageChanged, false)], pad);
+    file_pane(f, d, 1, g.staged, "Staged Changes (Will Commit)", &[("← Unstage", Btn::Unstage, false)], pad);
     if diff.width > 4 && diff.height > 1 {
         let name = d.lists[d.side].get(d.sel[d.side]).map_or(String::new(), |f| f.path.clone());
         let which = if d.side == 0 { "Working Tree" } else { "Index" };
@@ -641,8 +781,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
             diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), &[]);
         }
     }
-    let y = inner.y + top_h;
-    let mode = Rect::new(inner.x, y, inner.width, 1).intersection(inner);
+    let mode = g.mode;
     let radio = |on: bool| if on { "(•)" } else { "( )" };
     let mut x = mode.x + 1;
     for (label, b, on) in [("New Commit", Btn::New, !d.amend), ("Amend Last Commit", Btn::Amend, d.amend)] {
@@ -658,9 +797,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     if mode.width as usize > x.saturating_sub(mode.x) as usize + hint.width() {
         f.render_widget(Span::styled(hint.clone(), Style::new().fg(hc)), Rect::new(mode.right() - hint.width() as u16, mode.y, hint.width() as u16, 1));
     }
-    let m = Rect::new(inner.x, y + 1, inner.width, msg_h).intersection(inner);
-    message(f, d, m);
-    let by = y + 1 + msg_h;
+    message(f, d, g.msg);
     let items = [
         ("Rescan", Btn::Rescan, false),
         ("Sign Off", Btn::SignOff, false),
@@ -668,12 +805,12 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         ("Commit & Push", Btn::CommitPush, false),
         ("Cancel", Btn::Cancel, false),
     ];
-    if by < inner.bottom() {
-        buttons(f, &mut d.hits.btns, Rect::new(inner.x + 1, by, inner.width.saturating_sub(1), 1), &items, pad);
+    if g.buttons.height > 0 {
+        buttons(f, &mut d.hits.btns, g.buttons, &items, pad);
     }
-    if by + 1 < inner.bottom() && !d.note.is_empty() {
+    if g.note.height > 0 && !d.note.is_empty() {
         let c = if d.busy { P.dim } else { P.error_fg };
-        f.render_widget(Span::styled(fit(&format!(" {}", d.note), inner.width as usize), Style::new().fg(c)), Rect::new(inner.x, by + 1, inner.width, 1));
+        f.render_widget(Span::styled(fit(&format!(" {}", d.note), inner.width as usize), Style::new().fg(c)), g.note);
     }
 }
 
@@ -725,5 +862,120 @@ fn message(f: &mut Frame, d: &mut CommitDlg, r: Rect) {
     }
     if d.focus == Pane::Message && c.line >= v.scroll && c.line < v.scroll + h {
         f.set_cursor_position((r.x + 1 + (cx - v.hscroll) as u16, r.y + (c.line - v.scroll) as u16));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scm::ui_tests::{app, click, mouse, repo, screen, settle};
+    use crate::theme::P;
+    use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    #[test]
+    fn splitter_geometry_defaults_minimums_and_tiny_dialogs() {
+        let inner = Rect::new(2, 1, 156, 40);
+        let g = geometry(inner, [None; 3]);
+        // git-gui's defaults: lists 2/5 wide, halved; the message up to 8 rows.
+        assert_eq!((g.unstaged, g.staged), (Rect::new(2, 1, 62, 13), Rect::new(2, 15, 62, 14)));
+        assert_eq!(g.diff, Rect::new(65, 1, 93, 28));
+        assert_eq!(g.sashes, [Rect::new(64, 1, 1, 28), Rect::new(2, 14, 62, 1), Rect::new(2, 29, 156, 1)]);
+        assert_eq!((g.mode.y, g.msg, g.buttons.y, g.note.y), (30, Rect::new(2, 31, 156, 8), 39, 40));
+        // Dragged to either end: 3 file rows a list, 20 diff columns, 4 message rows, 12 list columns.
+        let lo = geometry(inner, [Some(0.0); 3]);
+        assert_eq!((lo.unstaged.width, lo.unstaged.height, lo.msg.height), (12, 5, 4));
+        let hi = geometry(inner, [Some(1.0); 3]);
+        assert_eq!((hi.diff.width, hi.staged.height, hi.unstaged.height, hi.msg.height), (20, 5, 5, 25));
+        // The ratio for a pointer position lands on the clamped size.
+        assert_eq!(ratio_at(inner, [None; 3], Sash::Left, Position::new(0, 0)), (12.0f64 / 155.0 * 1000.0).round() / 1000.0);
+        assert_eq!(geometry(inner, [Some(ratio_at(inner, [None; 3], Sash::Left, Position::new(42, 9))), None, None]).unstaged.width, 40);
+        assert_eq!(geometry(inner, [None, None, Some(ratio_at(inner, [None; 3], Sash::Message, Position::new(9, 20)))]).sashes[2].y, 20);
+        // Too small for the minimums: shared in proportion, every pane inside, nothing overlaps.
+        for h in 0..20 {
+            for w in [0u16, 5, 31, 40] {
+                let inner = Rect::new(3, 2, w, h);
+                for r in [[None; 3], [Some(0.0); 3], [Some(1.0); 3]] {
+                    let g = geometry(inner, r);
+                    for x in [g.unstaged, g.staged, g.diff, g.mode, g.msg, g.buttons, g.note].iter().chain(&g.sashes) {
+                        assert_eq!(x.intersection(inner), *x, "{w}x{h} {r:?}: {x:?}");
+                    }
+                    assert!(g.unstaged.height + g.sashes[1].height + g.staged.height <= g.sashes[0].height, "{w}x{h}: the lists fit their column");
+                    if h >= 4 {
+                        assert_eq!(g.sashes[0].height + g.msg.height + 4, h, "{w}x{h}: upper, message and 4 fixed rows");
+                    }
+                    if h >= 6 {
+                        assert!(g.msg.height >= 1, "{w}x{h}: a message row");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn splitters_drag_clamp_persist_and_double_click_reset() {
+        let (t, r) = repo("sash", "echo a > a.txt; git add .; git commit -qm first; echo b >> a.txt; echo u > u.txt; echo s > s.txt; git add s.txt");
+        let mut app = app(&t, &r);
+        let mut tm = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        app.commit();
+        settle(&mut app);
+        screen(&mut app, &mut tm);
+        let hits = |app: &App| {
+            let h = &app.gitui.dlg.as_ref().unwrap().hits;
+            (h.sashes, h.inner, h.lists, h.diff, h.msg)
+        };
+        let mid = |r: Rect| (r.x + r.width / 2, r.y + r.height / 2);
+        let moved = |app: &mut App, (x, y): (u16, u16)| app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: x, row: y, modifiers: KeyModifiers::NONE });
+        let (s, inner, ..) = hits(&app);
+        // Hovering a splitter redraws it in sash.hoverBorder; leaving it puts the border back.
+        assert!(moved(&mut app, mid(s[0])), "entering a splitter redraws");
+        screen(&mut app, &mut tm);
+        let cell = |tm: &Terminal<TestBackend>, p: (u16, u16)| tm.backend().buffer()[p].clone();
+        assert_eq!((cell(&tm, mid(s[0])).symbol(), cell(&tm, mid(s[0])).fg), ("│", P.sash_hover));
+        assert_eq!((cell(&tm, mid(s[2])).symbol(), cell(&tm, mid(s[2])).fg), ("─", P.widget_border));
+        assert!(moved(&mut app, (inner.x + 1, inner.y + 1)), "leaving it redraws");
+        screen(&mut app, &mut tm);
+        assert_eq!(cell(&tm, mid(s[0])).fg, P.widget_border);
+        // Lists | diff: to the far left the lists keep 12 columns, to the far right the diff keeps 20.
+        let drag = |app: &mut App, tm: &mut Terminal<TestBackend>, k: usize, to: &[(u16, u16)]| {
+            mouse(app, MouseEventKind::Down(MouseButton::Left), mid(hits(app).0[k]));
+            let mut out = Vec::new();
+            for &p in to {
+                mouse(app, MouseEventKind::Drag(MouseButton::Left), p);
+                screen(app, tm);
+                out.push(hits(app));
+                assert_eq!(cell(tm, mid(hits(app).0[k])).fg, P.sash_hover, "highlighted while dragged");
+            }
+            mouse(app, MouseEventKind::Up(MouseButton::Left), *to.last().unwrap());
+            out
+        };
+        let (y, x) = (mid(s[0]).1, mid(s[1]).0);
+        let got = drag(&mut app, &mut tm, 0, &[(0, y), (119, y), (40, y)]);
+        assert_eq!(got[0].2[0].width, 12);
+        assert_eq!(got[1].3.width, 20);
+        assert_eq!(got[2].2[0].width, 40 - inner.x, "follows the pointer between the limits");
+        // Unstaged / Staged: each list keeps 3 file rows.
+        let got = drag(&mut app, &mut tm, 1, &[(x, 0), (x, 39)]);
+        assert_eq!((got[0].2[0].height, got[1].2[1].height), (3, 3));
+        // Upper panes / message: the message keeps 4 rows, the lists 3 each.
+        let got = drag(&mut app, &mut tm, 2, &[(x, 39), (x, 0)]);
+        assert_eq!(got[0].4.height, 4);
+        assert_eq!((got[1].2[0].height, got[1].2[1].height), (3, 3));
+        // Kept in layout.json: a restart reads the same ratios.
+        let file = t.0.join("state/layout.json");
+        let saved = fs::read_to_string(&file).unwrap();
+        assert!(saved.contains("\"commit_dialog\""), "{saved}");
+        let fresh = App::new(r.clone(), Some(file.clone()));
+        assert!(app.gitui.dlg_split.iter().all(Option::is_some));
+        assert_eq!(fresh.gitui.dlg_split, app.gitui.dlg_split);
+        // A double click puts one splitter back to its default.
+        let (s, inner, ..) = hits(&app);
+        click(&mut app, mid(s[0]));
+        click(&mut app, mid(s[0]));
+        assert_eq!(app.gitui.dlg_split[0], None);
+        screen(&mut app, &mut tm);
+        assert_eq!(hits(&app).2[0].width, geometry(inner, [None; 3]).unstaged.width);
+        let saved = fs::read_to_string(&file).unwrap();
+        assert!(!saved.contains("\"left\"") && saved.contains("\"lists\""), "{saved}");
     }
 }

@@ -2872,6 +2872,7 @@ impl App {
                         || self.ui.scrollbars.iter().any(|s| s.track.contains(q))
                         || self.ui.minimaps.iter().any(|m| m.area.contains(q))
                         || self.ui.peek_zone.contains(q)
+                        || self.gitui.dlg.as_ref().is_some_and(|d| d.hits.sashes.iter().any(|r| r.contains(q)))
                 };
                 let redraw = old != Some(p) && (watched(p) || old.is_some_and(watched));
                 return crate::scm::moved(self, p) || redraw;
@@ -3879,6 +3880,19 @@ mod tests {
                     crate::navui::open_peek(&mut app, "println", "2 definitions".into(), vec![def.clone(), def]);
                     draw(&mut app);
                     app.nav.peek = None;
+                    // The commit dialog with each splitter dragged to both corners.
+                    app.commit();
+                    draw(&mut app);
+                    for k in 0..3 {
+                        for (x, y) in [(0, 0), (w - 1, h - 1)] {
+                            let Some(r) = app.gitui.dlg.as_ref().map(|d| d.hits.sashes[k]).filter(|r| !r.is_empty()) else { continue };
+                            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+                            mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, y);
+                            draw(&mut app);
+                            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+                        }
+                    }
+                    app.gitui.dlg = None;
                 }
             }
         }
