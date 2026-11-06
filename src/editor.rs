@@ -1063,17 +1063,20 @@ impl Buffer {
 }
 
 /// Hot-exit backup file for `file` inside `dir`, keyed by a hash of the herdr
-/// session (`scope`, its socket path) and the file path, so two sessions on the
-/// same worktree never share or delete each other's backups.
-pub fn backup_file(dir: &Path, scope: &str, file: &Path) -> PathBuf {
-    dir.join(format!("{}.json", crate::parse::lock_key(scope, &file.to_string_lossy())))
+/// session (`scope`, its socket path), the panel `instance` (pane id or `local`,
+/// plus pid) and the file path: two panels editing one file keep two backups.
+pub fn backup_file(dir: &Path, scope: &str, instance: &str, file: &Path) -> PathBuf {
+    dir.join(format!("{}.json", crate::parse::lock_key(&format!("{scope}\0{instance}"), &file.to_string_lossy())))
 }
 
 /// Write `b`'s unsaved content atomically, owner-only (it may hold secrets).
-pub fn write_backup(dir: &Path, scope: &str, b: &Buffer) -> std::io::Result<()> {
+/// The record names its writer (`instance`, `pid`) so a running panel's is left alone.
+pub fn write_backup(dir: &Path, scope: &str, instance: &str, b: &Buffer) -> std::io::Result<()> {
     let (Some(mut rec), Some(path)) = (b.backup_record(), b.path.as_ref()) else { return Ok(()) };
     rec["scope"] = scope.into();
-    write_record(dir, &backup_file(dir, scope, path), &rec)
+    rec["instance"] = instance.into();
+    rec["pid"] = std::process::id().into();
+    write_record(dir, &backup_file(dir, scope, instance, path), &rec)
 }
 
 /// Write a backup record to `dst` in `dir`: temp file, fsync, rename; 0600 in a 0700 dir.
@@ -1086,13 +1089,36 @@ pub fn write_record(dir: &Path, dst: &Path, rec: &serde_json::Value) -> std::io:
     fs::rename(&tmp, dst)
 }
 
-pub fn read_backup(dir: &Path, scope: &str, file: &Path) -> Option<serde_json::Value> {
-    let v: serde_json::Value = serde_json::from_slice(&fs::read(backup_file(dir, scope, file)).ok()?).ok()?;
+/// The record in backup file `bak`, if it is one for `file`.
+pub fn read_backup(bak: &Path, file: &Path) -> Option<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_slice(&fs::read(bak).ok()?).ok()?;
     (v["path"].as_str() == Some(file.to_string_lossy().as_ref())).then_some(v)
 }
 
-pub fn remove_backup(dir: &Path, scope: &str, file: &Path) {
-    let _ = fs::remove_file(backup_file(dir, scope, file));
+/// Backups in `dir` no running panel owns, newest first: any session, any panel,
+/// and the older key formats too (found by content, so never renamed). A record
+/// is a running panel's while its `pid` lives under the command name `live`.
+// ponytail: pid + comm liveness; a dead panel's pid reused by another herdr-code
+// hides that backup until the other one exits. A per-panel flock if that bites.
+pub fn orphan_backups(dir: &Path, live: &str) -> Vec<(PathBuf, serde_json::Value)> {
+    let running = |v: &serde_json::Value| {
+        v["pid"].as_u64().is_some_and(|p| fs::read_to_string(format!("/proc/{p}/comm")).is_ok_and(|c| c.trim_end() == live))
+    };
+    let mut v: Vec<(PathBuf, serde_json::Value)> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter_map(|p| Some((p.clone(), serde_json::from_slice::<serde_json::Value>(&fs::read(&p).ok()?).ok()?)))
+        .filter(|(_, r)| r["path"].is_string() && !running(r))
+        .collect();
+    v.sort_by_key(|(p, r)| (std::cmp::Reverse(r["taken"].as_u64().unwrap_or(0)), p.clone()));
+    v
+}
+
+pub fn remove_backup(dir: &Path, scope: &str, instance: &str, file: &Path) {
+    let _ = fs::remove_file(backup_file(dir, scope, instance, file));
 }
 
 #[cfg(test)]
@@ -1114,13 +1140,16 @@ mod tests {
         let mut b = Buffer::open(&p);
         let mut v = View::default();
         b.insert(&mut v, "zero ");
-        write_backup(&bak, "s1", &b).unwrap();
-        assert_eq!(fs::metadata(backup_file(&bak, "s1", &p)).unwrap().permissions().mode() & 0o777, 0o600);
+        write_backup(&bak, "s1", "w1:p1-7", &b).unwrap();
+        let file = backup_file(&bak, "s1", "w1:p1-7", &p);
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(&bak).unwrap().permissions().mode() & 0o777, 0o700);
-        assert!(read_backup(&bak, "s2", &p).is_none(), "another session does not see it");
+        assert_ne!(file, backup_file(&bak, "s1", "w1:p2-8", &p), "another panel writes its own");
+        assert_ne!(file, backup_file(&bak, "s2", "w1:p1-7", &p), "and so does another session");
+        assert!(read_backup(&file, &d.join("other.txt")).is_none(), "a record for another file");
         // A fresh session: the file on disk is unchanged, the backup holds the edit.
         let mut b2 = Buffer::open(&p);
-        let rec = read_backup(&bak, "s1", &p).unwrap();
+        let rec = read_backup(&file, &p).unwrap();
         assert!(!Buffer::backup_is_stale(&rec, &p));
         let mut v2 = View::default();
         assert!(b2.restore_backup(&mut v2, &rec));
@@ -1131,8 +1160,30 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&p, "changed\n").unwrap();
         assert!(Buffer::backup_is_stale(&rec, &p));
-        remove_backup(&bak, "s1", &p);
-        assert!(read_backup(&bak, "s1", &p).is_none());
+        remove_backup(&bak, "s1", "w1:p1-7", &p);
+        assert!(read_backup(&file, &p).is_none());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A running panel's backup is its own; any other (dead pid, none: an older
+    /// format) is offered, newest first.
+    #[test]
+    fn only_backups_no_running_panel_owns_are_offered() {
+        let d = tmpdir("orphan");
+        let bak = d.join("backup");
+        fs::create_dir_all(&bak).unwrap();
+        let rec = |pid: Option<u32>, taken: u64| serde_json::json!({ "path": "/r/f.c", "text": "t", "pid": pid, "taken": taken });
+        let me = std::process::id();
+        for (name, r) in [("live", rec(Some(me), 30)), ("dead", rec(Some(u32::MAX), 10)), ("old", rec(None, 20))] {
+            fs::write(bak.join(format!("{name}.json")), r.to_string()).unwrap();
+        }
+        fs::write(bak.join("x.tmp"), "{}").unwrap();
+        let comm = fs::read_to_string("/proc/self/comm").unwrap();
+        let names = |live: &str| -> Vec<String> {
+            orphan_backups(&bak, live).iter().map(|(p, _)| p.file_stem().unwrap().to_string_lossy().into_owned()).collect()
+        };
+        assert_eq!(names(comm.trim_end()), ["old", "dead"], "our own pid is a running panel");
+        assert_eq!(names("herdr-code"), ["live", "old", "dead"], "a pid under another name is no panel");
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -1147,8 +1198,8 @@ mod tests {
         b.insert(&mut v, "mine ");
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&p, "agent\n").unwrap(); // an agent writes before the backup timer fires
-        write_backup(&bak, "s", &b).unwrap();
-        let rec = read_backup(&bak, "s", &p).unwrap();
+        write_backup(&bak, "s", "i", &b).unwrap();
+        let rec = read_backup(&backup_file(&bak, "s", "i", &p), &p).unwrap();
         assert!(Buffer::backup_is_stale(&rec, &p), "the backup is based on the old version");
         let mut b2 = Buffer::open(&p);
         let mut v2 = View::default();

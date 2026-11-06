@@ -89,9 +89,17 @@ pub fn folder_marks<'a>(files: impl IntoIterator<Item = (&'a str, char)>) -> Has
     dirs
 }
 
+#[cfg(test)]
+thread_local! {
+    /// git commands built on this thread, for "no git without a repo" tests.
+    pub static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// `git -C root`, with paths after `--` taken literally: a file named `*.txt`
 /// must never act as a glob for `clean`/`restore`/`add`.
 pub fn cmd(root: &Path) -> Command {
+    #[cfg(test)]
+    CALLS.with(|n| n.set(n.get() + 1));
     let mut c = Command::new("git");
     c.arg("--literal-pathspecs").arg("-C").arg(root).stdin(Stdio::null());
     c

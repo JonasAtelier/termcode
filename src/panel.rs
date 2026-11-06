@@ -35,6 +35,8 @@ const QDIFF_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const MAX_HITS: usize = 5_000;
 pub const MAX_GROUPS: usize = 3;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// /proc/<pid>/comm of a running panel: its backups are its own.
+const PANEL_COMM: &str = "herdr-code";
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Side {
@@ -110,8 +112,9 @@ pub enum PAct {
     DropClose(String),
     SaveAllQuit,
     QuitNoSave,
-    RestoreBackup(String),
-    DiscardBackup(String),
+    /// A document and the backup file chosen for it; the backup file to drop.
+    RestoreBackup(String, PathBuf),
+    DiscardBackup(PathBuf),
 }
 
 /// Set by SIGHUP/SIGTERM (herdr closing the pane sends HUP, then TERM, then KILL).
@@ -366,7 +369,14 @@ enum Load {
 }
 
 pub struct App {
+    /// The workspace root: Explorer, Search, Quick Open and document paths.
     pub root: PathBuf,
+    /// The git worktree holding the root (VS Code's parent-repo detection); None = no git.
+    pub git_root: Option<PathBuf>,
+    /// The root relative to git_root, "" or "sub/dir/": git paths under the root start with it.
+    prefix: String,
+    /// Launcher requests carry this (see `on_paste`); None = take none.
+    pub token: Option<String>,
     pub repo: String,
     pub branch: String,
     pub side: Side,
@@ -426,8 +436,10 @@ pub struct App {
     backed: HashMap<String, u64>,
     backup_due: Option<Instant>,
     backup_first: Option<Instant>,
-    /// herdr socket path: backups of other sessions on this worktree are not ours.
+    /// herdr socket path ("local" outside herdr) and this panel (pane id or
+    /// `local`, plus pid): the backups this panel writes and removes.
     backup_scope: String,
+    backup_instance: String,
     pub msg: String,
     pub quit: bool,
     pub ui: Hits,
@@ -451,13 +463,17 @@ pub struct App {
     qdiff_due: Option<Instant>,
 }
 
-pub fn run() -> Result<(), String> {
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let root = crate::repo_root(&cwd)
-        .ok_or_else(|| format!("{} is not inside a git repository", cwd.display()))?;
-    let mut app = App::new(root, Some(layout_path()));
+/// The TUI on this process's terminal for `root`, first opening `req`
+/// (`open:<path>:<line>:<col>`, see `request`). `tab`: the plugin's tab pane,
+/// which also takes requests from `herdr-code --tab FILE`; in place it does not.
+/// Every exit restores the terminal, so in place the shell gets it back.
+pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> {
+    let mut app = App::new(root, Some(crate::plugin_dir(true).join("layout.json")));
     app.settings_file = Some(settings::path());
     app.check_settings();
+    if let Some(req) = req {
+        app.request(&req);
+    }
     // herdr closes a pane with HUP, then TERM, then KILL 500 ms later: catch the
     // first two so unsaved edits are flushed to the backup directory in time.
     for sig in [libc::SIGHUP, libc::SIGTERM] {
@@ -467,6 +483,12 @@ pub fn run() -> Result<(), String> {
         }
     }
     setup().map_err(|e| e.to_string())?;
+    // Written once the terminal is raw, so a request never lands in cooked mode.
+    let token_file = match (std::env::var("HERDR_SOCKET_PATH"), std::env::var("HERDR_PANE_ID")) {
+        (Ok(socket), Ok(pane)) if tab => Some(crate::token_path(&socket, &pane)),
+        _ => None,
+    };
+    app.token = token_file.as_deref().and_then(|p| write_token(p).ok());
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore();
@@ -479,6 +501,9 @@ pub fn run() -> Result<(), String> {
     app.sync_backups();
     restore();
     app.stop_search();
+    if let Some(p) = token_file.filter(|_| app.token.is_some()) {
+        let _ = fs::remove_file(p);
+    }
     // Quitting just ends this process: herdr then closes the tab. Nothing here
     // signals or closes anything else.
     match res {
@@ -488,14 +513,7 @@ pub fn run() -> Result<(), String> {
 }
 
 fn setup() -> io::Result<()> {
-    terminal::enable_raw_mode()?;
-    execute!(
-        io::stdout(),
-        terminal::EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableFocusChange,
-        EnableBracketedPaste
-    )?;
+    setup_on(&mut io::stdout(), terminal::enable_raw_mode, terminal::disable_raw_mode)?;
     // Lets Ctrl+Shift chords through where the whole chain supports it; legacy otherwise.
     if terminal::supports_keyboard_enhancement().unwrap_or(false) {
         let _ = execute!(
@@ -506,24 +524,52 @@ fn setup() -> io::Result<()> {
     Ok(())
 }
 
-fn restore() {
-    let _ = execute!(
-        io::stdout(),
+/// Raw mode (`raw`), then the screen modes on `w`. If writing them fails, undo
+/// it all (`restore_seq`, then `cooked`) before the error goes up: a shell must
+/// never be left raw. This is the only early return between setup and the loop.
+fn setup_on<W: Write>(w: &mut W, raw: fn() -> io::Result<()>, cooked: fn() -> io::Result<()>) -> io::Result<()> {
+    raw()?;
+    let r = execute!(w, terminal::EnterAlternateScreen, EnableMouseCapture, EnableFocusChange, EnableBracketedPaste);
+    if r.is_err() {
+        let _ = restore_seq(w);
+        let _ = cooked();
+    }
+    r
+}
+
+/// Undo every mode `setup` turned on (raw mode aside), so a shell gets back
+/// the terminal it had.
+fn restore_seq(w: &mut impl Write) -> io::Result<()> {
+    execute!(
+        w,
         PopKeyboardEnhancementFlags,
         DisableBracketedPaste,
         DisableFocusChange,
         DisableMouseCapture,
         terminal::LeaveAlternateScreen,
         cursor::Show
-    );
+    )
+}
+
+fn restore() {
+    let _ = restore_seq(&mut io::stdout());
     let _ = terminal::disable_raw_mode();
 }
 
-fn layout_path() -> PathBuf {
-    std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state/herdr-code"))
-        .join("layout.json")
+/// A fresh random token in `path` (0600, written whole by a rename).
+fn write_token(path: &Path) -> io::Result<String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut b = [0u8; 16];
+    fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+    let token: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    if let Some(d) = path.parent() {
+        fs::create_dir_all(d)?;
+    }
+    let tmp = path.with_extension("tmp");
+    let _ = fs::remove_file(&tmp);
+    fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?.write_all(token.as_bytes())?;
+    fs::rename(&tmp, path)?;
+    Ok(token)
 }
 
 /// Put text on the system clipboard: wl-copy, then xclip, then OSC 52 (which
@@ -618,6 +664,13 @@ impl App {
         let (tx, rx) = mpsc::sync_channel(MAX_HITS + 1);
         let (load_tx, load_rx) = mpsc::channel();
         let repo = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let git_root = crate::repo_root(&root);
+        let prefix = git_root
+            .as_ref()
+            .and_then(|g| root.strip_prefix(g).ok())
+            .map(|p| p.to_string_lossy().into_owned())
+            .filter(|p| !p.is_empty())
+            .map_or(String::new(), |p| p + "/");
         let saved: serde_json::Value = layout_file
             .as_ref()
             .and_then(|p| fs::read(p).ok())
@@ -625,6 +678,9 @@ impl App {
             .unwrap_or_default();
         let mut a = App {
             root,
+            git_root,
+            prefix,
+            token: None,
             repo,
             branch: String::new(),
             side: Side::Explorer,
@@ -679,7 +735,14 @@ impl App {
             backed: HashMap::new(),
             backup_due: None,
             backup_first: None,
-            backup_scope: std::env::var("HERDR_SOCKET_PATH").unwrap_or_default(),
+            // Outside herdr (in place in a plain terminal) the session is "local".
+            backup_scope: std::env::var("HERDR_SOCKET_PATH").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "local".into()),
+            // The pid too: panels run one after another in one pane never share a file.
+            backup_instance: format!(
+                "{}-{}",
+                std::env::var("HERDR_PANE_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "local".into()),
+                std::process::id()
+            ),
             msg: String::new(),
             quit: false,
             ui: Hits::default(),
@@ -698,7 +761,6 @@ impl App {
             qdiff_due: None,
         };
         a.backup_dir = a.layout_file.as_ref().and_then(|p| p.parent()).map(|d| d.join("backup"));
-        a.migrate_backups();
         a.refresh();
         a.tree = a.read_dir("", 0);
         let pending = a.pending_backups();
@@ -706,39 +768,6 @@ impl App {
             a.msg = format!("{pending} file(s) have unsaved changes from a closed session; open one to restore");
         }
         a
-    }
-
-    /// Backups from before records carried a session `scope` are invisible to
-    /// every session. Move this worktree's under the current session's key,
-    /// once; one whose new name is taken stays where it is (never deleted).
-    fn migrate_backups(&self) {
-        let Some(dir) = &self.backup_dir else { return };
-        if !dir.is_dir() {
-            return;
-        }
-        // Two panels starting at once: one migrates, the other then finds nothing to do.
-        let Ok(_held) = crate::lock_wait(&dir.join(".migrate.lock"), Duration::from_secs(2)) else { return };
-        for e in fs::read_dir(dir).into_iter().flatten().flatten() {
-            let old = e.path();
-            if old.extension().and_then(|x| x.to_str()) != Some("json") {
-                continue;
-            }
-            let Some(mut rec) = fs::read(&old).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
-                continue;
-            };
-            let Some(file) = rec["path"].as_str().map(PathBuf::from) else { continue };
-            if rec.get("scope").is_some() || !file.starts_with(&self.root) {
-                continue;
-            }
-            let dst = editor::backup_file(dir, &self.backup_scope, &file);
-            // Move (rename) the record under this session's name, then add its scope
-            // in place; a crash in between is finished by the next start (dst == old).
-            if dst != old && (dst.exists() || fs::rename(&old, &dst).is_err()) {
-                continue;
-            }
-            rec["scope"] = self.backup_scope.clone().into();
-            let _ = editor::write_record(dir, &dst, &rec);
-        }
     }
 
     /// Reload settings.json when it (or VS Code's, when followed) changed on disk.
@@ -858,7 +887,8 @@ impl App {
             .collect();
         self.qdiff.retain(|k, _| keys.contains(k));
         for key in keys {
-            let rel = key["file:".len()..].to_string();
+            // No repo, or outside it: no base, no gutter marks, no git call.
+            let Some(rel) = self.repo_path(&key["file:".len()..]) else { continue };
             self.load(format!("base:{key}"), move |root| Load::Base(git::blob(&root, &format!(":0:{rel}"))));
         }
     }
@@ -1017,17 +1047,15 @@ impl App {
         }
     }
 
-    /// Backups left by an earlier session for files in this worktree.
+    /// Files under the root with a backup no running panel owns.
     fn pending_backups(&self) -> usize {
         let Some(dir) = &self.backup_dir else { return 0 };
-        fs::read_dir(dir)
+        let files: std::collections::HashSet<String> = editor::orphan_backups(dir, PANEL_COMM)
             .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| serde_json::from_slice::<serde_json::Value>(&fs::read(e.path()).ok()?).ok())
-            .filter(|v| v["scope"].as_str() == Some(self.backup_scope.as_str()))
-            .filter(|v| v["path"].as_str().is_some_and(|p| Path::new(p).starts_with(&self.root)))
-            .count()
+            .filter_map(|(_, v)| v["path"].as_str().map(String::from))
+            .filter(|p| Path::new(p).starts_with(&self.root))
+            .collect();
+        files.len()
     }
 
     /// Write backups for dirty buffers whose current version is not on disk yet;
@@ -1044,7 +1072,7 @@ impl App {
             }
             if b.dirty() {
                 seen.push(key.clone());
-                if self.backed.get(key) != Some(&b.version()) && editor::write_backup(&dir, &self.backup_scope, b).is_ok() {
+                if self.backed.get(key) != Some(&b.version()) && editor::write_backup(&dir, &self.backup_scope, &self.backup_instance, b).is_ok() {
                     self.backed.insert(key.clone(), b.version());
                 }
             }
@@ -1053,7 +1081,7 @@ impl App {
         for key in stale {
             self.backed.remove(&key);
             if let Some(rel) = key.strip_prefix("file:") {
-                editor::remove_backup(&dir, &self.backup_scope, &self.root.join(rel));
+                editor::remove_backup(&dir, &self.backup_scope, &self.backup_instance, &self.root.join(rel));
             }
         }
     }
@@ -1081,7 +1109,7 @@ impl App {
             return Ok(());
         }
         if let Some(dir) = &self.backup_dir {
-            editor::write_backup(dir, &self.backup_scope, b).map_err(|e| format!("backup before save failed: {e}"))?;
+            editor::write_backup(dir, &self.backup_scope, &self.backup_instance, b).map_err(|e| format!("backup before save failed: {e}"))?;
             self.backed.insert(key.to_string(), b.version());
         }
         let r = match self.docs.get_mut(key) {
@@ -1092,23 +1120,30 @@ impl App {
         r
     }
 
-    /// A file just opened has a backup from an earlier session: offer it.
+    /// A file just opened has backups no running panel owns (any session or
+    /// panel): offer the newest; the others wait for the next open.
     fn offer_restore(&mut self, key: &str) {
         let (Some(dir), Some(rel)) = (&self.backup_dir, key.strip_prefix("file:")) else { return };
         let path = self.root.join(rel);
-        let Some(rec) = editor::read_backup(dir, &self.backup_scope, &path) else { return };
+        let mine = path.to_string_lossy();
+        let found: Vec<(PathBuf, serde_json::Value)> =
+            editor::orphan_backups(dir, PANEL_COMM).into_iter().filter(|(_, v)| v["path"].as_str() == Some(&mine)).collect();
+        let Some((file, rec)) = found.first().cloned() else { return };
         let mut text = vec![
             format!("{} has unsaved changes from a closed session.", rel),
             "Restore them into the editor, or discard the backup?".into(),
         ];
+        if found.len() > 1 {
+            text.push(format!("{} backups found: this is the newest.", found.len()));
+        }
         if Buffer::backup_is_stale(&rec, &path) {
             text.push("The file changed on disk after the backup was taken.".into());
         }
         self.prompt = Some(Prompt {
             text,
             buttons: vec![
-                ("Restore".into(), PAct::RestoreBackup(key.to_string())),
-                ("Discard Backup".into(), PAct::DiscardBackup(key.to_string())),
+                ("Restore".into(), PAct::RestoreBackup(key.to_string(), file.clone())),
+                ("Discard Backup".into(), PAct::DiscardBackup(file)),
             ],
             sel: 0,
         });
@@ -1152,7 +1187,7 @@ impl App {
                 }
                 Event::Mouse(m) => self.on_mouse(m),
                 Event::Paste(s) => {
-                    self.paste_text(&s);
+                    self.on_paste(&s);
                     self.schedule_backup();
                     true
                 }
@@ -1171,9 +1206,25 @@ impl App {
 
     // ---- git / filesystem ------------------------------------------------------
 
+    /// `git args` in the repo; None without one (and then git is not run at all).
     fn git(&self, args: &[&str]) -> Option<Vec<u8>> {
-        let o = git::cmd(&self.root).args(args).stderr(Stdio::null()).output().ok()?;
+        let o = git::cmd(self.git_root.as_ref()?).args(args).stderr(Stdio::null()).output().ok()?;
         o.status.success().then_some(o.stdout)
+    }
+
+    /// A repo path (git status, SCM rows) as a document path: relative under the root, else absolute.
+    pub fn doc_path(&self, repo_rel: &str) -> String {
+        match (repo_rel.strip_prefix(&self.prefix), &self.git_root) {
+            (Some(r), _) => r.to_string(),
+            (None, Some(g)) => g.join(repo_rel).to_string_lossy().into_owned(),
+            (None, None) => repo_rel.to_string(),
+        }
+    }
+
+    /// A document path (relative to the root, or absolute) as a repo path; None outside the repo.
+    pub fn repo_path(&self, rel: &str) -> Option<String> {
+        let g = self.git_root.as_ref()?;
+        Some(self.root.join(rel).strip_prefix(g).ok()?.to_string_lossy().into_owned())
     }
 
     fn git_line(&self, args: &[&str]) -> String {
@@ -1183,7 +1234,7 @@ impl App {
     /// Re-read git status, decorations, and the disk state of open files.
     pub fn refresh(&mut self) {
         let b = self.git_line(&["branch", "--show-current"]);
-        self.branch = if !b.is_empty() {
+        self.branch = if !b.is_empty() || self.git_root.is_none() {
             b
         } else {
             match self.git_line(&["rev-parse", "--short", "HEAD"]) {
@@ -1195,7 +1246,12 @@ impl App {
         self.status = parse::parse_porcelain_z(&raw);
         let (staged, changes) = git::split(&self.status);
         self.scm_files = staged.into_iter().chain(changes).collect();
-        self.marks = self.status.iter().filter_map(|e| Some((e.path.clone(), git::decoration(e)?))).collect();
+        // The Explorer shows the root: its files' marks, relative to it.
+        self.marks = self
+            .status
+            .iter()
+            .filter_map(|e| Some((e.path.strip_prefix(&self.prefix)?.to_string(), git::decoration(e)?)))
+            .collect();
         self.dirty_dirs = git::folder_marks(self.marks.iter().map(|(p, c)| (p.as_str(), *c)));
         let mut notes = Vec::new();
         for (key, doc) in self.docs.iter_mut() {
@@ -1294,7 +1350,8 @@ impl App {
         let n = format!("-n{PAGE}");
         let skip = format!("--skip={}", self.commits.len());
         let mut args = vec!["log", "--format=%H%x1f%h%x1f%an%x1f%ar%x1f%s", &n, &skip];
-        if let Some(p) = &self.history_path {
+        let path = self.history_path.as_deref().and_then(|p| self.repo_path(p));
+        if let Some(p) = &path {
             args.extend(["--follow", "--", p]);
         }
         let out = self.git(&args).unwrap_or_default();
@@ -1463,7 +1520,8 @@ impl App {
         self.load_gen += 1;
         let gen = self.load_gen;
         self.loading.insert(key.clone(), gen);
-        let (tx, root) = (self.load_tx.clone(), self.root.clone());
+        // Every job is git's: it runs in the repo.
+        let (tx, root) = (self.load_tx.clone(), self.git_root.clone().unwrap_or_else(|| self.root.clone()));
         std::thread::spawn(move || {
             let r = job(root);
             let _ = tx.send((key, gen, r));
@@ -1748,7 +1806,8 @@ impl App {
         match act {
             PAct::Cancel => {}
             PAct::Discard(files) => {
-                self.msg = match git::discard(&self.root, &files) {
+                let Some(g) = self.git_root.clone() else { return };
+                self.msg = match git::discard(&g, &files) {
                     Ok(_) => format!("discarded {} file(s)", files.len()),
                     Err(e) => e,
                 };
@@ -1790,11 +1849,8 @@ impl App {
                 self.sync_backups();
                 self.quit = true;
             }
-            PAct::RestoreBackup(key) => {
-                let rec = key
-                    .strip_prefix("file:")
-                    .zip(self.backup_dir.as_ref())
-                    .and_then(|(rel, dir)| editor::read_backup(dir, &self.backup_scope, &self.root.join(rel)));
+            PAct::RestoreBackup(key, file) => {
+                let rec = key.strip_prefix("file:").and_then(|rel| editor::read_backup(&file, &self.root.join(rel)));
                 let restored = match (rec, self.tab_of(&key)) {
                     (Some(rec), Some((g, i))) => {
                         let tab = &mut self.groups[g].tabs[i];
@@ -1812,11 +1868,17 @@ impl App {
                     format!("could not restore {} (backup kept)", base(&key))
                 };
                 self.sync_backups();
-            }
-            PAct::DiscardBackup(key) => {
-                if let (Some(dir), Some(rel)) = (&self.backup_dir, key.strip_prefix("file:")) {
-                    editor::remove_backup(dir, &self.backup_scope, &self.root.join(rel));
+                // Our own backup now holds the restored text: retire the chosen one,
+                // unless it is that very file or ours could not be written.
+                let ours = key.strip_prefix("file:").zip(self.backup_dir.as_ref()).map(|(rel, dir)| {
+                    editor::backup_file(dir, &self.backup_scope, &self.backup_instance, &self.root.join(rel))
+                });
+                if restored && self.backed.contains_key(&key) && ours.as_ref() != Some(&file) {
+                    let _ = fs::remove_file(&file);
                 }
+            }
+            PAct::DiscardBackup(file) => {
+                let _ = fs::remove_file(&file);
             }
         }
     }
@@ -2006,21 +2068,22 @@ impl App {
     }
 
     pub fn scm_action(&mut self, a: ScmAct) {
+        let Some(g) = self.git_root.clone() else { return };
         let one = |i: usize| self.scm_files.get(i).cloned().into_iter().collect::<Vec<_>>();
         let res = match a {
             ScmAct::OpenFile(i) => {
                 if let Some(f) = self.scm_files.get(i).cloned() {
-                    self.open_file(self.ag, &f.path, false);
+                    self.open_file(self.ag, &self.doc_path(&f.path), false);
                     self.focus = Focus::Editor;
                 }
                 return;
             }
             ScmAct::Discard(i) => return self.confirm_discard(one(i)),
             ScmAct::DiscardAll => return self.confirm_discard(self.section_files(Section::Changes)),
-            ScmAct::Stage(i) => git::stage(&self.root, &one(i)),
-            ScmAct::Unstage(i) => git::unstage(&self.root, &one(i)),
-            ScmAct::StageAll => git::stage(&self.root, &self.section_files(Section::Changes)),
-            ScmAct::UnstageAll => git::unstage(&self.root, &self.section_files(Section::Staged)),
+            ScmAct::Stage(i) => git::stage(&g, &one(i)),
+            ScmAct::Unstage(i) => git::unstage(&g, &one(i)),
+            ScmAct::StageAll => git::stage(&g, &self.section_files(Section::Changes)),
+            ScmAct::UnstageAll => git::unstage(&g, &self.section_files(Section::Staged)),
         };
         if let Err(e) = res {
             self.msg = e;
@@ -2029,6 +2092,7 @@ impl App {
     }
 
     pub fn commit(&mut self) {
+        let Some(g) = self.git_root.clone() else { return };
         let msg = self.commit_msg.trim().to_string();
         if !self.scm_files.iter().any(|f| f.section == Section::Staged) {
             self.msg = "No staged changes".into();
@@ -2036,7 +2100,7 @@ impl App {
             self.msg = "Enter a commit message first".into();
             self.focus = Focus::CommitInput;
         } else {
-            match git::commit(&self.root, &msg) {
+            match git::commit(&g, &msg) {
                 Ok(_) => {
                     self.msg = format!("committed: {}", msg.lines().next().unwrap_or(""));
                     self.commit_msg.clear();
@@ -2076,7 +2140,7 @@ impl App {
         self.focus = match s {
             Side::Search if input => Focus::SearchInput,
             // Like VS Code, opening Source Control puts the caret in the message box.
-            Side::Scm => Focus::CommitInput,
+            Side::Scm if self.git_root.is_some() => Focus::CommitInput,
             _ => Focus::Side,
         };
         self.refresh();
@@ -2193,7 +2257,12 @@ impl App {
 
     fn open_quick(&mut self) {
         if self.files.is_empty() {
-            let out = self.git(&["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).unwrap_or_default();
+            // From the root, ls-files lists only what is under it, relative to it.
+            let out = match self.git_root {
+                Some(_) => git::cmd(&self.root).args(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).stderr(Stdio::null()).output(),
+                None => Command::new("rg").args(["--files", "--null"]).current_dir(&self.root).stdin(Stdio::null()).stderr(Stdio::null()).output(),
+            };
+            let out = out.ok().filter(|o| o.status.success()).map(|o| o.stdout).unwrap_or_default();
             self.files = out
                 .split(|&b| b == 0)
                 .filter(|f| !f.is_empty())
@@ -2346,7 +2415,7 @@ impl App {
                 self.run_prompt(act);
             }
             // A restore offer must be answered: editing on would overwrite the old backup.
-            KeyCode::Esc if !p.buttons.iter().any(|b| matches!(b.1, PAct::RestoreBackup(_))) => self.prompt = None,
+            KeyCode::Esc if !p.buttons.iter().any(|b| matches!(b.1, PAct::RestoreBackup(..))) => self.prompt = None,
             _ => {}
         }
     }
@@ -2594,6 +2663,56 @@ impl App {
         self.msg = format!("{} via {how}", if cut { "cut" } else { "copied" });
         self.reveal();
         self.find_refresh();
+    }
+
+    /// A bracketed paste: a launcher request when it starts with
+    /// `herdr-code:<our token>:` (never inserted anywhere), else ordinary text.
+    pub fn on_paste(&mut self, s: &str) {
+        let req = self.token.as_deref().and_then(|t| s.strip_prefix("herdr-code:")?.strip_prefix(t)?.strip_prefix(':'));
+        match req {
+            Some(body) => self.request(body),
+            None => self.paste_text(s),
+        }
+    }
+
+    /// A launcher request, `open:<abs path>:<line>:<col>`: open that file pinned,
+    /// cursor at line:col (from 1, col in characters). Anything else is refused.
+    pub fn request(&mut self, body: &str) {
+        match self.parse_request(body) {
+            Ok((rel, line, col)) => {
+                self.quick = None;
+                self.open_file(self.ag, &rel, false);
+                if let Some((b, tab)) = self.ed() {
+                    let l = line.saturating_sub(1).min(b.lines.len() - 1);
+                    let c = b.lines[l].char_indices().nth(col.saturating_sub(1)).map_or(b.lines[l].len(), |(i, _)| i);
+                    tab.view.cursor = Pos::new(l, c);
+                    tab.view.anchor = None;
+                    tab.view.scroll = l.saturating_sub(5);
+                }
+                self.reveal();
+                self.focus = Focus::Editor;
+                self.msg = format!("opened {rel}:{line}");
+            }
+            Err(e) => self.msg = format!("request refused: {e}"),
+        }
+    }
+
+    /// (path relative to the root, line, col) of a valid `open:` request.
+    fn parse_request(&self, body: &str) -> Result<(String, usize, usize), String> {
+        let bad = || format!("{body:?}");
+        let rest = body.strip_prefix("open:").ok_or_else(bad)?;
+        let (rest, col) = rest.rsplit_once(':').ok_or_else(bad)?;
+        let (path, line) = rest.rsplit_once(':').ok_or_else(bad)?;
+        let (line, col) = line.parse::<usize>().ok().zip(col.parse::<usize>().ok()).ok_or_else(bad)?;
+        if !Path::new(path).is_absolute() {
+            return Err(bad());
+        }
+        let p = fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?;
+        let rel = p.strip_prefix(&self.root).map_err(|_| format!("{path} is outside {}", self.root.display()))?;
+        if !fs::metadata(&p).is_ok_and(|m| m.is_file()) {
+            return Err(format!("{path} is not a regular file"));
+        }
+        Ok((rel.to_string_lossy().into_owned(), line, col))
     }
 
     /// Bracketed paste or Ctrl+V: into the focused input or the editor.
@@ -3204,7 +3323,7 @@ mod tests {
         app.focus = Focus::Editor;
         typ(&mut app, "unsaved ");
         app.sync_backups(); // what HUP/TERM/panic and the 1 s timer do
-        let bak = editor::backup_file(&state.join("backup"), &app.backup_scope, &root.join("README.md"));
+        let bak = editor::backup_file(&state.join("backup"), &app.backup_scope, &app.backup_instance, &root.join("README.md"));
         assert!(bak.exists());
         drop(app); // the panel dies without saving
 
@@ -3246,7 +3365,7 @@ mod tests {
         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert!(app.msg.contains("save failed"), "{}", app.msg);
         assert!(app.ed().unwrap().0.dirty());
-        let bak = editor::backup_file(&state.join("backup"), &app.backup_scope, &root.join("README.md"));
+        let bak = editor::backup_file(&state.join("backup"), &app.backup_scope, &app.backup_instance, &root.join("README.md"));
         let rec: serde_json::Value = serde_json::from_slice(&fs::read(&bak).unwrap()).unwrap();
         assert_eq!(rec["text"], "xhello");
         key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
@@ -3628,7 +3747,7 @@ mod tests {
                     draw(&mut app);
                     app.prompt = Some(Prompt {
                         text: vec!["README.md has unsaved changes from a closed session.".into(), "Restore them?".into()],
-                        buttons: vec![("Restore".into(), PAct::RestoreBackup("file:README.md".into())), ("Discard Backup".into(), PAct::Cancel)],
+                        buttons: vec![("Restore".into(), PAct::RestoreBackup("file:README.md".into(), PathBuf::new())), ("Discard Backup".into(), PAct::Cancel)],
                         sel: 0,
                     });
                     draw(&mut app);
@@ -3981,24 +4100,77 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Records from the older key formats (no session; a session but no panel) are
+    /// found by content and never renamed, so every start leaves them as they are.
+    /// The newest is offered, and only the chosen one goes.
     #[test]
-    fn old_backups_without_a_session_move_under_this_one() {
+    fn old_backup_formats_are_found_in_place() {
         let root = repo("migrate");
         let state = root.join(".state");
         let bak = state.join("backup");
         fs::create_dir_all(&bak).unwrap();
         let readme = root.join("README.md");
-        let rec = serde_json::json!({ "path": readme, "text": "old edit", "crlf": false, "final_newline": true });
-        fs::write(bak.join("legacy.json"), rec.to_string()).unwrap();
-        let other = serde_json::json!({ "path": "/elsewhere/x.txt", "text": "y" });
-        fs::write(bak.join("other.json"), other.to_string()).unwrap();
-        let app = App::new(root.clone(), Some(state.join("layout.json")));
-        let moved = editor::backup_file(&bak, &app.backup_scope, &readme);
-        assert!(moved.exists() && !bak.join("legacy.json").exists());
-        let v: serde_json::Value = serde_json::from_slice(&fs::read(&moved).unwrap()).unwrap();
-        assert_eq!((v["scope"].as_str(), v["text"].as_str()), (Some(app.backup_scope.as_str()), Some("old edit")));
+        let rec = |text: &str, taken: u64| serde_json::json!({ "path": readme, "text": text, "crlf": false, "final_newline": true, "taken": taken });
+        fs::write(bak.join("legacy.json"), rec("legacy edit", 1).to_string()).unwrap();
+        let mut scoped = rec("scoped edit", 2);
+        scoped["scope"] = "/old/socket".into();
+        fs::write(bak.join("scoped.json"), scoped.to_string()).unwrap();
+        fs::write(bak.join("other.json"), serde_json::json!({ "path": "/elsewhere/x.txt", "text": "y" }).to_string()).unwrap();
+        let listing = || {
+            let mut v: Vec<_> = fs::read_dir(&bak).unwrap().map(|e| e.unwrap().file_name()).collect();
+            v.sort();
+            v
+        };
+        let before = listing();
+        for _ in 0..2 {
+            let app = App::new(root.clone(), Some(state.join("layout.json")));
+            assert!(app.msg.contains("1 file(s)"), "{}", app.msg);
+        }
+        assert_eq!(listing(), before, "a start renames nothing");
+        let mut app = App::new(root.clone(), Some(state.join("layout.json")));
+        app.open_file(0, "README.md", false);
+        let p = app.prompt.as_ref().expect("restore offer");
+        assert!(p.text.iter().any(|t| t == "2 backups found: this is the newest."), "{:?}", p.text);
+        let discard = p.buttons[1].1.clone();
+        app.run_prompt(discard);
+        assert!(!bak.join("scoped.json").exists() && bak.join("legacy.json").exists(), "only the chosen one");
+        // The next open offers the one left, alone; restoring retires it into ours.
+        let mut app = App::new(root.clone(), Some(state.join("layout.json")));
+        app.open_file(0, "README.md", false);
+        let p = app.prompt.as_ref().expect("restore offer");
+        assert!(!p.text.iter().any(|t| t.contains("backups found")), "{:?}", p.text);
+        let restore = p.buttons[0].1.clone();
+        app.run_prompt(restore);
+        assert!(app.ed().unwrap().0.text().starts_with("legacy edit"));
+        assert!(!bak.join("legacy.json").exists());
+        assert!(editor::backup_file(&bak, &app.backup_scope, &app.backup_instance, &readme).exists());
         assert!(bak.join("other.json").exists(), "another worktree's backup is left alone");
-        assert!(app.msg.contains("1 file(s)"), "{}", app.msg);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn two_panels_editing_one_file_keep_two_backups() {
+        let root = repo("twopanes");
+        let state = root.join(".state");
+        let (mut a, mut b) = (App::new(root.clone(), Some(state.join("layout.json"))), App::new(root.clone(), Some(state.join("layout.json"))));
+        a.backup_instance = "w1:p1-101".into();
+        b.backup_instance = "w1:p2-102".into();
+        // Both open the clean file, then both edit it.
+        a.open_file(0, "README.md", false);
+        b.open_file(0, "README.md", false);
+        for (app, t) in [(&mut a, "from a "), (&mut b, "from b ")] {
+            app.focus = Focus::Editor;
+            typ(app, t);
+            app.sync_backups();
+        }
+        let file = |app: &App| editor::backup_file(&state.join("backup"), &app.backup_scope, &app.backup_instance, &root.join("README.md"));
+        let (fa, fb) = (file(&a), file(&b));
+        assert!(fa != fb && fa.exists() && fb.exists());
+        // b saves: only b's backup goes; a's edits stay backed up.
+        key(&mut b, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(!fb.exists() && fa.exists());
+        let rec: serde_json::Value = serde_json::from_slice(&fs::read(&fa).unwrap()).unwrap();
+        assert_eq!((rec["text"].as_str(), rec["instance"].as_str()), (Some("from a hello"), Some("w1:p1-101")));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4071,5 +4243,173 @@ mod tests {
         assert_eq!(app.hits.len(), MAX_HITS);
         assert!(app.msg.contains("search stopped"), "{}", app.msg);
         fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    /// A write failing after raw mode is on still hands the shell a cooked terminal.
+    #[test]
+    fn a_failed_setup_restores_the_terminal() {
+        static RAW: AtomicBool = AtomicBool::new(false);
+        fn raw() -> io::Result<()> {
+            RAW.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        fn cooked() -> io::Result<()> {
+            RAW.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+        /// Fails its first write (the alt-screen switch), then takes the rest.
+        struct FailOnce(Vec<u8>, bool);
+        impl Write for FailOnce {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                if !self.1 {
+                    self.1 = true;
+                    return Err(io::Error::other("EIO"));
+                }
+                self.0.extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut w = FailOnce(Vec::new(), false);
+        assert!(setup_on(&mut w, raw, cooked).is_err());
+        assert!(!RAW.load(Ordering::SeqCst), "raw mode undone");
+        let s = String::from_utf8(w.0).unwrap();
+        assert!(s.contains("\x1b[?1049l") && s.contains("\x1b[?1000l") && s.contains("\x1b[?25h"), "{s:?}");
+        let mut ok = Vec::new();
+        setup_on(&mut ok, raw, cooked).unwrap();
+        assert!(RAW.load(Ordering::SeqCst) && String::from_utf8(ok).unwrap().contains("\x1b[?1049h"));
+    }
+
+    /// Quitting in place hands the shell its terminal back: every mode `setup` set is undone.
+    #[test]
+    fn quit_restores_the_terminal() {
+        let mut v = Vec::new();
+        restore_seq(&mut v).unwrap();
+        let s = String::from_utf8(v).unwrap();
+        for (seq, what) in [
+            ("\x1b[<1u", "keyboard enhancement popped"),
+            ("\x1b[?2004l", "bracketed paste off"),
+            ("\x1b[?1004l", "focus events off"),
+            ("\x1b[?1000l", "mouse capture off"),
+            ("\x1b[?1006l", "SGR mouse off"),
+            ("\x1b[?1049l", "main screen back"),
+            ("\x1b[?25h", "cursor shown"),
+        ] {
+            assert!(s.contains(seq), "{what}: {s:?}");
+        }
+    }
+
+    fn text(app: &App, key: &str) -> String {
+        match app.docs.get(key) {
+            Some(Doc::Text(b)) => b.lines.join("\n"),
+            _ => panic!("{key} is not open"),
+        }
+    }
+
+    #[test]
+    fn a_subfolder_root_maps_paths_to_its_repo() {
+        let root = repo("ws");
+        fs::write(root.join("README.md"), "changed\n").unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let mut app = App::new(root.join("src"), None);
+        assert_eq!((app.git_root.as_deref(), app.prefix.as_str(), app.repo.as_str()), (Some(root.as_path()), "src/", "src"));
+        // Source Control lists the whole repo; the Explorer marks what is under the root.
+        let scm: Vec<&str> = app.scm_files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(scm, ["README.md", "src/main.rs"]);
+        assert_eq!(app.marks, HashMap::from([("main.rs".to_string(), 'M')]));
+        let readme = root.join("README.md").to_string_lossy().into_owned();
+        assert_eq!(app.doc_path("src/main.rs"), "main.rs");
+        assert_eq!(app.doc_path("README.md"), readme, "outside the root: absolute");
+        assert_eq!(app.repo_path("main.rs").as_deref(), Some("src/main.rs"));
+        assert_eq!(app.repo_path(&readme).as_deref(), Some("README.md"));
+        assert_eq!(app.repo_path("/elsewhere/x"), None);
+        // SCM rows open as documents; their quick diff is against the repo's index.
+        app.scm_action(ScmAct::OpenFile(1));
+        app.scm_action(ScmAct::OpenFile(0));
+        let keys: Vec<String> = app.groups[0].tabs.iter().map(|t| t.key.clone()).collect();
+        assert_eq!(keys, ["file:main.rs".to_string(), format!("file:{readme}")]);
+        wait(&mut app);
+        app.update_qdiff();
+        for k in &keys {
+            assert!(app.qdiff[k].marks.iter().any(Option::is_some), "{k}: changed against the index");
+        }
+        // An Explorer file's history follows its repo path.
+        app.history_path = Some("main.rs".into());
+        app.load_history(true);
+        assert_eq!(app.commits.len(), 1);
+        // Staging from a subfolder root stages the repo path.
+        app.scm_action(ScmAct::Stage(1));
+        assert!(app.scm_files.iter().any(|f| f.section == Section::Staged && f.path == "src/main.rs"), "{:?}", app.scm_files);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_folder_without_git_has_no_scm_and_runs_no_git() {
+        let d = std::env::temp_dir().join(format!("herdr-code-nogit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("sub")).unwrap();
+        fs::write(d.join("sub/a.txt"), "alpha\nbeta\n").unwrap();
+        let d = d.canonicalize().unwrap();
+        let mut app = App::new(d.clone(), None);
+        assert_eq!(app.git_root, None);
+        let before = git::CALLS.with(|n| n.get());
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        assert!(screen(&mut app, &mut t).contains("sub"));
+        app.open_file(0, "sub/a.txt", false);
+        app.refresh();
+        app.show_side(Side::Scm, false);
+        assert_eq!(app.focus, Focus::Side, "no commit box to type into");
+        let s = screen(&mut app, &mut t);
+        assert!(s.contains("The folder currently open") && s.contains("git repository."), "{s}");
+        assert!(!s.contains("Commit") && !s.contains("Changes"), "{s}");
+        app.show_side(Side::History, false);
+        app.open_quick();
+        assert_eq!(app.quick.as_ref().unwrap().items, ["sub/a.txt"]);
+        app.quick = None;
+        screen(&mut app, &mut t);
+        assert_eq!(git::CALLS.with(|n| n.get()), before, "no git command at all");
+        assert!(app.loading.is_empty() && app.qdiff.is_empty() && app.branch.is_empty());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn launcher_requests_open_files_and_other_pastes_insert() {
+        let root = repo("req");
+        let mut app = App::new(root.clone(), None);
+        app.token = Some("t0k".into());
+        let main = root.join("src/main.rs");
+        let req = |p: &Path, rest: &str| format!("herdr-code:t0k:open:{}{rest}", p.display());
+        // A request opens the file pinned at line:col (col in characters); nothing is inserted.
+        app.on_paste(&req(&main, ":2:5"));
+        let tab = &app.groups[0].tabs[app.groups[0].active];
+        assert_eq!((tab.key.as_str(), tab.preview, tab.view.cursor), ("file:src/main.rs", false, Pos::new(1, 4)));
+        assert_eq!(app.focus, Focus::Editor);
+        let clean = "fn main() {\n    println!(\"needle\");\n}";
+        assert!(text(&app, "file:src/main.rs").starts_with(clean));
+        // Refused, never inserted: outside the root, not a regular file, bad numbers, a relative path.
+        let out = std::env::temp_dir().join(format!("herdr-code-req-out-{}", std::process::id()));
+        fs::write(&out, "x").unwrap();
+        let bad = [
+            (req(&out, ":1:1"), "outside"),
+            (req(&root.join("src"), ":1:1"), "not a regular file"),
+            (req(&main, ":x:1"), "open:"),
+            (req(&main, ":1"), "open:"),
+            ("herdr-code:t0k:open:src/main.rs:1:1".into(), "open:"),
+            ("herdr-code:t0k:shell:true".into(), "shell"),
+        ];
+        for (body, why) in bad {
+            app.on_paste(&body);
+            assert!(app.msg.starts_with("request refused") && app.msg.contains(why), "{body}: {}", app.msg);
+        }
+        assert_eq!(app.groups[0].tabs.len(), 1);
+        assert!(text(&app, "file:src/main.rs").starts_with(clean));
+        // Another token is no request, and any other paste is ordinary text.
+        app.on_paste("herdr-code:bad:open:/x:1:1");
+        app.on_paste("hi");
+        assert!(text(&app, "file:src/main.rs").contains("    herdr-code:bad:open:/x:1:1hiprintln!"));
+        fs::remove_file(&out).unwrap();
+        fs::remove_dir_all(&root).unwrap();
     }
 }

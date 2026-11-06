@@ -1,8 +1,9 @@
-//! herdr-code: a VS Code-like editor and git panel for the caller's repo or
-//! worktree, as a tab in the caller's herdr workspace.
+//! herdr-code: a VS Code-like editor and git panel for a folder, file or repo,
+//! in the caller's terminal (like vim) or as a tab in the caller's herdr workspace.
 //!
-//!   herdr-code         launcher: a shell in a herdr pane, or the plugin action
-//!   herdr-code panel   the TUI, the plugin's `[[panes]]` entrypoint
+//!   herdr-code [PATH[:LINE[:COL]]]         the TUI in this terminal; quit returns to the shell
+//!   herdr-code --tab [PATH[:LINE[:COL]]]   launcher: a Code tab (also the plugin action)
+//!   herdr-code panel                       the TUI, the plugin's `[[panes]]` entrypoint
 
 mod decor;
 mod diff;
@@ -20,6 +21,7 @@ mod ui;
 use serde_json::Value;
 use std::env;
 use std::fs;
+use std::io::IsTerminal;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -28,19 +30,78 @@ use std::time::{Duration, Instant};
 const PLUGIN_ID: &str = "jonas.herdr-code";
 /// herdr labels a plugin pane with its `[[panes]]` title.
 const PANE_LABEL: &str = "Code";
-const USAGE: &str = "usage: herdr-code | herdr-code panel";
+const USAGE: &str = "usage: herdr-code [--tab] [PATH[:LINE[:COL]]]
+
+Open PATH like `code PATH`, in this terminal; quitting returns to the shell.
+  FOLDER        the workspace root (Explorer, Search, Quick Open); git from its repo
+  FILE[:L[:C]]  open it at line L, column C; the root is its git repo (else its folder)
+  (no PATH)     this folder's git repo, or the folder
+  --tab         in a 'Code: <name>' tab of this herdr workspace instead (reused if open);
+                also used when there is no terminal
+Relative paths resolve against this folder.
+(`herdr-code panel` is the plugin's pane entrypoint.)";
+
+#[derive(Debug, PartialEq)]
+enum Cmd {
+    Help,
+    Panel,
+    Open { tab: bool, path: Option<String> },
+}
+
+fn parse_args(args: &[String]) -> Result<Cmd, String> {
+    if let [a] = args {
+        if a == "panel" {
+            return Ok(Cmd::Panel);
+        }
+    }
+    let (mut tab, mut path) = (false, None);
+    for a in args {
+        match a.as_str() {
+            "-h" | "--help" => return Ok(Cmd::Help),
+            "--tab" => tab = true,
+            s if s.starts_with('-') => return Err(format!("unknown option {s:?} (a path starting with '-' needs ./)\n{USAGE}")),
+            s if path.is_none() => path = Some(s.to_string()),
+            s => return Err(format!("unexpected argument {s:?}\n{USAGE}")),
+        }
+    }
+    Ok(Cmd::Open { tab, path })
+}
+
+/// (tab mode, note): in place needs a terminal on stdin and stdout; without one
+/// (a plugin action, a pipe) a tab opens instead.
+fn mode(tab: bool, tty: bool) -> (bool, Option<&'static str>) {
+    if !tab && !tty {
+        return (true, Some("no terminal here: opening a Code tab instead"));
+    }
+    (tab, None)
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let result = match args.first().map(String::as_str) {
-        None => launch(),
-        Some("panel") => panel::run(),
-        Some("-h" | "--help") => {
+    let result = parse_args(&args).and_then(|cmd| match cmd {
+        Cmd::Help => {
             println!("{USAGE}");
             Ok(())
         }
-        Some(other) => Err(format!("unknown argument {other:?}\n{USAGE}")),
-    };
+        // The launcher opens the pane with the workspace root as its cwd.
+        Cmd::Panel => env::current_dir()
+            .and_then(fs::canonicalize)
+            .map_err(|e| e.to_string())
+            .and_then(|root| panel::run(root, env::var("HERDR_CODE_OPEN").ok(), true)),
+        Cmd::Open { tab, path } => match mode(tab, std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+            (true, note) => {
+                if let Some(n) = note {
+                    eprintln!("herdr-code: {n}");
+                }
+                launch(path.as_deref())
+            }
+            (false, _) => {
+                let cwd = env::current_dir().map_err(|e| e.to_string())?;
+                let (root, file) = target(path.as_deref(), &cwd)?;
+                panel::run(root, file.map(|(p, l, c)| format!("open:{}:{l}:{c}", p.display())), false)
+            }
+        },
+    });
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -100,6 +161,83 @@ fn lock_path(scope: &str, root: &Path) -> PathBuf {
     base.join("herdr-code").join(format!("launch-{key}.lock"))
 }
 
+/// Our plugin directory, config or state: herdr's `HERDR_PLUGIN_CONFIG_DIR` /
+/// `HERDR_PLUGIN_STATE_DIR` in a plugin pane; elsewhere (in place, a shell, outside
+/// herdr) the same path herdr 0.9.1 hands us (`plugin_paths.rs`, `config/io.rs`), so
+/// settings, layout and backups are one set in every mode.
+pub fn plugin_dir(state: bool) -> PathBuf {
+    plugin_dir_from(state, |k| env::var(k).ok())
+}
+
+fn plugin_dir_from(state: bool, var: impl Fn(&str) -> Option<String>) -> PathBuf {
+    let (ours, xdg, home_rel, sub) = if state {
+        ("HERDR_PLUGIN_STATE_DIR", "XDG_STATE_HOME", ".local/state", "plugins")
+    } else {
+        ("HERDR_PLUGIN_CONFIG_DIR", "XDG_CONFIG_HOME", ".config", "plugins/config")
+    };
+    // Only absolute bases: an empty or relative XDG_* is unset (the XDG spec),
+    // so nothing lands in ./herdr/ under whatever folder the panel runs in.
+    let abs = |k: &str| var(k).filter(|d| Path::new(d).is_absolute());
+    if let Some(d) = abs(ours) {
+        return PathBuf::from(d);
+    }
+    let base = match (abs(xdg), abs("HOME")) {
+        (Some(x), _) => PathBuf::from(x).join("herdr"),
+        (None, Some(h)) => PathBuf::from(h).join(home_rel).join("herdr"),
+        (None, None) => env::temp_dir().join("herdr"),
+    };
+    // herdr's path component for the id: unchanged for [a-z0-9._-].
+    base.join(sub).join(PLUGIN_ID)
+}
+
+/// The request token of the tab panel in `pane`, keyed by session socket and pane id.
+pub fn token_path(socket: &str, pane: &str) -> PathBuf {
+    plugin_dir(true).join(format!("req-{}.token", parse::lock_key(socket, pane)))
+}
+
+/// `PATH[:LINE[:COL]]` against `cwd`, canonicalized; line and column from 1.
+/// Like `code -g`, but a path that exists as typed wins, so a name with `:` opens.
+fn parse_target(arg: &str, cwd: &Path) -> Result<FilePos, String> {
+    let canon = |p: &str| fs::canonicalize(cwd.join(p)).ok();
+    let num = |s: &str| s.bytes().all(|b| b.is_ascii_digit()).then(|| s.parse::<usize>().ok()).flatten().map(|n| n.max(1));
+    if let Some(p) = canon(arg) {
+        return Ok((p, 1, 1));
+    }
+    if let Some((rest, last)) = arg.rsplit_once(':') {
+        if let (Some((p, l)), Some(c)) = (rest.rsplit_once(':'), num(last)) {
+            if let (Some(l), Some(p)) = (num(l), canon(p)) {
+                return Ok((p, l, c));
+            }
+        }
+        if let (Some(l), Some(p)) = (num(last), canon(rest)) {
+            return Ok((p, l, 1));
+        }
+    }
+    Err(format!("{arg}: no such file or directory"))
+}
+
+/// A file to open: canonical path, line, column (from 1).
+type FilePos = (PathBuf, usize, usize);
+
+/// The workspace root and the file to open, VS Code style: a
+/// folder is its own root; a file opens in its git worktree, else in its folder.
+/// No argument: the caller's worktree, else its folder.
+fn target(arg: Option<&str>, cwd: &Path) -> Result<(PathBuf, Option<FilePos>), String> {
+    let Some(arg) = arg else {
+        let root = repo_root(cwd).or_else(|| fs::canonicalize(cwd).ok()).ok_or_else(|| format!("{}: no such directory", cwd.display()))?;
+        return Ok((root, None));
+    };
+    let (p, line, col) = parse_target(arg, cwd)?;
+    if p.is_dir() {
+        return Ok((p, None));
+    }
+    if !p.is_file() {
+        return Err(format!("{}: not a regular file", p.display()));
+    }
+    let dir = p.parent().unwrap_or(&p).to_path_buf();
+    Ok((repo_root(&dir).unwrap_or(dir), Some((p, line, col))))
+}
+
 /// Open (creating) `path` and take a non-blocking exclusive flock. `Some(file)`
 /// while held; the kernel releases it when the file is dropped or the process
 /// dies, so a crash never leaves a stale lock. std opens files O_CLOEXEC.
@@ -147,20 +285,23 @@ fn find_code_pane(list: &Value, root: &Path) -> Option<(String, String)> {
 /// `herdr plugin pane open` for a new Code tab. The CLI focuses by default
 /// (focus = true unless `--no-focus`), which would make the new tab the
 /// workspace's active tab; `--no-focus` leaves every client and the active tab alone.
-fn open_args<'a>(ws: &'a str, root: &'a str) -> Vec<&'a str> {
-    vec![
-        "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "panel", "--placement", "tab", "--workspace", ws,
-        "--cwd", root, "--no-focus",
-    ]
+/// `env` (`HERDR_CODE_OPEN=<request>`) hands a file to open to the new panel.
+fn open_args<'a>(ws: &'a str, root: &'a str, env: Option<&'a str>) -> Vec<&'a str> {
+    let mut a = vec!["plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "panel", "--placement", "tab", "--workspace", ws];
+    if let Some(e) = env {
+        a.extend(["--env", e]);
+    }
+    a.extend(["--cwd", root, "--no-focus"]);
+    a
 }
 
 /// Find or open the Code tab for the caller's worktree in the caller's workspace,
 /// without focusing anything: herdr 0.9.1 can only focus a tab for every client
 /// attached to the session (`tab focus`), and other clients must not move. Even the
 /// workspace's active tab stays as it was; the user clicks the new tab.
-fn launch() -> Result<(), String> {
+fn launch(arg: Option<&str>) -> Result<(), String> {
     let socket = env::var("HERDR_SOCKET_PATH")
-        .map_err(|_| "run herdr-code from a shell inside a herdr pane (HERDR_SOCKET_PATH is not set)")?;
+        .map_err(|_| "a Code tab needs herdr: run herdr-code --tab from a herdr pane (HERDR_SOCKET_PATH is not set)")?;
     let ws = env::var("HERDR_WORKSPACE_ID").map_err(|_| "HERDR_WORKSPACE_ID is not set")?;
     // A plugin action runs in the plugin dir; follow the invoking pane instead.
     let cwd = if env::var_os("HERDR_PLUGIN_ACTION_ID").is_some() {
@@ -171,21 +312,58 @@ fn launch() -> Result<(), String> {
     } else {
         env::current_dir().map_err(|e| e.to_string())?
     };
-    let root = repo_root(&cwd).ok_or_else(|| format!("{} is not inside a git repository", cwd.display()))?;
+    let (root, file) = target(arg, &cwd)?;
     let root_s = root.to_string_lossy().into_owned();
-    // Find-or-create under a lock: two launches at once still make one tab.
-    let _held = lock_wait(&lock_path(&format!("{socket}\0{ws}"), &root), Duration::from_secs(5))?;
-    let panes = herdr(&["pane", "list", "--workspace", &ws])?;
+    // The panel's request body; a control character could end the bracketed paste early.
+    let req = file.as_ref().map(|(p, l, c)| format!("open:{}:{l}:{c}", p.display()));
+    if req.as_deref().is_some_and(|r| r.chars().any(char::is_control)) {
+        return Err("the path contains control characters".into());
+    }
     let name = root.file_name().map_or(root_s.clone(), |n| n.to_string_lossy().into_owned());
     let label = format!("Code: {name}");
-    if find_code_pane(&panes, &root).is_none() {
-        let v = herdr(&open_args(&ws, &root_s))?;
-        let tab = v["result"]["plugin_pane"]["pane"]["tab_id"].as_str().ok_or("plugin pane open: no tab_id")?;
-        // Cosmetic: the tab still works under herdr's default label.
-        let _ = herdr_raw(&["tab", "rename", tab, &label]);
+    // Find-or-create under a lock: two launches at once still make one tab.
+    let existing = {
+        let _held = lock_wait(&lock_path(&format!("{socket}\0{ws}"), &root), Duration::from_secs(5))?;
+        let panes = herdr(&["pane", "list", "--workspace", &ws])?;
+        let found = find_code_pane(&panes, &root);
+        if found.is_none() {
+            // A new panel opens the file itself, from its environment.
+            let env = req.as_ref().map(|r| format!("HERDR_CODE_OPEN={r}"));
+            let v = herdr(&open_args(&ws, &root_s, env.as_deref()))?;
+            let tab = v["result"]["plugin_pane"]["pane"]["tab_id"].as_str().ok_or("plugin pane open: no tab_id")?;
+            // Cosmetic: the tab still works under herdr's default label.
+            let _ = herdr_raw(&["tab", "rename", tab, &label]);
+        }
+        found
+    };
+    if let (Some((_, pane)), Some(req)) = (existing, &req) {
+        send_request(&socket, &pane, req)?;
     }
     println!("Code tab ready: click '{label}' in the tab bar");
+    if let Some((p, line, _)) = &file {
+        println!("opened {}:{line}", p.display());
+    }
     Ok(())
+}
+
+/// Hand a request to the running panel in `pane` as one bracketed paste
+/// carrying its token: it wakes the panel's event loop at once, no signal.
+/// A panel still starting gets up to 5 s to write its token.
+fn send_request(socket: &str, pane: &str, req: &str) -> Result<(), String> {
+    let path = token_path(socket, pane);
+    let start = Instant::now();
+    let token = loop {
+        match fs::read_to_string(&path) {
+            Ok(t) if !t.trim().is_empty() => break t,
+            _ if start.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(50)),
+            _ => return Err("the Code tab does not take requests (opened by an older herdr-code?); close it and run again".into()),
+        }
+    };
+    herdr_raw(&["pane", "send-text", pane, &request_paste(token.trim(), req)]).map(drop)
+}
+
+fn request_paste(token: &str, req: &str) -> String {
+    format!("\x1b[200~herdr-code:{token}:{req}\x1b[201~")
 }
 
 #[cfg(test)]
@@ -194,9 +372,112 @@ mod tests {
 
     #[test]
     fn opens_the_tab_without_focus() {
-        let a = open_args("w1", "/r");
-        assert!(a.contains(&"--no-focus") && !a.contains(&"--focus"), "{a:?}");
-        assert_eq!(&a[a.len() - 3..], ["--cwd", "/r", "--no-focus"]);
+        for env in [None, Some("HERDR_CODE_OPEN=open:/r/a.c:3:1")] {
+            let a = open_args("w1", "/r", env);
+            assert!(a.contains(&"--no-focus") && !a.contains(&"--focus"), "{a:?}");
+            assert_eq!(&a[a.len() - 3..], ["--cwd", "/r", "--no-focus"]);
+            assert_eq!(a.iter().position(|x| *x == "--env").map(|i| a[i + 1]), env);
+        }
+    }
+
+    /// A scratch tree: repo/ (git, with sub/f.rs and a file named `odd:2`) and plain/ (no git).
+    fn scratch(tag: &str) -> PathBuf {
+        let d = env::temp_dir().join(format!("herdr-code-main-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("repo/sub")).unwrap();
+        fs::create_dir_all(d.join("plain")).unwrap();
+        assert!(Command::new("git").args(["init", "-q"]).arg(d.join("repo")).status().unwrap().success());
+        for f in ["repo/sub/f.rs", "repo/odd:2", "plain/p.txt"] {
+            fs::write(d.join(f), "x\n").unwrap();
+        }
+        d.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn parses_path_line_col_like_code_g() {
+        let d = scratch("args");
+        let (repo, f) = (d.join("repo"), d.join("repo/sub/f.rs"));
+        assert_eq!(parse_target("sub", &repo), Ok((repo.join("sub"), 1, 1)), "a relative dir");
+        assert_eq!(parse_target(f.to_str().unwrap(), &d), Ok((f.clone(), 1, 1)), "an absolute file");
+        assert_eq!(parse_target("sub/f.rs:12", &repo), Ok((f.clone(), 12, 1)));
+        assert_eq!(parse_target("sub/f.rs:12:7", &repo), Ok((f.clone(), 12, 7)));
+        assert_eq!(parse_target("sub/./f.rs:0:0", &repo), Ok((f.clone(), 1, 1)), "clamped to 1");
+        assert_eq!(parse_target("odd:2", &repo), Ok((repo.join("odd:2"), 1, 1)), "an existing name with ':' wins");
+        assert_eq!(parse_target("odd:2:5", &repo), Ok((repo.join("odd:2"), 5, 1)));
+        assert!(parse_target("nope", &repo).unwrap_err().contains("no such file"));
+        assert!(parse_target("sub/f.rs:x", &repo).is_err());
+        assert!(parse_target("sub/f.rs:+3", &repo).is_err());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn picks_the_workspace_root_like_vscode() {
+        let d = scratch("root");
+        let (repo, plain) = (d.join("repo"), d.join("plain"));
+        assert_eq!(target(Some("sub"), &repo), Ok((repo.join("sub"), None)), "a subdir is its own root");
+        assert_eq!(target(Some("."), &plain), Ok((plain.clone(), None)), "a non-git dir is allowed");
+        assert_eq!(target(Some("sub/f.rs:3"), &repo), Ok((repo.clone(), Some((repo.join("sub/f.rs"), 3, 1)))), "a file: its repo");
+        assert_eq!(target(Some("p.txt:2:4"), &plain), Ok((plain.clone(), Some((plain.join("p.txt"), 2, 4)))), "else its folder");
+        assert_eq!(target(None, &repo.join("sub")), Ok((repo.clone(), None)), "no argument: the caller's repo");
+        assert_eq!(target(None, &plain), Ok((plain.clone(), None)));
+        assert!(target(Some("/dev/null"), &d).unwrap_err().contains("not a regular file"));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn argv_runs_in_place_unless_tab() {
+        let a = |v: &[&str]| parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let open = |tab, p: Option<&str>| Ok(Cmd::Open { tab, path: p.map(String::from) });
+        assert_eq!(a(&[]), open(false, None));
+        assert_eq!(a(&["src/main.rs:12"]), open(false, Some("src/main.rs:12")));
+        assert_eq!(a(&["--tab"]), open(true, None));
+        assert_eq!(a(&["--tab", "drivers"]), open(true, Some("drivers")));
+        assert_eq!(a(&["drivers", "--tab"]), open(true, Some("drivers")));
+        assert_eq!(a(&["panel"]), Ok(Cmd::Panel));
+        assert_eq!(a(&["--tab", "panel"]), open(true, Some("panel")), "a folder named panel");
+        assert_eq!(a(&["-h"]), Ok(Cmd::Help));
+        assert_eq!(a(&["x", "--help"]), Ok(Cmd::Help));
+        assert!(a(&["--bogus"]).unwrap_err().contains("unknown option"));
+        assert!(a(&["a", "b"]).unwrap_err().contains("unexpected argument \"b\""));
+    }
+
+    #[test]
+    fn without_a_terminal_a_tab_opens_instead() {
+        assert_eq!(mode(false, true), (false, None), "in place");
+        assert_eq!(mode(true, true), (true, None));
+        assert_eq!(mode(true, false), (true, None));
+        let (tab, note) = mode(false, false);
+        assert!(tab && note.is_some_and(|n| n.contains("no terminal")));
+    }
+
+    #[test]
+    fn plugin_dirs_match_what_herdr_hands_us() {
+        let dirs = |vars: &[(&str, &str)]| {
+            let m: std::collections::HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let get = |k: &str| m.get(k).cloned();
+            (plugin_dir_from(false, get), plugin_dir_from(true, get))
+        };
+        let p = |s: &str| PathBuf::from(s);
+        let home = [("HOME", "/h")];
+        assert_eq!(dirs(&home), (p("/h/.config/herdr/plugins/config/jonas.herdr-code"), p("/h/.local/state/herdr/plugins/jonas.herdr-code")));
+        let xdg = [("HOME", "/h"), ("XDG_CONFIG_HOME", "/xc"), ("XDG_STATE_HOME", "/xs")];
+        assert_eq!(dirs(&xdg), (p("/xc/herdr/plugins/config/jonas.herdr-code"), p("/xs/herdr/plugins/jonas.herdr-code")));
+        let pane = [("HOME", "/h"), ("XDG_STATE_HOME", "/xs"), ("HERDR_PLUGIN_CONFIG_DIR", "/pc"), ("HERDR_PLUGIN_STATE_DIR", "/ps")];
+        assert_eq!(dirs(&pane), (p("/pc"), p("/ps")), "a plugin pane's own dirs win");
+        let empty = [("HOME", "/h"), ("HERDR_PLUGIN_CONFIG_DIR", ""), ("HERDR_PLUGIN_STATE_DIR", "")];
+        assert_eq!(dirs(&empty), dirs(&home));
+        let blank_xdg = [("HOME", "/h"), ("XDG_CONFIG_HOME", ""), ("XDG_STATE_HOME", "")];
+        assert_eq!(dirs(&blank_xdg), dirs(&home), "an empty XDG_* is unset");
+        let relative = [("HOME", "/h"), ("XDG_CONFIG_HOME", "cfg"), ("XDG_STATE_HOME", "./st"), ("HERDR_PLUGIN_STATE_DIR", "rel")];
+        assert_eq!(dirs(&relative), dirs(&home), "a relative base is ignored");
+        assert_eq!(dirs(&[("HOME", "h")]), dirs(&[]), "a relative HOME too");
+        assert_eq!(dirs(&[]).1, env::temp_dir().join("herdr/plugins/jonas.herdr-code"));
+    }
+
+    #[test]
+    fn a_request_is_one_bracketed_paste() {
+        assert_eq!(request_paste("t0k", "open:/r/a.c:3:1"), "\x1b[200~herdr-code:t0k:open:/r/a.c:3:1\x1b[201~");
+        assert_ne!(token_path("/s1", "w1:p2"), token_path("/s2", "w1:p2"), "another session's panel never collides");
     }
 
     #[test]

@@ -164,13 +164,9 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-/// `$HERDR_PLUGIN_CONFIG_DIR/settings.json`.
+/// `$HERDR_PLUGIN_CONFIG_DIR/settings.json`, or where herdr would put it.
 pub fn path() -> PathBuf {
-    std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")
-        .filter(|d| !d.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".config/herdr/plugins/config/jonas.herdr-code"))
-        .join("settings.json")
+    crate::plugin_dir(false).join("settings.json")
 }
 
 /// VS Code's user settings, for `herdr-code.followVSCode`.

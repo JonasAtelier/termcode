@@ -1,7 +1,9 @@
 # herdr-code
 
-herdr plugin, written in Rust. Run `herdr-code` in a herdr pane to open a `Code: <repo>` **tab in
-that pane's workspace**, with a VS Code-like editor for the pane's repo or worktree: activity
+herdr plugin, written in Rust. Run `herdr-code [PATH]` like VS Code's `code PATH`: a VS
+Code-like editor for that folder, file or repo **in the same terminal**, like vim; quitting
+returns to the shell. `herdr-code --tab` opens it as a `Code: <name>` tab of the herdr workspace
+instead. It has an activity
 bar, a resizable Explorer / Search /
 Source Control / History sidebar, editor groups with preview tabs, a side-by-side diff, and
 the "Visual Studio Dark - C++" colours (or any VS Code theme, see [Settings](#settings)).
@@ -17,18 +19,61 @@ The manifest runs `herdr-code` through PATH, so the herdr server's PATH must inc
 
 ## Use
 
-- `herdr-code` from a shell in a herdr pane, or the plugin action `jonas.herdr-code.open`. The
-  action uses the invoking pane's `foreground_cwd`.
-- Outside a git repo it exits with status 1. If the workspace already has a Code tab for this
-  worktree (our "Code" pane with the worktree root as its cwd), it is reused; otherwise a new
-  tab opens (`herdr plugin pane open --placement tab`, without `--focus`) and is renamed
-  `Code: <repo>`. A short lock around find-or-create makes a double launch open one tab.
+```sh
+herdr-code                    # this folder's git repo (or, outside one, the folder)
+herdr-code drivers/net/dsa    # that folder as the workspace root; git from the repo above it
+herdr-code ~/proj             # any folder, git repo or not
+herdr-code src/main.rs:120    # the file at line 120 (also :LINE:COL), its repo as the root
+herdr-code --tab src          # the same, as a Code tab in this herdr workspace
+```
+
+- `herdr-code [--tab] [PATH[:LINE[:COL]]]`; `herdr-code -h` prints the usage.
+- **In place** (the default) the panel takes over the terminal it was started in, like vim.
+  Close (title bar) or Ctrl+Q asks Save All / Don't Save / Cancel for unsaved files, then puts
+  the terminal back (main screen, mouse, keyboard flags, bracketed paste, cursor) and exits 0,
+  so the shell prompt returns. Nothing in herdr moves: no tab, no focus, no other client. It
+  also works outside herdr, as a plain terminal app.
+- A relative PATH resolves against the current folder. A missing PATH exits with status 1. As
+  with `code -g`, `:LINE` and `:LINE:COL` are split off, except that a path which exists as
+  typed (a name containing `:`) wins. A name starting with `-` needs `./`.
+- A folder becomes the workspace root: the Explorer, Search and Quick Open cover it, and its
+  name heads the Explorer. Inside a git repo, Source Control, the Explorer's decorations and the
+  quick diff use that repo, as VS Code does for a subfolder; Source Control lists the whole
+  repo's changes. A folder outside any repo works too: Source Control then says "The folder
+  currently open doesn't have a git repository." and nothing runs git.
+- A file opens, pinned, at LINE:COL, with its git worktree as the root, or its folder outside a
+  repo.
+- Settings, the layout and hot-exit backups are the same in every mode: in a plugin pane herdr
+  gives `$HERDR_PLUGIN_CONFIG_DIR` / `$HERDR_PLUGIN_STATE_DIR`; elsewhere herdr-code uses the
+  paths herdr would give (`~/.config/herdr/plugins/config/jonas.herdr-code`,
+  `~/.local/state/herdr/plugins/jonas.herdr-code`, under `$XDG_CONFIG_HOME` / `$XDG_STATE_HOME`
+  when set). Backups are kept per herdr session (`HERDR_SOCKET_PATH`), or as `local` outside
+  herdr.
+
+### As a tab: `--tab` and the plugin action
+
+- `herdr-code --tab [PATH]` from a herdr pane, or the plugin action `jonas.herdr-code.open`
+  (no path: the invoking pane's `foreground_cwd`). Without a terminal on stdin and stdout,
+  `herdr-code` notes it and opens a tab instead.
+- If the workspace already has a Code tab for that root (our "Code" pane with the root as its
+  cwd), it is reused; otherwise a new tab opens (`herdr plugin pane open --placement tab
+  --no-focus`) and is renamed `Code: <name>`. A short lock around find-or-create makes a double
+  launch open one tab. A new tab gets a file in `HERDR_CODE_OPEN`. A running one gets it as
+  one bracketed paste, `herdr pane send-text`, carrying a random token that the tab panel writes
+  at start to `$HERDR_PLUGIN_STATE_DIR/req-<key>.token` (0600; key = session socket and pane
+  id). The paste wakes the panel at once. One that does not start with `herdr-code:<token>:`
+  is an ordinary paste. The panel opens only a regular file under its root. A Code tab
+  started by an older herdr-code takes no requests: close it and run again.
 - It never focuses anything: herdr 0.9.1 can only focus a tab for every client attached to the
   session (`herdr tab focus` moves them all, e.g. a mosh client elsewhere), so the active tab
-  stays as it was. It prints `Code tab ready: click 'Code: <repo>' in the tab bar`.
-- Close (title bar) or Ctrl+Q asks Save All / Don't Save / Cancel for unsaved files, then ends
-  the panel process; herdr then closes the tab. It never signals or closes anything else.
-  herdr closing the tab (HUP, then TERM) still flushes unsaved edits to the hot-exit backups.
+  stays as it was. It prints `Code tab ready: click 'Code: <name>' in the tab bar`, and
+  `opened <file>:<line>` for a file.
+- Quitting ends the panel process; herdr then closes the tab. It never signals or closes
+  anything else. herdr closing the tab (HUP, then TERM) still flushes unsaved edits to the
+  hot-exit backups.
+
+### More
+
 - Icons: UI icons are VS Code codicons (`nf-cod-*`); file icons are VS Code's default Seti
   theme mapped to `nf-seti-*`, coloured like VS Code (`cargo run --example gen_seti`). Both need a
   Nerd Font. `"herdr-code.icons": "ascii"` or `HERDR_CODE_ICONS=0` (always wins) gives plain
@@ -66,7 +111,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | a gutter marker (click), Alt+F5 / Shift+Alt+F5, F7 / Shift+F7 | quick-diff peek on that / the next / the previous change |
 | in the peek | Revert (the hunk back to the index version, one undo step), ↑ ↓ (wraps), × or Esc closes |
 
-The Explorer header shows the worktree's name and, under it, its parent folder (`~` for
+The Explorer header shows the root's name and, under it, its parent folder (`~` for
 $HOME, cut from the left as `…/work/fetched` when narrow).
 
 The editor gutter shows VS Code's quick diff against the git index (`:0:path`): green `▎`
@@ -194,6 +239,10 @@ session; the next settings load resets them to the file.
   `enum`. A theme's `tokenColors` given as a `.tmTheme` path is ignored.
 - Colour keys a theme leaves unset fall back to VS Code's *dark* registry defaults, so a
   light theme that does not set every workbench colour gets dark sidebars or tabs there.
-- Hot-exit backups written before backups carried the session (`scope`) are moved once under
-  the current session's key when the panel starts in their worktree. If that name is already
-  taken the old file is left in `$HERDR_PLUGIN_STATE_DIR/backup` untouched; nothing is deleted.
+- Hot-exit backups (`$HERDR_PLUGIN_STATE_DIR/backup`) are one file per herdr session, panel
+  (pane id or `local`, plus pid) and file, so two panels editing one file keep two. Opening a
+  file offers the newest backup of it that no running panel owns, from any session or panel,
+  noting when there are more ("2 backups found"); Restore or Discard acts on that one only.
+  Older formats are found by content and never renamed. A panel counts as running while its
+  pid is alive as `herdr-code`; records from before this carry no pid, so a still-running older
+  panel's backup can be offered too.

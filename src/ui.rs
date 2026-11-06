@@ -16,7 +16,7 @@ use crate::panel::{
 };
 use crate::theme::{git_color, icons, Rgba, P};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
 use syntect::highlighting::{FontStyle, Style as SStyle};
 use unicode_width::UnicodeWidthStr;
 
@@ -242,7 +242,9 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let edge = sp(lay.s.status_padding);
     let sep = sp(lay.s.status_gap);
     let branch_gap = if icons().branch.is_empty() { String::new() } else { sp(lay.s.icon_gap) };
-    let mut left = vec![Span::styled(format!("{edge}{}{branch_gap}{}", icons().branch, app.branch), st)];
+    // No repository: no branch item, as in VS Code.
+    let branch = if app.git_root.is_some() { format!("{}{branch_gap}{}", icons().branch, app.branch) } else { String::new() };
+    let mut left = vec![Span::styled(format!("{edge}{branch}"), st)];
     if let Some(e) = &app.settings_err {
         left.push(Span::styled(sep.clone(), st));
         let err = Style::new().fg(P.status_err_fg).bg(P.status_err_bg);
@@ -397,6 +399,13 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
             let summary = if app.hits.is_empty() { String::new() } else { format!("{} results in {files} files", app.hits.len()) };
             row(f, inset(Rect::new(r.x, y, r.width, 1), lay.pad), P.sidebar_bg, vec![Span::styled(format!("  {summary}"), Style::new().fg(P.dim))]);
             y += 1;
+        }
+        Side::Scm if app.git_root.is_none() => {
+            // VS Code's Source Control view for a folder without a repository.
+            let msg = "The folder currently open doesn't have a git repository.";
+            let area = inset(Rect::new(r.x, y, r.width, r.bottom().saturating_sub(y)), m);
+            f.render_widget(Paragraph::new(msg).wrap(Wrap { trim: true }).style(Style::new().fg(P.sidebar_fg)), area);
+            y = r.bottom();
         }
         Side::Scm => {
             let lines = app.commit_msg.split('\n').count().clamp(1, 5) as u16;

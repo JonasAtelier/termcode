@@ -2,14 +2,14 @@ id = "jonas.herdr-code"
 name = "herdr-code"
 version = "0.1.0"
 min_herdr_version = "0.9.1"
-description = "VS Code-like editor and git panel for the current repo, as a tab in the current workspace"
+description = "VS Code-like editor and git panel for a folder, file or repo, as a tab in the current workspace"
 platforms = ["linux"]
 
 [[actions]]
 id = "open"
-title = "Open a Code tab for this pane's repo"
+title = "Open a Code tab for this pane's repo or folder"
 contexts = ["pane"]
-command = ["herdr-code"]
+command = ["herdr-code", "--tab"]
 
 [[panes]]
 id = "panel"
