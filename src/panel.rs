@@ -5121,7 +5121,7 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
-    /// A non-git tree arch/{sh/{boards/b00..b59.c, kernel.c}, x86/x.c}, block/blk.c,
+    /// A non-git tree arch/{sh/{boards/b00..b59.c, kernel.c}, x86/x.c}, block/{blk,blk2}.c,
     /// zz.txt, with arch, sh and boards expanded.
     fn deep_tree(tag: &str) -> (PathBuf, App) {
         let d = std::env::temp_dir().join(format!("herdr-code-sticky-{tag}-{}", std::process::id()));
@@ -5132,7 +5132,7 @@ mod tests {
         for i in 0..60 {
             fs::write(d.join(format!("arch/sh/boards/b{i:02}.c")), "x\n").unwrap();
         }
-        for f in ["arch/sh/kernel.c", "arch/x86/x.c", "block/blk.c", "zz.txt"] {
+        for f in ["arch/sh/kernel.c", "arch/x86/x.c", "block/blk.c", "block/blk2.c", "zz.txt"] {
             fs::write(d.join(f), "x\n").unwrap();
         }
         let d = d.canonicalize().unwrap();
@@ -5170,10 +5170,15 @@ mod tests {
         assert!(side_line(&t, &app, y).contains("arch") && side_line(&t, &app, y + 1).contains("b11.c"));
         let c = &t.backend().buffer()[(x + 1, y)];
         assert!(c.modifier.contains(Modifier::UNDERLINED) && c.underline_color == crate::theme::P.sticky_shadow);
-        // arch's last row under the sticky row: still arch; one more and block's own row is on top.
-        app.off[0] = block - 1;
+        // arch while the first visible row is in arch. When arch's last row (x86) is the
+        // one under the sticky row, arch is pushed out: it would sit over block.
+        app.off[0] = block - 2;
         screen(&mut app, &mut t);
         assert_eq!(app.ui.sticky, [arch]);
+        assert!(side_line(&t, &app, y + 1).contains("x86"));
+        app.off[0] = block - 1;
+        screen(&mut app, &mut t);
+        assert!(app.ui.sticky.is_empty() && side_line(&t, &app, y).contains("x86") && side_line(&t, &app, y + 1).contains("block"));
         app.off[0] = block;
         screen(&mut app, &mut t);
         assert!(app.ui.sticky.is_empty() && side_line(&t, &app, y).contains("block"));
@@ -5379,6 +5384,81 @@ mod tests {
         assert!(side_line(&t, &app, y).contains("many.txt"));
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 3, y);
         assert_eq!((app.off[1], app.sel[1]), (g, g), "the group's header back on top");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The sticky rows at `off` must be the folders, outermost first, holding the
+    /// first row visible below them (`off + pinned`), and no more could be pinned.
+    fn assert_sticky_holds(depth: &dyn Fn(usize) -> Option<usize>, pinned: &[usize], off: usize, cap: usize, tag: &str) {
+        let c = pinned.len();
+        let first = off + c;
+        for (k, &a) in pinned.iter().enumerate() {
+            assert_eq!(depth(a), Some(k), "{tag} off {off}: pin {k} is at depth {k}");
+            assert_eq!(decor::walk_back(depth, first, k), Some(a), "{tag} off {off}: pin {k} ({a}) holds the first visible row {first}");
+        }
+        // One more pin would have to hold the row it covers and the row below that.
+        if c < cap {
+            let more = decor::walk_back(depth, first, c);
+            let holds_next = more.is_some_and(|a| decor::walk_back(depth, first + 1, c) == Some(a));
+            assert!(!holds_next, "{tag} off {off}: {pinned:?} could pin {more:?} too");
+        }
+    }
+
+    /// Scroll through a tree of several nested top-level folders one row at a time:
+    /// at every offset the sticky row is the folder holding the first visible row.
+    #[test]
+    fn sticky_rows_hold_the_first_visible_row_at_every_offset() {
+        let (d, mut app) = deep_tree("sweep");
+        for p in ["arch/x86", "block"] {
+            let i = at(&app, p);
+            app.toggle(i);
+        }
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        for cap in [1, 3] {
+            app.settings.sticky_max = cap;
+            for off in 0..app.tree.len() {
+                app.off[0] = off;
+                screen(&mut app, &mut t);
+                let depth = |j: usize| app.tree.get(j).map(|n| n.depth);
+                let tag = format!("cap {cap}, top {}", app.tree[off].path);
+                assert_sticky_holds(&depth, &app.ui.sticky, off, cap, &tag);
+                // What the screen says: the sticky row's name, then a row inside it.
+                if let Some(&a) = app.ui.sticky.first() {
+                    let y = app.ui.side_list.y;
+                    assert!(side_line(&t, &app, y).contains(&app.tree[a].name), "{tag}");
+                }
+            }
+        }
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The same sweep over Search file groups and the CHANGES sections.
+    #[test]
+    fn search_groups_and_changes_sections_hold_the_first_visible_row() {
+        let root = repo("sweepscm");
+        let mut app = App::new(root.clone(), None);
+        app.hits = (0..40).map(|i| Hit { path: format!("f{}.c", i / [1, 7, 2, 13][i % 4].max(1)), line: i + 1, col: 1, text: "x".into() }).collect();
+        app.hits.sort_by(|a, b| a.path.cmp(&b.path));
+        app.side = Side::Search;
+        let rows = app.search_rows();
+        let depth = |j: usize| rows.get(j).map(|r| matches!(r, HRow::Hit(_)) as usize);
+        for cap in [1, 2] {
+            for off in 0..rows.len() {
+                assert_sticky_holds(&depth, &app.pinned(off, cap, &rows, &[]), off, cap, "search");
+            }
+        }
+        let file = |section, path: String, letter| ScmFile { section, path, orig: None, letter };
+        app.scm_files = (0..3)
+            .map(|i| file(Section::Changes, format!("m{i}"), '!'))
+            .chain((0..1).map(|i| file(Section::Staged, format!("s{i}"), 'M')))
+            .chain((0..4).map(|i| file(Section::Changes, format!("c{i}"), 'M')))
+            .collect();
+        app.side = Side::Scm;
+        let rows = app.scm_rows();
+        let depth = |j: usize| rows.get(j).map(|r| matches!(r, SRow::File(_)) as usize);
+        for off in 0..rows.len() {
+            assert_sticky_holds(&depth, &app.pinned(off, 1, &[], &rows), off, 1, "changes");
+        }
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5588,6 +5668,39 @@ mod tests {
             }
         }
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The sweep on a real tree, read only:
+    /// `HERDR_CODE_BIG_TREE=<kernel tree> cargo test -- --ignored --nocapture sticky_sweep`
+    /// expands arch, arch/sh, arch/sh/boards and scrolls one row at a time to past arch.
+    #[test]
+    #[ignore]
+    fn sticky_sweep_on_a_big_tree() {
+        let Some(root) = std::env::var_os("HERDR_CODE_BIG_TREE").map(PathBuf::from) else { return };
+        let mut app = App::new(root.canonicalize().unwrap(), None);
+        for p in ["arch", "arch/sh", "arch/sh/boards"] {
+            let i = at(&app, p);
+            app.toggle(i);
+        }
+        let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let arch = at(&app, "arch");
+        let end = (arch + 1..app.tree.len()).find(|&j| app.tree[j].depth == 0).unwrap();
+        let mut bad = Vec::new();
+        for cap in [1, 3] {
+            app.settings.sticky_max = cap;
+            for off in arch..end + 3 {
+                app.off[0] = off;
+                screen(&mut app, &mut t);
+                let depth = |j: usize| app.tree.get(j).map(|n| n.depth);
+                let pinned: Vec<&str> = app.ui.sticky.iter().map(|&a| app.tree[a].path.as_str()).collect();
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| assert_sticky_holds(&depth, &app.ui.sticky, off, cap, "")));
+                if r.is_err() {
+                    bad.push(format!("cap {cap}: top {} | pinned {pinned:?} | first visible {}", app.tree[off].path, app.tree.get(off + pinned.len()).map_or("-", |n| n.path.as_str())));
+                }
+            }
+        }
+        eprintln!("{} rows swept twice, {} wrong:\n{}", end + 3 - arch, bad.len(), bad.join("\n"));
+        assert!(bad.is_empty());
     }
 
     /// Frame time over big lists, sticky scroll on and off. Read only:

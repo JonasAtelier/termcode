@@ -280,11 +280,20 @@ pub fn word_changes(old: &str, new: &str) -> (Vec<std::ops::Range<usize>>, Vec<s
 /// pin over list slots 0, 1, … for a list scrolled to `off`, at most `max`. Slot
 /// `k` pins `ancestor(off + k, k)`: the depth-`k` folder holding the row under it,
 /// None when that row is not deeper than `k` (it is the folder itself, shown as it
-/// is, or lies outside the folder pinned at `k - 1`) or past the end. Scrolling
-/// past a folder's last row unpins it; with whole rows that is VS Code's push-up,
-/// which only slides a pinned row between row positions. At most `max` calls.
+/// is, or lies outside the folder pinned at `k - 1`) or past the end.
+///
+/// The pinned folders must hold the first row visible below them. When the
+/// deepest one's last row is the one it covers, VS Code pushes it up as that row
+/// scrolls away; on whole rows it goes at once, so a folder never sits over rows
+/// outside it. The row it covered is inside its parent, so one such pop is enough.
 pub fn sticky(ancestor: impl Fn(usize, usize) -> Option<usize>, off: usize, max: usize) -> Vec<usize> {
-    (0..max).map_while(|k| ancestor(off + k, k)).collect()
+    let mut pinned: Vec<usize> = (0..max).map_while(|k| ancestor(off + k, k)).collect();
+    if let Some(k) = pinned.len().checked_sub(1) {
+        if ancestor(off + pinned.len(), k) != Some(pinned[k]) {
+            pinned.pop();
+        }
+    }
+    pinned
 }
 
 /// `sticky`'s `ancestor` for a list given by row depths (a row's children follow
@@ -349,8 +358,8 @@ pub fn drag_offset(y: i32, grab: u16, track: u16, len: u16, max_off: usize) -> u
 mod tests {
     use super::*;
 
-    /// arch/{sh/{boards/{a,b,c,e,f}, g}, d}, block/{h}, z: the expanded tree's depths.
-    const TREE: [usize; 13] = [
+    /// arch/{sh/{boards/{a,b,c,e,f}, g}, d}, block/{h, i}, z: the expanded tree's depths.
+    const TREE: [usize; 14] = [
         0, //  0 arch/
         1, //  1   sh/
         2, //  2     boards/
@@ -363,7 +372,8 @@ mod tests {
         1, //  9   d
         0, // 10 block/
         1, // 11   h
-        0, // 12 z
+        1, // 12   i
+        0, // 13 z
     ];
 
     fn st(off: usize, max: usize) -> Vec<usize> {
@@ -384,15 +394,15 @@ mod tests {
 
     #[test]
     fn sticky_rows_leave_when_their_folder_ends() {
-        assert_eq!(st(5, 7), [0, 1, 2], "f, boards' last row, is under the sticky area");
+        assert_eq!(st(5, 7), [0, 1], "f, boards' last row, under the sticky rows: boards is pushed out over g");
         assert_eq!(st(6, 7), [0, 1], "f scrolled under sh: boards is pushed out");
         assert_eq!(st(8, 7), [0], "slot 1 holds d, outside sh: sh goes too");
         assert!(st(10, 7).is_empty(), "block is the top row itself");
         assert_eq!(st(11, 7), [10], "the next folder takes over");
-        assert!(st(12, 7).is_empty());
+        assert!(st(12, 7).is_empty(), "i, block's last row, under it: pushed out over z");
         assert!(st(99, 7).is_empty(), "past the end");
         // One row: arch stays while anything of arch is under it, then block replaces it.
-        assert_eq!(st(9, 1), [0], "d, arch's last row, under the sticky row");
+        assert!(st(9, 1).is_empty(), "d, arch's last row, under the sticky row: arch is pushed out over block");
         assert!(st(10, 1).is_empty(), "arch pushed out: block is the top row");
         assert!(sticky(|i, k| walk_back(|_| None, i, k), 0, 7).is_empty());
     }
