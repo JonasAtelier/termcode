@@ -1601,6 +1601,7 @@ pub(crate) fn diff_view(
             peek: None,
             rulers: &[],
         };
+        // TODO(perf1): count this buffer in hl_pending too, like the editors' minimaps.
         out_mini = Some((mr, draw_minimap(f, m.buf, v, mr, &m.cfg, &deco, ms)));
     }
     let h = track.height as usize;

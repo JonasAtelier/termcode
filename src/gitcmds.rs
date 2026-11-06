@@ -258,7 +258,7 @@ pub struct State {
     blame: Blame,
     next_id: u64,
     /// Parsed conflict markers per document version.
-    conflicts: HashMap<String, (u64, Vec<ConflictRegion>)>,
+    pub(crate) conflicts: HashMap<String, (u64, Vec<ConflictRegion>)>,
     out_gen: u64,
 }
 

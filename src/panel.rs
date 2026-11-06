@@ -1816,9 +1816,28 @@ impl App {
         let used = self.groups.iter().any(|g| g.tabs.iter().any(|t| t.key == key));
         let dirty = matches!(self.docs.get(key), Some(Doc::Text(b)) if b.dirty());
         if !used && !dirty {
-            self.docs.remove(key);
-            self.loading.remove(key);
-            self.diff_minis.remove(key);
+            self.drop_doc(key);
+        }
+    }
+
+    /// Forget document `key` and everything kept per document, in one place: the
+    /// buffer or diff, its loads (and its index base's), the quick diff and its peek,
+    /// a diff's minimap buffer, its conflict markers. Backups are bookkept by
+    /// `sync_backups`, which also deletes the file of one no longer needed.
+    fn drop_doc(&mut self, key: &str) {
+        self.docs.remove(key);
+        self.loading.remove(key);
+        self.loading.remove(&format!("base:{key}"));
+        self.qdiff.remove(key);
+        self.diff_minis.remove(key);
+        self.gitui.cmds.conflicts.remove(key);
+        if self.peek.as_ref().is_some_and(|p| p.key == key) {
+            self.peek = None;
+        }
+        if self.diff_cancel.as_ref().is_some_and(|(k, _)| k == key) {
+            if let Some((_, stop)) = self.diff_cancel.take() {
+                stop.store(true, Ordering::SeqCst);
+            }
         }
     }
 
@@ -1968,8 +1987,7 @@ impl App {
         if refs == 1 {
             // Closing the last view (after Save or an explicit Don't Save) also
             // retires its hot-exit backup.
-            self.docs.remove(&key);
-            self.loading.remove(&key);
+            self.drop_doc(&key);
             self.sync_backups();
         }
         self.find_refresh();
@@ -2061,7 +2079,10 @@ impl App {
             }
             PAct::QuitNoSave => {
                 // An explicit Don't Save: drop the edits and their backups.
-                self.docs.retain(|_, d| !matches!(d, Doc::Text(b) if b.dirty()));
+                let dirty: Vec<String> = self.docs.iter().filter(|(_, d)| matches!(d, Doc::Text(b) if b.dirty())).map(|(k, _)| k.clone()).collect();
+                for k in dirty {
+                    self.drop_doc(&k);
+                }
                 self.sync_backups();
                 self.quit = true;
             }
@@ -5642,6 +5663,36 @@ mod tests {
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), mm.area.x + 2, mm.area.bottom() - 1);
         assert!(view(&app).scroll > 0);
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Closing tabs drops every per-document cache with the document (hc-sup6: a
+    /// closed diff tab used to keep its minimap buffer for good).
+    #[test]
+    fn closing_tabs_drops_every_per_doc_cache() {
+        let root = repo("dropdoc");
+        let mut app = App::new(root.clone(), None);
+        let mut t = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        open_big_diff(&mut app);
+        screen(&mut app, &mut t);
+        assert_eq!(app.diff_minis.len(), 1, "the diff's minimap buffer");
+        app.close_tab(0, app.groups[0].active, false);
+        assert!(app.diff_minis.is_empty() && app.docs.is_empty(), "closed: its minimap buffer goes with it");
+        // A text file and a diff, the diff in a second group too; then every tab closed.
+        app.open_file(0, "README.md", false);
+        screen(&mut app, &mut t);
+        open_big_diff(&mut app);
+        app.split_right(0);
+        wait(&mut app);
+        screen(&mut app, &mut t);
+        app.groups[0].active = 0;
+        screen(&mut app, &mut t);
+        assert!(!app.qdiff.is_empty() && !app.diff_minis.is_empty() && !app.gitui.cmds.conflicts.is_empty(), "every cache in use");
+        while let Some(g) = (0..app.groups.len()).find(|&g| !app.groups[g].tabs.is_empty()) {
+            app.close_tab(g, 0, true);
+        }
+        assert!(app.docs.is_empty() && app.loading.is_empty() && app.qdiff.is_empty() && app.peek.is_none());
+        assert!(app.diff_minis.is_empty() && app.gitui.cmds.conflicts.is_empty() && app.diff_cancel.is_none());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
