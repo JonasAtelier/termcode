@@ -343,6 +343,20 @@ pub fn command(app: &mut App, a: Act) {
     }
 }
 
+/// The peek's preview buffer is still catching up on its first highlighting (only while
+/// the peek is drawn: one too small to draw closes).
+pub fn hl_pending(app: &App) -> bool {
+    // Not drawn this frame (no room): nothing would catch up, so nothing to wait for.
+    if app.nav.hits.pop.is_empty() {
+        return false;
+    }
+    let Some(l) = app.nav.peek.as_ref().and_then(|pk| pk.items.get(pk.sel)) else { return false };
+    match app.docs.get(&format!("file:{}", l.path)) {
+        Some(Doc::Text(b)) => b.hl_pending(),
+        _ => app.nav.peek.as_ref().is_some_and(|pk| pk.files.iter().any(|(p, b)| *p == l.path && b.hl_pending())),
+    }
+}
+
 pub fn open_peek(app: &mut App, sym: &str, title: String, items: Vec<Location>) {
     app.nav.peek = Some(Peek { title, sym: sym.into(), items, sel: 0, off: 0, top: None, shown_top: 0, files: Vec::new() });
 }
@@ -469,13 +483,14 @@ fn peek_mouse(app: &mut App, m: MouseEvent, p: Position) -> Option<bool> {
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if h.pop.contains(p) => {
             let d: isize = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
+            let old = (pk.sel, pk.top);
             if h.list.contains(p) {
                 pk.sel = (pk.sel as isize + d).clamp(0, pk.items.len() as isize - 1) as usize;
-                pk.top = None;
+                pk.top = if pk.sel == old.0 { old.1 } else { None };
             } else {
                 pk.top = Some((pk.shown_top as isize + d).max(0) as usize);
             }
-            Some(true)
+            Some((pk.sel, pk.top) != old)
         }
         MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_) if h.pop.contains(p) => Some(false),
         _ => None,
@@ -654,7 +669,7 @@ fn peek(app: &mut App, f: &mut Frame, c: &Cols) {
     let top = pk.top.unwrap_or(target.saturating_sub(rows / 3)).min(b.lines.len().saturating_sub(1));
     pk.top = pk.top.map(|_| top);
     pk.shown_top = top;
-    b.highlight_upto(top + rows);
+    b.highlight_view(top, top + rows);
     let gw = b.lines.len().max(1).to_string().len() as u16 + 1;
     let gutter = (gw + sp.editor_padding.max(1)).min(preview.width);
     let code = Rect::new(preview.x + gutter, preview.y, preview.width - gutter, preview.height);
@@ -902,6 +917,23 @@ mod tests {
         let mut tiny = term(40, 7);
         draw(&mut app, &mut tiny);
         assert!(app.nav.peek.is_none());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_undrawn_peek_never_keeps_the_loop_awake() {
+        let (mut app, root) = app("undrawn");
+        fs::write(root.join("net/big.c"), "int x;\n".repeat(3000)).unwrap();
+        let far = Location { path: "net/big.c".into(), line: 2900, col: 5, preview: String::new(), kind: Kind::Value, score: 0 };
+        open_peek(&mut app, "x", "1 definition".into(), vec![far]);
+        crate::editor::set_frame_budget(Some(Duration::ZERO));
+        let mut t = term(120, 30);
+        draw(&mut app, &mut t);
+        assert!(app.hl_pending(), "the preview's far line is still catching up");
+        let mut tiny = term(25, 4); // below 30x5: nothing is drawn
+        draw(&mut app, &mut tiny);
+        assert!(!app.hl_pending(), "a peek not drawn cannot catch up: no 2 ms wakeups");
+        crate::editor::set_frame_budget(Some(crate::editor::FRAME_BUDGET));
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -31,6 +31,54 @@ pub fn set_tab(n: usize) {
 /// Lines longer than this are not highlighted (minified code); state carries over unchanged.
 const HL_MAX_LINE: usize = 4000;
 
+/// A parser state is kept every this many lines: a state is 1.3-1.5 KB, one per line made
+/// a 20k-line file cost ~28 MB. An edit re-parses from the checkpoint at or above it.
+const HL_CHECKPOINT: usize = 32;
+/// Lines above a far view that its speculative pass starts at, for some context.
+const HL_SPEC_CONTEXT: usize = 20;
+
+/// Highlighting time per frame, shared by everything one frame draws (text, minimap, peek).
+pub const FRAME_BUDGET: Duration = Duration::from_millis(6);
+
+thread_local! {
+    /// Highlighting time per frame; None: unlimited (a test's reference frames).
+    static BUDGET: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(Some(FRAME_BUDGET)) };
+    /// When the current frame's highlighting stops; None outside a frame.
+    static DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+fn out_of_time() -> bool {
+    DEADLINE.with(|d| d.get().is_some_and(|t| Instant::now() >= t))
+}
+
+/// Starts a frame's highlighting budget (`ui::draw`); dropping it ends the frame. Outside
+/// a frame highlighting has no budget, so every other caller gets complete results.
+pub struct FrameBudget(());
+
+impl FrameBudget {
+    pub fn start() -> FrameBudget {
+        DEADLINE.with(|d| d.set(BUDGET.with(|b| b.get()).map(|b| Instant::now() + b)));
+        FrameBudget(())
+    }
+}
+
+impl Drop for FrameBudget {
+    fn drop(&mut self) {
+        DEADLINE.with(|d| d.set(None));
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Speculative passes built (a test counts rebuilds).
+    pub static SPEC_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub fn set_frame_budget(b: Option<Duration>) {
+    BUDGET.with(|c| c.set(b));
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub struct Pos {
     pub line: usize,
@@ -84,12 +132,40 @@ struct Group {
 
 struct Hl {
     syntax: &'static SyntaxReference,
-    /// `states[i]` is the parser state at the start of line i (valid prefix).
+    /// `states[c]` is the parser state at the start of line `c * HL_CHECKPOINT` (valid prefix).
     states: Vec<(ParseState, HighlightState, semantic::Ctx)>,
+    /// The state at the start of line `segs.len()` when that is not a checkpoint.
+    front: Option<(ParseState, HighlightState, semantic::Ctx)>,
     /// Highlighted segments `(end byte, style)` per line (valid prefix).
     segs: Vec<Vec<(usize, SStyle)>>,
     /// `theme::Syntax::gen` the cache was built with.
     gen: u64,
+    /// The furthest line a view asked for: the sequential pass works toward it.
+    want: usize,
+    /// Segments of far views (each from its first line, `.0`), tokenised from a fresh state
+    /// because the sequential pass is not there yet; shown until it is, then dropped. One
+    /// region per view (editor groups, the peek), so views do not rebuild each other's.
+    spec: Vec<(usize, Vec<Segs>)>,
+}
+
+/// One line's highlighted segments: `(end byte, style)`.
+type Segs = Vec<(usize, SStyle)>;
+
+/// One line's segments, advancing `st` (parse, highlight and semantic state) past it.
+fn tokenise(line: &str, st: &mut (ParseState, HighlightState, semantic::Ctx), hl: &Highlighter, look: &theme::Syntax, lang: semantic::Lang) -> Segs {
+    let plain = vec![(line.len(), PLAIN)];
+    if line.len() > HL_MAX_LINE {
+        return plain;
+    }
+    match st.0.parse_line(line, syntaxes()) {
+        Ok(mut ops) => {
+            semantic::alias_ops(&mut ops);
+            let start = st.1.path.clone();
+            let pieces = RangedHighlightIterator::new(&mut st.1, &ops, line, hl).map(|(s, _, r)| (r.end, s)).collect();
+            semantic::refine(lang, line, &ops, start, pieces, &mut st.2, &look.sem)
+        }
+        Err(_) => plain,
+    }
 }
 
 pub struct Buffer {
@@ -115,7 +191,8 @@ pub struct Buffer {
     redo: Vec<Group>,
     open_kind: Option<Kind>,
     last_edit: Option<Instant>,
-    hl: Option<Hl>,
+    /// Boxed: a far jump's state makes it big, and every `Doc::Text` carries one.
+    hl: Option<Box<Hl>>,
 }
 
 pub fn syntaxes() -> &'static SyntaxSet {
@@ -314,7 +391,7 @@ impl Buffer {
             HighlightState::new(&Highlighter::new(&look.theme), ScopeStack::new()),
             semantic::Ctx::default(),
         );
-        self.hl = Some(Hl { syntax: syn, states: vec![start], segs: Vec::new(), gen: look.gen });
+        self.hl = Some(Box::new(Hl { syntax: syn, states: vec![start], front: None, segs: Vec::new(), gen: look.gen, want: 0, spec: Vec::new() }));
     }
 
     fn set_text(&mut self, text: &str) {
@@ -382,15 +459,34 @@ impl Buffer {
 
     fn invalidate(&mut self, line: usize) {
         if let Some(h) = &mut self.hl {
-            h.segs.truncate(line);
-            h.states.truncate(line + 1);
+            // Back to the checkpoint at or above the edit; the pass resumes from its state.
+            // An edit the pass has not reached yet changes nothing it has: its front state
+            // stays (a resume from the checkpoint below would start on the wrong line).
+            if line < h.segs.len() {
+                let c = line / HL_CHECKPOINT;
+                h.segs.truncate(c * HL_CHECKPOINT);
+                h.states.truncate(c + 1);
+                h.front = None;
+            }
+            h.spec.clear();
         }
     }
 
     /// Highlight lines up to `upto` (exclusive), resuming from the cached state:
     /// grammar scopes renamed to VS Code's (`semantic::alias`), themed, then the
     /// semantic pass for C/C++/Rust identifiers.
+    /// Tokenise lines `..upto` (no view to colour ahead of the pass).
     pub fn highlight_upto(&mut self, upto: usize) {
+        self.highlight_view(upto, upto);
+    }
+
+    /// Tokenise for a view of lines `start..end`. The sequential pass (exact: syntect's
+    /// state runs from the top) works toward the furthest line any view asked for, but
+    /// inside a draw only until the frame's budget is spent, one line at the least (a page
+    /// down fits the budget). View lines it has not reached yet (a jump to the end) are
+    /// tokenised from a fresh state just above the view instead, close for most code, until
+    /// the pass gets there. `hl_pending` tells when to draw again.
+    pub fn highlight_view(&mut self, start: usize, end: usize) {
         let Some(h) = &mut self.hl else { return };
         let look = theme::syntax();
         let hl = Highlighter::new(&look.theme);
@@ -400,34 +496,57 @@ impl Buffer {
             h.segs.clear();
             h.states.truncate(1);
             h.states[0] = (ParseState::new(h.syntax), HighlightState::new(&hl, ScopeStack::new()), Default::default());
+            h.front = None;
+            h.spec.clear();
         }
         let lang = semantic::lang(&h.syntax.name);
-        let upto = upto.min(self.lines.len());
-        while h.segs.len() < upto {
+        let n = self.lines.len();
+        let end = end.min(n);
+        h.want = h.want.max(end).min(n);
+        let mut done = 0;
+        while h.segs.len() < h.want {
             let i = h.segs.len();
-            let (mut ps, mut hs, mut ctx) = h.states[i].clone();
-            let line = &self.lines[i];
-            let plain = vec![(line.len(), PLAIN)];
-            let segs = if line.len() > HL_MAX_LINE {
-                plain
-            } else {
-                match ps.parse_line(line, syntaxes()) {
-                    Ok(mut ops) => {
-                        semantic::alias_ops(&mut ops);
-                        let start = hs.path.clone();
-                        let pieces = RangedHighlightIterator::new(&mut hs, &ops, line, &hl).map(|(st, _, r)| (r.end, st)).collect();
-                        semantic::refine(lang, line, &ops, start, pieces, &mut ctx, &look.sem)
-                    }
-                    Err(_) => plain,
-                }
-            };
+            if done > 0 && out_of_time() {
+                break;
+            }
+            // Without a front state the prefix ends on a checkpoint (`invalidate`, a reset).
+            let mut st = h.front.take().unwrap_or_else(|| h.states[i / HL_CHECKPOINT].clone());
+            let segs = tokenise(&self.lines[i], &mut st, &hl, &look, lang);
             h.segs.push(segs);
-            h.states.push((ps, hs, ctx));
+            if (i + 1) % HL_CHECKPOINT == 0 {
+                h.states.push(st.clone());
+            }
+            h.front = Some(st);
+            done += 1;
+        }
+        let have = h.segs.len();
+        h.spec.retain(|(f, v)| have < f + v.len()); // the exact pass has caught up with these
+        // Only a view (start < end) gets speculative lines: the minimap asks with none.
+        let from = start.saturating_sub(HL_SPEC_CONTEXT).max(have);
+        let covered = h.spec.iter().any(|(f, v)| *f <= from && f + v.len() >= end);
+        if start < end && have < end && !covered {
+            let mut st = (ParseState::new(h.syntax), HighlightState::new(&hl, ScopeStack::new()), Default::default());
+            if h.spec.len() >= 4 {
+                h.spec.remove(0);
+            }
+            h.spec.push((from, self.lines[from..end].iter().map(|l| tokenise(l, &mut st, &hl, &look, lang)).collect()));
+            #[cfg(test)]
+            SPEC_BUILDS.with(|c| c.set(c.get() + 1));
         }
     }
 
+    /// The exact pass still has lines a view asked for: draw again soon. It never stays
+    /// true while the buffer is drawn: every frame does at least one line, toward a target
+    /// no larger than the buffer.
+    pub fn hl_pending(&self) -> bool {
+        self.hl.as_ref().is_some_and(|h| h.segs.len() < h.want.min(self.lines.len()))
+    }
+
+    /// A line's segments: exact, else the speculative ones of a far view, else None
+    /// (drawn in the editor's foreground).
     pub fn segs(&self, line: usize) -> Option<&[(usize, SStyle)]> {
-        self.hl.as_ref()?.segs.get(line).map(Vec::as_slice)
+        let h = self.hl.as_ref()?;
+        h.segs.get(line).or_else(|| h.spec.iter().rev().find_map(|(f, v)| v.get(line.checked_sub(*f)?))).map(Vec::as_slice)
     }
 
     pub fn syntax_name(&self) -> &str {
@@ -1457,6 +1576,189 @@ mod tests {
         assert_eq!(b.selected_text(&v).as_deref(), Some(" foo_bar"));
         b.left(&mut v, false, true);
         assert_eq!(v.cursor.col, 4);
+    }
+
+    /// A C file whose line 2500 opens a block comment that line 2600 closes: a parse that
+    /// starts fresh inside it colours the comment as code.
+    fn far_comment_c(n: usize) -> Buffer {
+        let text: String = (0..n)
+            .map(|i| match i {
+                2500 => "/* a comment opened far above".to_string(),
+                2600 => "*/".to_string(),
+                _ => format!("int v{i} = {i};"),
+            } + "\n")
+            .collect();
+        let mut b = buf(&text);
+        b.set_syntax(syntaxes().find_syntax_by_extension("c"));
+        b
+    }
+
+    /// Draws one frame's worth of highlighting for a view, with the frame already out of time.
+    fn starved_frame(b: &mut Buffer, start: usize, end: usize) {
+        set_frame_budget(Some(Duration::ZERO));
+        let _frame = FrameBudget::start();
+        b.highlight_view(start, end);
+    }
+
+    #[test]
+    fn a_far_jump_is_highlighted_in_slices_and_settles_exactly() {
+        let (start, end) = (2550, 2590); // a view inside the comment
+        let mut exact = far_comment_c(3000);
+        exact.highlight_upto(end); // outside a frame: no budget, all at once
+        let mut b = far_comment_c(3000);
+        starved_frame(&mut b, start, end);
+        assert!(b.hl_pending(), "one frame does not tokenise 2500 lines");
+        assert!((start..end).all(|l| b.segs(l).is_some()), "the view is coloured at once");
+        assert_ne!(b.segs(2560), exact.segs(2560), "speculative: a fresh state cannot know the comment");
+        let mut frames = 1;
+        while b.hl_pending() {
+            starved_frame(&mut b, start, end);
+            frames += 1;
+            assert!(frames < 10_000, "never settles");
+        }
+        for l in 0..end {
+            assert_eq!(b.segs(l), exact.segs(l), "line {l} after {frames} frames");
+        }
+        set_frame_budget(Some(FRAME_BUDGET));
+    }
+
+    #[test]
+    fn states_are_kept_every_32_lines_and_edits_resume_exactly() {
+        let mut b = far_comment_c(3000);
+        b.highlight_upto(3000);
+        let kept = b.hl.as_ref().unwrap().states.len();
+        assert!(kept <= 3000 / 32 + 2, "{kept} parser states kept for 3000 lines");
+        // Deleting the comment's opener (line 2500) recolours everything below it, from the
+        // checkpoint under the edit; the result equals a buffer parsed fresh.
+        let mut v = View { cursor: Pos::new(2500, 0), ..Default::default() };
+        b.move_to(&mut v, Pos::new(2500, 2), true);
+        b.insert(&mut v, "//");
+        b.highlight_upto(3000);
+        let mut fresh = buf(&b.lines.join("\n"));
+        fresh.set_syntax(syntaxes().find_syntax_by_extension("c"));
+        fresh.highlight_upto(3000);
+        for l in 0..3000 {
+            assert_eq!(b.segs(l), fresh.segs(l), "line {l}");
+        }
+    }
+
+    /// hc-sup6's probe: typing in a far view before the exact pass reaches it.
+    #[test]
+    fn an_edit_beyond_the_pass_still_settles_exactly() {
+        let text: String = (0..3000).map(|i| match i { 35 => "/* open".to_string(), 50 => "*/".to_string(), _ => format!("int v{i} = {i};") } + "\n").collect();
+        let mut b = buf(&text);
+        b.set_syntax(syntaxes().find_syntax_by_extension("c"));
+        for _ in 0..40 {
+            starved_frame(&mut b, 2550, 2590); // one exact line a frame: the pass is at 40
+        }
+        assert_eq!(b.hl.as_ref().unwrap().segs.len(), 40);
+        let mut v = View { cursor: Pos::new(2560, 0), ..Default::default() };
+        b.insert(&mut v, "x"); // typing in the far view
+        set_frame_budget(Some(FRAME_BUDGET));
+        b.highlight_upto(3000);
+        let mut fresh = buf(&b.lines.join("\n"));
+        fresh.set_syntax(syntaxes().find_syntax_by_extension("c"));
+        fresh.highlight_upto(3000);
+        let bad: Vec<usize> = (0..3000).filter(|&l| b.segs(l) != fresh.segs(l)).collect();
+        assert!(bad.is_empty(), "{} lines differ from a fresh parse, first {:?}", bad.len(), &bad[..bad.len().min(5)]);
+    }
+
+    /// Random far views, starved frames and edits (comment openers and closers among
+    /// them, before and beyond the pass): settled, every line equals a fresh parse.
+    #[test]
+    fn random_edits_during_catch_up_settle_exactly() {
+        for seed in 1..=12u64 {
+            let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            let mut next = |n: usize| {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                (rng % n as u64) as usize
+            };
+            let text: String = (0..600).map(|i| format!("int v{i} = {i};\n")).collect();
+            let mut b = buf(&text);
+            b.set_syntax(syntaxes().find_syntax_by_extension("c"));
+            let mut v = View::default();
+            for _ in 0..60 {
+                let n = b.lines.len();
+                let start = next(n);
+                for _ in 0..next(6) {
+                    starved_frame(&mut b, start, (start + 40).min(n));
+                }
+                let line = next(b.lines.len());
+                let col = next(b.lines[line].len() + 1);
+                v.cursor = Pos::new(line, col);
+                v.anchor = None;
+                let s = ["x", "/*", "*/", "\n", "\"", "int a;\n"][next(6)];
+                b.insert(&mut v, s);
+            }
+            set_frame_budget(Some(FRAME_BUDGET));
+            let n = b.lines.len();
+            b.highlight_upto(n);
+            let mut fresh = buf(&b.lines.join("\n"));
+            fresh.set_syntax(syntaxes().find_syntax_by_extension("c"));
+            fresh.highlight_upto(n);
+            let bad: Vec<usize> = (0..n).filter(|&l| b.segs(l) != fresh.segs(l)).collect();
+            assert!(bad.is_empty(), "seed {seed}: {} lines differ, first {:?}", bad.len(), &bad[..bad.len().min(5)]);
+        }
+    }
+
+    /// The minimap (no view of its own) and a second view of the buffer (a split, the
+    /// peek) keep the first view's speculative lines instead of rebuilding them each frame.
+    #[test]
+    fn views_keep_their_speculative_lines() {
+        let mut b = far_comment_c(3000);
+        starved_frame(&mut b, 2550, 2590);
+        let first = b.segs(2560).map(<[_]>::to_vec);
+        assert!(first.is_some());
+        SPEC_BUILDS.with(|c| c.set(0));
+        for _ in 0..5 {
+            starved_frame(&mut b, 2550, 2590); // the editor
+            starved_frame(&mut b, 2620, 2620); // the minimap: no view
+            starved_frame(&mut b, 1200, 1240); // a split elsewhere in the file
+        }
+        assert_eq!(SPEC_BUILDS.with(|c| c.get()), 1, "only the split's view was new");
+        assert!((1200..1240).all(|l| b.segs(l).is_some()) && b.segs(2560).map(<[_]>::to_vec) == first);
+        set_frame_budget(Some(FRAME_BUDGET));
+    }
+
+    #[test]
+    fn pending_ends_after_an_edit_mid_catch_up_and_on_truncated_buffers() {
+        let mut b = far_comment_c(3000);
+        let mut v = View::default();
+        for frame in 0.. {
+            starved_frame(&mut b, 2950, 2990);
+            if frame == 50 {
+                v.cursor = Pos::new(10, 0);
+                b.insert(&mut v, "x\ny\n"); // an edit while catching up
+            }
+            if !b.hl_pending() {
+                break;
+            }
+            assert!(frame < 10_000, "an edit kept it pending");
+        }
+        // Cut to MAX_LINES: the pass ends at the last line kept, and stays done.
+        let d = std::env::temp_dir().join(format!("herdr-code-ed-trunc-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("big.c"), "int x;\n".repeat(MAX_LINES + 500)).unwrap();
+        let mut t = Buffer::open(&d.join("big.c"));
+        assert!(t.readonly.is_some() && t.lines.len() == MAX_LINES);
+        for frame in 0.. {
+            starved_frame(&mut t, MAX_LINES - 30, MAX_LINES + 400);
+            if !t.hl_pending() {
+                break;
+            }
+            assert!(frame < 100_000, "a truncated file kept it pending");
+        }
+        starved_frame(&mut t, MAX_LINES - 30, MAX_LINES + 400);
+        assert!(!t.hl_pending(), "stays done");
+        let mut ro = Buffer::from_text("a\nb\n", "C", "read-only view");
+        for _ in 0..5 {
+            starved_frame(&mut ro, 0, 50); // one line a frame at the least: done in three
+        }
+        assert!(!ro.hl_pending(), "a read-only view ends too");
+        set_frame_budget(Some(FRAME_BUDGET));
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

@@ -623,13 +623,25 @@ pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> 
         _ => None,
     };
     app.token = token_file.as_deref().and_then(|p| write_token(p).ok());
+    // Only the event loop's own panic leaves the terminal (then the default hook prints it
+    // on the shell's screen). A job thread's panic is logged; its Reply guard or closed
+    // channel shows the failure, and the UI goes on: restoring would close the gate.
+    let main = std::thread::current().id();
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        restore();
-        hook(info);
+        if panic_restores(main) {
+            restore();
+            hook(info);
+        } else {
+            let name = std::thread::current().name().unwrap_or("job").to_string();
+            log_panic(&crate::plugin_dir(true), &format!("thread '{name}' {info}"));
+        }
     }));
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        Terminal::new(CrosstermBackend::new(io::stdout())).and_then(|mut t| app.event_loop(&mut t))
+        // One write per frame (ratatui flushes the backend after each draw): herdr then
+        // gets whole frames, not ~14 line-buffered pieces.
+        let out = io::BufWriter::with_capacity(1 << 16, Gate { w: io::stdout(), off: &RESTORED });
+        Terminal::new(CrosstermBackend::new(out)).and_then(|mut t| app.event_loop(&mut t))
     }));
     // Every exit path (quit, signal, error, panic) leaves unsaved edits on disk.
     app.sync_backups();
@@ -692,7 +704,46 @@ fn restore_seq(w: &mut impl Write) -> io::Result<()> {
     )
 }
 
+/// Whether a panic on this thread tears the terminal down: only on the event loop's.
+fn panic_restores(main: std::thread::ThreadId) -> bool {
+    std::thread::current().id() == main
+}
+
+/// A job thread's panic, appended to `panic.log` in `dir` (best effort: never in the UI).
+fn log_panic(dir: &Path, msg: &str) {
+    let _ = fs::create_dir_all(dir);
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("panic.log")) {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
+/// Set once `restore` ran: the terminal's buffered output is dropped from then on.
+static RESTORED: AtomicBool = AtomicBool::new(false);
+
+/// The terminal's stdout, closed by `restore`: a frame a panic cut short, still in the
+/// `BufWriter` when it is dropped after the panic hook, never lands on the shell's screen.
+struct Gate<W> {
+    w: W,
+    off: &'static AtomicBool,
+}
+
+impl<W: Write> Write for Gate<W> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        if self.off.load(Ordering::SeqCst) {
+            return Ok(b.len());
+        }
+        self.w.write(b)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        if self.off.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        self.w.flush()
+    }
+}
+
 pub(crate) fn restore() {
+    RESTORED.store(true, Ordering::SeqCst);
     let _ = restore_seq(&mut io::stdout());
     let _ = terminal::disable_raw_mode();
 }
@@ -1390,6 +1441,12 @@ impl App {
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         for t in [self.qdiff_due, self.gitui.due(), self.refresh_due].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
+        }
+        // A far jump's first highlighting catches up one budgeted slice per frame
+        // (editor::FrameBudget): draw again soon, input still comes first.
+        if self.hl_pending() {
+            *dirty = true;
+            wait = wait.min(Duration::from_millis(2));
         }
         // A key or click held back by the last batch runs now, after that batch's frame.
         let ev = match self.pending_ev.take() {
@@ -3137,10 +3194,11 @@ impl App {
             // Shift+wheel and the horizontal wheel scroll a diff sideways.
             MouseEventKind::ScrollUp if shift && self.hwheel(p, -6) => {}
             MouseEventKind::ScrollDown if shift && self.hwheel(p, 6) => {}
-            MouseEventKind::ScrollLeft => _ = self.hwheel(p, -6),
-            MouseEventKind::ScrollRight => _ = self.hwheel(p, 6),
-            MouseEventKind::ScrollUp => self.wheel(p, -3),
-            MouseEventKind::ScrollDown => self.wheel(p, 3),
+            // No diff there: nothing moved, no redraw.
+            MouseEventKind::ScrollLeft => return self.hwheel(p, -6),
+            MouseEventKind::ScrollRight => return self.hwheel(p, 6),
+            MouseEventKind::ScrollUp => return self.wheel(p, -3),
+            MouseEventKind::ScrollDown => return self.wheel(p, 3),
             // Redraw only when what the frame shows for the pointer changes.
             MouseEventKind::Moved => {
                 let old = self.hover.replace(p);
@@ -3615,36 +3673,40 @@ impl App {
         true
     }
 
-    fn wheel(&mut self, p: Position, d: isize) {
+    /// Scroll what is under `p`; false when it could not move (no redraw needed).
+    fn wheel(&mut self, p: Position, d: isize) -> bool {
         if let Some(q) = self.quick.as_mut() {
+            let old = q.sel;
             q.sel = (q.sel as isize + d).clamp(0, (q.items.len() as isize - 1).max(0)) as usize;
-            return;
+            return q.sel != old;
         }
         if crate::scm::wheel(self, p, d) {
-            return;
+            return true;
         }
         if self.ui.peek_zone.contains(p) {
             let max = self.ui.peek_max;
-            if let Some(pk) = self.peek.as_mut() {
-                pk.scroll = (pk.scroll.min(max) as isize + d).clamp(0, max as isize) as usize;
-            }
-            return;
+            let Some(pk) = self.peek.as_mut() else { return false };
+            let old = pk.scroll;
+            pk.scroll = (pk.scroll.min(max) as isize + d).clamp(0, max as isize) as usize;
+            return pk.scroll != old;
         }
         // Over an editor's scrollbar the wheel scrolls that editor.
         if let Some(sb) = self.ui.scrollbars.iter().find(|s| s.track.contains(p)).copied() {
             if let ScrollTarget::Editor(_) = sb.target {
                 let cur = self.scroll_of(sb.target);
-                return self.set_scroll(sb.target, (cur as isize + d).max(0) as usize);
+                self.set_scroll(sb.target, (cur as isize + d).max(0) as usize);
+                return self.scroll_of(sb.target) != cur;
             }
         }
         if self.ui.side_list.contains(p) {
             let s = self.side as usize;
             let n = self.side_count();
             let h = self.ui.side_rows;
+            let old = self.off[s];
             self.off[s] = (self.off[s] as isize + d).clamp(0, n.saturating_sub(h) as isize) as usize;
-            return;
+            return self.off[s] != old;
         }
-        let Some(g) = self.ui.groups.iter().position(|g| g.area.contains(p)) else { return };
+        let Some(g) = self.ui.groups.iter().position(|g| g.area.contains(p)) else { return false };
         let max = {
             let grp = &self.groups[g];
             match grp.tabs.get(grp.active).and_then(|t| self.docs.get(&t.key)) {
@@ -3653,9 +3715,25 @@ impl App {
                 None => 0,
             }
         };
-        if let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) {
-            t.view.scroll = (t.view.scroll as isize + d).clamp(0, max.saturating_sub(1) as isize) as usize;
-        }
+        let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) else { return false };
+        let old = t.view.scroll;
+        t.view.scroll = (t.view.scroll as isize + d).clamp(0, max.saturating_sub(1) as isize) as usize;
+        t.view.scroll != old
+    }
+
+    /// A drawn editor's (or the definition peek's) first highlighting is still catching
+    /// up. Only what was drawn last frame counts: a hidden tab cannot keep the loop awake.
+    pub(crate) fn hl_pending(&self) -> bool {
+        let shown = |g: usize| self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).and_then(|t| self.docs.get(&t.key));
+        // A terminal too small to draw (under 30x5) records no groups: then nothing counts,
+        // a peek kept from a bigger frame included.
+        (0..self.ui.groups.len()).any(|g| self.ui.groups[g].text.height > 0 && matches!(shown(g), Some(Doc::Text(b)) if b.hl_pending()))
+            || (!self.ui.groups.is_empty() && crate::navui::hl_pending(self))
+            // A drawn diff minimap highlights its own buffer (ui::diff_mini).
+            || self.ui.minimaps.iter().any(|m| {
+                let key = self.groups.get(m.group).and_then(|grp| grp.tabs.get(grp.active)).map(|t| &t.key);
+                key.and_then(|k| self.diff_minis.get(k)).is_some_and(|e| e.1.hl_pending())
+            })
     }
 }
 
@@ -4341,6 +4419,126 @@ mod tests {
     /// Popups, dialogs and the find widget on terminals from 30x5 to 40x18, in both
     /// densities and with every spacing key at its maximum: nothing may draw
     /// outside the buffer (that panics). `cargo test tiny` runs it.
+    #[test]
+    fn a_far_jump_highlights_in_slices_and_settles_to_the_unbudgeted_frame() {
+        let root = repo("farjump");
+        let text: String = (0..3000)
+            .map(|i| match i {
+                2500 => "/* a comment opened far above".to_string(),
+                2600 => "*/".to_string(),
+                _ => format!("int v{i} = {i};"),
+            } + "\n")
+            .collect();
+        fs::write(root.join("src/far.c"), text).unwrap();
+        let jump = |app: &mut App| {
+            app.open_file(0, "src/far.c", false);
+            app.focus = Focus::Editor;
+            if let Some((_, t)) = app.ed() {
+                (t.view.cursor, t.view.scroll) = (Pos::new(2560, 0), 2540);
+            }
+        };
+        // The reference: the same view drawn with no budget, as before.
+        crate::editor::set_frame_budget(None);
+        let mut e = App::new(root.clone(), None);
+        jump(&mut e);
+        let mut te = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        te.draw(|f| crate::ui::draw(&mut e, f)).unwrap();
+        assert!(!e.hl_pending());
+        // Budgeted, through the loop's own step and no input: it keeps drawing with short
+        // waits while the highlighting catches up, then stops asking.
+        crate::editor::set_frame_budget(Some(Duration::from_millis(1)));
+        let mut a = App::new(root.clone(), None);
+        jump(&mut a);
+        let mut ta = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let (mut dirty, mut steps) = (true, 0);
+        loop {
+            let wait = a.step(&mut ta, &mut dirty, |_| Ok(None)).unwrap();
+            steps += 1;
+            if !a.hl_pending() {
+                break;
+            }
+            assert!(dirty && wait <= Duration::from_millis(2), "step {steps}: pending, yet dirty {dirty} wait {wait:?}");
+            assert!(steps < 20_000, "never settles");
+        }
+        crate::editor::set_frame_budget(Some(crate::editor::FRAME_BUDGET));
+        assert!(steps > 2, "one frame did it all: not budgeted");
+        assert!(!a.hl_pending() && !dirty, "settled: no more frames asked for");
+        // The editor group (text, gutter, minimap) is what the budget draws; the rest of the
+        // frame shows async git state (status bar, Timeline) that only `a` has drained.
+        let g = a.ui.groups[0].area;
+        assert_eq!(g, e.ui.groups[0].area);
+        let (ba, be) = (ta.backend().buffer(), te.backend().buffer());
+        for (x, y) in (g.top()..g.bottom()).flat_map(|y| (g.left()..g.right()).map(move |x| (x, y))) {
+            assert!(ba[(x, y)] == be[(x, y)], "the settled editor differs from the unbudgeted one at {x},{y}");
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_diff_minimap_still_highlighting_keeps_the_loop_drawing() {
+        let d = repo("dmini");
+        let mut app = App::new(d.clone(), None);
+        open_big_diff(&mut app);
+        let mut t = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        crate::editor::set_frame_budget(Some(Duration::ZERO)); // one line per frame
+        t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+        assert!(!app.ui.minimaps.is_empty() && app.hl_pending(), "the minimap's buffer is catching up");
+        let (mut dirty, mut steps) = (false, 0);
+        loop {
+            let wait = app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+            if !app.hl_pending() {
+                break;
+            }
+            assert!(dirty && wait <= Duration::from_millis(2), "step {steps}: pending, yet dirty {dirty} wait {wait:?}");
+            steps += 1;
+            assert!(steps < 1000, "never settles");
+        }
+        crate::editor::set_frame_budget(Some(crate::editor::FRAME_BUDGET));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_wheel_that_cannot_scroll_asks_for_no_redraw() {
+        let root = repo("wheel");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/main.rs", false); // 3 lines
+        let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+        let tx = app.ui.groups[0].text;
+        let wheel = |app: &mut App, kind, x, y| app.on_mouse(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE });
+        assert!(!wheel(&mut app, MouseEventKind::ScrollUp, tx.x + 2, tx.y), "editor already at the top");
+        assert!(wheel(&mut app, MouseEventKind::ScrollDown, tx.x + 2, tx.y));
+        assert!(!wheel(&mut app, MouseEventKind::ScrollDown, tx.x + 2, tx.y), "editor at its last line");
+        let sl = app.ui.side_list;
+        assert!(!wheel(&mut app, MouseEventKind::ScrollDown, sl.x + 1, sl.y), "a short list cannot scroll");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn only_the_event_loops_panic_restores_the_terminal() {
+        let main = std::thread::current().id();
+        assert!(panic_restores(main));
+        assert!(!std::thread::spawn(move || panic_restores(main)).join().unwrap(), "a job thread leaves the terminal and the gate alone");
+        let d = std::env::temp_dir().join(format!("herdr-code-panic-{}", std::process::id()));
+        log_panic(&d, "thread 'git' panicked at x.rs:1:1:\nboom");
+        log_panic(&d, "thread 'nav' panicked at y.rs:2:2:\nagain");
+        let log = fs::read_to_string(d.join("panic.log")).unwrap();
+        assert!(log.contains("boom") && log.contains("again"), "{log}");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn output_after_restore_is_dropped() {
+        static OFF: AtomicBool = AtomicBool::new(false);
+        let mut out = io::BufWriter::new(Gate { w: Vec::new(), off: &OFF });
+        out.write_all(b"frame").unwrap();
+        out.flush().unwrap();
+        out.write_all(b" half a frame").unwrap(); // a panic cut this frame short
+        OFF.store(true, Ordering::SeqCst); // restore() ran
+        out.flush().unwrap(); // the buffer being dropped
+        assert_eq!(out.get_ref().w, b"frame");
+    }
+
     #[test]
     fn tiny_terminals_never_panic() {
         use crate::settings::Spacing;

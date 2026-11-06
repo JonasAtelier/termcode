@@ -159,6 +159,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     if area.height < 5 || area.width < 30 {
         return;
     }
+    // This frame's share of first-time highlighting (a far jump catches up over frames).
+    let _hl = editor::FrameBudget::start();
     let title = Rect::new(area.x, area.y, area.width, 1);
     let status = Rect::new(area.x, area.bottom() - 1, area.width, 1);
     let body = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
@@ -1143,7 +1145,7 @@ fn text_editor(
     out.text = text;
     out.marks_x = Some(gx + nums);
     let h = area.height as usize;
-    b.highlight_upto(v.scroll + h);
+    b.highlight_view(v.scroll, v.scroll + h);
     let c = b.clamp(v.cursor);
     let sel = v.selection();
     let sel_bg = if group_focus { P.selection } else { P.sel_inactive };
@@ -1662,7 +1664,7 @@ pub(crate) fn diff_view(
             peek: None,
             rulers: &[],
         };
-        // TODO(perf1): count this buffer in hl_pending too, like the editors' minimaps.
+        // App::hl_pending counts this buffer (by its MiniHit) while it catches up.
         out_mini = Some((mr, draw_minimap(f, m.buf, v, mr, &m.cfg, &deco, ms)));
     }
     let h = track.height as usize;
