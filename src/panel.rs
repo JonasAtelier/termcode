@@ -604,7 +604,7 @@ pub struct App {
     pub nav: crate::navui::Nav,
     /// Source Control view, Timeline, hover card and commit dialog state.
     pub gitui: crate::scm::GitUi,
-    /// The saved session of this root (`session`).
+    /// The saved session of the launch folder (`session`).
     pub session: crate::session::State,
 }
 
@@ -612,13 +612,14 @@ pub struct App {
 /// (`open:<path>:<line>:<col>`, see `request`). `tab`: the plugin's tab pane,
 /// which also takes requests from `herdr-code --tab FILE`; in place it does not.
 /// Every exit restores the terminal, so in place the shell gets it back.
-pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> {
+pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> {
     let state = crate::plugin_dir(true);
     let mut app = App::new(root, Some(state.join("layout.json")));
     app.settings_file = Some(settings::path());
     app.check_settings();
-    // In place and in a tab alike: the same state dir, so one session per root.
-    app.session.file = Some(crate::session::path(&state, &app.root));
+    // In place and in a tab alike: the same state dir, one session per launch folder
+    // (`key`: where herdr-code was started; the root itself for a PATH).
+    app.session.file = Some(crate::session::path(&state, &key));
     crate::session::restore(&mut app);
     // `herdr-code FILE:L` opens on top of the restored tabs.
     if let Some(req) = req {

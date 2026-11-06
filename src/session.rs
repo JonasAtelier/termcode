@@ -52,9 +52,9 @@ pub struct State {
     offers: std::collections::VecDeque<String>,
 }
 
-/// The session file of `root` in the plugin state directory.
-pub fn path(state_dir: &Path, root: &Path) -> PathBuf {
-    state_dir.join("sessions").join(format!("{}.json", crate::parse::lock_key("session", &root.to_string_lossy())))
+/// The session file of launch folder `key` in the plugin state directory.
+pub fn path(state_dir: &Path, key: &Path) -> PathBuf {
+    state_dir.join("sessions").join(format!("{}.json", crate::parse::lock_key("session", &key.to_string_lossy())))
 }
 
 /// An event that may change the session: save it a second after the last one.

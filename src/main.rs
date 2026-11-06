@@ -94,11 +94,12 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             Ok(())
         }
-        // The launcher opens the pane with the workspace root as its cwd.
-        Cmd::Panel => env::current_dir()
-            .and_then(fs::canonicalize)
-            .map_err(|e| e.to_string())
-            .and_then(|root| panel::run(root, env::var("HERDR_CODE_OPEN").ok(), true)),
+        // The launcher opens the pane with the workspace root as its cwd, and hands over
+        // the launch folder (the session's key) when it is not the root.
+        Cmd::Panel => env::current_dir().and_then(fs::canonicalize).map_err(|e| e.to_string()).and_then(|root| {
+            let key = env::var_os("HERDR_CODE_KEY").map(PathBuf::from).filter(|k| k.is_absolute()).unwrap_or_else(|| root.clone());
+            panel::run(root, key, env::var("HERDR_CODE_OPEN").ok(), true)
+        }),
         Cmd::Open { tab, path } => match mode(tab, std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
             (true, note) => {
                 if let Some(n) = note {
@@ -109,7 +110,8 @@ fn main() -> ExitCode {
             (false, _) => {
                 let cwd = env::current_dir().map_err(|e| e.to_string())?;
                 let (root, file) = target(path.as_deref(), &cwd)?;
-                panel::run(root, file.map(|(p, l, c)| format!("open:{}:{l}:{c}", p.display())), false)
+                let key = session_key(path.as_deref(), &cwd, &root);
+                panel::run(root, key, file.map(|(p, l, c)| format!("open:{}:{l}:{c}", p.display())), false)
             }
         },
     });
@@ -249,6 +251,15 @@ fn target(arg: Option<&str>, cwd: &Path) -> Result<(PathBuf, Option<FilePos>), S
     Ok((repo_root(&dir).unwrap_or(dir), Some((p, line, col))))
 }
 
+/// The session's key: the folder herdr-code was started from, so a no-argument launch
+/// from arch/sh has its own session though its root is the repo; with a PATH, the root.
+fn session_key(arg: Option<&str>, cwd: &Path, root: &Path) -> PathBuf {
+    match arg {
+        None => fs::canonicalize(cwd).unwrap_or_else(|_| root.to_path_buf()),
+        Some(_) => root.to_path_buf(),
+    }
+}
+
 /// Open (creating) `path` and take a non-blocking exclusive flock. `Some(file)`
 /// while held; the kernel releases it when the file is dropped or the process
 /// dies, so a crash never leaves a stale lock. std opens files O_CLOEXEC.
@@ -296,10 +307,10 @@ fn find_code_pane(list: &Value, root: &Path) -> Option<(String, String)> {
 /// `herdr plugin pane open` for a new Code tab. The CLI focuses by default
 /// (focus = true unless `--no-focus`), which would make the new tab the
 /// workspace's active tab; `--no-focus` leaves every client and the active tab alone.
-/// `env` (`HERDR_CODE_OPEN=<request>`) hands a file to open to the new panel.
-fn open_args<'a>(ws: &'a str, root: &'a str, env: Option<&'a str>) -> Vec<&'a str> {
+/// `envs` (`HERDR_CODE_OPEN=<request>`, `HERDR_CODE_KEY=<launch folder>`) go to the new panel.
+fn open_args<'a>(ws: &'a str, root: &'a str, envs: &[&'a str]) -> Vec<&'a str> {
     let mut a = vec!["plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "panel", "--placement", "tab", "--workspace", ws];
-    if let Some(e) = env {
+    for e in envs {
         a.extend(["--env", e]);
     }
     a.extend(["--cwd", root, "--no-focus"]);
@@ -324,6 +335,7 @@ fn launch(arg: Option<&str>) -> Result<(), String> {
         env::current_dir().map_err(|e| e.to_string())?
     };
     let (root, file) = target(arg, &cwd)?;
+    let key = session_key(arg, &cwd, &root);
     let root_s = root.to_string_lossy().into_owned();
     // The panel's request body; a control character could end the bracketed paste early.
     let req = file.as_ref().map(|(p, l, c)| format!("open:{}:{l}:{c}", p.display()));
@@ -338,9 +350,12 @@ fn launch(arg: Option<&str>) -> Result<(), String> {
         let panes = herdr(&["pane", "list", "--workspace", &ws])?;
         let found = find_code_pane(&panes, &root);
         if found.is_none() {
-            // A new panel opens the file itself, from its environment.
-            let env = req.as_ref().map(|r| format!("HERDR_CODE_OPEN={r}"));
-            let v = herdr(&open_args(&ws, &root_s, env.as_deref()))?;
+            // A new panel opens the file itself, from its environment, and keys its
+            // session by the launch folder.
+            let open = req.as_ref().map(|r| format!("HERDR_CODE_OPEN={r}"));
+            let keyed = (key != root).then(|| format!("HERDR_CODE_KEY={}", key.display()));
+            let envs: Vec<&str> = [open.as_deref(), keyed.as_deref()].into_iter().flatten().collect();
+            let v = herdr(&open_args(&ws, &root_s, &envs))?;
             let tab = v["result"]["plugin_pane"]["pane"]["tab_id"].as_str().ok_or("plugin pane open: no tab_id")?;
             // Cosmetic: the tab still works under herdr's default label.
             let _ = herdr_raw(&["tab", "rename", tab, &label]);
@@ -383,11 +398,12 @@ mod tests {
 
     #[test]
     fn opens_the_tab_without_focus() {
-        for env in [None, Some("HERDR_CODE_OPEN=open:/r/a.c:3:1")] {
-            let a = open_args("w1", "/r", env);
+        for envs in [vec![], vec!["HERDR_CODE_OPEN=open:/r/a.c:3:1", "HERDR_CODE_KEY=/r/sub"]] {
+            let a = open_args("w1", "/r", &envs);
             assert!(a.contains(&"--no-focus") && !a.contains(&"--focus"), "{a:?}");
             assert_eq!(&a[a.len() - 3..], ["--cwd", "/r", "--no-focus"]);
-            assert_eq!(a.iter().position(|x| *x == "--env").map(|i| a[i + 1]), env);
+            let given: Vec<&str> = a.windows(2).filter(|w| w[0] == "--env").map(|w| w[1]).collect();
+            assert_eq!(given, envs);
         }
     }
 
@@ -432,6 +448,24 @@ mod tests {
         assert_eq!(target(None, &repo.join("sub")), Ok((repo.clone(), None)), "no argument: the caller's repo");
         assert_eq!(target(None, &plain), Ok((plain.clone(), None)));
         assert!(target(Some("/dev/null"), &d).unwrap_err().contains("not a regular file"));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Sessions are per launch folder: two no-argument launches under one repo, from the
+    /// repo and from a subfolder of it, share the root yet keep two session files.
+    #[test]
+    fn each_launch_folder_keeps_its_own_session() {
+        let d = scratch("key");
+        let (repo, sub) = (d.join("repo"), d.join("repo/sub"));
+        let (root_a, root_b) = (target(None, &repo).unwrap().0, target(None, &sub).unwrap().0);
+        assert_eq!((&root_a, &root_b), (&repo, &repo), "one root: the repo");
+        let (ka, kb) = (session_key(None, &repo, &root_a), session_key(None, &sub, &root_b));
+        let state = d.join("state");
+        assert_ne!(session::path(&state, &ka), session::path(&state, &kb), "two launch folders, two session files");
+        assert_eq!((ka, kb), (repo.clone(), sub.clone()));
+        // With a PATH the key is the root: a folder (its own root) or a file's repo.
+        assert_eq!(session_key(Some("sub"), &repo, &sub), sub);
+        assert_eq!(session_key(Some("sub/f.rs:3"), &repo, &repo), repo);
         fs::remove_dir_all(&d).unwrap();
     }
 
