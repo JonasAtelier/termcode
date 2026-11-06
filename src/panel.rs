@@ -1885,6 +1885,13 @@ impl App {
                 Load::Diff(d) => Doc::Diff(d),
                 Load::Base(_) | Load::Status(..) | Load::Cancelled => continue,
             };
+            // A refresh that changed the rows drops the selection: it would mark other text.
+            let stale = matches!((self.docs.get(&key), &doc), (Some(Doc::Diff(a)), Doc::Diff(b)) if a.rows != b.rows);
+            if stale {
+                for t in self.groups.iter_mut().flat_map(|g| g.tabs.iter_mut()).filter(|t| t.key == key) {
+                    t.view.anchor = None;
+                }
+            }
             self.docs.insert(key, doc);
             changed = true;
         }
@@ -6831,6 +6838,27 @@ mod tests {
 
     /// Selecting in a diff, as in VS Code's diff editor: on one side only, copying that
     /// side's text without line numbers, signs or filler rows.
+    #[test]
+    fn a_reloaded_diff_with_new_rows_drops_the_selection() {
+        let d = std::env::temp_dir().join(format!("herdr-code-dreload-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let mut app = App::new(d.canonicalize().unwrap(), None);
+        let rows = open_big_diff(&mut app);
+        let key = "cdiff:abc:big.c".to_string();
+        let land = |app: &mut App, rows: Vec<diff::Row>| {
+            let file = ScmFile { section: Section::Changes, path: "big.c".into(), orig: None, letter: 'M' };
+            app.loading.insert(key.clone(), 7);
+            app.load_tx.send((key.clone(), 7, Load::Diff(DiffDoc { title: "big.c".into(), rows, note: None, file, id: Default::default() }))).unwrap();
+            app.drain();
+        };
+        app.groups[0].tabs[0].view.anchor = Some(Pos::new(3, 0));
+        land(&mut app, rows.clone());
+        assert!(app.groups[0].tabs[0].view.anchor.is_some(), "the same rows: the selection stays");
+        land(&mut app, rows[1..].to_vec());
+        assert!(app.groups[0].tabs[0].view.anchor.is_none(), "new rows: it would mark other text");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
     #[test]
     fn diff_selection_copies_one_side() {
         let d = std::env::temp_dir().join(format!("herdr-code-dsel-{}", std::process::id()));
