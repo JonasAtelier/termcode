@@ -1161,8 +1161,8 @@ pub fn run_act(app: &mut App, a: GitAct) {
 
 // ---------------------------------------------------------------- drawing
 
-/// A pane header; `focused`: its list has the keys (VS Code's focus outline, here the
-/// header in `focusBorder` with a bar at its left edge).
+/// A pane header; `focused`: its list has the keys. Cards show that on their border;
+/// the other styles (no focused border) colour the header `focusBorder`.
 #[allow(clippy::too_many_arguments)]
 fn pane_header(app: &mut App, f: &mut Frame, r: Rect, title: &str, open: bool, hit: Hit, extra: &str, focused: bool) {
     if r.height == 0 {
@@ -1171,11 +1171,8 @@ fn pane_header(app: &mut App, f: &mut Frame, r: Rect, title: &str, open: bool, h
     let s = app.settings.spacing;
     let ic = icons();
     fill(f, r, P.section_bg);
-    if focused {
-        f.render_widget(Span::styled("▎", Style::new().fg(P.focus_border)), Rect::new(r.x, r.y, 1, 1));
-    }
     let chev = if open { ic.chev_down } else { ic.chev_right };
-    let fg = if focused { P.focus_border } else { P.section_fg };
+    let fg = if focused && app.settings.blocks != crate::blocks::BlockStyle::Cards { P.focus_border } else { P.section_fg };
     let ir = inset(r, s.sidebar_padding);
     // As in the rows: cut once with "…"; the dim file name only while the title is whole.
     let head = format!(" {chev}{}{title}", sp(crate::blocks::icon_gap(s.icon_gap)));
@@ -1248,6 +1245,7 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
         fill(f, btn, P.button_bg);
         let bx = btn.x + btn.width.saturating_sub(label.width() as u16) / 2;
         f.render_widget(Span::styled(fit(&label, btn.width as usize), Style::new().fg(P.button_fg).bg(P.button_bg)), Rect::new(bx, btn.y, btn.right().saturating_sub(bx), 1));
+        crate::ui::round_ends(f, btn, P.button_bg, P.sidebar_bg);
         app.ui.commit_btn = btn;
         let top = (1 + s.section_gap).min(crect.height);
         changes_list(app, f, Rect::new(crect.x, crect.y + top, crect.width, crect.height - top));
@@ -1939,16 +1937,19 @@ pub(crate) mod ui_tests {
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert!(!app.gitui.graph_focus && app.focus == Focus::Side);
         screen(&mut app, &mut tm);
+        // Cards show focus on the pane card's border only (the header keeps its colour).
         let (cx, cy) = at(&tm, "CHANGES");
-        assert_eq!(tm.backend().buffer()[(cx, cy)].fg, P.focus_border, "the focused pane's header");
+        let sx = app.ui.sidebar.x;
+        let edge = |tm: &Terminal<TestBackend>, y: u16| tm.backend().buffer()[(sx, y)].fg;
+        assert_eq!(edge(&tm, cy), crate::blocks::border(true), "the focused pane's card");
+        assert_eq!(tm.backend().buffer()[(cx, cy)].fg, P.section_fg, "no second focus colour");
         key(&mut app, KeyCode::End, KeyModifiers::NONE);
         assert_eq!(app.sel[Side::Scm as usize], app.scm_rows().len() - 1, "End in CHANGES");
         key(&mut app, KeyCode::BackTab, KeyModifiers::NONE);
         assert!(app.gitui.graph_focus && app.focus == Focus::Side, "Shift+Tab cycles too");
         screen(&mut app, &mut tm);
-        let (gx, gy) = at(&tm, "GRAPH");
-        assert_eq!(tm.backend().buffer()[(gx, gy)].fg, P.focus_border);
-        assert_ne!(tm.backend().buffer()[(cx, cy)].fg, P.focus_border);
+        let (_, gy) = at(&tm, "GRAPH");
+        assert_eq!((edge(&tm, gy), edge(&tm, cy)), (crate::blocks::border(true), crate::blocks::border(false)));
         key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
         assert!(app.gitui.graph.list.sel > 1);
         key(&mut app, KeyCode::Home, KeyModifiers::NONE);

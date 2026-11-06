@@ -4632,10 +4632,14 @@ mod tests {
                 app.settings.blocks = style;
                 let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
                 screen(&mut app, &mut t);
+                // One left edge: the view title, the section headers' chevrons, the field
+                // text (its pill cap in the padding cell before, as the badges' and the
+                // field's caps sit in the one after Refresh on the right).
                 let title = cell_of(&t, "EXPLORER", 0).0;
                 let section = cell_of(&t, "DEMO", 0).0;
+                let lead = 1 + crate::blocks::icon_gap(spacing.icon_gap); // chevron, gap
                 let icon = cell_of(&t, "README.md", 0).0 - crate::blocks::icon_gap(spacing.icon_gap) - 1;
-                assert_eq!(title, section, "{compact}/{style:?}: view and section title alignment");
+                assert_eq!(title, section - lead, "{compact}/{style:?}: view title on the chevrons' edge");
                 assert_eq!(section, icon, "{compact}/{style:?}: root label aligns with file icons");
                 println!("{style:?} compact={compact} padding={}: title={title}, section={section}, file_icon={icon}", spacing.sidebar_padding);
                 let refresh = app.ui.find_btns.iter().find(|(_, b)| *b == FindBtn::Refresh).unwrap().0;
@@ -4644,6 +4648,7 @@ mod tests {
                 let input = app.ui.side_input;
                 assert_eq!(input.x, app.ui.side_list.x + spacing.sidebar_padding);
                 assert_eq!(input.right(), refresh.right(), "input and right action share an edge");
+                assert_eq!(cell_of(&t, "Search", 0).0, title, "{compact}/{style:?}: the field's text on the left edge");
                 for (r, b) in app.ui.find_btns.clone() {
                     if b == FindBtn::SearchCase {
                         let old = app.s_opts.0;
@@ -4654,7 +4659,7 @@ mod tests {
                 app.show_side(Side::Scm, false);
                 screen(&mut app, &mut t);
                 assert_eq!((app.ui.commit_btn.x, app.ui.commit_btn.right()), (input.x, input.right()));
-                assert_eq!(cell_of(&t, "CHANGES", 0).0, title);
+                assert_eq!(cell_of(&t, "CHANGES", 0).0, title + lead);
                 let menu = app.gitui.hits.cmds.iter().find(|(_, h)| *h == crate::gitcmds::Hit::Menu).unwrap().0;
                 assert_eq!(menu.x + 3, refresh.x, "SCM menu anchored to Refresh");
                 mouse(&mut app, MouseEventKind::Down(MouseButton::Left), menu.x, menu.y);
@@ -7347,6 +7352,109 @@ mod tests {
         assert!(line.starts_with("waiting for 2 git operations: slow test write… (0 s)") && line.ends_with("Ctrl+C to stop waiting"), "{line}");
         crate::scm::finish_writes(&mut app, None);
         assert_eq!(app.gitui.writes(), 0);
+        fs::remove_dir_all(&root).unwrap();
+    }
+    /// The activity bar's SCM count hangs off the icon's top-right corner, Dock style: a
+    /// pill on the row above the icon (at most "99+"), nothing under the icon; a compact
+    /// item (no row above) has it beside the icon, a dot where no number fits.
+    #[test]
+    fn activity_badge_hangs_off_the_icons_top_right() {
+        use crate::settings::Spacing;
+        let root = repo("dock");
+        let file = |i: usize| ScmFile { section: Section::Changes, path: format!("f{i}"), orig: None, letter: 'M' };
+        let cases = [(false, 7, "\u{e0b6}7\u{e0b4}"), (false, 42, "\u{e0b6}42\u{e0b4}"), (false, 150, "99+"), (true, 3, "3"), (true, 42, "●")];
+        for (compact, n, want) in cases {
+            let mut app = App::new(root.clone(), None);
+            app.settings.compact = compact;
+            app.settings.spacing = if compact { Spacing::COMPACT } else { Spacing::COMFORTABLE };
+            wait(&mut app);
+            app.scm_files = (0..n).map(file).collect();
+            let mut t = Terminal::new(TestBackend::new(110, 24)).unwrap();
+            screen(&mut app, &mut t);
+            let b = t.backend().buffer();
+            let (item, _) = app.ui.activity[2];
+            let ih = if compact { 2 } else { 3 };
+            assert_eq!(item.height, ih, "{n}: the hit rect is the item's");
+            let iy = item.y + (ih - 1) / 2;
+            let ix = (item.x..item.right()).find(|&x| b[(x, iy)].symbol() == crate::theme::icons().scm).expect("the icon");
+            let row = |y: u16, x0: u16| (x0..item.right()).map(|x| b[(x, y)].symbol()).collect::<String>();
+            if compact {
+                assert_eq!(row(iy, ix + 1).trim(), want, "{n}: beside the icon, no row above");
+            } else {
+                assert_eq!(row(iy - 1, item.x + 1).trim(), want, "{n}: on the row above");
+                // Off the top-right corner: a single digit just right of the icon column, a
+                // longer badge shifted left only as far as the bar's edge needs.
+                let end = (item.x..item.right()).rev().find(|&x| b[(x, iy - 1)].symbol() != " ").unwrap();
+                assert_eq!(end, item.right() - 1, "{n}: against the bar's right edge");
+                if n < 10 {
+                    assert_eq!(b[(ix + 1, iy - 1)].symbol(), "7", "a digit right of the icon column");
+                }
+            }
+            assert_eq!(row(item.bottom() - 1, item.x + 1).trim(), "", "{n}: nothing under the icon");
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Pills: the Add commit button, the count badges (a Changes header's, the activity
+    /// bar's), the Search field and the commit dialog's buttons end in round caps (U+E0B6,
+    /// U+E0B4) in their fill over the surface behind, inside their hit rects.
+    #[test]
+    fn buttons_badges_and_the_search_field_are_pills() {
+        use crate::theme::P;
+        let root = repo("pills");
+        fs::write(root.join("README.md"), "changed\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.refresh();
+        wait(&mut app);
+        app.show_side(Side::Scm, false);
+        let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let ends = |t: &Terminal<TestBackend>, r: Rect| {
+            let b = t.backend().buffer();
+            (b[(r.x, r.y)].clone(), b[(r.right() - 1, r.y)].clone())
+        };
+        let (l, r) = ends(&t, app.ui.commit_btn);
+        assert_eq!((l.symbol(), r.symbol()), ("\u{e0b6}", "\u{e0b4}"), "Add commit");
+        assert_eq!((l.fg, l.bg, r.fg, r.bg), (P.button_bg, P.sidebar_bg, P.button_bg, P.sidebar_bg));
+        // A pill ◖1◗ at the end of a row: on the row's background.
+        let pill_on_row = |t: &Terminal<TestBackend>, x0: u16, x1: u16, y: u16, under: Color| {
+            let b = t.backend().buffer();
+            let x = (x0..x1).find(|&x| b[(x, y)].symbol() == "\u{e0b6}").expect("a left cap");
+            assert_eq!((b[(x + 1, y)].symbol(), b[(x + 2, y)].symbol()), ("1", "\u{e0b4}"), "row {y}");
+            assert_eq!((b[(x, y)].bg, b[(x + 2, y)].bg), (under, under), "row {y}: caps over the surface");
+            assert_eq!(b[(x, y)].fg, b[(x + 1, y)].bg, "row {y}: caps in the fill");
+        };
+        let (hx, hy) = cell_of(&t, "Changes", 0);
+        let row_bg = t.backend().buffer()[(hx, hy)].bg;
+        pill_on_row(&t, hx, app.ui.divider.x, hy, row_bg);
+        let (scm, _) = app.ui.activity[2];
+        let by = (scm.y..scm.bottom()).find(|&y| (scm.x..scm.right()).any(|x| t.backend().buffer()[(x, y)].symbol() == "1")).expect("the badge");
+        pill_on_row(&t, scm.x, scm.right(), by, crate::blocks::active_bg(&serde_json::Map::new()));
+        assert_ne!(t.backend().buffer()[(scm.x, by)].symbol(), "\u{e0b6}", "the indicator column stays");
+        // The Search field: caps at its ends, a click on one focuses it.
+        app.show_side(Side::Search, false);
+        app.focus = Focus::Editor;
+        screen(&mut app, &mut t);
+        let inp = app.ui.side_input;
+        let (l, r) = ends(&t, inp);
+        assert_eq!((l.symbol(), r.symbol(), l.fg, l.bg), ("\u{e0b6}", "\u{e0b4}", P.input_bg, P.sidebar_bg), "Search");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), inp.x, inp.y);
+        assert_eq!(app.focus, Focus::SearchInput, "the cap is the field's");
+        // One sectionGap between the field and the results the summary heads.
+        typ(&mut app, "needle");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        wait(&mut app);
+        screen(&mut app, &mut t);
+        assert_eq!(cell_of(&t, "1 results in 1 files", 0).1, inp.y + 1 + app.settings.spacing.section_gap);
+        // The commit dialog's buttons, on the dialog's background.
+        crate::commitdlg::open(&mut app);
+        screen(&mut app, &mut t);
+        let btns = app.gitui.dlg.as_ref().unwrap().hits.btns.clone();
+        let (commit, _) = *btns.iter().find(|(_, b)| *b == crate::commitdlg::Btn::Commit).unwrap();
+        let (l, r) = ends(&t, commit);
+        assert_eq!((l.symbol(), r.symbol(), l.fg, l.bg), ("\u{e0b6}", "\u{e0b4}", P.button_bg, P.widget_bg), "Commit");
+        app.gitui.dlg = None;
+        wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
 }

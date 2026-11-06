@@ -366,14 +366,35 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
         let fg = if active || hot { P.activity_fg } else { P.activity_inactive };
         let (ix, iy) = (r.x + 1 + r.width.saturating_sub(3) / 2, y + (ih - 1) / 2);
         f.render_widget(Span::styled(icon, Style::new().fg(fg)), Rect::new(ix, iy, 2.min(r.right().saturating_sub(ix)), 1));
-        if *s == Side::Scm && !app.scm_files.is_empty() && iy + 1 < item.bottom() {
-            let n = app.scm_files.len().min(99).to_string();
-            f.render_widget(
-                Span::styled(n, Style::new().fg(P.activity_badge_fg).bg(P.activity_badge_bg)),
-                Rect::new(ix, iy + 1, 2.min(r.right().saturating_sub(ix)), 1),
-            );
+        if *s == Side::Scm && !app.scm_files.is_empty() {
+            activity_badge(f, r, item, (ix, iy), app.scm_files.len(), if active { active_bg } else { P.activity_bg });
         }
         app.ui.activity.push((item, *s));
+    }
+}
+
+/// The SCM count on its activity item, Dock / VS Code style: a pill (at most "99+") off
+/// the icon's top-right corner, on the row above the icon (the icon's own row when the
+/// item has none), one cell right of the icon column, shifted left to stay in the bar but
+/// never onto the indicator column or the icon itself. Where no pill fits (ASCII icons,
+/// a narrow bar): the bare count in the badge colours, else a dot.
+fn activity_badge(f: &mut Frame, bar: Rect, item: Rect, (ix, iy): (u16, u16), n: usize, under: Color) {
+    let label = if n > 99 { "99+".to_string() } else { n.to_string() };
+    let st = Style::new().fg(P.activity_badge_fg).bg(P.activity_badge_bg);
+    let above = iy > item.y;
+    let (y, lo) = if above { (iy - 1, bar.x + 1) } else { (iy, ix + 1) };
+    let lw = label.len() as u16;
+    let ascii = crate::theme::ascii();
+    let mut shapes = vec![(vec![Span::styled(label.clone(), st)], lw), (vec![Span::styled(if ascii { "*" } else { "●" }, Style::new().fg(P.activity_badge_bg).bg(under))], 1)];
+    if !ascii {
+        shapes.insert(0, (pill(label, st, under), lw + 2));
+    }
+    for (spans, w) in shapes {
+        let x = (ix + 1).min(bar.right().saturating_sub(w)).max(lo);
+        if x + w <= bar.right() {
+            f.render_widget(Line::from(spans), Rect::new(x, y, w, 1));
+            return;
+        }
     }
 }
 
@@ -383,7 +404,8 @@ fn side_title(app: &mut App, f: &mut Frame, r: Rect, title: &str, lay: Lay, bg: 
     let frame = crate::blocks::frame(app.settings.blocks) / 2;
     let ir = inset(r, (lay.pad + frame).min(r.width / 2));
     let rr = Rect::new(ir.right().saturating_sub(2).max(ir.x), r.y, ir.width.min(2), 1);
-    let x = (ir.x + 2 + crate::blocks::icon_gap(lay.s.icon_gap)).min(rr.x);
+    // The title starts on the content's left edge: the section headers' chevron column.
+    let x = (ir.x + 1).min(rr.x);
     let reserve = if app.side == Side::Scm { 4 } else { 1 };
     let text = fit(title, rr.x.saturating_sub(x + reserve) as usize);
     row(f, Rect::new(x, r.y, rr.x.saturating_sub(x), 1), bg, vec![Span::styled(text, Style::new().fg(P.sidebar_title))]);
@@ -461,7 +483,10 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, lay: Lay) {
             let controls = if inp.width >= 8 { 6 } else { 0 };
             let text = Rect::new(inp.x, inp.y, inp.width - controls, 1);
             fill(f, inp, P.input_bg);
-            input(f, text, &app.query, "Search", focused);
+            // A pill: its caps take the padding cells either end, so the text and the
+            // toggles keep their columns; the card border and the caret show focus.
+            input(f, text, &app.query, "Search", focused && crate::theme::ascii());
+            round_ends(f, inp, P.input_bg, P.sidebar_bg);
             app.ui.side_input = inp;
             let (c, w, rx) = app.s_opts;
             let toggles = [(ic.case, c, FindBtn::SearchCase), (ic.word, w, FindBtn::SearchWord), (ic.regex, rx, FindBtn::SearchRegex)];
@@ -477,11 +502,14 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, lay: Lay) {
                 let cx = text.x + 1 + (app.query.width() as u16).min(text.width.saturating_sub(2));
                 f.set_cursor_position((cx, y));
             }
-            y += 1;
-            let files = app.search_rows().len() - app.hits.len();
-            let summary = if app.hits.is_empty() { String::new() } else { format!("{} results in {files} files", app.hits.len()) };
-            row(f, inset(Rect::new(r.x, y, r.width, 1), lay.pad), P.sidebar_bg, vec![Span::styled(format!(" {summary}"), Style::new().fg(P.dim))]);
-            y += 1;
+            // One sectionGap between the field and the results, which the summary heads.
+            y += 1 + lay.s.section_gap;
+            if !app.hits.is_empty() {
+                let files = app.search_rows().len() - app.hits.len();
+                let summary = format!(" {} results in {files} files", app.hits.len());
+                row(f, inset(Rect::new(r.x, y, r.width, 1), lay.pad), P.sidebar_bg, vec![Span::styled(summary, Style::new().fg(P.dim))]);
+                y += 1;
+            }
         }
         Side::Scm => {}
     }
@@ -651,8 +679,33 @@ pub(crate) fn right(f: &mut Frame, r: Rect, spans: Vec<Span<'static>>) -> u16 {
     r.right() - w
 }
 
-pub(crate) fn badge(n: usize) -> Span<'static> {
-    Span::styled(format!(" {n} "), Style::new().fg(P.badge_fg).bg(P.badge_bg))
+/// A pill: `text` in `st` between Nerd Font round caps (U+E0B6, U+E0B4) drawn in `st`'s
+/// background over `under`, the surface behind. With ASCII icons a space takes each
+/// cap's place: the square look. Either way one cell a side.
+pub(crate) fn pill(text: String, st: Style, under: Color) -> Vec<Span<'static>> {
+    if crate::theme::ascii() {
+        return vec![Span::styled(format!(" {text} "), st)];
+    }
+    let cap = Style::new().fg(st.bg.unwrap_or(under)).bg(under);
+    vec![Span::styled("\u{e0b6}", cap), Span::styled(text, st), Span::styled("\u{e0b4}", cap)]
+}
+
+/// Rounds a filled run's ends (see `pill`): `r`'s first and last cells become the caps,
+/// `fill` over `under`. Nothing with ASCII icons, or in a run too short for both.
+pub(crate) fn round_ends(f: &mut Frame, r: Rect, fill: Color, under: Color) {
+    let r = r.intersection(f.area());
+    if crate::theme::ascii() || r.width < 3 || r.height == 0 {
+        return;
+    }
+    let st = Style::new().fg(fill).bg(under);
+    let buf = f.buffer_mut();
+    buf[(r.x, r.y)].set_symbol("\u{e0b6}").set_style(st);
+    buf[(r.right() - 1, r.y)].set_symbol("\u{e0b4}").set_style(st);
+}
+
+/// A count badge: a pill on `under` (the row's background).
+pub(crate) fn badge(n: usize, under: Color) -> Vec<Span<'static>> {
+    pill(n.to_string(), Style::new().fg(P.badge_fg).bg(P.badge_bg), under)
 }
 
 fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) {
@@ -702,7 +755,7 @@ fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
         HRow::File(p, n) => {
             let dir = p.rsplit_once('/').map_or(String::new(), |(d, _)| format!(" {d}"));
             let (glyph, gfg) = file_icon(base(p), &app.settings.file_icons);
-            let count = vec![badge(*n)];
+            let count = badge(*n, bg);
             let room = room_before(&count, (r.width as usize).saturating_sub(3 + 2 * g as usize));
             let (name, dir) = fit_pair(base(p), &dir, room);
             row(
@@ -750,7 +803,9 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
         SRow::Gap => {}
         SRow::MergeHead(n) => {
             row(f, r, bg, vec![Span::styled(format!(" {}{}Merge Changes", ic.chev_down, sp(g)), Style::new().fg(P.sidebar_fg).bold())]);
-            let x0 = right(f, r, vec![Span::styled(format!("{} ", ic.add), Style::new().fg(P.icon_fg)), badge(*n)]);
+            let mut spans = vec![Span::styled(format!("{} ", ic.add), Style::new().fg(P.icon_fg))];
+            spans.extend(badge(*n, bg));
+            let x0 = right(f, r, spans);
             app.ui.scm_btns.push((Rect::new(x0, r.y, 1, 1), ScmAct::StageMerge));
         }
         SRow::Head(sec, n) => {
@@ -765,7 +820,7 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
             for (icon, _) in &acts {
                 spans.push(Span::styled(format!("{icon} "), Style::new().fg(P.icon_fg)));
             }
-            spans.push(badge(*n));
+            spans.extend(badge(*n, bg));
             let x0 = right(f, r, spans);
             for (k, (_, a)) in acts.into_iter().enumerate() {
                 app.ui.scm_btns.push((Rect::new(x0 + 2 * k as u16, r.y, 1, 1), a));
@@ -948,7 +1003,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
             let color = if focused_group && app.focus == Focus::Editor { P.tab_active_border } else { P.tab_border };
             row(f, Rect::new(x, area.y, w, 1), P.tabs_bg,
                 vec![Span::styled(if crate::theme::ascii() { "-" } else { "━" }.repeat(w as usize), Style::new().fg(color))]);
-        } else if active && focused_group && app.focus == Focus::Editor && !edge.is_empty() {
+        } else if active && focused_group && app.focus == Focus::Editor && !edge.is_empty() && app.settings.blocks != BlockStyle::Cards {
             f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" }, Style::new().fg(P.tab_active_border).bg(bg)), Rect::new(x, tabbar.y, 1, 1));
         }
         gh.tabs.push((Rect::new(x, tabbar.y, w - tail_w + 1, 1), xr));

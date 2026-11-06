@@ -13,7 +13,7 @@ use crate::gitops::{self, CommitOpts};
 use crate::panel::{App, DiffDoc, PAct, Prompt};
 use crate::scm::{GitAct, Msg as ScmMsg};
 use crate::theme::{git_color, P};
-use crate::ui::{centered, diff_view, fill, fit, popup_block, render_line, row, sash, sp};
+use crate::ui::{centered, diff_view, fill, fit, popup_block, render_line, row, sash};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::Clear;
@@ -706,16 +706,20 @@ pub fn wheel(app: &mut App, p: Position, delta: isize) {
 
 // ---------------------------------------------------------------- drawing
 
-fn button_spans(label: &str, primary: bool, pad: u16) -> Span<'static> {
+/// A button: a pill whose caps take the padding cells (`pad` is 0 or 1), or the bare label.
+fn button_spans(label: &str, primary: bool, pad: u16) -> Vec<Span<'static>> {
     let st = if primary { Style::new().fg(P.button_fg).bg(P.button_bg) } else { Style::new().fg(P.button2_fg).bg(P.button2_bg) };
-    Span::styled(format!("{}{label}{}", sp(pad), sp(pad)), st)
+    if pad == 0 {
+        return vec![Span::styled(label.to_string(), st)];
+    }
+    crate::ui::pill(label.to_string(), st, P.widget_bg)
 }
 
 /// Buttons left to right from `x`; each is drawn and hit only where it fits.
 fn buttons(f: &mut Frame, hits: &mut Vec<(Rect, Btn)>, r: Rect, items: &[(&str, Btn, bool)], pad: u16) {
     let mut x = r.x;
     for (label, b, primary) in items {
-        let s = button_spans(label, *primary, pad);
+        let s = Line::from(button_spans(label, *primary, pad));
         let br = Rect::new(x, r.y, s.width() as u16, 1).intersection(r);
         if br.width < s.width() as u16 {
             break;
