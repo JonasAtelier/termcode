@@ -763,6 +763,7 @@ fn file_pane(f: &mut Frame, d: &mut CommitDlg, k: usize, r: Rect, title: &str, b
 pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let pad = app.settings.spacing.button_padding.min(1);
     let comfy = !app.settings.compact;
+    let gap = if comfy { app.settings.spacing.editor_padding } else { 0 };
     let (ratios, hover) = (app.gitui.dlg_split, app.hover);
     let Some(d) = app.gitui.dlg.as_mut() else { return };
     d.hits = DlgHits::default();
@@ -793,7 +794,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         d.hits.diff = body;
         fill(f, body, P.editor_bg);
         if let Some(doc) = &d.diff {
-            diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), &[], None);
+            diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), gap, &[], None);
         }
     }
     let mode = g.mode;

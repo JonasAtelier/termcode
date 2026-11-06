@@ -852,8 +852,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
         f.render_widget(Span::styled(ic.split, Style::new().fg(P.icon_fg)), split);
         app.ui.split_btns.push((split, g));
     }
-    // editorPadding of 2 or more also leaves a blank row under the tab bar.
-    let top = 1 + u16::from(lay.s.editor_padding >= 2);
+    // A blank row under the tab bar: comfortable, or editorPadding of 2 or more.
+    let top = 1 + u16::from(lay.comfy || lay.s.editor_padding >= 2);
     let body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
     let active = app.groups[g].active;
     let Some(key) = app.groups[g].tabs.get(active).map(|t| t.key.clone()) else {
@@ -897,7 +897,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
                 drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
             });
             let view = &mut app.groups[g].tabs[active].view;
-            let (sb, mm) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), &rulers, mini);
+            let gap = if lay.comfy { lay.s.editor_padding } else { 0 };
+            let (sb, mm) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), gap, &rulers, mini);
             if let Some((area, mini)) = mm {
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.scroll });
             }
@@ -1512,7 +1513,11 @@ fn draw_peek(f: &mut Frame, zr: Rect, gx: u16, gutter: u16, tx: u16, pk: &PeekDr
         let rr = Rect::new(zr.x, y, zr.width, 1);
         fill(f, rr, line_bg);
         let sign = if removed { "-" } else { "+" };
-        let num = format!("{:>w$} {sign}", no, w = gutter.saturating_sub(4).max(1) as usize);
+        // The editor's gutter columns: the number ends where its numbers do, the sign
+        // sits in its marker column.
+        let mark = gutter.saturating_sub(1 + d.gap);
+        let nw = mark.saturating_sub(if d.comfy { d.gap } else { 0 });
+        let num = format!("{:>nw$}{}{sign}", no, sp(mark - nw), nw = nw as usize);
         f.render_widget(Span::styled(num, Style::new().fg(P.line_nr).bg(line_bg)), Rect::new(gx, y, gutter, 1).intersection(rr));
         let words = if idx < pairs {
             let (o, n) = decor::word_changes(&pk.base[h.base.start + idx], lines.get(h.cur.start + idx).map_or("", String::as_str));
@@ -1574,6 +1579,7 @@ pub(crate) fn diff_view(
     area: Rect,
     slider: Rgba,
     blank: u16,
+    gap: u16,
     rulers: &[(usize, Color)],
     mini: Option<DiffMini>,
 ) -> (Option<ScrollHit>, Option<(Rect, Mini)>) {
@@ -1586,7 +1592,10 @@ pub(crate) fn diff_view(
     let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
     let area = Rect::new(area.x, area.y, area.width.saturating_sub(1 + blank), area.height);
     let digits = n.to_string().len().max(3) as u16;
-    let gw = digits + 2;
+    // As the editor's gutter: `number␠sign␠code` (comfortable, gap = editorPadding);
+    // compact passes 0: `number␠sign` with the code right after.
+    let (pre, post) = (gap.max(1), gap);
+    let gw = digits + pre + 1 + post;
     // The minimap takes its columns from the modified side, as in the editor.
     let right_w = area.width.saturating_sub(area.width.saturating_sub(1) / 2 + 1);
     let mw = mini.as_ref().map_or(0, |m| minimap::width(right_w.saturating_sub(gw), area.width, m.cfg.max_column, m.cfg.min_text));
@@ -1626,7 +1635,7 @@ pub(crate) fn diff_view(
                         _ => "+",
                     };
                     fill(f, sr, bg);
-                    let g = Span::styled(format!("{:>w$} {sign}", n + 1, w = digits as usize), Style::new().fg(P.line_nr).bg(bg));
+                    let g = Span::styled(format!("{:>w$}{}{sign}{}", n + 1, sp(pre), sp(post), w = digits as usize), Style::new().fg(P.line_nr).bg(bg));
                     f.render_widget(g, Rect::new(sr.x, y, gw.min(sr.width), 1));
                     let tr = Rect::new(sr.x + gw.min(sr.width), y, sr.width.saturating_sub(gw), 1);
                     f.render_widget(render_line(text, None, &[], None, v.hscroll, tr.width as usize, Style::new().fg(P.editor_fg).bg(bg)), tr);

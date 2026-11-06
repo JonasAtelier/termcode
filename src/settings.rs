@@ -22,7 +22,8 @@ pub struct Spacing {
     /// Blank rows between sidebar sections and headers.
     pub section_gap: u16,
     /// Columns between the line number and the quick-diff marker (comfortable) and
-    /// between the marker and the code; 2 or more also leaves a blank row under the tab bar.
+    /// between the marker and the code, in editors, diffs and peeks; 2 or more also
+    /// leaves a blank row under the tab bar in compact (comfortable always has it).
     pub editor_padding: u16,
     /// Spaces each side of a tab label.
     pub tab_padding: u16,
@@ -55,7 +56,8 @@ impl Spacing {
         sidebar_width: 38,
         sidebar_padding: 2,
         section_gap: 1,
-        editor_padding: 2,
+        // `␠number␠marker␠code`, VS Code's tight gutter.
+        editor_padding: 1,
         tab_padding: 2,
         status_gap: 3,
         activity_width: 7,
@@ -607,7 +609,7 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // },
     // "workbench.density": "comfortable",   // or "compact"
     // "herdr-code.spacing": {   // overrides the density's values, one key at a time
-    //     "sidebarWidth": 38, "sidebarPadding": 2, "sectionGap": 1, "editorPadding": 2,
+    //     "sidebarWidth": 38, "sidebarPadding": 2, "sectionGap": 1, "editorPadding": 1,
     //     "tabPadding": 2, "statusBarGap": 3, "activityBarWidth": 7, "listItemGap": 0,
     //     "popupPadding": [3, 1], "iconGap": 2, "treeIndent": 2, "titleBarPadding": 2,
     //     "buttonPadding": 2, "findWidgetPadding": 1, "statusBarPadding": 2,

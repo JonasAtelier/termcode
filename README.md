@@ -272,7 +272,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `sidebarWidth` | 38 | 30 | Sidebar columns, a card's frame included, until you drag the divider (a dragged width is kept in layout.json) |
 | `sidebarPadding` | 2 | 0 | Left/right padding of sidebar rows and inputs |
 | `sectionGap` | 1 | 0 | Blank rows under the sidebar title and between SCM sections |
-| `editorPadding` | 2 | 1 | Gutter gaps: `number␠␠marker␠␠code` in comfortable (compact: `number marker␠code`); 2 or more also leaves the blank row under the tab bar |
+| `editorPadding` | 1 | 1 | Gutter gaps in editors, diffs and peeks: `number␠marker␠code` in comfortable (compact: `number marker␠code`); comfortable, or 2 or more, also leaves the blank row under the tab bar |
 | `tabPadding` | 2 | 1 | Spaces each side of a tab label |
 | `statusBarGap` | 3 | 3 | Spaces between status bar items |
 | `statusBarPadding` | 2 | 1 | Spaces at the status bar's left and right edges |

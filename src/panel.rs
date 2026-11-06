@@ -4789,6 +4789,48 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// VS Code's tight gutter by default: `␠number␠marker␠code`, the same columns in
+    /// the editor, its quick-diff peek and a diff; compact keeps its own.
+    #[test]
+    fn gutters_are_tight_and_line_up() {
+        let (root, mut app) = changed_file("gutter");
+        assert_eq!(app.settings.spacing.editor_padding, 1);
+        let mut t = Terminal::new(TestBackend::new(120, 34)).unwrap();
+        screen(&mut app, &mut t);
+        let gh = app.ui.groups[0].clone();
+        let mx = gh.marks_x.unwrap();
+        let sym = |t: &Terminal<TestBackend>, x: u16, y: u16| t.backend().buffer()[(x, y)].symbol().to_string();
+        assert_eq!(gh.text.y, gh.tabbar.y + 2, "comfortable keeps the blank row under the tab bar");
+        // Editor: the last digit, one blank, the marker column, one blank, the code.
+        let (x, y) = cell_of(&t, "int line_1 ", 0);
+        assert_eq!((x, sym(&t, mx - 2, y), sym(&t, mx - 1, y), sym(&t, mx + 1, y)), (mx + 2, "1".into(), " ".into(), " ".into()));
+        // The quick-diff peek: its numbers and signs in the editor's columns.
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), mx, gh.text.y + 4);
+        screen(&mut app, &mut t);
+        let (x, y) = cell_of(&t, "int line_5 = 5;", 0);
+        assert_eq!((x, sym(&t, mx, y), sym(&t, mx - 2, y), sym(&t, mx - 1, y)), (mx + 2, "-".into(), "5".into(), " ".into()), "removed row");
+        // Line 5 itself is above the zone too: find the added row inside it.
+        let (zy, zh) = app.ui.groups[0].zone.unwrap();
+        let y = (zy..zy + zh).find(|&y| line_of(&t, y).contains("int line_5 = 50;")).unwrap();
+        let x = line_of(&t, y).find("int line_5 = 50;").map(|i| line_of(&t, y)[..i].chars().count() as u16).unwrap();
+        assert_eq!((x, sym(&t, mx, y), sym(&t, mx - 2, y)), (mx + 2, "+".into(), "5".into()), "added row");
+        app.peek = None;
+        // A diff: `number␠sign␠code` on both sides.
+        open_big_diff(&mut app);
+        for (compact, pre) in [(false, " "), (true, "")] {
+            app.settings.compact = compact;
+            app.settings.spacing = if compact { crate::settings::Spacing::COMPACT } else { crate::settings::Spacing::COMFORTABLE };
+            screen(&mut app, &mut t);
+            let (x, y) = cell_of(&t, "line 020 changed", 0);
+            let row = line_of(&t, y);
+            assert!(row.contains(&format!(" 21 +{pre}line 020 changed")) && row.contains(&format!(" 21 -{pre}line 020 ")), "compact {compact}: {row}");
+            assert_eq!(sym(&t, x - 1 - pre.len() as u16, y), "+");
+            let gh = &app.ui.groups[0];
+            assert_eq!(gh.text.y, gh.tabbar.y + 1 + u16::from(!compact), "compact {compact}: the blank row");
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn peek_beside_a_left_minimap_and_below_a_long_hunk() {
         let (root, mut app) = changed_file("peekl");
