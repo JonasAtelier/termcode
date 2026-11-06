@@ -52,15 +52,15 @@ pub struct Spacing {
 
 impl Spacing {
     pub const COMFORTABLE: Spacing = Spacing {
-        // Outer widths: a card's frame takes 2 cells, the content keeps 34 and 5.
-        sidebar_width: 38,
+        // Content widths: cards add their 2-cell frame (38 and 7 wide then).
+        sidebar_width: 36,
         sidebar_padding: 2,
         section_gap: 1,
         // `␠number␠marker␠code`, VS Code's tight gutter.
         editor_padding: 1,
         tab_padding: 2,
         status_gap: 3,
-        activity_width: 7,
+        activity_width: 5,
         list_gap: 0,
         popup_padding: (3, 1),
         icon_gap: 2,
@@ -140,8 +140,6 @@ pub struct Settings {
     pub blame_status: bool,
     /// `herdr-code.blocks.style`: cards, lines or none between the blocks.
     pub blocks: crate::blocks::BlockStyle,
-    /// `herdr-code.icons.size`: small, wide or large icons.
-    pub icon_size: crate::blocks::IconSize,
     /// `git.blame.editorDecoration.enabled`: the same as ghost text after the cursor line.
     pub blame_decoration: bool,
     /// `git.confirmSync`: ask before Sync pulls and pushes.
@@ -179,7 +177,6 @@ impl Default for Settings {
             theme: ThemeData { json: theme::embedded_theme().clone(), extra_rules: Vec::new() },
             blame_status: true,
             blocks: crate::blocks::BlockStyle::Cards,
-            icon_size: crate::blocks::IconSize::Wide,
             blame_decoration: false,
             confirm_sync: true,
             warnings: Vec::new(),
@@ -291,7 +288,6 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         theme: ThemeData { json, extra_rules },
         blame_status: g("git.blame.statusBarItem.enabled").and_then(Value::as_bool).unwrap_or(d.blame_status),
         blocks: crate::blocks::parse(g("herdr-code.blocks.style"), compact),
-        icon_size: crate::blocks::icon_size(g("herdr-code.icons.size")),
         blame_decoration: g("git.blame.editorDecoration.enabled").and_then(Value::as_bool).unwrap_or(d.blame_decoration),
         confirm_sync: g("git.confirmSync").and_then(Value::as_bool).unwrap_or(d.confirm_sync),
         warnings,
@@ -609,13 +605,12 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // },
     // "workbench.density": "comfortable",   // or "compact"
     // "herdr-code.spacing": {   // overrides the density's values, one key at a time
-    //     "sidebarWidth": 38, "sidebarPadding": 2, "sectionGap": 1, "editorPadding": 1,
-    //     "tabPadding": 2, "statusBarGap": 3, "activityBarWidth": 7, "listItemGap": 0,
+    //     "sidebarWidth": 36, "sidebarPadding": 2, "sectionGap": 1, "editorPadding": 1,
+    //     "tabPadding": 2, "statusBarGap": 3, "activityBarWidth": 5, "listItemGap": 0,
     //     "popupPadding": [3, 1], "iconGap": 2, "treeIndent": 2, "titleBarPadding": 2,
     //     "buttonPadding": 2, "findWidgetPadding": 1, "statusBarPadding": 2,
     // },
     // "herdr-code.blocks.style": "cards",  // or "lines", "none" (compact density: "lines")
-    // "herdr-code.icons.size": "wide",      // or "small", "large" (3x2 activity icons)
     // "herdr-code.icons": "nerd",           // or "ascii"
     // "herdr-code.fileIcons": {
     //     "extensions": { "c": { "glyph": "", "color": "#519ABA" } },

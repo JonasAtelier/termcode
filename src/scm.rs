@@ -1300,7 +1300,7 @@ fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: 
 
 fn file_row(app: &App, f: &mut Frame, r: Rect, bg: Color, indent: usize, fc: &FileChange) {
     let (glyph, gfg) = crate::icons::file_icon(base(&fc.path), &app.settings.file_icons);
-    let g = crate::blocks::icon_gap(app.settings.icon_size, app.settings.spacing.icon_gap);
+    let g = crate::blocks::icon_gap(app.settings.spacing.icon_gap);
     let dir = fc.path.rsplit_once('/').map_or("", |(d, _)| d);
     let letter = Span::styled(format!(" {} ", fc.status), Style::new().fg(git_color(fc.status)));
     let room = (r.width as usize).saturating_sub(indent + 1 + g as usize + 4);

@@ -9,7 +9,6 @@ mod blocks;
 mod decor;
 mod diff;
 mod editor;
-mod icondemo;
 mod git;
 mod minimap;
 mod icons;
@@ -56,8 +55,6 @@ Relative paths resolve against this folder.
 enum Cmd {
     Help,
     Panel,
-    /// Hidden: `--icon-demo` shows the icon sizes side by side.
-    IconDemo,
     Open { tab: bool, path: Option<String> },
 }
 
@@ -65,9 +62,6 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
     if let [a] = args {
         if a == "panel" {
             return Ok(Cmd::Panel);
-        }
-        if a == "--icon-demo" {
-            return Ok(Cmd::IconDemo);
         }
     }
     let (mut tab, mut path) = (false, None);
@@ -99,7 +93,6 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             Ok(())
         }
-        Cmd::IconDemo => icondemo::run(),
         // The launcher opens the pane with the workspace root as its cwd.
         Cmd::Panel => env::current_dir()
             .and_then(fs::canonicalize)
@@ -442,9 +435,10 @@ mod tests {
     }
 
     #[test]
-    fn icon_demo_is_a_hidden_flag() {
-        assert!(matches!(parse_args(&["--icon-demo".into()]), Ok(Cmd::IconDemo)));
-        assert!(!USAGE.contains("icon-demo"));
+    fn in_place_without_a_tty_opens_a_tab() {
+        assert!(mode(false, false).0, "no terminal on stdin/stdout: a Code tab instead of raw mode");
+        assert!(!mode(false, true).0);
+        assert!(parse_args(&["--icon-demo".into()]).is_err(), "the demo is gone");
     }
 
     #[test]

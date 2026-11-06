@@ -151,6 +151,8 @@ struct HoverKey {
     peek: Option<usize>,
     /// A commit-dialog splitter (sash.hoverBorder).
     sash: Option<usize>,
+    /// An activity bar item (its icon lights up).
+    activity: Option<usize>,
 }
 
 /// Events the loop batches before one frame: wheel ticks and plain pointer motion.
@@ -497,6 +499,8 @@ pub struct App {
     pub side_visible: bool,
     /// Dragged sidebar width; None = `herdr-code.spacing.sidebarWidth`.
     pub side_w: Option<u16>,
+    /// `side_w` came from a layout.json before version 2: a content width, not an outer one.
+    pub side_w_legacy: bool,
     pub(crate) layout_file: Option<PathBuf>,
     pub focus: Focus,
     pub status: Vec<StatusEntry>,
@@ -810,6 +814,8 @@ impl App {
                 .as_u64()
                 .filter(|_| saved["sidebar_dragged"] == true)
                 .map(|w| w.clamp(12, 200) as u16),
+            // Before layout_version 2 the width was the content's: a card adds its frame.
+            side_w_legacy: saved["layout_version"].as_u64().unwrap_or(1) < 2,
             layout_file,
             focus: Focus::Side,
             status: Vec::new(),
@@ -2429,7 +2435,10 @@ impl App {
             let _ = fs::create_dir_all(d);
         }
         let mut v = serde_json::json!({ "sidebar_visible": self.side_visible, "scm": self.gitui.layout() });
+        v["layout_version"] = 2.into();
         if let Some(w) = self.side_w {
+            // Written as the sidebar's outer width, as it is drawn.
+            let w = w + if self.side_w_legacy { crate::blocks::frame(self.settings.blocks) } else { 0 };
             v["sidebar_width"] = w.into();
             v["sidebar_dragged"] = true.into();
         }
@@ -3164,6 +3173,7 @@ impl App {
             minimap: self.ui.minimaps.iter().position(|m| m.area.contains(p)),
             peek: self.ui.peek_btns.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.peek_zone.contains(p).then_some(usize::MAX)),
             sash: self.gitui.dlg.as_ref().and_then(|d| d.hits.sashes.iter().position(|r| r.contains(p))),
+            activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)),
         }
     }
 
@@ -3451,6 +3461,7 @@ impl App {
                 let start = self.ui.sidebar.x;
                 let max = self.ui.editor_area.right().saturating_sub(start + 20).max(12);
                 self.side_w = Some(p.x.saturating_sub(start).clamp(12, max));
+                self.side_w_legacy = false;
             }
             Drag::File { from, active, .. } => {
                 if !*active && (from.x.abs_diff(p.x) + from.y.abs_diff(p.y)) >= 2 {
@@ -3919,38 +3930,65 @@ mod tests {
     }
 
     #[test]
-    fn activity_icons_small_wide_and_large() {
-        use crate::blocks::IconSize;
-        let root = repo("icons");
-        for size in [IconSize::Small, IconSize::Wide, IconSize::Large] {
+    fn activity_items_are_tall_with_the_active_one_marked_and_hover_lit() {
+        let root = repo("activity");
+        for compact in [false, true] {
             let mut app = App::new(root.clone(), None);
-            app.settings.icon_size = size;
+            app.settings.compact = compact;
             let mut t = Terminal::new(TestBackend::new(110, 22)).unwrap();
             screen(&mut app, &mut t);
-            let b = t.backend().buffer();
-            let (ar, side) = app.ui.activity[2];
-            assert_eq!(side, Side::Scm);
-            let row: Vec<&str> = (ar.x..ar.right()).map(|x| b[(x, ar.y)].symbol()).collect();
-            match size {
-                // One cell; wide: the same glyph with a blank cell kept after it.
-                IconSize::Small | IconSize::Wide => {
-                    let i = row.iter().position(|s| *s == crate::theme::icons().scm).expect("the glyph");
-                    assert_eq!(ar.height, 1);
-                    if size == IconSize::Wide {
-                        assert_eq!(row.get(i + 1), Some(&" "), "{size:?}: the slot's second cell is blank");
-                    }
-                }
-                // Two rows of three braille cells, the hit rect covering both.
-                IconSize::Large => {
-                    let rows = crate::blocks::large_icon("source-control").unwrap();
-                    assert_eq!(ar.height, 2);
-                    let line: String = row.concat();
-                    assert!(line.contains(rows[0].as_str()), "{line:?}");
-                    let below: String = (ar.x..ar.right()).map(|x| b[(x, ar.y + 1)].symbol()).collect();
-                    assert!(below.contains(rows[1].as_str()), "{below:?}");
-                }
+            let ih = if compact { 2 } else { 3 };
+            let (items, b) = (app.ui.activity.clone(), t.backend().buffer().clone());
+            assert!(items.iter().all(|(r, _)| r.height == ih), "{compact}: one {ih}-row cell per item");
+            assert!(items.windows(2).all(|w| w[1].0.y == w[0].0.bottom()), "stacked without gaps");
+            // The icon in its item's middle row, a blank kept after it (its 2-cell slot).
+            let (scm, _) = items[2];
+            let iy = scm.y + (ih - 1) / 2;
+            let ix = (scm.x..scm.right()).find(|&x| b[(x, iy)].symbol() == crate::theme::icons().scm).expect("the SCM icon");
+            assert_eq!(b[(ix + 1, iy)].symbol(), " ");
+            // The active item (Explorer): the indicator down its rows over the active background.
+            let (ex, side) = items[0];
+            assert_eq!(side, Side::Explorer);
+            for y in ex.y..ex.bottom() {
+                assert_eq!((b[(ex.x, y)].symbol(), b[(ex.x, y)].fg), ("▎", crate::theme::P.activity_border), "row {y}");
+                assert_eq!(b[(ex.x + 1, y)].bg, crate::blocks::active_bg(&serde_json::Map::new()));
             }
+            assert_ne!(b[(scm.x + 1, scm.y)].bg, b[(ex.x + 1, ex.y)].bg, "only the active item is lifted");
+            // Hover: inactive foreground -> foreground, and the motion asks for a redraw.
+            assert_eq!(b[(ix, iy)].fg, crate::theme::P.activity_inactive);
+            assert!(app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: ix, row: iy, modifiers: KeyModifiers::NONE }));
+            screen(&mut app, &mut t);
+            assert_eq!(t.backend().buffer()[(ix, iy)].fg, crate::theme::P.activity_fg, "hovered");
         }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn widths_are_the_content_and_old_dragged_widths_keep_theirs() {
+        use crate::blocks::BlockStyle;
+        let root = repo("widths");
+        // Defaults: cards add their 2-cell frame; none keeps the old 36 and 5.
+        for (st, side, act) in [(BlockStyle::Cards, 38, 7), (BlockStyle::Lines, 36, 5), (BlockStyle::None, 36, 5)] {
+            let mut app = App::new(root.clone(), None);
+            app.settings.blocks = st;
+            let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+            screen(&mut app, &mut t);
+            assert_eq!((app.ui.divider.x - app.ui.sidebar.x, app.ui.activity[0].0.width + crate::blocks::frame(st)), (side, act), "{st:?}");
+        }
+        // A width dragged before layout_version 2 was the content's: a card adds its frame,
+        // and saving writes the outer width with the version.
+        let lay = root.join("layout.json");
+        fs::write(&lay, r#"{"sidebar_visible": true, "sidebar_width": 30, "sidebar_dragged": true}"#).unwrap();
+        let mut app = App::new(root.clone(), Some(lay.clone()));
+        let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.divider.x - app.ui.sidebar.x, 32, "30 columns of content, in a card");
+        app.save_layout();
+        let v: serde_json::Value = serde_json::from_str(&fs::read_to_string(&lay).unwrap()).unwrap();
+        assert_eq!((v["sidebar_width"].as_u64(), v["layout_version"].as_u64()), (Some(32), Some(2)));
+        let mut again = App::new(root.clone(), Some(lay));
+        screen(&mut again, &mut t);
+        assert_eq!(again.ui.divider.x - again.ui.sidebar.x, 32, "a version 2 width is the outer one");
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4234,15 +4272,18 @@ mod tests {
             app.settings.compact = compact;
             app.settings.spacing = sp;
             app.settings.blocks = st;
-            let gap = crate::blocks::icon_gap(app.settings.icon_size, sp.icon_gap);
+            let gap = crate::blocks::icon_gap(sp.icon_gap);
+            let fr = crate::blocks::frame(st);
             let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
             screen(&mut app, &mut t);
-            assert_eq!(app.ui.divider.x - app.ui.sidebar.x, sp.sidebar_width, "{tag}: default width until dragged");
+            assert_eq!(app.ui.divider.x - app.ui.sidebar.x, sp.sidebar_width + fr, "{tag}: default width (and frame) until dragged");
             // A gutter (cards) or a line (lines) between the activity bar and the sidebar.
-            assert_eq!(app.ui.sidebar.x, sp.activity_width + u16::from(st != BlockStyle::None), "{tag}");
-            // The activity icon is drawn centred inside its hit rect.
+            assert_eq!(app.ui.sidebar.x, sp.activity_width + fr + u16::from(st != BlockStyle::None), "{tag}");
+            // The activity icon is drawn centred inside its hit rect: the middle row, its
+            // 2-cell slot centred right of the indicator column.
             let (ar, _) = app.ui.activity[2];
-            assert_eq!(t.backend().buffer()[(ar.x + ar.width / 2, ar.y)].symbol(), crate::theme::icons().scm, "{tag}");
+            let (ix, iy) = (ar.x + 1 + ar.width.saturating_sub(3) / 2, ar.y + (ar.height - 1) / 2);
+            assert_eq!(t.backend().buffer()[(ix, iy)].symbol(), crate::theme::icons().scm, "{tag}");
             // Explorer header: the root's name; the tree starts on the next row.
             let (_, hy) = cell_of(&t, &app.repo.to_uppercase(), 0);
             assert_eq!(app.ui.side_list.y, hy + 1, "{tag}: tree rows start below it");
@@ -4312,15 +4353,14 @@ mod tests {
                 "iconGap": 4, "treeIndent": 8, "titleBarPadding": 6, "buttonPadding": 4, "findWidgetPadding": 3,
                 "statusBarPadding": 6 }),
         );
-        use crate::blocks::{BlockStyle, IconSize};
-        let looks = [(BlockStyle::Cards, IconSize::Wide), (BlockStyle::Lines, IconSize::Large), (BlockStyle::None, IconSize::Small)];
+        use crate::blocks::BlockStyle;
+        let looks = [BlockStyle::Cards, BlockStyle::Lines, BlockStyle::None];
         let runs = [(false, Spacing::COMFORTABLE), (true, Spacing::COMPACT), (false, max), (true, max)];
-        for (compact, sp, (st, size)) in runs.into_iter().flat_map(|r| looks.map(move |l| (r.0, r.1, l))) {
+        for (compact, sp, st) in runs.into_iter().flat_map(|r| looks.map(move |l| (r.0, r.1, l))) {
             let mut app = App::new(root.clone(), None);
             app.settings.compact = compact;
             app.settings.spacing = sp;
             app.settings.blocks = st;
-            app.settings.icon_size = size;
             app.settings.rulers = vec![(2, None), (90, None)];
             app.refresh();
             wait(&mut app);

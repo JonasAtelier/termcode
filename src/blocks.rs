@@ -2,7 +2,7 @@
 //! bar, each sidebar section, each editor group) with rounded corners and leaves a 1-cell
 //! gutter of workbench background between them; "lines" draws one shared line between
 //! blocks, joined with ├ ┤ ┬ ┴ ┼ where they meet; "none" is the flat look. The title and
-//! status bars stay flat rows. Also the icon size, `herdr-code.icons.size`.
+//! status bars stay flat rows.
 //!
 //! Frames come from the rects the layout hands out, and every hit rect is recorded from
 //! the inside a block was drawn in, so hit-testing follows the frames by construction.
@@ -32,42 +32,32 @@ pub fn parse(v: Option<&Value>, compact: bool) -> BlockStyle {
     }
 }
 
-/// `herdr-code.icons.size`: "small" (A: one cell), "wide" (B: a 2-cell slot then a blank,
-/// room for a non-Mono Nerd Font glyph's natural width), "large" (C: 3x2 braille
-/// activity icons; tree rows as "wide").
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub enum IconSize {
-    Small,
-    #[default]
-    Wide,
-    Large,
+/// Blank cells after a tree icon: `icon_gap`, but always the rest of a 2-cell slot and one
+/// more, so a non-Mono Nerd Font glyph drawn wider than its cell never touches the name.
+pub fn icon_gap(icon_gap: u16) -> u16 {
+    icon_gap.max(2)
 }
 
-pub fn icon_size(v: Option<&Value>) -> IconSize {
-    match v.and_then(Value::as_str) {
-        Some("small") => IconSize::Small,
-        Some("large") => IconSize::Large,
-        _ => IconSize::Wide,
-    }
-}
-
-/// Blank cells after a tree or tab icon: `icon_gap`, but at least the rest of a 2-cell slot
-/// plus one when icons are wide.
-pub fn icon_gap(size: IconSize, icon_gap: u16) -> u16 {
-    if size == IconSize::Small {
-        icon_gap
+/// Columns a block's frame adds to its content width (cards only).
+pub fn frame(st: BlockStyle) -> u16 {
+    if st == BlockStyle::Cards {
+        2
     } else {
-        icon_gap.max(2)
+        0
     }
 }
 
-/// A large (C) activity icon: 2 rows of 3 braille cells, from VS Code's codicon.ttf
-/// (`examples/gen_codicons.rs` writes assets/codicons.json).
-pub fn large_icon(name: &str) -> Option<[String; 2]> {
-    static DATA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-    let v = DATA.get_or_init(|| serde_json::from_str(include_str!("../assets/codicons.json")).unwrap_or_default());
-    let rows = v.get(name)?.as_array()?;
-    Some([rows.first()?.as_str()?.to_string(), rows.get(1)?.as_str()?.to_string()])
+/// `activityBar.activeBackground` behind the active item; unset (VS Code's dark default),
+/// a subtle lift of the bar's own background.
+pub fn active_bg(theme: &serde_json::Map<String, Value>) -> Color {
+    match crate::theme::lookup(theme, "activityBar.activeBackground") {
+        Some(c) => c.over(P.activity_bg),
+        None => {
+            let (Color::Rgb(r, g, b), Color::Rgb(fr, fg, fb)) = (P.activity_bg, P.activity_fg) else { return P.activity_bg };
+            let mix = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * 0.06).round() as u8;
+            Color::Rgb(mix(r, fr), mix(g, fg), mix(b, fb))
+        }
+    }
 }
 
 /// The border colour; a focused block's is a little toward the foreground (~#5A5A5A on
@@ -213,7 +203,7 @@ mod tests {
         assert_eq!(parse(None, false), BlockStyle::Cards);
         assert_eq!(parse(None, true), BlockStyle::Lines, "compact density draws lines");
         assert_eq!(parse(Some(&"none".into()), true), BlockStyle::None);
-        assert_eq!((icon_size(None), icon_size(Some(&"large".into()))), (IconSize::Wide, IconSize::Large));
-        assert_eq!((icon_gap(IconSize::Wide, 1), icon_gap(IconSize::Small, 1), icon_gap(IconSize::Wide, 3)), (2, 1, 3));
+        assert_eq!((icon_gap(1), icon_gap(2), icon_gap(3)), (2, 2, 3));
+        assert_eq!((frame(BlockStyle::Cards), frame(BlockStyle::Lines), frame(BlockStyle::None)), (2, 0, 0));
     }
 }

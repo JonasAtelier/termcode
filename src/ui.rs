@@ -14,7 +14,7 @@ use crate::panel::{
     base, App, DiffDoc, DiffId, Doc, Drag, Find, FindBtn, Focus, GroupHit, HRow, Hits, MiniHit, PeekBtn, ScmAct, ScrollHit,
     ScrollTarget, Side, SRow, Zone, COMMANDS, SIDES,
 };
-use crate::blocks::{BlockStyle, IconSize};
+use crate::blocks::BlockStyle;
 use crate::theme::{git_color, icons, Rgba, P};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
@@ -168,7 +168,9 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     // divider (none). Each block draws inside what `blocks::card` leaves of its rect.
     let st = app.settings.blocks;
     crate::blocks::begin();
-    let aw = lay.s.activity_width.min(body.width / 4);
+    // The spacing widths are the content's; a card adds its frame.
+    let fr = crate::blocks::frame(st);
+    let aw = (lay.s.activity_width + fr).min(body.width / 4);
     let act = Rect::new(body.x, body.y, aw, body.height);
     let inner = crate::blocks::card(st, f, act, P.activity_bg, false);
     activity_bar(app, f, inner);
@@ -181,7 +183,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     }
     if app.side_visible {
         let max = body.width.saturating_sub(x - body.x + 1 + 20).max(12);
-        let w = app.side_w.unwrap_or(lay.s.sidebar_width).clamp(12, max);
+        let w = app.side_w.map_or(lay.s.sidebar_width + fr, |w| w + if app.side_w_legacy { fr } else { 0 }).clamp(12, max);
         app.ui.sidebar = Rect::new(x, body.y, w, body.height);
         sidebar(app, f, app.ui.sidebar, lay);
         x += w;
@@ -286,59 +288,48 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     crate::gitcmds::status_blame(app, f, Rect::new(lx, r.y, rx.saturating_sub(lx), 1), lay.s.status_gap);
 }
 
+/// VS Code's activity bar: each item a 3-row cell (2 in compact) with its icon centred,
+/// the icon in a 2-cell slot (room for a non-Mono Nerd Font glyph). The active item gets
+/// `activityBar.activeBorder` down its left edge over a subtle `activeBackground`; a
+/// hovered one lights up from `inactiveForeground` to `foreground`.
 fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     fill(f, r, P.activity_bg);
     let ic = icons();
-    // herdr-code.icons.size: one cell (small); a 2-cell slot, so a non-Mono Nerd Font glyph
-    // can draw at its natural width (wide); 3x2 braille codicons (large, needs 4 columns).
-    let size = app.settings.icon_size;
+    let empty = serde_json::Map::new();
+    let theme = app.settings.theme.json.get("colors").and_then(serde_json::Value::as_object).unwrap_or(&empty);
+    let active_bg = crate::blocks::active_bg(theme);
+    let ih: u16 = if app.settings.compact { 2 } else { 3 };
     for (i, s) in SIDES.iter().enumerate() {
+        let y = r.y + i as u16 * ih;
+        if y + ih > r.bottom() || r.width == 0 {
+            break;
+        }
+        let item = Rect::new(r.x, y, r.width, ih);
         let active = *s == app.side && app.side_visible;
-        let (icon, name) = match s {
-            Side::Explorer => (ic.files, "files"),
-            Side::Search => (ic.search, "search"),
-            Side::Scm => (ic.scm, "source-control"),
+        let hot = app.hover.is_some_and(|p| item.contains(p));
+        let icon = match s {
+            Side::Explorer => ic.files,
+            Side::Search => ic.search,
+            Side::Scm => ic.scm,
         };
-        let Some((rr, ix)) = activity_item(f, r, i, size, icon, name, active) else { break };
-        let (y, ih) = (rr.y, rr.height);
-        if *s == Side::Scm && !app.scm_files.is_empty() && y + ih < r.bottom() {
+        if active {
+            fill(f, item, active_bg);
+            for k in 0..ih {
+                f.render_widget(Span::styled("▎", Style::new().fg(P.activity_border)), Rect::new(r.x, y + k, 1, 1));
+            }
+        }
+        let fg = if active || hot { P.activity_fg } else { P.activity_inactive };
+        let (ix, iy) = (r.x + 1 + r.width.saturating_sub(3) / 2, y + (ih - 1) / 2);
+        f.render_widget(Span::styled(icon, Style::new().fg(fg)), Rect::new(ix, iy, 2.min(r.right().saturating_sub(ix)), 1));
+        if *s == Side::Scm && !app.scm_files.is_empty() && iy + 1 < item.bottom() {
             let n = app.scm_files.len().min(99).to_string();
             f.render_widget(
                 Span::styled(n, Style::new().fg(P.activity_badge_fg).bg(P.activity_badge_bg)),
-                Rect::new(ix, y + ih, 2.min(r.right() - ix), 1),
+                Rect::new(ix, iy + 1, 2.min(r.right().saturating_sub(ix)), 1),
             );
         }
-        app.ui.activity.push((rr, *s));
+        app.ui.activity.push((item, *s));
     }
-}
-
-/// The activity bar's `i`th item in bar `r`: the active marker at the left edge, the icon's
-/// slot centred right of it. `herdr-code.icons.size`: one cell (small); a 2-cell slot, so a
-/// non-Mono Nerd Font glyph can draw at its natural width (wide); 3x2 braille codicons
-/// (large, needs 4 columns). Returns the item's hit rect and the icon's column; None when
-/// it does not fit. `--icon-demo` draws with this too.
-pub(crate) fn activity_item(f: &mut Frame, r: Rect, i: usize, size: IconSize, icon: &str, name: &str, active: bool) -> Option<(Rect, u16)> {
-    let large = size == IconSize::Large && !crate::theme::ascii() && r.width >= 4;
-    let (iw, ih) = if large { (3, 2) } else if size == IconSize::Small { (1, 1) } else { (2, 1) };
-    let y = r.y + 1 + i as u16 * (ih + 1);
-    if y + ih > r.bottom() || r.width == 0 {
-        return None;
-    }
-    let fg = if active { P.activity_fg } else { P.activity_inactive };
-    let bar = if active { "▎" } else { " " };
-    let ix = r.x + 1 + r.width.saturating_sub(1 + iw) / 2;
-    for k in 0..ih {
-        f.render_widget(Span::styled(bar, Style::new().fg(P.activity_border)), Rect::new(r.x, y + k, 1, 1));
-    }
-    match crate::blocks::large_icon(name).filter(|_| large) {
-        Some(rows) => {
-            for (k, line) in rows.iter().enumerate() {
-                f.render_widget(Span::styled(line.clone(), Style::new().fg(fg)), Rect::new(ix, y + k as u16, iw, 1));
-            }
-        }
-        None => f.render_widget(Span::styled(icon.to_string(), Style::new().fg(fg)), Rect::new(ix, y, iw.min(r.right().saturating_sub(ix)), 1)),
-    }
-    Some((Rect::new(r.x, y, r.width, ih), ix))
 }
 
 /// Sidebar title row with right-aligned action icons.
@@ -564,7 +555,7 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) {
     };
     let s = app.settings.spacing;
     let indent = sp(s.tree_indent * n.depth as u16);
-    let gap = sp(crate::blocks::icon_gap(app.settings.icon_size, s.icon_gap));
+    let gap = sp(crate::blocks::icon_gap(s.icon_gap));
     // VS Code: a folder holding changes gets the colour and a dot; a file its letter.
     let right_spans = match mark {
         Some(c) if n.dir => vec![Span::styled(format!("{} ", ic.folder_dot), Style::new().fg(git_color(c)))],
@@ -593,7 +584,7 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) {
 
 fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
     let ic = icons();
-    let g = crate::blocks::icon_gap(app.settings.icon_size, app.settings.spacing.icon_gap);
+    let g = crate::blocks::icon_gap(app.settings.spacing.icon_gap);
     match hr {
         HRow::File(p, n) => {
             let dir = p.rsplit_once('/').map_or("", |(d, _)| d);
@@ -638,7 +629,7 @@ fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
 
 pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: bool) {
     let ic = icons();
-    let g = crate::blocks::icon_gap(app.settings.icon_size, app.settings.spacing.icon_gap);
+    let g = crate::blocks::icon_gap(app.settings.spacing.icon_gap);
     match sr {
         SRow::Gap => {}
         SRow::MergeHead(n) => {
