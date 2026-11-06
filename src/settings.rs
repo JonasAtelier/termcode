@@ -127,6 +127,8 @@ pub struct Settings {
     pub rulers: Vec<(usize, Option<Rgba>)>,
     pub follow_vscode: bool,
     pub minimap: crate::minimap::Cfg,
+    /// `editor.gotoLocation.multipleDefinitions`.
+    pub goto_multiple: crate::navui::GotoMode,
     pub theme: ThemeData,
     /// Parts that were skipped (a bad regex): shown, the rest still applies.
     pub warnings: Vec<String>,
@@ -154,6 +156,7 @@ impl Default for Settings {
             rulers: vec![(90, None)],
             follow_vscode: false,
             minimap: crate::minimap::Cfg::default(),
+            goto_multiple: Default::default(),
             theme: ThemeData { json: theme::embedded_theme().clone(), extra_rules: Vec::new() },
             warnings: Vec::new(),
         }
@@ -258,6 +261,7 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         rulers: g("editor.rulers").and_then(Value::as_array).map_or(d.rulers, |a| rulers(a)),
         follow_vscode: vscode.is_some(),
         minimap: crate::minimap::Cfg::parse(user),
+        goto_multiple: crate::navui::goto_mode(g("editor.gotoLocation.multipleDefinitions")),
         theme: ThemeData { json, extra_rules },
         warnings,
     })
@@ -490,6 +494,7 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "editor.minimap.side": "right",              // or "left"
     // "editor.minimap.size": "proportional",       // or "fill", "fit"
     // "herdr-code.minimap.minEditorWidth": 40,     // shrink, then hide, below this
+    // "editor.gotoLocation.multipleDefinitions": "peek",   // or "gotoAndPeek", "goto"
 }
 "##;
 

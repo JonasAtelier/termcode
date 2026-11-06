@@ -7,6 +7,7 @@ use crate::minimap::Mini;
 use crate::diff;
 use crate::editor::{self, Buffer, Pos, View};
 use crate::git::{self, ScmFile, Section};
+use crate::nav::{reap, take_slot, MAX_LIVE_RG};
 use crate::parse::{self, Commit, Hit, StatusEntry};
 use crate::settings::{self, Settings, ThemeData};
 use crate::theme;
@@ -154,6 +155,7 @@ pub enum Cmd {
     QuickOpen,
     Save,
     ReloadSettings,
+    Nav(crate::navui::Act),
 }
 
 /// The F1 command palette: label, command, key hint.
@@ -170,6 +172,11 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("Go to File...", Cmd::QuickOpen, "Ctrl+P"),
     ("File: Save", Cmd::Save, "Ctrl+S"),
     ("Developer: Reload Settings", Cmd::ReloadSettings, ""),
+    ("Go to Definition", Cmd::Nav(crate::navui::Act::Definition), "F12"),
+    ("Peek Definition", Cmd::Nav(crate::navui::Act::Peek), "Alt+F12"),
+    ("Find All References", Cmd::Nav(crate::navui::Act::References), "Shift+F12"),
+    ("Go Back", Cmd::Nav(crate::navui::Act::Back), "Alt+←"),
+    ("Go Forward", Cmd::Nav(crate::navui::Act::Forward), "Alt+→"),
 ];
 
 /// Commands matching `q`, best tier first, palette order within a tier.
@@ -402,8 +409,8 @@ pub struct App {
     pub search: Option<Child>,
     /// Tells the running search's reader thread to stop.
     search_stop: Arc<AtomicBool>,
-    /// rg processes not yet reaped (running or abandoned).
-    live_rg: Arc<AtomicUsize>,
+    /// rg processes not yet reaped (running or abandoned), Search and nav lookups alike.
+    pub(crate) live_rg: Arc<AtomicUsize>,
     /// A search waits until fewer than MAX_LIVE_RG rg processes are left.
     pub queued_search: Option<(String, (bool, bool, bool))>,
     gen: u64,
@@ -461,6 +468,8 @@ pub struct App {
     pub peek: Option<Peek>,
     pub qdiff: HashMap<String, QDiff>,
     qdiff_due: Option<Instant>,
+    /// Go to Definition / Peek / References state.
+    pub nav: crate::navui::Nav,
 }
 
 /// The TUI on this process's terminal for `root`, first opening `req`
@@ -631,23 +640,6 @@ fn clipboard_get() -> Option<String> {
     None
 }
 
-/// Abandoned rg processes allowed to run at once; a newer search waits for one to end.
-const MAX_LIVE_RG: usize = 2;
-
-/// Wait for a child we gave up on, off the UI thread (no zombie, no signal).
-/// Its pipes are closed first: a child blocked on a full pipe then gets EPIPE
-/// and exits instead of keeping the reaper waiting forever. `live` counts it out.
-fn reap(mut c: Child, live: Option<Arc<AtomicUsize>>) -> std::thread::JoinHandle<()> {
-    drop(c.stdin.take());
-    drop(c.stdout.take());
-    drop(c.stderr.take());
-    std::thread::spawn(move || {
-        let _ = c.wait();
-        if let Some(n) = live {
-            n.fetch_sub(1, Ordering::SeqCst);
-        }
-    })
-}
 
 fn filter(files: &[String], q: &str) -> Vec<String> {
     let mut v: Vec<(usize, &String)> = files.iter().filter_map(|f| parse::match_score(f, q).map(|s| (s, f))).collect();
@@ -759,6 +751,7 @@ impl App {
             peek: None,
             qdiff: HashMap::new(),
             qdiff_due: None,
+            nav: Default::default(),
         };
         a.backup_dir = a.layout_file.as_ref().and_then(|p| p.parent()).map(|d| d.join("backup"));
         a.refresh();
@@ -865,6 +858,7 @@ impl App {
             Cmd::PrevChange => self.peek_step(-1),
             Cmd::QuickOpen => self.open_quick(),
             Cmd::Save => self.save_active(),
+            Cmd::Nav(a) => crate::navui::command(self, a),
             Cmd::ReloadSettings => {
                 self.settings_stamp = None;
                 self.check_settings();
@@ -1155,53 +1149,68 @@ impl App {
             if SIGNALED.load(Ordering::SeqCst) {
                 return Ok(()); // run() flushes the backups
             }
-            if self.backup_due.is_some_and(|t| Instant::now() >= t) {
-                self.sync_backups();
-            }
-            if self.qdiff_due.is_some_and(|t| Instant::now() >= t) {
-                self.update_qdiff();
-                dirty = true;
-            }
-            if dirty {
-                t.draw(|f| crate::ui::draw(self, f))?;
-            }
-            dirty = self.drain();
-            // Wake often only while rg/git output streams in or a backup is pending,
-            // so a HUP is noticed within 100 ms whenever there is something to save.
-            let busy = self.search.is_some() || self.queued_search.is_some() || !self.loading.is_empty() || self.backup_due.is_some();
-            let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
-            if let Some(t) = self.qdiff_due {
-                wait = wait.min(t.saturating_duration_since(Instant::now()));
-            }
-            let ev = match event::poll(wait).and_then(|ready| if ready { event::read().map(Some) } else { Ok(None) }) {
-                Ok(ev) => ev,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            };
-            let Some(ev) = ev else { continue };
-            dirty |= match ev {
-                Event::Key(k) if k.kind != KeyEventKind::Release => {
-                    self.on_key(k);
-                    self.schedule_backup();
-                    true
-                }
-                Event::Mouse(m) => self.on_mouse(m),
-                Event::Paste(s) => {
-                    self.on_paste(&s);
-                    self.schedule_backup();
-                    true
-                }
-                Event::FocusGained => {
-                    self.refresh();
-                    true
-                }
-                Event::Resize(..) => true,
-                _ => false,
-            };
-            // Any edit (keys, paste, a Replace All click) re-diffs the gutter shortly after.
-            self.schedule_qdiff();
+            let next = |wait| event::poll(wait).and_then(|ready| if ready { event::read().map(Some) } else { Ok(None) });
+            self.step(t, &mut dirty, next)?;
         }
         Ok(())
+    }
+
+    /// One turn of the event loop: timers, background results, then the frame (so what
+    /// `drain` brought is on screen before the wait), then at most one input event from
+    /// `next`, given how long it may wait. `dirty` carries a redraw the event asked for.
+    /// Returns that wait.
+    pub(crate) fn step<B: Backend>(
+        &mut self,
+        t: &mut Terminal<B>,
+        dirty: &mut bool,
+        next: impl FnOnce(Duration) -> io::Result<Option<Event>>,
+    ) -> io::Result<Duration> {
+        if self.backup_due.is_some_and(|t| Instant::now() >= t) {
+            self.sync_backups();
+        }
+        if self.qdiff_due.is_some_and(|t| Instant::now() >= t) {
+            self.update_qdiff();
+            *dirty = true;
+        }
+        *dirty |= self.drain();
+        if std::mem::take(dirty) {
+            t.draw(|f| crate::ui::draw(self, f))?;
+        }
+        // Wake often only while rg/git output streams in or a backup is pending,
+        // so a HUP is noticed within 100 ms whenever there is something to save.
+        let busy = self.search.is_some() || self.queued_search.is_some() || !self.loading.is_empty() || self.backup_due.is_some() || self.nav.busy();
+        let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
+        if let Some(t) = self.qdiff_due {
+            wait = wait.min(t.saturating_duration_since(Instant::now()));
+        }
+        let ev = match next(wait) {
+            Ok(ev) => ev,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(wait),
+            Err(e) => return Err(e),
+        };
+        let Some(ev) = ev else { return Ok(wait) };
+        *dirty |= match ev {
+            Event::Key(k) if k.kind != KeyEventKind::Release => {
+                crate::navui::on_key(self, k);
+                self.schedule_backup();
+                true
+            }
+            Event::Mouse(m) => crate::navui::on_mouse(self, m),
+            Event::Paste(s) => {
+                self.on_paste(&s);
+                self.schedule_backup();
+                true
+            }
+            Event::FocusGained => {
+                self.refresh();
+                true
+            }
+            Event::Resize(..) => true,
+            _ => false,
+        };
+        // Any edit (keys, paste, a Replace All click) re-diffs the gutter shortly after.
+        self.schedule_qdiff();
+        Ok(wait)
     }
 
     // ---- git / filesystem ------------------------------------------------------
@@ -1378,8 +1387,8 @@ impl App {
             return;
         }
         // Without kill, an abandoned rg runs until it ends: cap them, and run only
-        // the latest request, as submitted, once one has ended.
-        if self.live_rg.load(Ordering::SeqCst) >= MAX_LIVE_RG {
+        // the latest request, as submitted, once one has ended. The slot is ours from here.
+        if !take_slot(&self.live_rg) {
             self.queued_search = Some((query, (case, word, regex)));
             self.msg = "waiting for the previous search…".into();
             return;
@@ -1404,11 +1413,11 @@ impl App {
         let mut child = match child {
             Ok(c) => c,
             Err(e) => {
+                self.live_rg.fetch_sub(1, Ordering::SeqCst);
                 self.msg = format!("rg: {e}");
                 return;
             }
         };
-        self.live_rg.fetch_add(1, Ordering::SeqCst);
         let Some(out) = child.stdout.take() else {
             reap(child, Some(self.live_rg.clone()));
             return;
@@ -1513,7 +1522,7 @@ impl App {
             }
             changed = true;
         }
-        changed
+        changed | crate::navui::poll(self)
     }
 
     fn load(&mut self, key: String, job: impl FnOnce(PathBuf) -> Load + Send + 'static) {
@@ -2994,7 +3003,7 @@ impl App {
 
     /// The buffer line drawn on screen row `y` of group `g`: rows below the peek
     /// zone are shifted down by its height; a row inside it is no line.
-    fn line_at(&self, g: usize, y: u16) -> Option<usize> {
+    pub(crate) fn line_at(&self, g: usize, y: u16) -> Option<usize> {
         let gh = self.ui.groups.get(g)?;
         let grp = self.groups.get(g)?;
         let tab = grp.tabs.get(grp.active)?;
@@ -3008,6 +3017,18 @@ impl App {
             }
         }
         Some((tab.view.scroll + row as usize).min(b.lines.len() - 1))
+    }
+
+    /// The screen row buffer line `line` of group `g` is drawn on, if any: `line_at` backwards.
+    pub(crate) fn line_y(&self, g: usize, line: usize) -> Option<u16> {
+        let gh = self.ui.groups.get(g)?;
+        let grp = self.groups.get(g)?;
+        let row = u16::try_from(line.checked_sub(grp.tabs.get(grp.active)?.view.scroll)?).ok()?;
+        let mut y = gh.text.y.checked_add(row)?;
+        if let Some((_, zh)) = gh.zone.filter(|&(zy, _)| y >= zy) {
+            y = y.checked_add(zh)?;
+        }
+        (y < gh.text.bottom()).then_some(y)
     }
 
     /// Where a dragged file would land: the group under the cursor and which part.
@@ -3756,6 +3777,10 @@ mod tests {
                     app.hover = Some(Position::new(w - 3, 3)); // over the minimap: slider shown
                     draw(&mut app);
                     app.hover = None;
+                    let def = crate::nav::Location { path: "src/main.rs".into(), line: 2, col: 5, preview: String::new(), kind: crate::nav::Kind::Function, score: 0 };
+                    crate::navui::open_peek(&mut app, "println", "2 definitions".into(), vec![def.clone(), def]);
+                    draw(&mut app);
+                    app.nav.peek = None;
                 }
             }
         }

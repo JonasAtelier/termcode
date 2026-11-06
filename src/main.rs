@@ -12,6 +12,7 @@ mod git;
 mod minimap;
 mod icons;
 mod nav;
+mod navui;
 mod panel;
 mod parse;
 mod semantic;

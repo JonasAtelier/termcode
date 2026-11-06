@@ -110,6 +110,12 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | minimap | click: centre that line; drag the slider; the wheel scrolls the editor |
 | a gutter marker (click), Alt+F5 / Shift+Alt+F5, F7 / Shift+F7 | quick-diff peek on that / the next / the previous change |
 | in the peek | Revert (the hunk back to the index version, one undo step), ↑ ↓ (wraps), × or Esc closes |
+| F12, Ctrl+click | Go to Definition: one result opens at its line (flashed); several follow `editor.gotoLocation.multipleDefinitions` |
+| Alt+F12 | Peek Definition, even for one result |
+| Shift+F12 | Find All References, in the peek ("N references") |
+| in the peek | Up/Down, PgUp/PgDn, Enter or click opens, wheel scrolls the list or the preview, Esc or a click outside closes |
+| Alt+← / Alt+→ | Go Back / Go Forward (also VS Code Linux's Ctrl+Alt+- / Ctrl+Shift+- where they reach, and F1) |
+| Ctrl+hover | underlines the identifier under the mouse (`editorLink.activeForeground`) |
 
 The Explorer header shows the root's name and, under it, its parent folder (`~` for
 $HOME, cut from the left as `…/work/fetched` when narrow).
@@ -164,6 +170,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `editor.minimap.side` | `"right"` | or `"left"` |
 | `herdr-code.minimap.minEditorWidth` | `40` | The minimap shrinks (to 4 cells) so the code keeps this many columns, then hides |
 | `editor.minimap.size` | `"proportional"` | `"fill"`: the whole file over the height; `"fit"`: proportional while it fits |
+| `editor.gotoLocation.multipleDefinitions` | `"peek"` | Several definitions: `"peek"` shows them, `"gotoAndPeek"` opens the first and peeks, `"goto"` opens the first |
 
 `herdr-code.spacing` (comfortable / compact defaults):
 
@@ -215,8 +222,29 @@ Unset colour keys fall back to VS Code's dark colour-registry defaults
 The command palette's View toggles (indent rainbow, guides, minimap ruler) last for the
 session; the next settings load resets them to the file.
 
+## Go to Definition
+
+There is no index: each lookup scans the open buffer (unsaved edits, locals, parameters, C
+labels), then runs one `rg` over the language's files with definition patterns (C/C++ with
+kernel style, Rust, Python, Go, shell, JS/TS; other files: a whole-word match). Results rank
+locals first, then definitions before declarations (a declaration is dropped when a
+definition exists), then the same file, directory, `foo.c`/`foo.h` pair, shallower paths. Under
+a subfolder root (`herdr-code drivers/net`), a symbol not defined there is looked up in the whole
+repo, so `include/` headers resolve; files outside the root open by their full path. The
+status bar shows "Searching definitions…" until it ends; Esc or a new request cancels it. A
+cancelled `rg` is never signalled: its pipe closes and it is reaped; Search and lookups share
+one cap of two running `rg`. Every jump (definitions, peek items, Back/Forward) goes through a
+50-entry history; a new jump clears Forward. The peek's colours are VS Code's `peekView*` keys.
+
 ## Known limits
 
+- Go to Definition is pattern-based: C++ methods defined inside a class body, Go `const (…)`
+  groups and macros that build names are not found; a C function head split over lines is read
+  from the file (first 1 MB) to tell a definition from a prototype. Up to 200 definitions and
+  1000 references are kept.
+- Ctrl+click needs the terminal to report Ctrl with the mouse (herdr 0.9.1 forwards it, after
+  checking the cell is not a link). Mouse buttons 8/9 (back/forward) never reach the panel:
+  herdr drops them. In legacy terminals Ctrl+Alt+- and Ctrl+Shift+- arrive as Ctrl(+Alt)+7.
 - Copy tries `wl-copy`, then `xclip`, then OSC 52. Paste uses bracketed paste (the terminal's
   own paste), or `wl-paste`/`xclip` for Ctrl+V, else the panel's last copy.
 - Files that were truncated (over 1 MB or 20k lines), are not UTF-8, or are binary open

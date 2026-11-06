@@ -404,6 +404,13 @@ fn loc(path: &str, line: usize, at: usize, text: &str, kind: Kind) -> Location {
     Location { path: path.into(), line, col: at + 1, preview: text.trim_end().into(), kind, score: 0 }
 }
 
+/// Take one of the `MAX_LIVE_RG` rg slots in one atomic step; false when all are taken.
+/// Every rg (Search and lookups) goes through here, so no two callers can both see a
+/// free slot and take it. Give it back with `fetch_sub(1)` (or `reap`).
+pub(crate) fn take_slot(live: &AtomicUsize) -> bool {
+    live.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_LIVE_RG).then_some(n + 1)).is_ok()
+}
+
 /// Cancel flag and live-rg counter of one query.
 #[derive(Clone, Copy)]
 struct Ctl<'a> {
@@ -430,7 +437,7 @@ pub(crate) fn reap(mut c: Child, live: Option<Arc<AtomicUsize>>) -> std::thread:
 /// done or `stop` is set; then rg is reaped in the background. Waits first while
 /// `live` is at `MAX_LIVE_RG`, and gives up if `stop` is set meanwhile.
 fn rg(root: &Path, args: &[&str], Ctl { stop, live }: Ctl, mut f: impl FnMut(Hit) -> bool) -> Result<(), String> {
-    while live.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_LIVE_RG).then_some(n + 1)).is_err() {
+    while !take_slot(live) {
         if stop.load(Ordering::Relaxed) {
             return Ok(());
         }
@@ -935,6 +942,31 @@ mod tests {
         assert!(until(|| h.is_finished()));
         assert_eq!((h.join().unwrap(), live.load(Ordering::SeqCst)), (0, MAX_LIVE_RG));
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn take_slot_is_atomic_under_concurrent_takers() {
+        let (count, peak) = (live(), live());
+        let takers: Vec<_> = (0..8)
+            .map(|_| {
+                let (count, peak) = (count.clone(), peak.clone());
+                std::thread::spawn(move || {
+                    let mut got = 0;
+                    for _ in 0..20_000 {
+                        if take_slot(&count) {
+                            peak.fetch_max(count.load(Ordering::SeqCst), Ordering::SeqCst);
+                            got += 1;
+                            count.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    }
+                    got
+                })
+            })
+            .collect();
+        let got: usize = takers.into_iter().map(|h| h.join().unwrap()).sum();
+        assert!(got > 0);
+        assert!(peak.load(Ordering::SeqCst) <= MAX_LIVE_RG, "{} rg at once", peak.load(Ordering::SeqCst));
+        assert_eq!(count.load(Ordering::SeqCst), 0);
     }
 
     /// nav.rs never signals a process: kill, killpg, raise, sigqueue and pthread_kill

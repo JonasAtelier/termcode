@@ -54,12 +54,12 @@ fn fit(s: &str, w: usize) -> String {
     out
 }
 
-fn fill(f: &mut Frame, r: Rect, bg: Color) {
+pub(crate) fn fill(f: &mut Frame, r: Rect, bg: Color) {
     f.buffer_mut().set_style(r, Style::new().bg(bg));
 }
 
 /// Draw `spans` left-aligned in a one-row rect over `bg`.
-fn row(f: &mut Frame, r: Rect, bg: Color, spans: Vec<Span<'static>>) {
+pub(crate) fn row(f: &mut Frame, r: Rect, bg: Color, spans: Vec<Span<'static>>) {
     fill(f, r, bg);
     f.render_widget(Line::from(spans), r);
 }
@@ -88,7 +88,7 @@ pub fn fit_left(s: &str, w: usize) -> String {
 }
 
 /// `n` spaces: the blank cells after an icon, inside a button, at an edge.
-fn sp(n: u16) -> String {
+pub(crate) fn sp(n: u16) -> String {
     " ".repeat(n as usize)
 }
 
@@ -206,6 +206,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
             fill(f, r, P.drop_bg);
         }
     }
+    crate::navui::draw(app, f);
     if app.quick.is_some() {
         quick(app, f, area, lay);
     }
@@ -517,7 +518,7 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
 }
 
 /// Right-aligned spans inside a row.
-fn right(f: &mut Frame, r: Rect, spans: Vec<Span<'static>>) -> u16 {
+pub(crate) fn right(f: &mut Frame, r: Rect, spans: Vec<Span<'static>>) -> u16 {
     let w = width(&spans).min(r.width);
     f.render_widget(Line::from(spans), Rect::new(r.right() - w, r.y, w, 1));
     r.right() - w
@@ -916,7 +917,7 @@ fn sstyle(base: Style, s: &SStyle) -> Style {
 
 /// One display line: highlight segments, background overlays (byte ranges),
 /// tabs expanded, wide chars clipped cleanly at both scroll edges.
-fn render_line(
+pub(crate) fn render_line(
     text: &str,
     segs: Option<&[(usize, SStyle)]>,
     overlays: &[(usize, usize, Color)],
