@@ -3793,6 +3793,7 @@ mod tests {
             app.peek_step(1); // the peek zone open on that change, the minimap on
             for w in 30..=40 {
                 for h in 5..=18 {
+                    app.settings.minimap.render_characters = h % 2 == 0; // braille and half blocks
                     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
                     let mut draw = |app: &mut App| {
                         t.draw(|f| crate::ui::draw(app, f)).unwrap();
@@ -3870,25 +3871,59 @@ mod tests {
         let row = m.mini.row_of(m.scroll, 4).unwrap();
         let lane = &buf[(m.area.x, m.area.y + row)];
         assert_eq!((lane.symbol(), lane.fg), ("▎", crate::theme::P.mini_modified));
-        // Half blocks coloured by the text, nothing past it; no slider until the mouse is over it.
-        assert_eq!(buf[(m.area.x + 1, m.area.y)].symbol(), "▀");
-        assert_ne!(buf[(m.area.x + 1, m.area.y)].fg, crate::theme::P.mini_bg, "line 1 has text");
-        assert_eq!(buf[(m.area.right() - 1, m.area.y)].fg, crate::theme::P.mini_bg, "past the text: background");
-        // A find match colours its slot's empty part with minimap.findMatchHighlight.
+        // Braille by default (VS Code's renderCharacters): 4 lines a cell, a dot per run of
+        // columns with code ("int line_N = N;": the first two dot columns), nothing past it.
+        let p = &crate::theme::P;
+        let first = buf[(m.area.x + 1, m.area.y)].clone();
+        assert_eq!(first.symbol(), "⣿", "lines 1-4, columns 0..10: all code");
+        assert_eq!(buf[(m.area.x + 4, m.area.y)].symbol(), "⠀", "the fourth cell: past every line");
+        // Muted: the cell's token colour 65% over the background, never the raw colour.
+        let b = match app.docs.get("file:long.c") {
+            Some(Doc::Text(b)) => b,
+            _ => unreachable!(),
+        };
+        let mut raw: Vec<Color> = b.segs(0).unwrap().iter().map(|(_, st)| Color::Rgb(st.foreground.r, st.foreground.g, st.foreground.b)).collect();
+        raw.push(p.editor_fg);
+        let inked = |c: Color| raw.iter().any(|&r| crate::minimap::ink(r, p.mini_fg_opacity, p.mini_bg) == c);
+        assert!(inked(first.fg), "{:?} from {raw:?}", first.fg);
+        assert!(!raw.contains(&first.fg));
+        assert_eq!(first.bg, p.mini_bg);
+        // A find match colours its cell (lines 9-12 for line 9) with minimap.findMatchHighlight.
         app.open_find(false);
         typ(&mut app, "line_9 ");
         app.focus = Focus::Editor;
         screen(&mut app, &mut t);
         let m = app.ui.minimaps[0];
         let r9 = m.mini.row_of(m.scroll, 8).unwrap();
-        let c = &t.backend().buffer()[(m.area.right() - 1, m.area.y + r9)];
-        assert_eq!(c.fg, crate::theme::P.mini_find, "line 9 (index 8) is the upper half of its row");
-        // Mouseover shows the slider (VS Code's showSlider default).
+        assert_eq!(t.backend().buffer()[(m.area.right() - 1, m.area.y + r9)].bg, p.mini_find);
+        // Mouseover shows the slider (VS Code's showSlider default), translucent: blended
+        // over the background, the dots keep their colour.
         app.find = None;
+        screen(&mut app, &mut t);
+        let before = t.backend().buffer()[(m.area.x + 1, m.area.y)].clone();
         app.hover = Some(Position::new(m.area.x + 2, m.area.bottom() - 1));
         screen(&mut app, &mut t);
-        let top = &t.backend().buffer()[(m.area.right() - 1, m.area.y)];
-        assert_ne!(top.bg, crate::theme::P.mini_bg, "slider over the viewport rows");
+        let top = t.backend().buffer()[(m.area.x + 1, m.area.y)].clone();
+        assert_eq!((top.symbol(), top.fg), (before.symbol(), before.fg), "dots visible under the slider");
+        assert_eq!(top.bg, p.mini_slider_hover.over(p.mini_bg), "slider over the viewport rows");
+        let sc = p.mini_slider_hover;
+        assert_ne!(top.bg, Color::Rgb(sc.0, sc.1, sc.2), "not an opaque block");
+        // renderCharacters false: half blocks, a line per half (lines 1 and 2), in the same
+        // muted inks; the slider tints both halves.
+        app.settings.minimap.render_characters = false;
+        app.hover = None;
+        screen(&mut app, &mut t);
+        let m = app.ui.minimaps[0];
+        let half = t.backend().buffer()[(m.area.x + 1, m.area.y)].clone();
+        assert_eq!(half.symbol(), "▀");
+        assert!(inked(half.fg) && inked(half.bg), "{half:?}");
+        assert_eq!(t.backend().buffer()[(m.area.right() - 1, m.area.y)].fg, p.mini_bg, "past the text: background");
+        app.hover = Some(Position::new(m.area.x + 2, m.area.bottom() - 1));
+        screen(&mut app, &mut t);
+        let lit = t.backend().buffer()[(m.area.x + 1, m.area.y)].clone();
+        assert_eq!((lit.fg, lit.bg), (sc.over(half.fg), sc.over(half.bg)), "the slider over both halves");
+        app.hover = None;
+        app.settings.minimap = crate::minimap::Cfg::default();
         // Click below the slider: the clicked line is centred.
         let m = app.ui.minimaps[0];
         let y = m.area.bottom() - 1;

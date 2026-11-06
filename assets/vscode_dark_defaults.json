@@ -97,6 +97,7 @@
   "diffEditor.insertedLineBackground": "#9BB95533",
   "diffEditor.removedLineBackground": "#FF000033",
   "minimap.background": "editor.background",
+  "minimap.foregroundOpacity": "#000f",
   "minimap.findMatchHighlight": "editor.findMatchHighlightBackground",
   "minimap.selectionHighlight": "editor.selectionBackground",
   "minimapGutter.addedBackground": "editorGutter.addedBackground",

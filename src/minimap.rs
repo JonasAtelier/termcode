@@ -1,10 +1,14 @@
 //! The minimap (VS Code `editor.minimap`): settings, geometry and colour
 //! sampling, kept free of drawing for tests. Each cell row covers `slots`
-//! slots (2 half-block halves, or 4 braille dot rows) of `lps` source lines;
-//! each content column covers `cpc` characters. Colours come from the editor's
-//! highlight cache (per line, invalidated from the edit point), so nothing is
-//! re-tokenised per frame; only the visible rows are sampled.
+//! slots (4 braille dot rows, VS Code's default `renderCharacters`, or 2
+//! half-block halves) of `lps` source lines; each dot (or half-block) column
+//! covers `cpc` characters, so `maxColumn` fits the width. A dot is on where
+//! its run of a line has code: indentation and short lines show as VS Code's
+//! silhouette. Colours come from the editor's highlight cache (per line,
+//! invalidated from the edit point), so nothing is re-tokenised per frame;
+//! only the visible rows are sampled.
 
+use crate::theme::Rgba;
 use ratatui::style::Color;
 use serde_json::{Map, Value};
 use syntect::highlighting::Style as SStyle;
@@ -38,7 +42,7 @@ impl Default for Cfg {
         Cfg {
             enabled: true,
             max_column: 120,
-            render_characters: false,
+            render_characters: true,
             slider_always: false,
             left: false,
             size: Size::Proportional,
@@ -84,9 +88,25 @@ pub fn width(text_w: u16, editor_w: u16, max_column: usize, min_text: u16) -> u1
     }
 }
 
-/// Characters per content column.
-pub fn chars_per_col(width: u16, max_column: usize) -> usize {
-    max_column.div_ceil(width.saturating_sub(1).max(1) as usize).max(1)
+/// Characters per sampled column (a braille dot column or a half-block cell)
+/// when `cols` of them span `max_column`.
+pub fn chars_per_col(cols: usize, max_column: usize) -> usize {
+    max_column.div_ceil(cols.max(1)).max(1)
+}
+
+/// How strongly a token colour shows over the minimap background: VS Code's
+/// 1x glyphs cover about 44% of their pixels (softened by 12/15) and its blocks
+/// are drawn at 50%; a braille dot is already thinner than a cell, so 65%.
+pub const INK: f64 = 0.65;
+
+/// A token colour as the minimap draws it: `INK` (scaled by
+/// `minimap.foregroundOpacity`'s alpha) of it over `bg`.
+pub fn ink(c: Color, opacity: u8, bg: Color) -> Color {
+    let (r, g, b) = match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0xCC, 0xCC, 0xCC),
+    };
+    Rgba(r, g, b, opacity).alpha(INK).over(bg)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -173,31 +193,25 @@ impl Mini {
     }
 }
 
-/// One sampled span: the dominant non-space colour and the share of non-space cells.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Sample {
-    pub color: Option<Color>,
-    pub density: f32,
-}
-
 /// Sample `lines` (text and highlight segments) into `cols` columns of `cpc`
-/// characters each. A segment colour with alpha 0 is the editor foreground `fg`.
+/// display columns each, up to `max_column`: per column the most frequent colour
+/// of its non-space characters, None where it has none (indentation, past the
+/// end, an empty line). A segment colour with alpha 0 is the editor foreground `fg`.
 pub fn sample<'a>(
     lines: impl IntoIterator<Item = (&'a str, Option<&'a [(usize, SStyle)]>)>,
     cols: usize,
     cpc: usize,
+    max_column: usize,
     fg: Color,
     tab: usize,
-) -> Vec<Sample> {
+) -> Vec<Option<Color>> {
     let mut counts: Vec<Vec<(Color, u32)>> = vec![Vec::new(); cols];
-    let mut nlines = 0u32;
     for (text, segs) in lines {
-        nlines += 1;
         let (mut x, mut si) = (0usize, 0usize);
         for (i, c) in text.char_indices() {
             let nx = if c == '\t' { (x / tab.max(1) + 1) * tab.max(1) } else { x + 1 };
             let col = x / cpc;
-            if col >= cols {
+            if col >= cols || x >= max_column {
                 break;
             }
             if !c.is_whitespace() {
@@ -219,28 +233,31 @@ pub fn sample<'a>(
             x = nx;
         }
     }
-    let area = (cpc as u32 * nlines.max(1)) as f32;
-    counts
-        .into_iter()
-        .map(|c| {
-            let total: u32 = c.iter().map(|(_, n)| n).sum();
-            Sample { color: c.iter().max_by_key(|(_, n)| *n).map(|(k, _)| *k), density: (total as f32 / area).min(1.0) }
-        })
-        .collect()
+    counts.into_iter().map(|c| most(&c)).collect()
 }
 
-/// A braille cell from 4 dot rows x 2 dot columns (`on[row][col]`).
-pub fn braille(on: [[bool; 2]; 4]) -> char {
+/// The most frequent colour; the first seen wins a tie.
+fn most(counts: &[(Color, u32)]) -> Option<Color> {
+    counts.iter().fold(None, |best: Option<(Color, u32)>, &(k, n)| if best.is_some_and(|(_, m)| m >= n) { best } else { Some((k, n)) }).map(|(k, _)| k)
+}
+
+/// A braille cell from up to 4 dot rows (one per slot) of 2 sampled columns:
+/// the dots where there is code, and the most frequent colour among them.
+pub fn braille(rows: &[[Option<Color>; 2]]) -> (char, Option<Color>) {
     const BITS: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
-    let mut v = 0;
-    for (r, row) in on.iter().enumerate() {
+    let (mut v, mut counts) = (0, Vec::<(Color, u32)>::new());
+    for (r, row) in rows.iter().take(4).enumerate() {
         for (c, dot) in row.iter().enumerate() {
-            if *dot {
+            if let Some(k) = *dot {
                 v |= BITS[r][c];
+                match counts.iter_mut().find(|(q, _)| *q == k) {
+                    Some((_, n)) => *n += 1,
+                    None => counts.push((k, 1)),
+                }
             }
         }
     }
-    char::from_u32(0x2800 + v).unwrap_or(' ')
+    (char::from_u32(0x2800 + v).unwrap_or(' '), most(&counts))
 }
 
 #[cfg(test)]
@@ -262,24 +279,53 @@ mod tests {
         assert_eq!(width(44, 100, 120, 40), 4, "down to 4 cells");
         assert_eq!(width(43, 100, 120, 40), 0, "then hidden");
         assert_eq!(width(43, 100, 120, 30), 13, "minEditorWidth is a setting");
-        assert_eq!(chars_per_col(15, 120), 9, "14 content columns + the git lane");
+        assert_eq!(chars_per_col(14, 120), 9, "half blocks: 14 content columns (15 minus the git lane)");
+        assert_eq!(chars_per_col(28, 120), 5, "braille: 2 dot columns a cell");
     }
 
     #[test]
     fn colour_sampling_takes_the_dominant_non_space_colour() {
         let segs = [(4, st(1)), (12, st(2))];
         // "int " is colour 1, "foo_bar" colour 2; spaces are not counted.
-        let s = sample([("int foo_bar", Some(&segs[..]))], 2, 8, Color::White, 4);
-        assert_eq!(s[0].color, Some(Color::Rgb(2, 0, 0)), "cols 0..8: 3 of colour 1, 4 of colour 2");
-        assert_eq!(s[1].color, Some(Color::Rgb(2, 0, 0)));
-        assert!((s[0].density - 7.0 / 8.0).abs() < 1e-6);
-        let empty = sample([("        ", None)], 1, 8, Color::White, 4);
-        assert_eq!(empty[0], Sample { color: None, density: 0.0 }, "blank span: editor background");
-        let plain = sample([("x", None)], 1, 8, Color::White, 4);
-        assert_eq!(plain[0].color, Some(Color::White), "no highlight: the editor foreground");
-        let tabbed = sample([("\tx", None)], 2, 4, Color::White, 4);
-        assert_eq!((tabbed[0].color, tabbed[1].color), (None, Some(Color::White)), "a tab spans to the next stop");
-        assert_eq!(braille([[true, false], [false, false], [false, false], [false, true]]), '\u{2881}');
+        let s = sample([("int foo_bar", Some(&segs[..]))], 2, 8, 120, Color::White, 4);
+        assert_eq!(s, [Some(Color::Rgb(2, 0, 0)); 2], "cols 0..8: 3 of colour 1, 4 of colour 2");
+        assert_eq!(sample([("        ", None)], 1, 8, 120, Color::White, 4), [None], "blank span: nothing drawn");
+        assert_eq!(sample([("x", None)], 1, 8, 120, Color::White, 4), [Some(Color::White)], "no highlight: the editor foreground");
+        let tabbed = sample([("\tx", None)], 2, 4, 120, Color::White, 4);
+        assert_eq!(tabbed, [None, Some(Color::White)], "a tab spans to the next stop");
+    }
+
+    #[test]
+    fn braille_dots_are_lines_and_column_runs() {
+        let w = Some(Color::White);
+        // 4 lines, one dot row each, in 4 dot columns of 2 characters (maxColumn 8).
+        let lines = ["ab", "    if x", "", "abcdefghijklmnop"];
+        let cols: Vec<Vec<Option<Color>>> = lines.iter().map(|l| sample([(*l, None)], 4, 2, 8, Color::White, 4)).collect();
+        assert_eq!(cols[0], [w, None, None, None], "a short line lights its own length");
+        assert_eq!(cols[1], [None, None, w, w], "indentation leaves its dots off");
+        assert_eq!(cols[2], [None; 4], "an empty line is a blank dot row");
+        assert_eq!(cols[3], [w; 4], "a long line is clipped at maxColumn");
+        assert_eq!(sample([("abcdefghij", None)], 8, 2, 5, Color::White, 4)[3..], [None; 5], "nothing past maxColumn (5) even with spare dots");
+        // Cell 0 = dot columns 0..2, cell 1 = 2..4.
+        let cell = |c: usize| braille(&cols.iter().map(|v| [v[2 * c], v[2 * c + 1]]).collect::<Vec<_>>()).0;
+        // Dots: line 1 left; line 4 both. Bits 0x01 (row 1 left) + 0x40 | 0x80 (row 4).
+        assert_eq!(cell(0), '\u{28C1}');
+        // Line 2 both (0x02 | 0x10), line 4 both.
+        assert_eq!(cell(1), '\u{28D2}');
+        assert_eq!(braille(&[[None, None]]), ('\u{2800}', None), "no code: a blank cell");
+    }
+
+    #[test]
+    fn a_cell_takes_the_most_frequent_colour_of_its_dots_muted() {
+        let (a, b) = (Some(Color::Rgb(255, 0, 0)), Some(Color::Rgb(0, 0, 255)));
+        let (ch, c) = braille(&[[a, b], [b, None], [None, None], [None, b]]);
+        assert_eq!((ch, c), ('\u{288B}', b), "3 blue dots beat 1 red");
+        assert_eq!(braille(&[[a, b]]).1, a, "a tie: the first dot's colour");
+        // 65% over the background, scaled by minimap.foregroundOpacity.
+        let bg = Color::Rgb(0x1E, 0x1E, 0x1E);
+        assert_eq!(ink(Color::Rgb(255, 255, 255), 255, bg), Color::Rgb(176, 176, 176), "0.65 * 255 + 0.35 * 30");
+        assert_eq!(ink(Color::Rgb(255, 255, 255), 0, bg), bg, "opacity 0: invisible");
+        assert_ne!(ink(Color::Rgb(255, 255, 255), 255, bg), Color::Rgb(255, 255, 255), "never the raw token colour");
     }
 
     #[test]

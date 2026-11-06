@@ -133,11 +133,15 @@ added, blue `▎` modified, red `▸` lines deleted below. Staging a hunk clears
 recomputes about 200 ms after an edit. The editor scrollbar's overview ruler marks git
 changes (left half), find matches (right half) and the cursor line.
 
-The minimap (VS Code's `editor.minimap`) sits between the code and the scrollbar: half-block
-cells, two lines tall, about 8 characters wide, coloured by the dominant token colour, with
-the git changes on its left edge, find matches and the selection behind the text, and the
-viewport slider while the mouse is over it (herdr forwards plain mouse motion to the pane, so
-VS Code's `showSlider: "mouseover"` works). In a narrow editor it shrinks, then hides.
+The minimap (VS Code's `editor.minimap`) sits between the code and the scrollbar and shows
+the code's silhouette, like VS Code's default `renderCharacters`: braille cells of 2 × 4 dots,
+one dot row per line and one dot per run of columns (so `maxColumn` fits), lit where that run
+has code, so indentation and line lengths show. Each cell takes the most frequent token
+colour of its dots, muted towards the background (`minimap.foregroundOpacity` scales it). The
+git changes are on its left edge, find matches and the selection behind the dots, and the
+viewport slider is a translucent overlay while the mouse is over it (herdr forwards plain mouse
+motion to the pane, so VS Code's `showSlider: "mouseover"` works). In a narrow editor it
+shrinks, then hides. `renderCharacters: false` draws half blocks instead, one line per half.
 
 Clicking a quick-diff marker opens VS Code's dirty-diff peek below the change: the index
 lines on red, the buffer lines on green with word highlights. Stage stages that one hunk (an
@@ -236,7 +240,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `editor.rulers` | `[90]` | Vertical rulers after N display columns (tabs and wide characters counted), in `editorRuler.foreground`; `[]` for none; `[{ "column": 80, "color": "#rrggbb" }, 100]` gives one its own colour. Drawn behind the text, in the editor and both sides of the diff. F1 "View: Toggle Rulers" for the session |
 | `editor.minimap.enabled` | `true` | The minimap (F1 "View: Toggle Minimap" for the session) |
 | `editor.minimap.maxColumn` | `120` | Characters the minimap covers (about 8 per cell, 8 to 16 cells, at most 15% of the editor, shrunk to leave minEditorWidth) |
-| `editor.minimap.renderCharacters` | `false` | `true`: braille dots (4 lines × 2 dot columns per cell) instead of half blocks |
+| `editor.minimap.renderCharacters` | `true` | Braille dots (4 lines × 2 dot columns per cell); `false`: half blocks, a line per half |
 | `editor.minimap.showSlider` | `"mouseover"` | or `"always"` |
 | `editor.minimap.side` | `"right"` | or `"left"` |
 | `herdr-code.minimap.minEditorWidth` | `40` | The minimap shrinks (to 4 cells) so the code keeps this many columns, then hides |

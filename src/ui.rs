@@ -1212,9 +1212,11 @@ fn text_editor(
     out
 }
 
-/// The minimap in `r`: a git lane, then half-block (or braille) cells coloured by
-/// the dominant token colour of the lines they cover; find matches, the
-/// selection and (when shown) the slider on top.
+/// The minimap in `r`: a git lane, then braille cells (a dot row per line, a dot
+/// where its run of columns has code) or half blocks (a half per line), in the
+/// cell's most frequent token colour muted towards the background (VS Code's
+/// silhouette); find matches and the selection as cell backgrounds, and (when
+/// shown) the slider as a translucent overlay.
 fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap::Cfg, d: &Deco, slider: Option<Rgba>) -> Mini {
     let n = b.lines.len();
     let view = r.height as usize; // the editor shows as many rows as the minimap is tall
@@ -1227,7 +1229,8 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
     // fit on a long file) are sampled in the editor colour, not tokenised on every edit.
     b.highlight_upto(end.min(v.scroll + 2 * view));
     let cols = r.width.saturating_sub(1) as usize;
-    let cpc = minimap::chars_per_col(r.width, cfg.max_column);
+    let dcols = if braille { cols * 2 } else { cols };
+    let dcpc = minimap::chars_per_col(dcols, cfg.max_column);
     let sel = v.selection();
     let finds: Vec<usize> = d.find.map_or(Vec::new(), |fd| fd.matches.iter().map(|(a, _)| a.line).collect());
     let tab = editor::tab();
@@ -1250,15 +1253,7 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
             P.mini_bg
         }
     };
-    let ink = |s: &minimap::Sample, under: Color| {
-        s.color.map(|c| {
-            let rgb = match c {
-                Color::Rgb(r, g, b) => (r, g, b),
-                _ => (0xCC, 0xCC, 0xCC),
-            };
-            Rgba(rgb.0, rgb.1, rgb.2, ((0.35 + 0.65 * s.density) * 255.0) as u8).over(under)
-        })
-    };
+    let ink = |c: Option<Color>, under: Color| c.map_or(under, |c| minimap::ink(c, P.mini_fg_opacity, under));
     for row in 0..r.height {
         let y = r.y + row;
         let l0 = mini.slot_line(v.scroll, row, 0);
@@ -1278,11 +1273,10 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
         };
         let cell = &mut f.buffer_mut()[(r.x, y)];
         cell.set_symbol(lg).set_fg(lc).set_bg(P.mini_bg);
-        let slot_samples: Vec<(Vec<usize>, Vec<minimap::Sample>)> = (0..slots)
+        let slot_samples: Vec<(Vec<usize>, Vec<Option<Color>>)> = (0..slots)
             .map(|k| {
                 let ls = slot_lines(mini.slot_line(v.scroll, row, k), mini.slot_line(v.scroll, row, k) + mini.lps);
-                let (dcols, dcpc) = if braille { (cols * 2, cpc.div_ceil(2)) } else { (cols, cpc) };
-                let samples = minimap::sample(ls.iter().map(|&l| (b.lines[l].as_str(), b.segs(l))), dcols, dcpc, P.editor_fg, tab);
+                let samples = minimap::sample(ls.iter().map(|&l| (b.lines[l].as_str(), b.segs(l))), dcols, dcpc, cfg.max_column, P.editor_fg, tab);
                 (ls, samples)
             })
             .collect();
@@ -1296,34 +1290,23 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
             let x = r.x + 1 + col as u16;
             let cell = &mut f.buffer_mut()[(x, y)];
             if braille {
-                let mut on = [[false; 2]; 4];
-                let mut ink_s = None;
-                for (k, (_, s)) in slot_samples.iter().enumerate() {
-                    for dc in 0..2 {
-                        let sm = &s[col * 2 + dc];
-                        on[k][dc] = sm.color.is_some();
-                        if ink_s.is_none_or(|i: minimap::Sample| sm.density > i.density) && sm.color.is_some() {
-                            ink_s = Some(*sm);
-                        }
-                    }
-                }
-                let bg = cell_bg;
-                let fg = ink_s.and_then(|s| ink(&s, bg)).unwrap_or(bg);
-                cell.set_char(minimap::braille(on)).set_fg(fg).set_bg(bg);
+                let dots: Vec<[Option<Color>; 2]> = slot_samples.iter().map(|(_, s)| [s[col * 2], s[col * 2 + 1]]).collect();
+                let (ch, c) = minimap::braille(&dots);
+                cell.set_char(ch).set_fg(ink(c, cell_bg)).set_bg(cell_bg);
             } else {
-                let (b0, b1) = (bgs[0], bgs[1]);
-                let up = ink(&slot_samples[0].1[col], b0).unwrap_or(b0);
-                let down = ink(&slot_samples[1].1[col], b1).unwrap_or(b1);
+                let (s0, s1) = (slot_samples[0].1[col], slot_samples[1].1[col]);
+                let (up, down) = (ink(s0, bgs[0]), ink(s1, bgs[1]));
                 if ascii {
-                    // No half blocks (ambiguous width): the denser half colours the cell.
-                    let pick = if slot_samples[0].1[col].density >= slot_samples[1].1[col].density { up } else { down };
-                    cell.set_symbol(" ").set_bg(pick);
+                    // No half blocks (ambiguous width): the upper line if it has code, else the lower.
+                    cell.set_symbol(" ").set_bg(if s0.is_some() { up } else { down });
                 } else {
                     cell.set_symbol("▀").set_fg(up).set_bg(down);
                 }
             }
         }
     }
+    // Translucent, like VS Code's slider layer: over the background, and over a
+    // half block's upper half (it is area too), but not over braille dots.
     if let Some(sc) = slider {
         let (top, len) = mini.slider(v.scroll);
         let buf = f.buffer_mut();
@@ -1331,7 +1314,10 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
             for x in r.x..r.right() {
                 let cell = &mut buf[(x, y)];
                 let (fg, bg) = (cell.fg, cell.bg);
-                cell.set_fg(sc.over(fg)).set_bg(sc.over(bg));
+                if !braille && x > r.x {
+                    cell.set_fg(sc.over(fg));
+                }
+                cell.set_bg(sc.over(bg));
             }
         }
     }

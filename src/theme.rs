@@ -191,6 +191,8 @@ pub struct Pal {
     pub diff_ins_text: Rgba,
     pub diff_del_text: Rgba,
     pub mini_bg: Color,
+    /// `minimap.foregroundOpacity`'s alpha: scales the token colours.
+    pub mini_fg_opacity: u8,
     pub mini_find: Color,
     pub mini_sel: Color,
     pub mini_added: Color,
@@ -318,6 +320,7 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         diff_ins_text: raw("diffEditor.insertedTextBackground"),
         diff_del_text: raw("diffEditor.removedTextBackground"),
         mini_bg: on("minimap.background", editor_bg),
+        mini_fg_opacity: raw("minimap.foregroundOpacity").3,
         mini_find: on("minimap.findMatchHighlight", editor_bg),
         mini_sel: on("minimap.selectionHighlight", editor_bg),
         mini_added: on("minimapGutter.addedBackground", editor_bg),

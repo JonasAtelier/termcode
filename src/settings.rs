@@ -620,7 +620,7 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "editor.rulers": [90],   // [] for none; [{ "column": 80, "color": "#5A5A5A" }, 100]
     // "editor.minimap.enabled": true,
     // "editor.minimap.maxColumn": 120,
-    // "editor.minimap.renderCharacters": false,   // true: braille dots
+    // "editor.minimap.renderCharacters": true,    // braille dots; false: half blocks
     // "editor.minimap.showSlider": "mouseover",    // or "always"
     // "editor.minimap.side": "right",              // or "left"
     // "editor.minimap.size": "proportional",       // or "fill", "fit"
