@@ -1071,16 +1071,17 @@ pub fn status_left(app: &mut App, f: &mut Frame, r: Rect, edge: u16, gap: u16) -
     x
 }
 
-/// Status bar: the cursor line's blame, right-aligned in `r`.
-pub fn status_blame(app: &mut App, f: &mut Frame, r: Rect, gap: u16) {
+/// Status bar: the cursor line's blame, right-aligned in `r`. Returns where it starts
+/// (`r`'s right edge when there is none), so the message ends before it.
+pub fn status_blame(app: &mut App, f: &mut Frame, r: Rect, gap: u16) -> u16 {
     if !app.settings.blame_status {
-        return;
+        return r.right();
     }
-    let Some(b) = current_blame(app) else { return };
+    let Some(b) = current_blame(app) else { return r.right() };
     let (t, hash) = (blame_text(b), b.hash.clone());
     let w = t.width() as u16 + gap;
     if r.width < w + 10 {
-        return;
+        return r.right();
     }
     let br = Rect::new(r.right() - w, r.y, w - gap, 1);
     f.render_widget(Span::styled(t, Style::new().fg(P.status_fg).bg(P.status_bg)), br);
@@ -1088,6 +1089,7 @@ pub fn status_blame(app: &mut App, f: &mut Frame, r: Rect, gap: u16) {
     if let Some(h) = hash {
         app.gitui.hits.push_hover(br, h);
     }
+    br.x
 }
 
 /// The "…" action on the Source Control title row, left of Refresh.

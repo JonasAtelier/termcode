@@ -300,14 +300,8 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let sep = sp(lay.s.status_gap);
     // Branch, sync / Publish Branch or the running git op (clickable).
     let lx = crate::gitcmds::status_left(app, f, r, lay.s.status_padding, lay.s.status_gap);
-    let mut left = Vec::new();
-    if let Some(e) = &app.settings_err {
-        left.push(Span::styled(sep.clone(), st));
-        let err = Style::new().fg(P.status_err_fg).bg(P.status_err_bg);
-        left.push(Span::styled(format!(" settings.json: {} ", fit(e, (r.width / 2) as usize)), err));
-    }
-    left.push(Span::styled(format!("{sep}{}", app.msg), st));
-    let mut right = Vec::new();
+    let gap = lay.s.status_gap;
+    let mut items = Vec::new();
     if let Some(Doc::Text(b)) = app.groups.get(app.ag).and_then(|g| g.tabs.get(g.active)).and_then(|t| app.docs.get(&t.key)) {
         let v = &app.groups[app.ag].tabs[app.groups[app.ag].active].view;
         let c = b.clamp(v.cursor);
@@ -323,14 +317,32 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
             "UTF-8".into()
         };
         let eol = if b.crlf { "CRLF" } else { "LF" };
-        let items = [s, indent, enc, eol.to_string(), b.syntax_name().to_string()];
-        right.push(Span::styled(format!("{}{edge}", items.join(&sep)), st));
+        items = vec![s, indent, enc, eol.to_string(), b.syntax_name().to_string()];
     }
-    f.render_widget(Line::from(left), Rect::new(lx, r.y, r.right().saturating_sub(lx), 1));
-    let w = width(&right);
+    // The left items stay whole. Short of room the message goes first (below), then the
+    // right items from their left end: Ln/Col first, the language last.
+    let right_text = |items: &[String]| if items.is_empty() { String::new() } else { format!("{}{edge}", items.join(&sep)) };
+    while !items.is_empty() && lx as usize + gap as usize + right_text(&items).width() > r.right() as usize {
+        items.remove(0);
+    }
+    let right = right_text(&items);
+    let w = (right.width() as u16).min(r.width);
     let rx = r.right().saturating_sub(w);
-    f.render_widget(Line::from(right), Rect::new(rx, r.y, w.min(r.width), 1));
-    crate::gitcmds::status_blame(app, f, Rect::new(lx, r.y, rx.saturating_sub(lx), 1), lay.s.status_gap);
+    f.render_widget(Span::styled(right, st), Rect::new(rx, r.y, w, 1));
+    // Blame left of them; the message (a settings error first) in what is left, cut once
+    // with "…" and `gap` cells before what follows it.
+    let end = crate::gitcmds::status_blame(app, f, Rect::new(lx, r.y, rx.saturating_sub(lx), 1), gap);
+    let mut room = end.saturating_sub(lx + 2 * gap) as usize;
+    let mut left = vec![Span::styled(sep.clone(), st)];
+    if let Some(e) = &app.settings_err {
+        let t = fit(&format!(" settings.json: {e} "), room);
+        room = room.saturating_sub(t.width() + gap as usize);
+        left.push(Span::styled(t, Style::new().fg(P.status_err_fg).bg(P.status_err_bg)));
+        left.push(Span::styled(sep.clone(), st));
+    }
+    // Under 8 cells a cut message is noise ("op…"): it goes.
+    left.push(Span::styled(if room < 8 { String::new() } else { fit(&app.msg, room) }, st));
+    f.render_widget(Line::from(left), Rect::new(lx, r.y, end.saturating_sub(lx), 1));
 }
 
 /// VS Code's activity bar: each item a 3-row cell (2 in compact) with its icon centred,

@@ -3941,6 +3941,36 @@ mod tests {
         d.canonicalize().unwrap()
     }
 
+    /// The status bar from narrow to wide: the branch item stays whole (its hit rect on
+    /// it), the message is cut once with "…" and keeps statusBarGap blanks before the
+    /// right items, which drop from their left end (Ln/Col first, the language last).
+    #[test]
+    fn the_status_message_never_runs_into_the_right_items() {
+        let root = repo("statusbar");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/main.rs", false);
+        wait(&mut app);
+        let msg = "opened src/ui.rs:900";
+        let gap = " ".repeat(app.settings.spacing.status_gap as usize);
+        let mut line = String::new();
+        for w in [40u16, 60, 75, 95, 140] {
+            let mut t = Terminal::new(TestBackend::new(w, 20)).unwrap();
+            app.msg = msg.into();
+            line = screen(&mut app, &mut t).lines().last().unwrap().to_string();
+            let (r, _) = *app.gitui.hits.cmds.iter().find(|(_, h)| *h == crate::gitcmds::Hit::Branch).unwrap();
+            let hit: String = (r.x..r.right()).map(|x| t.backend().buffer()[(x, r.y)].symbol()).collect();
+            assert!(hit.contains(&app.branch), "{w}: the branch item and its hit rect: {hit:?} in {line:?}");
+            assert!(line.contains("Rust"), "{w}: the language goes last: {line:?}");
+            assert!(!line.contains("Ln") || line.contains(&format!("Ln 1, Col 1{gap}")), "{w}: {line:?}");
+            if let Some(i) = line.find("opened") {
+                let shown = line[i..].split(gap.as_str()).next().unwrap();
+                assert!(shown == msg || shown.ends_with('…') && msg.starts_with(shown.trim_end_matches('…')), "{w}: message {shown:?} in {line:?}");
+            }
+        }
+        assert!(line.contains(msg) && line.contains("Ln 1, Col 1"), "room for all: {line:?}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn welcome_actions_open_existing_views_and_stay_inside_editor() {
         let root = repo("welcome-actions");
