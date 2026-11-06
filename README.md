@@ -84,6 +84,18 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
   non-Mono Nerd Font glyph. Activity bar items are 3 rows tall (2 in compact), the icon
   centred: the active one has `activityBar.activeBorder` down its left edge over a subtle
   `activityBar.activeBackground`, a hovered one turns from `inactiveForeground` to `foreground`.
+  the focused block's a little lighter. Icon sizes (`herdr-code.icons.size`):
+  `herdr-code --icon-demo` shows the three side by side in your terminal and font; any key quits.
+- Sessions: reopening `herdr-code` on the same folder brings back the last session there, as
+  VS Code does: the editor groups and tabs (pinned or preview, the active ones), each file's
+  cursor, selection and scroll, the sidebar view, width and visibility, the Explorer's open
+  folders and scroll, the Search query and toggles (not its results), the Source Control
+  layout, and diff tabs (still-pending working-tree/index changes, commits still there). Missing
+  files are skipped and positions clamped; tabs reopen lazily, their files read when first
+  shown. Unsaved text comes back from the hot-exit backups (the Restore prompt). It is saved
+  about a second after a change, on quit, when herdr closes the pane, and after a crash, to
+  `$HERDR_PLUGIN_STATE_DIR/sessions/<hash of the folder>.json` (in place and as a tab alike).
+  `herdr-code FILE:L` opens that file on top of it.
 - `prefix+g` is herdr's default `goto`, so no keybinding is shipped. To add one, bind
   `plugin_action` `jonas.herdr-code.open` to a free key.
 
@@ -252,6 +264,8 @@ the panel: the status bar shows the error and the last good settings stay.
 | `editor.guides.indentation` | `true` | Indent guides (`editorIndentGuide.background` / `.activeBackground`) |
 | `editor.tabSize` | `4` | Tab stops, the indent unit, rainbow and guides |
 | `workbench.tree.enableStickyScroll` | `true` | Sticky scroll in the Explorer, Search and Source Control lists |
+| `herdr-code.restoreSession` | `true` | Reopen the last session's groups, tabs and sidebar for this folder |
+| `workbench.editor.restoreViewState` | `true` | Restore each file's cursor, selection and scroll: in the restored tabs, and when a closed file is opened again |
 | `workbench.tree.stickyScrollMaxItemCount` | `1` | Pinned rows at most (1 to 10), outermost first; VS Code's default is 7 |
 | `editor.rulers` | `[90]` | Vertical rulers after N display columns (tabs and wide characters counted), in `editorRuler.foreground`; `[]` for none; `[{ "column": 80, "color": "#rrggbb" }, 100]` gives one its own colour. Drawn behind the text, in the editor and both sides of the diff. F1 "View: Toggle Rulers" for the session |
 | `editor.minimap.enabled` | `true` | The minimap (F1 "View: Toggle Minimap" for the session) |

@@ -144,6 +144,10 @@ pub struct Settings {
     pub blame_decoration: bool,
     /// `git.confirmSync`: ask before Sync pulls and pushes.
     pub confirm_sync: bool,
+    /// `workbench.editor.restoreViewState`: cursors and scroll come back with a file.
+    pub restore_view_state: bool,
+    /// `herdr-code.restoreSession`: the groups, tabs and sidebar of the last session.
+    pub restore_session: bool,
     /// Parts that were skipped (a bad regex): shown, the rest still applies.
     pub warnings: Vec<String>,
 }
@@ -179,6 +183,8 @@ impl Default for Settings {
             blocks: crate::blocks::BlockStyle::Cards,
             blame_decoration: false,
             confirm_sync: true,
+            restore_view_state: true,
+            restore_session: true,
             warnings: Vec::new(),
         }
     }
@@ -290,6 +296,8 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         blocks: crate::blocks::parse(g("herdr-code.blocks.style"), compact),
         blame_decoration: g("git.blame.editorDecoration.enabled").and_then(Value::as_bool).unwrap_or(d.blame_decoration),
         confirm_sync: g("git.confirmSync").and_then(Value::as_bool).unwrap_or(d.confirm_sync),
+        restore_view_state: g("workbench.editor.restoreViewState").and_then(Value::as_bool).unwrap_or(d.restore_view_state),
+        restore_session: g("herdr-code.restoreSession").and_then(Value::as_bool).unwrap_or(d.restore_session),
         warnings,
     })
 }
@@ -622,6 +630,8 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "indentRainbow.enabled": true,
     // "indentRainbow.indicatorStyle": "classic",   // or "light"
     // "editor.guides.indentation": true,
+    // "herdr-code.restoreSession": true,              // reopen the last tabs, groups and sidebar
+    // "workbench.editor.restoreViewState": true,      // and each file's cursor and scroll
     // "workbench.tree.enableStickyScroll": true,      // pin the folders above the top row
     // "workbench.tree.stickyScrollMaxItemCount": 1,  // up to 10: arch, then sh, boards, …
     // "editor.tabSize": 4,

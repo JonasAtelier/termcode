@@ -20,6 +20,7 @@ mod navui;
 mod panel;
 mod parse;
 mod semantic;
+mod session;
 mod settings;
 mod theme;
 mod ui;

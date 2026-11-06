@@ -595,6 +595,8 @@ pub struct App {
     pub nav: crate::navui::Nav,
     /// Source Control view, Timeline, hover card and commit dialog state.
     pub gitui: crate::scm::GitUi,
+    /// The saved session of this root (`session`).
+    pub session: crate::session::State,
 }
 
 /// The TUI on this process's terminal for `root`, first opening `req`
@@ -602,9 +604,14 @@ pub struct App {
 /// which also takes requests from `herdr-code --tab FILE`; in place it does not.
 /// Every exit restores the terminal, so in place the shell gets it back.
 pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> {
-    let mut app = App::new(root, Some(crate::plugin_dir(true).join("layout.json")));
+    let state = crate::plugin_dir(true);
+    let mut app = App::new(root, Some(state.join("layout.json")));
     app.settings_file = Some(settings::path());
     app.check_settings();
+    // In place and in a tab alike: the same state dir, so one session per root.
+    app.session.file = Some(crate::session::path(&state, &app.root));
+    crate::session::restore(&mut app);
+    // `herdr-code FILE:L` opens on top of the restored tabs.
     if let Some(req) = req {
         app.request(&req);
     }
@@ -643,9 +650,9 @@ pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> 
         let out = io::BufWriter::with_capacity(1 << 16, Gate { w: io::stdout(), off: &RESTORED });
         Terminal::new(CrosstermBackend::new(out)).and_then(|mut t| app.event_loop(&mut t))
     }));
-    // Every exit path (quit, signal, error, panic) leaves unsaved edits on disk.
-    app.sync_backups();
+    // The terminal first: saving backups and the session never holds the shell back.
     restore();
+    finish(&mut app);
     // Git writes still queued or running finish before the process ends (closing their
     // pipes would SIGPIPE git mid-write). After HUP/TERM or a panic only briefly.
     if app.gitui.writes() > 0 {
@@ -663,6 +670,13 @@ pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> 
         Err(panic) => std::panic::resume_unwind(panic),
         Ok(r) => r.map_err(|e| e.to_string()),
     }
+}
+
+/// Every exit path (quit, HUP/TERM, an error, a panic) leaves the unsaved edits
+/// and the session on disk.
+fn finish(app: &mut App) {
+    app.sync_backups();
+    crate::session::save_guarded(app);
 }
 
 pub(crate) fn setup() -> io::Result<()> {
@@ -941,6 +955,7 @@ impl App {
             diff_minis: HashMap::new(),
             nav: Default::default(),
             gitui: crate::scm::GitUi::new(&saved),
+            session: Default::default(),
         };
         a.backup_dir = a.layout_file.as_ref().and_then(|p| p.parent()).map(|d| d.join("backup"));
         // The first frame shows the real status: read it here, once, synchronously.
@@ -1362,7 +1377,7 @@ impl App {
 
     /// A file just opened has backups no running panel owns (any session or
     /// panel): offer the newest; the others wait for the next open.
-    fn offer_restore(&mut self, key: &str) {
+    pub(crate) fn offer_restore(&mut self, key: &str) {
         let (Some(dir), Some(rel)) = (&self.backup_dir, key.strip_prefix("file:")) else { return };
         let path = self.root.join(rel);
         let mine = path.to_string_lossy();
@@ -1425,6 +1440,7 @@ impl App {
         }
         // Source Control timers: the resting-pointer card, the blame delay, the op spinner.
         *dirty |= crate::scm::tick(self);
+        *dirty |= crate::session::tick(self);
         *dirty |= self.drain();
         if std::mem::take(dirty) {
             t.draw(|f| crate::ui::draw(self, f))?;
@@ -1439,7 +1455,7 @@ impl App {
             || self.nav.busy()
             || self.gitui.busy();
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
-        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due].into_iter().flatten() {
+        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
         // A far jump's first highlighting catches up one budgeted slice per frame
@@ -1493,12 +1509,19 @@ impl App {
             Event::Key(k) if k.kind != KeyEventKind::Release => {
                 crate::navui::on_key(self, k);
                 self.schedule_backup();
+                crate::session::touch(self);
                 true
             }
-            Event::Mouse(m) => crate::navui::on_mouse(self, m),
+            Event::Mouse(m) => {
+                if m.kind != MouseEventKind::Moved {
+                    crate::session::touch(self); // clicks, drags, wheel: tabs, cursors, scroll
+                }
+                crate::navui::on_mouse(self, m)
+            }
             Event::Paste(s) => {
                 self.on_paste(&s);
                 self.schedule_backup();
+                crate::session::touch(self);
                 true
             }
             // Debounced: focus flickers between windows run one refresh.
@@ -1629,7 +1652,7 @@ impl App {
         v
     }
 
-    fn toggle(&mut self, i: usize) {
+    pub(crate) fn toggle(&mut self, i: usize) {
         let (dir, open, depth, path) = {
             let n = &self.tree[i];
             (n.dir, n.open, n.depth, n.path.clone())
@@ -1884,22 +1907,47 @@ impl App {
     /// Show `key` in group `g`: reuse its tab, else replace the group's preview
     /// tab (preview), else add a tab after the active one.
     pub(crate) fn show_tab(&mut self, g: usize, key: String, preview: bool) {
-        let grp = &mut self.groups[g];
-        if let Some(i) = grp.tabs.iter().position(|t| t.key == key) {
+        if let Some(i) = self.groups[g].tabs.iter().position(|t| t.key == key) {
+            let grp = &mut self.groups[g];
             grp.active = i;
             if !preview {
                 grp.tabs[i].preview = false;
             }
-        } else if let Some(i) = grp.tabs.iter().position(|t| t.preview).filter(|_| preview) {
-            let old = std::mem::replace(&mut grp.tabs[i], Tab { key, preview: true, view: View::default() });
+            self.ag = g;
+            return;
+        }
+        // A file opened again comes back where it was (workbench.editor.restoreViewState).
+        let view = crate::session::recall(self, &key);
+        let grp = &mut self.groups[g];
+        if let Some(i) = grp.tabs.iter().position(|t| t.preview).filter(|_| preview) {
+            let old = std::mem::replace(&mut grp.tabs[i], Tab { key, preview: true, view });
             grp.active = i;
+            crate::session::remember(self, &old.key, &old.view);
             self.gc(&old.key);
         } else {
             let at = if grp.tabs.is_empty() { 0 } else { grp.active + 1 };
-            grp.tabs.insert(at, Tab { key, preview, view: View::default() });
+            grp.tabs.insert(at, Tab { key, preview, view });
             grp.active = at;
         }
         self.ag = g;
+    }
+
+    /// A restored tab's document, first drawn (`session::materialize`): a file (with
+    /// its hot-exit backup offered), a working-tree or index diff, or a commit diff.
+    pub(crate) fn open_restored(&mut self, key: &str) {
+        if let Some(rel) = key.strip_prefix("file:") {
+            self.file_doc(rel);
+            // One prompt at a time: with another one open, this offer follows it.
+            crate::session::offer(self, key);
+            self.load_bases();
+        } else if let Some((sec, path)) = key.strip_prefix("diff:").and_then(|r| r.split_once(':')) {
+            let f = self.scm_files.iter().find(|f| f.path == path && (f.section == Section::Staged) == (sec == "staged")).cloned();
+            if let Some(f) = f {
+                self.load_diff(key.to_string(), f, None);
+            }
+        } else if let Some((hash, path)) = key.strip_prefix("cdiff:").and_then(|r| r.split_once(':')) {
+            crate::scm::load_commit_diff(self, key, hash, path);
+        }
     }
 
     /// Drop a document nobody shows any more (a dirty one is kept for the quit prompt).
@@ -1922,6 +1970,7 @@ impl App {
         self.qdiff.remove(key);
         self.diff_minis.remove(key);
         self.gitui.cmds.conflicts.remove(key);
+        crate::session::forget(self, key);
         if self.peek.as_ref().is_some_and(|p| p.key == key) {
             self.peek = None;
         }
@@ -2065,7 +2114,7 @@ impl App {
             return;
         }
         let grp = &mut self.groups[g];
-        grp.tabs.remove(i);
+        let tab = grp.tabs.remove(i);
         if i < grp.active || grp.active >= grp.tabs.len() {
             grp.active = grp.active.saturating_sub(1);
         }
@@ -2075,6 +2124,7 @@ impl App {
                 self.ag -= 1;
             }
         }
+        crate::session::remember(self, &tab.key, &tab.view);
         if refs == 1 {
             // Closing the last view (after Save or an explicit Don't Save) also
             // retires its hot-exit backup.
@@ -4805,6 +4855,30 @@ mod tests {
         let Some(Doc::Text(b)) = app.docs.get("file:README.md") else { unreachable!() };
         assert_eq!((b.text(), b.dirty()), ("hello\n".to_string(), false), "undo history came along");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// herdr closes a pane with HUP: the loop ends, and the exit path writes the
+    /// session next to the backups. (The handler is called as the signal would.)
+    #[test]
+    fn hup_ends_the_loop_and_saves_the_session() {
+        let root = repo("hup");
+        let state = std::env::temp_dir().join(format!("herdr-code-hup-state-{}", std::process::id()));
+        let mut app = App::new(root.clone(), Some(state.join("layout.json")));
+        app.session.file = Some(crate::session::path(&state, &root));
+        app.open_file(0, "README.md", false);
+        app.focus = Focus::Editor;
+        typ(&mut app, "x"); // unsaved: a backup too
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        on_term(libc::SIGHUP);
+        let r = app.event_loop(&mut t);
+        SIGNALED.store(false, Ordering::SeqCst);
+        r.unwrap();
+        finish(&mut app);
+        let saved = fs::read_to_string(app.session.file.as_ref().unwrap()).unwrap();
+        assert!(saved.contains("\"file:README.md\""), "{saved}");
+        assert!(fs::read_dir(state.join("backup")).unwrap().count() > 0, "and the hot-exit backup");
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&state).unwrap();
     }
 
     /// A committed 100-line file with three changes in the buffer: line 5

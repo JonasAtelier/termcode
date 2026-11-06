@@ -768,6 +768,8 @@ fn tab_icon(app: &App, key: &str) -> (String, Color) {
 }
 
 fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
+    // A restored tab's document is read when the tab is first shown.
+    crate::session::materialize(app, g);
     let mut gh = GroupHit { area, ..Default::default() };
     let tabbar = Rect::new(area.x, area.y, area.width, 1);
     gh.tabbar = tabbar;

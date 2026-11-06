@@ -212,18 +212,17 @@ impl GitUi {
     /// Pane state from layout.json's `scm` object.
     pub fn new(saved: &serde_json::Value) -> GitUi {
         let (tx, rx) = mpsc::channel();
-        let s = &saved["scm"];
-        GitUi {
-            changes_open: s["changes_open"].as_bool().unwrap_or(true),
-            graph_open: s["graph_open"].as_bool().unwrap_or(true),
-            split: s["split"].as_u64().map(|v| v.clamp(1, 500) as u16),
+        let mut g = GitUi {
+            changes_open: true,
+            graph_open: true,
+            split: None,
             graph_focus: false,
             graph: Graph::default(),
-            timeline: Timeline { open: s["timeline_open"].as_bool().unwrap_or(true), ..Default::default() },
+            timeline: Timeline { open: true, ..Default::default() },
             card: None,
             hover: None,
             dlg: None,
-            dlg_split: commitdlg::SASHES.map(|k| s["commit_dialog"][k.name()].as_f64().filter(|f| (0.0..=1.0).contains(f))),
+            dlg_split: [None; 3],
             draft: None,
             drag: None,
             hits: Hits::default(),
@@ -237,6 +236,23 @@ impl GitUi {
             tx,
             rx,
             jobs: 0,
+        };
+        g.restore(&saved["scm"]);
+        g
+    }
+
+    /// Pane state from a `layout()` object (layout.json's `scm`, a session's): what it has.
+    pub fn restore(&mut self, s: &serde_json::Value) {
+        self.changes_open = s["changes_open"].as_bool().unwrap_or(self.changes_open);
+        self.graph_open = s["graph_open"].as_bool().unwrap_or(self.graph_open);
+        self.timeline.open = s["timeline_open"].as_bool().unwrap_or(self.timeline.open);
+        if let Some(v) = s["split"].as_u64() {
+            self.split = Some(v.clamp(1, 500) as u16);
+        }
+        for (k, r) in commitdlg::SASHES.iter().zip(self.dlg_split.iter_mut()) {
+            if let Some(f) = s["commit_dialog"][k.name()].as_f64().filter(|f| (0.0..=1.0).contains(f)) {
+                *r = Some(f);
+            }
         }
     }
 
@@ -658,6 +674,21 @@ pub fn open_commit_diff(app: &mut App, hash: &str, short: &str, f: FileChange, p
         let (hash, short) = (hash.to_string(), short.to_string());
         app.gitui.spawn(move || Msg::Diff(key, commit_diff_doc(&root, &hash, &short, f)));
     }
+}
+
+/// A restored commit-diff tab's document: `path` of `hash`, built off the UI thread.
+pub fn load_commit_diff(app: &mut App, key: &str, hash: &str, path: &str) {
+    let Some(root) = app.git_root.clone() else { return };
+    let (key, hash, path) = (key.to_string(), hash.to_string(), path.to_string());
+    app.gitui.spawn(move || {
+        let short = hash.get(..7).unwrap_or(&hash).to_string();
+        let f = gitops::commit_files(&root, &hash).ok().and_then(|fs| fs.into_iter().find(|f| f.path == path || f.orig_path.as_deref() == Some(path.as_str())));
+        let doc = match f {
+            Some(f) => commit_diff_doc(&root, &hash, &short, f),
+            None => DiffDoc { title: format!("{} ({short})", base(&path)), rows: Vec::new(), note: Some(format!("{path} is not in {short}")), file: ScmFile { section: Section::Changes, path, orig: None, letter: 'M' }, id: Default::default() },
+        };
+        Msg::Diff(key, doc)
+    });
 }
 
 /// Open one file of `hash` (`path`, or the first) once its file list is known.
