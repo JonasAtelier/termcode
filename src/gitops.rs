@@ -26,8 +26,8 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -132,40 +132,65 @@ pub struct LogEntry {
 }
 
 const LOG_MAX: usize = 2000;
-static LOG: Mutex<VecDeque<LogEntry>> = Mutex::new(VecDeque::new());
-static LOG_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// The Git Output log: a generation that changes with every call, and the entries.
-pub fn output() -> (u64, Vec<LogEntry>) {
-    let log = LOG.lock().unwrap_or_else(|e| e.into_inner());
-    (LOG_GEN.load(Ordering::SeqCst), log.iter().cloned().collect())
-}
+/// One panel's Git Output: the git calls made under `with_log`, newest last,
+/// and a generation that changes with every call. Clones share the log.
+#[derive(Clone, Default)]
+pub struct OutputLog(Arc<Mutex<(u64, VecDeque<LogEntry>)>>);
 
-pub fn output_gen() -> u64 {
-    LOG_GEN.load(Ordering::SeqCst)
-}
-
-fn log(e: LogEntry) {
-    let mut log = LOG.lock().unwrap_or_else(|e| e.into_inner());
-    if log.len() >= LOG_MAX {
-        log.pop_front();
+impl OutputLog {
+    fn lock(&self) -> MutexGuard<'_, (u64, VecDeque<LogEntry>)> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
-    log.push_back(e);
-    LOG_GEN.fetch_add(1, Ordering::SeqCst);
+
+    pub fn gen(&self) -> u64 {
+        self.lock().0
+    }
+
+    pub fn entries(&self) -> Vec<LogEntry> {
+        self.lock().1.iter().cloned().collect()
+    }
+
+    fn push(&self, e: LogEntry) {
+        let mut l = self.lock();
+        if l.1.len() >= LOG_MAX {
+            l.1.pop_front();
+        }
+        l.1.push_back(e);
+        l.0 += 1;
+    }
 }
 
 thread_local! {
+    /// Where this thread's git calls are logged (`with_log`); None: nowhere.
+    static LOG: RefCell<Option<OutputLog>> = const { RefCell::new(None) };
     /// The cancel switch of the operation running on this thread (`with_cancel`).
     static CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// Log every git call `f` makes on this thread into `log` (the panel's Git Output).
+pub fn with_log<T>(log: &OutputLog, f: impl FnOnce() -> T) -> T {
+    let prev = LOG.replace(Some(log.clone()));
+    let r = f();
+    LOG.set(prev);
+    r
+}
+
+fn log(e: LogEntry) {
+    LOG.with(|l| {
+        if let Some(l) = l.borrow().as_ref() {
+            l.push(e);
+        }
+    });
 }
 
 /// Run `f` with `flag` as the cancel switch of every git call it makes on this
 /// thread. Setting the flag closes the running call's pipes (git then fails its
 /// next write) and makes the call return Err("Cancelled"); nothing is signalled.
 pub fn with_cancel<T>(flag: Arc<AtomicBool>, f: impl FnOnce() -> T) -> T {
-    CANCEL.set(Some(flag));
+    let prev = CANCEL.replace(Some(flag));
     let r = f();
-    CANCEL.set(None);
+    CANCEL.set(prev);
     r
 }
 
@@ -237,9 +262,7 @@ fn exec(mut c: Command, args: &[&str], input: Option<Vec<u8>>, cap: usize) -> Re
     if truncated || cancelled {
         // Our pipe ends close here, so git fails its next write (EPIPE) and exits; reap it elsewhere.
         drop((out, err));
-        thread::spawn(move || {
-            let _ = child.wait();
-        });
+        crate::nav::reap(child, None);
         log(entry(None, if cancelled { b"cancelled" } else { b"output past the cap: abandoned" }));
         return if cancelled { Err("Cancelled".into()) } else { Ok(Out { stdout, truncated: true }) };
     }
@@ -868,6 +891,15 @@ pub fn checkout_remote(repo: &Path, remote_branch: &str) -> Res<()> {
 }
 
 /// Create `name` from HEAD or `from` and check it out (VS Code's Create Branch).
+/// A name git accepts for a new branch (`check-ref-format --branch`); a
+/// leading `-` is refused first, since git would read it as an option.
+pub fn valid_branch_name(repo: &Path, name: &str) -> Res<()> {
+    if name.is_empty() || name.starts_with('-') || read(repo, &["check-ref-format", "--branch", name]).is_err() {
+        return Err(format!("'{name}' is not a valid branch name"));
+    }
+    Ok(())
+}
+
 pub fn create_branch(repo: &Path, name: &str, from: Option<&str>) -> Res<()> {
     let mut args = vec!["checkout", "-q", "-b", rev(name)?];
     if let Some(f) = from {
@@ -1688,6 +1720,16 @@ mod tests {
         let ours = unsafe { libc::getsid(0) } as i64;
         assert_ne!(sid, ours, "ssh ran in another session (git's own)");
         assert!(!got.contains("read-tty"), "no tty to prompt on");
+    }
+
+    #[test]
+    fn branch_names_are_checked_by_git() {
+        let t = tmp("refname");
+        let r = repo(&t);
+        assert!(valid_branch_name(&r, "feature/x-1").is_ok());
+        for bad in ["", "-x", "a..b", "a b", "x.lock", "@{u}"] {
+            assert!(valid_branch_name(&r, bad).is_err(), "{bad:?}");
+        }
     }
 
     /// A `+` refspec in remote.*.push must never force: push sends an explicit, plain refspec.

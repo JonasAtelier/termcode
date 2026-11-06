@@ -11,10 +11,8 @@ mod editor;
 mod git;
 mod minimap;
 mod icons;
-// Git backend for History, branches, stash, hunks and blame; the UI is wired in later.
-#[allow(dead_code)]
+// Git backend (history, refs, stash, commit, remotes, hunks, blame, conflicts) and graph lanes.
 mod gitops;
-#[allow(dead_code)]
 mod graph;
 mod nav;
 mod navui;
@@ -24,6 +22,10 @@ mod semantic;
 mod settings;
 mod theme;
 mod ui;
+// Source Control UI: the CHANGES / GRAPH view, Timeline, hover card, commit dialog.
+mod commitdlg;
+mod gitcmds;
+mod scm;
 
 use serde_json::Value;
 use std::env;

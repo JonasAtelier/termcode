@@ -133,6 +133,12 @@ pub struct Settings {
     /// `editor.gotoLocation.multipleDefinitions`.
     pub goto_multiple: crate::navui::GotoMode,
     pub theme: ThemeData,
+    /// `git.blame.statusBarItem.enabled`: the cursor line's blame in the status bar.
+    pub blame_status: bool,
+    /// `git.blame.editorDecoration.enabled`: the same as ghost text after the cursor line.
+    pub blame_decoration: bool,
+    /// `git.confirmSync`: ask before Sync pulls and pushes.
+    pub confirm_sync: bool,
     /// Parts that were skipped (a bad regex): shown, the rest still applies.
     pub warnings: Vec<String>,
 }
@@ -164,6 +170,9 @@ impl Default for Settings {
             minimap: crate::minimap::Cfg::default(),
             goto_multiple: Default::default(),
             theme: ThemeData { json: theme::embedded_theme().clone(), extra_rules: Vec::new() },
+            blame_status: true,
+            blame_decoration: false,
+            confirm_sync: true,
             warnings: Vec::new(),
         }
     }
@@ -271,6 +280,9 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         minimap: crate::minimap::Cfg::parse(user),
         goto_multiple: crate::navui::goto_mode(g("editor.gotoLocation.multipleDefinitions")),
         theme: ThemeData { json, extra_rules },
+        blame_status: g("git.blame.statusBarItem.enabled").and_then(Value::as_bool).unwrap_or(d.blame_status),
+        blame_decoration: g("git.blame.editorDecoration.enabled").and_then(Value::as_bool).unwrap_or(d.blame_decoration),
+        confirm_sync: g("git.confirmSync").and_then(Value::as_bool).unwrap_or(d.confirm_sync),
         warnings,
     })
 }
@@ -285,6 +297,115 @@ fn rulers(a: &[Value]) -> Vec<(usize, Option<Rgba>)> {
         })
         .filter(|(c, _)| *c > 0)
         .collect()
+}
+
+/// Set a boolean key in settings.json text, keeping everything else byte for
+/// byte. JSONC aware: strings and comments are skipped, so only a top-level
+/// `"key": true|false` is replaced; otherwise the key goes after the object's `{`.
+pub fn set_bool(text: &str, key: &str, on: bool) -> String {
+    let b = text.as_bytes();
+    let (mut i, mut depth, mut open) = (0, 0usize, None);
+    // A string just read at the top level of the object: its text.
+    let mut last: Option<&str> = None;
+    while i < b.len() {
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+                continue;
+            }
+            b'"' => {
+                let start = i + 1;
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                last = (depth == 1).then(|| &text[start..i.min(b.len())]);
+                i += 1;
+                continue;
+            }
+            b'{' | b'[' => {
+                if depth == 0 && b[i] == b'{' && open.is_none() {
+                    open = Some(i);
+                }
+                depth += 1;
+                last = None;
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                last = None;
+            }
+            b':' if depth == 1 && last == Some(key) => {
+                let v = text[i + 1..].trim_start();
+                let at = text.len() - v.len();
+                for lit in ["true", "false"] {
+                    if v.starts_with(lit) {
+                        return format!("{}{on}{}", &text[..at], &text[at + lit.len()..]);
+                    }
+                }
+                last = None;
+            }
+            b',' => last = None,
+            _ => {}
+        }
+        i += 1;
+    }
+    match open {
+        Some(o) => format!("{}\n    \"{key}\": {on},{}", &text[..=o], &text[o + 1..]),
+        None if text.trim().is_empty() => format!("{{\n    \"{key}\": {on},\n}}\n"),
+        None => text.to_string(),
+    }
+}
+
+/// Write `key: on` into settings.json, or refuse and leave the file byte-identical.
+/// The file must read as UTF-8 and parse; the edit must parse with the key set and
+/// every other key unchanged. The write is the editor's atomic save (temp file,
+/// fsync, rename, mode kept; a symlink's target). A missing file is created.
+pub fn write_bool(path: &Path, key: &str, on: bool) -> Result<(), String> {
+    let manual = || format!("add \"{key}\": {on} to settings.json manually");
+    let text = match std::fs::read(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let made = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| {
+                let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+                std::io::Write::write_all(&mut f, set_bool("", key, on).as_bytes())?;
+                f.sync_all()
+            });
+            return made.map_err(|e| format!("{}: {e}; {}", path.display(), manual()));
+        }
+        Err(e) => return Err(format!("{}: {e}; {}", path.display(), manual())),
+        Ok(bytes) => String::from_utf8(bytes).map_err(|_| format!("settings.json is not UTF-8; {}", manual()))?,
+    };
+    let old = parse_jsonc(&text).map_err(|e| format!("settings.json does not parse ({e}); {}", manual()))?;
+    let new = set_bool(&text, key, on);
+    let safe = parse_jsonc(&new).is_ok_and(|m| {
+        m.get(key) == Some(&Value::Bool(on))
+            && m.len() == old.len() + usize::from(!old.contains_key(key))
+            && old.iter().all(|(k, v)| k == key || m.get(k) == Some(v))
+    });
+    if !safe {
+        return Err(format!("could not edit settings.json safely; {}", manual()));
+    }
+    let mut b = crate::editor::Buffer::open(path);
+    if let Some(why) = &b.readonly {
+        return Err(format!("settings.json: {why}; {}", manual()));
+    }
+    let mut v = crate::editor::View::default();
+    b.select_all(&mut v);
+    let body = if b.final_newline { new.strip_suffix("\r\n").or_else(|| new.strip_suffix('\n')).unwrap_or(&new) } else { &new };
+    b.insert(&mut v, body);
+    if b.text() != new {
+        return Err(format!("could not edit settings.json safely; {}", manual()));
+    }
+    b.save()
 }
 
 /// `indentRainbow.*`; a pattern that does not compile is skipped with a warning.

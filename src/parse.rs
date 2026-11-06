@@ -58,28 +58,6 @@ pub fn parse_rg_line(s: &str) -> Option<Hit> {
     })
 }
 
-/// One `git log --format=%H%x1f%h%x1f%an%x1f%ar%x1f%s` line.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Commit {
-    pub hash: String,
-    pub short: String,
-    pub author: String,
-    pub date: String,
-    pub subject: String,
-}
-
-pub fn parse_log_line(s: &str) -> Option<Commit> {
-    let f: Vec<&str> = s.splitn(5, '\x1f').collect();
-    let [hash, short, author, date, subject] = f[..] else { return None };
-    Some(Commit {
-        hash: hash.into(),
-        short: short.into(),
-        author: author.into(),
-        date: date.into(),
-        subject: subject.into(),
-    })
-}
-
 /// File name stem for a (scope, path) pair: launch locks, hot-exit backups.
 /// FNV-1a: stable across builds, unlike `DefaultHasher`.
 pub fn lock_key(session: &str, root: &str) -> String {
@@ -166,13 +144,6 @@ mod tests {
         assert_eq!(parse_rg_line("中文.txt\x003:1:").unwrap().text, "");
         assert!(parse_rg_line("no-null:1:2:x").is_none());
         assert!(parse_rg_line("p\x00x:1:t").is_none());
-    }
-
-    #[test]
-    fn log_line_parses() {
-        let c = parse_log_line("abc123\x1fabc\x1fJonas\x1f2 days ago\x1ffix: a\x1fb").unwrap();
-        assert_eq!((c.short.as_str(), c.author.as_str(), c.subject.as_str()), ("abc", "Jonas", "fix: a\x1fb"));
-        assert!(parse_log_line("short\x1fline").is_none());
     }
 
     #[test]

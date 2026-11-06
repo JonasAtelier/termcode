@@ -1,5 +1,5 @@
 //! App state and input for the VS Code-like panel: activity bar, sidebar
-//! (Explorer / Search / Source Control / History), editor groups with preview
+//! (Explorer with Timeline / Search / Source Control with Graph), editor groups with preview
 //! tabs, find widget, prompts. Drawing lives in ui.rs.
 
 use crate::decor::{self, Hunk, Mark, TrackHit};
@@ -8,7 +8,7 @@ use crate::diff;
 use crate::editor::{self, Buffer, Pos, View};
 use crate::git::{self, ScmFile, Section};
 use crate::nav::{reap, take_slot, MAX_LIVE_RG};
-use crate::parse::{self, Commit, Hit, StatusEntry};
+use crate::parse::{self, Hit, StatusEntry};
 use crate::settings::{self, Settings, ThemeData};
 use crate::theme;
 use ratatui::crossterm::event::{
@@ -28,7 +28,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime};
 
-const PAGE: usize = 200;
 /// A file's (mtime, length), or None when it does not exist.
 type Stamp = Option<(SystemTime, u64)>;
 /// Quick-diff recompute delay after an edit.
@@ -44,17 +43,15 @@ pub enum Side {
     Explorer,
     Search,
     Scm,
-    History,
 }
 /// Activity bar order (VS Code's).
-pub const SIDES: [Side; 4] = [Side::Explorer, Side::Search, Side::Scm, Side::History];
+pub const SIDES: [Side; 3] = [Side::Explorer, Side::Search, Side::Scm];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
     Side,
     Editor,
     SearchInput,
-    CommitInput,
     Find,
 }
 
@@ -111,6 +108,8 @@ pub enum PAct {
     Discard(Vec<ScmFile>),
     SaveClose(String),
     DropClose(String),
+    /// A Source Control action asked for confirmation.
+    Git(crate::scm::GitAct),
     SaveAllQuit,
     QuitNoSave,
     /// A document and the backup file chosen for it; the backup file to drop.
@@ -156,6 +155,7 @@ pub enum Cmd {
     Save,
     ReloadSettings,
     Nav(crate::navui::Act),
+    Git(crate::gitcmds::GitCmd),
 }
 
 /// The F1 command palette: label, command, key hint.
@@ -179,13 +179,15 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("Go Forward", Cmd::Nav(crate::navui::Act::Forward), "Alt+→"),
 ];
 
+/// Every palette command: the app's, then the Git ones.
+pub fn all_commands() -> impl Iterator<Item = (&'static str, Cmd)> {
+    COMMANDS.iter().map(|c| (c.0, c.1)).chain(crate::gitcmds::GIT_COMMANDS.iter().map(|(l, g)| (*l, Cmd::Git(*g))))
+}
+
 /// Commands matching `q`, best tier first, palette order within a tier.
 pub fn filter_commands(q: &str) -> Vec<String> {
-    let mut v: Vec<(usize, usize, &str)> = COMMANDS
-        .iter()
-        .enumerate()
-        .filter_map(|(i, c)| parse::match_score(c.0, q).map(|s| (s / 100_000, i, c.0)))
-        .collect();
+    let mut v: Vec<(usize, usize, &str)> =
+        all_commands().enumerate().filter_map(|(i, c)| parse::match_score(c.0, q).map(|s| (s / 100_000, i, c.0))).collect();
     v.sort();
     v.into_iter().map(|(_, _, l)| l.to_string()).collect()
 }
@@ -196,6 +198,8 @@ pub enum ScrollTarget {
     Editor(usize),
     Side,
     Quick,
+    /// Source Control lists: 0 = GRAPH, 1 = Explorer TIMELINE.
+    Git(u8),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -278,6 +282,8 @@ pub enum ScmAct {
     StageAll,
     UnstageAll,
     DiscardAll,
+    /// "Stage All Merge Changes": mark every conflict resolved.
+    StageMerge,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -300,6 +306,8 @@ pub enum FindBtn {
 /// Source Control list rows (indices into `scm_files`).
 pub enum SRow {
     Head(Section, usize),
+    /// "Merge Changes": the conflicts, above Staged Changes.
+    MergeHead(usize),
     File(usize),
     /// Blank row between sections (comfortable density).
     Gap,
@@ -378,7 +386,6 @@ pub struct GroupHit {
 
 enum Load {
     Diff(DiffDoc),
-    Show(String),
     /// Quick-diff base (the index blob) for a `file:` document.
     Base(Option<Vec<u8>>),
     Cancelled,
@@ -399,18 +406,14 @@ pub struct App {
     pub side_visible: bool,
     /// Dragged sidebar width; None = `herdr-code.spacing.sidebarWidth`.
     pub side_w: Option<u16>,
-    layout_file: Option<PathBuf>,
+    pub(crate) layout_file: Option<PathBuf>,
     pub focus: Focus,
     pub status: Vec<StatusEntry>,
     pub marks: HashMap<String, char>,
     pub dirty_dirs: HashMap<String, char>,
     /// Staged files first, then Changes.
     pub scm_files: Vec<ScmFile>,
-    pub commit_msg: String,
     pub tree: Vec<Node>,
-    pub commits: Vec<Commit>,
-    pub history_path: Option<String>,
-    history_done: bool,
     pub query: String,
     /// Search toggles (Match Case, Whole Word, Regex); all off like VS Code.
     pub s_opts: (bool, bool, bool),
@@ -425,8 +428,8 @@ pub struct App {
     gen: u64,
     tx: mpsc::SyncSender<(u64, Option<Hit>)>,
     rx: mpsc::Receiver<(u64, Option<Hit>)>,
-    pub sel: [usize; 4],
-    pub off: [usize; 4],
+    pub sel: [usize; 3],
+    pub off: [usize; 3],
     pub docs: HashMap<String, Doc>,
     pub groups: Vec<Group>,
     /// Active (focused) editor group.
@@ -479,6 +482,8 @@ pub struct App {
     qdiff_due: Option<Instant>,
     /// Go to Definition / Peek / References state.
     pub nav: crate::navui::Nav,
+    /// Source Control view, Timeline, hover card and commit dialog state.
+    pub gitui: crate::scm::GitUi,
 }
 
 /// The TUI on this process's terminal for `root`, first opening `req`
@@ -592,7 +597,7 @@ fn write_token(path: &Path) -> io::Result<String> {
 
 /// Put text on the system clipboard: wl-copy, then xclip, then OSC 52 (which
 /// herdr forwards to the outer terminal; not every terminal honours it).
-fn clipboard_set(text: &str) -> &'static str {
+pub(crate) fn clipboard_set(text: &str) -> &'static str {
     for argv in [&["wl-copy"][..], &["xclip", "-selection", "clipboard"][..]] {
         let Ok(mut c) = Command::new(argv[0])
             .args(&argv[1..])
@@ -697,11 +702,7 @@ impl App {
             marks: HashMap::new(),
             dirty_dirs: HashMap::new(),
             scm_files: Vec::new(),
-            commit_msg: String::new(),
             tree: Vec::new(),
-            commits: Vec::new(),
-            history_path: None,
-            history_done: false,
             query: String::new(),
             s_opts: (false, false, false),
             hits: Vec::new(),
@@ -712,8 +713,8 @@ impl App {
             gen: 0,
             tx,
             rx,
-            sel: [0; 4],
-            off: [0; 4],
+            sel: [0; 3],
+            off: [0; 3],
             docs: HashMap::new(),
             groups: vec![Group::default()],
             ag: 0,
@@ -761,6 +762,7 @@ impl App {
             qdiff: HashMap::new(),
             qdiff_due: None,
             nav: Default::default(),
+            gitui: crate::scm::GitUi::new(&saved),
         };
         a.backup_dir = a.layout_file.as_ref().and_then(|p| p.parent()).map(|d| d.join("backup"));
         a.refresh();
@@ -868,6 +870,7 @@ impl App {
             Cmd::QuickOpen => self.open_quick(),
             Cmd::Save => self.save_active(),
             Cmd::Nav(a) => crate::navui::command(self, a),
+            Cmd::Git(g) => crate::gitcmds::run_cmd(self, g),
             Cmd::ReloadSettings => {
                 self.settings_stamp = None;
                 self.check_settings();
@@ -1020,10 +1023,45 @@ impl App {
         }
     }
 
-    /// The one place hunk staging will go: hc-git's `gitops::stage_hunk(root, path, hunk)`
-    /// once that backend is merged. Until then the Stage button explains itself.
+    /// The peek's Stage. git stages the file on disk, so an unsaved buffer is
+    /// saved first, after asking (Cancel by default).
     fn stage_hunk(&mut self) -> Result<(), String> {
-        Err("Stage hunk arrives with the git backend".into())
+        let pk = self.peek.clone().ok_or("no change selected")?;
+        if matches!(self.docs.get(&pk.key), Some(Doc::Text(b)) if b.dirty()) {
+            self.prompt = Some(Prompt {
+                text: vec!["Save the file and stage this change?".into(), "Staging works on the file as saved.".into()],
+                buttons: vec![("Save & Stage".into(), PAct::Git(crate::scm::GitAct::SaveStage(pk.key))), ("Cancel".into(), PAct::Cancel)],
+                sel: 1,
+            });
+            return Ok(());
+        }
+        self.stage_peek_hunk()
+    }
+
+    /// Stage the peek's hunk: the git hunk (index vs the file as git stages it)
+    /// over the same buffer lines, through `gitcmds::stage_hunk`, which refreshes
+    /// and refetches the gutter base.
+    pub(crate) fn stage_peek_hunk(&mut self) -> Result<(), String> {
+        let pk = self.peek.clone().ok_or("no change selected")?;
+        let g = self.git_root.clone().ok_or("no git repository")?;
+        let rel = pk.key.strip_prefix("file:").and_then(|r| self.repo_path(r)).ok_or("not a file in the repository")?;
+        let cur = self.qdiff.get(&pk.key).and_then(|q| q.hunks.get(pk.hunk)).map(|h| h.cur.clone()).ok_or("Changes moved, try again")?;
+        let (index, work) = self.gitui.logged(|| crate::gitops::stage_sides(&g, &rel))?;
+        let h = crate::gitops::hunks(&index, &work)
+            .into_iter()
+            .find(|h| {
+                let n = h.new_start..h.new_start + h.new_len;
+                if n.is_empty() || cur.is_empty() {
+                    n.is_empty() && cur.is_empty() && n.start == cur.start
+                } else {
+                    n.start < cur.end && cur.start < n.end
+                }
+            })
+            .ok_or("Changes moved, try again")?;
+        crate::gitcmds::stage_hunk(self, &rel, &h)?;
+        self.peek = None;
+        self.msg = "staged the change".into();
+        Ok(())
     }
 
     fn peek_button(&mut self, b: PeekBtn) {
@@ -1106,7 +1144,7 @@ impl App {
     /// Back up, then save, then drop the backup. A clean buffer is not written
     /// at all; a failed write leaves the buffer dirty with its backup kept, so
     /// closing still prompts.
-    fn save_doc(&mut self, key: &str) -> Result<(), String> {
+    pub(crate) fn save_doc(&mut self, key: &str) -> Result<(), String> {
         let Some(Doc::Text(b)) = self.docs.get(key) else { return Ok(()) };
         if !b.dirty() {
             return Ok(());
@@ -1181,15 +1219,22 @@ impl App {
             self.update_qdiff();
             *dirty = true;
         }
+        // Source Control timers: the resting-pointer card, the blame delay, the op spinner.
+        *dirty |= crate::scm::tick(self);
         *dirty |= self.drain();
         if std::mem::take(dirty) {
             t.draw(|f| crate::ui::draw(self, f))?;
         }
         // Wake often only while rg/git output streams in or a backup is pending,
         // so a HUP is noticed within 100 ms whenever there is something to save.
-        let busy = self.search.is_some() || self.queued_search.is_some() || !self.loading.is_empty() || self.backup_due.is_some() || self.nav.busy();
+        let busy = self.search.is_some()
+            || self.queued_search.is_some()
+            || !self.loading.is_empty()
+            || self.backup_due.is_some()
+            || self.nav.busy()
+            || self.gitui.busy();
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
-        if let Some(t) = self.qdiff_due {
+        for t in [self.qdiff_due, self.gitui.due()].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
         let ev = match next(wait) {
@@ -1293,13 +1338,15 @@ impl App {
             .iter()
             .filter_map(|g| g.tabs.get(g.active))
             .filter_map(|t| match self.docs.get(&t.key) {
-                Some(Doc::Diff(d)) => Some((t.key.clone(), d.file.clone())),
+                // A commit's diff never changes.
+                Some(Doc::Diff(d)) if !t.key.starts_with("cdiff:") => Some((t.key.clone(), d.file.clone())),
                 _ => None,
             })
             .collect();
         for (key, f) in visible {
             self.load_diff(key, f, None);
         }
+        crate::scm::on_refresh(self);
     }
 
     fn read_dir(&self, rel: &str, depth: usize) -> Vec<Node> {
@@ -1350,32 +1397,9 @@ impl App {
             i += 1;
         }
         self.files.clear();
-        if self.side == Side::History {
-            self.load_history(true);
+        if self.side == Side::Scm {
+            crate::scm::load_graph(self, true);
         }
-    }
-
-    fn load_history(&mut self, reset: bool) {
-        if reset {
-            self.commits.clear();
-            self.history_done = false;
-            self.sel[3] = 0;
-            self.off[3] = 0;
-        }
-        if self.history_done {
-            return;
-        }
-        let n = format!("-n{PAGE}");
-        let skip = format!("--skip={}", self.commits.len());
-        let mut args = vec!["log", "--format=%H%x1f%h%x1f%an%x1f%ar%x1f%s", &n, &skip];
-        let path = self.history_path.as_deref().and_then(|p| self.repo_path(p));
-        if let Some(p) = &path {
-            args.extend(["--follow", "--", p]);
-        }
-        let out = self.git(&args).unwrap_or_default();
-        let page: Vec<Commit> = String::from_utf8_lossy(&out).lines().filter_map(parse::parse_log_line).collect();
-        self.history_done = page.len() < PAGE;
-        self.commits.extend(page);
     }
 
     // ---- search ------------------------------------------------------------------
@@ -1519,7 +1543,6 @@ impl App {
             }
             let doc = match load {
                 Load::Diff(d) => Doc::Diff(d),
-                Load::Show(text) => Doc::Text(Buffer::from_text(&text, "Diff", "commit view")),
                 Load::Base(_) | Load::Cancelled => continue,
             };
             self.docs.insert(key, doc);
@@ -1531,7 +1554,7 @@ impl App {
             }
             changed = true;
         }
-        changed | crate::navui::poll(self)
+        changed | crate::navui::poll(self) | crate::scm::drain(self)
     }
 
     fn load(&mut self, key: String, job: impl FnOnce(PathBuf) -> Load + Send + 'static) {
@@ -1584,7 +1607,7 @@ impl App {
 
     /// Show `key` in group `g`: reuse its tab, else replace the group's preview
     /// tab (preview), else add a tab after the active one.
-    fn show_tab(&mut self, g: usize, key: String, preview: bool) {
+    pub(crate) fn show_tab(&mut self, g: usize, key: String, preview: bool) {
         let grp = &mut self.groups[g];
         if let Some(i) = grp.tabs.iter().position(|t| t.key == key) {
             grp.active = i;
@@ -1657,23 +1680,11 @@ impl App {
         }
     }
 
-    fn open_show(&mut self, hash: String) {
-        let key = format!("show:{hash}");
-        self.show_tab(self.ag, key.clone(), true);
-        if !self.docs.contains_key(&key) {
-            self.load(key, move |root| {
-                let out = git::capped(&root, &["show", "--no-color", "--no-ext-diff", "--stat", "--patch", &hash]);
-                Load::Show(String::from_utf8_lossy(&out).into_owned())
-            });
-        }
-    }
-
     pub fn tab_title(&self, key: &str) -> String {
         match self.docs.get(key) {
             Some(Doc::Diff(d)) => d.title.clone(),
             _ => match key.split_once(':') {
-                Some(("show", h)) => format!("commit {}", &h[..h.len().min(7)]),
-                Some(("diff", rest)) => base(rest.split_once(':').map_or(rest, |(_, p)| p)).to_string(),
+                Some(("diff" | "cdiff", rest)) => base(rest.split_once(':').map_or(rest, |(_, p)| p)).to_string(),
                 Some((_, rel)) => base(rel).to_string(),
                 None => key.to_string(),
             },
@@ -1844,6 +1855,7 @@ impl App {
                     self.close_tab(g, i, true);
                 }
             }
+            PAct::Git(a) => crate::scm::run_act(self, a),
             PAct::SaveAllQuit => {
                 let dirty: Vec<String> = self
                     .docs
@@ -2044,23 +2056,29 @@ impl App {
 
     // ---- source control ----------------------------------------------------------------
 
+    /// VS Code's groups: Merge Changes (conflicts), Staged Changes, Changes.
     pub fn scm_rows(&self) -> Vec<SRow> {
-        let staged = self.scm_files.iter().filter(|f| f.section == Section::Staged).count();
+        let idx = |keep: &dyn Fn(&ScmFile) -> bool| (0..self.scm_files.len()).filter(|&i| keep(&self.scm_files[i])).collect::<Vec<_>>();
+        let merge = idx(&|f| f.section == Section::Changes && f.letter == '!');
+        let staged = idx(&|f| f.section == Section::Staged);
+        let changes = idx(&|f| f.section == Section::Changes && f.letter != '!');
+        let gap = self.settings.spacing.section_gap;
         let mut rows = Vec::new();
-        if staged > 0 {
-            rows.push(SRow::Head(Section::Staged, staged));
-            rows.extend((0..staged).map(SRow::File));
+        for (head, files) in [(SRow::MergeHead(merge.len()), merge), (SRow::Head(Section::Staged, staged.len()), staged)] {
+            if !files.is_empty() {
+                rows.push(head);
+                rows.extend(files.into_iter().map(SRow::File));
+                rows.extend((0..gap).map(|_| SRow::Gap));
+            }
         }
-        if staged > 0 {
-            rows.extend((0..self.settings.spacing.section_gap).map(|_| SRow::Gap));
-        }
-        rows.push(SRow::Head(Section::Changes, self.scm_files.len() - staged));
-        rows.extend((staged..self.scm_files.len()).map(SRow::File));
+        rows.push(SRow::Head(Section::Changes, changes.len()));
+        rows.extend(changes.into_iter().map(SRow::File));
         rows
     }
 
+    /// A group's files; Changes leaves out the conflicts (Merge Changes has them).
     fn section_files(&self, s: Section) -> Vec<ScmFile> {
-        self.scm_files.iter().filter(|f| f.section == s).cloned().collect()
+        self.scm_files.iter().filter(|f| f.section == s && (s == Section::Staged || f.letter != '!')).cloned().collect()
     }
 
     fn confirm_discard(&mut self, files: Vec<ScmFile>) {
@@ -2102,6 +2120,10 @@ impl App {
             ScmAct::Unstage(i) => git::unstage(&g, &one(i)),
             ScmAct::StageAll => git::stage(&g, &self.section_files(Section::Changes)),
             ScmAct::UnstageAll => git::unstage(&g, &self.section_files(Section::Staged)),
+            ScmAct::StageMerge => {
+                let merge: Vec<ScmFile> = self.scm_files.iter().filter(|f| f.letter == '!').cloned().collect();
+                git::stage(&g, &merge)
+            }
         };
         if let Err(e) = res {
             self.msg = e;
@@ -2109,24 +2131,9 @@ impl App {
         self.refresh();
     }
 
+    /// "Add commit": the git-gui style commit dialog.
     pub fn commit(&mut self) {
-        let Some(g) = self.git_root.clone() else { return };
-        let msg = self.commit_msg.trim().to_string();
-        if !self.scm_files.iter().any(|f| f.section == Section::Staged) {
-            self.msg = "No staged changes".into();
-        } else if msg.is_empty() {
-            self.msg = "Enter a commit message first".into();
-            self.focus = Focus::CommitInput;
-        } else {
-            match git::commit(&g, &msg) {
-                Ok(_) => {
-                    self.msg = format!("committed: {}", msg.lines().next().unwrap_or(""));
-                    self.commit_msg.clear();
-                }
-                Err(e) => self.msg = format!("commit failed: {e}"),
-            }
-            self.refresh();
-        }
+        crate::commitdlg::open(self);
     }
 
     // ---- sidebar ------------------------------------------------------------------------
@@ -2148,7 +2155,6 @@ impl App {
             Side::Explorer => self.tree.len(),
             Side::Search => self.search_rows().len(),
             Side::Scm => self.scm_rows().len(),
-            Side::History => self.commits.len(),
         }
     }
 
@@ -2157,23 +2163,18 @@ impl App {
         self.side_visible = true;
         self.focus = match s {
             Side::Search if input => Focus::SearchInput,
-            // Like VS Code, opening Source Control puts the caret in the message box.
-            Side::Scm if self.git_root.is_some() => Focus::CommitInput,
             _ => Focus::Side,
         };
         self.refresh();
-        if s == Side::History {
-            self.load_history(true);
-        }
         self.save_layout();
     }
 
-    fn save_layout(&self) {
+    pub(crate) fn save_layout(&self) {
         let Some(p) = &self.layout_file else { return };
         if let Some(d) = p.parent() {
             let _ = fs::create_dir_all(d);
         }
-        let mut v = serde_json::json!({ "sidebar_visible": self.side_visible });
+        let mut v = serde_json::json!({ "sidebar_visible": self.side_visible, "scm": self.gitui.layout() });
         if let Some(w) = self.side_w {
             v["sidebar_width"] = w.into();
             v["sidebar_dragged"] = true.into();
@@ -2219,15 +2220,6 @@ impl App {
                     self.open_diff(f, !pin);
                 }
             }
-            Side::History => {
-                if let Some(c) = self.commits.get(i) {
-                    let h = c.hash.clone();
-                    self.open_show(h);
-                    if pin {
-                        self.pin_active();
-                    }
-                }
-            }
         }
     }
 
@@ -2244,13 +2236,13 @@ impl App {
     }
 
     /// Tree depth of each sidebar row, for sticky scroll: Explorer folders over their
-    /// contents, Search file groups over their hits, SCM sections over their files.
+    /// contents, Search file groups over their hits, the CHANGES sections (Merge,
+    /// Staged, Changes headers) over their files.
     pub fn side_depths(&self) -> Vec<usize> {
         match self.side {
             Side::Explorer => self.tree.iter().map(|n| n.depth).collect(),
             Side::Search => self.search_rows().iter().map(|r| matches!(r, HRow::Hit(_)) as usize).collect(),
             Side::Scm => self.scm_rows().iter().map(|r| matches!(r, SRow::File(_)) as usize).collect(),
-            Side::History => Vec::new(),
         }
     }
 
@@ -2295,9 +2287,6 @@ impl App {
         if self.sel[s] < self.off[s] + decor::sticky(&self.side_depths(), self.off[s], self.ui.sticky_cap).len() {
             self.off[s] = self.under_pinned(self.sel[s]);
         }
-        if self.side == Side::History && self.sel[s] + 20 >= n {
-            self.load_history(false);
-        }
     }
 
     // ---- quick open ----------------------------------------------------------------------
@@ -2330,7 +2319,7 @@ impl App {
         let Some(q) = self.quick.take() else { return };
         let Some(item) = q.items.get(i).cloned() else { return };
         if q.commands {
-            if let Some(c) = COMMANDS.iter().find(|c| c.0 == item) {
+            if let Some(c) = all_commands().find(|c| c.0 == item) {
                 self.run_command(c.1);
             }
         } else {
@@ -2376,6 +2365,15 @@ impl App {
         }
         if self.quick.is_some() {
             return self.quick_key(k, ctrl || alt);
+        }
+        if self.gitui.dlg.is_some() {
+            return crate::commitdlg::key(self, k);
+        }
+        if self.gitui.cmds.picker.is_some() {
+            return crate::gitcmds::picker_key(self, k);
+        }
+        if k.code == KeyCode::Esc && (self.gitui.card.take().is_some() || self.gitui.cmds.toast.take().is_some()) {
+            return;
         }
         if std::mem::take(&mut self.pending_k) && k.code == KeyCode::Enter {
             return self.pin_active(); // Ctrl+K Enter: Keep Open
@@ -2424,10 +2422,16 @@ impl App {
             KeyCode::F(4) => return self.show_side(Side::Search, true),
             KeyCode::F(3) => return self.find_step(if shift { -1 } else { 1 }),
             // VS Code's Go to Next/Previous Change (Alt+F5); F7 where Alt+F5 does not arrive.
+            // In a diff tab F7 walks the diff's changes instead.
             KeyCode::F(5) if alt => return self.peek_step(if shift { -1 } else { 1 }),
+            KeyCode::F(7) if self.ed().is_none() => return crate::scm::jump_change(self, if shift { -1 } else { 1 }),
             KeyCode::F(7) => return self.peek_step(if shift { -1 } else { 1 }),
-            KeyCode::Char(c @ '1'..='4') if alt => {
-                let s = [Side::Explorer, Side::Scm, Side::History, Side::Search][c as usize - '1' as usize];
+            KeyCode::Char(c @ ('1' | '2' | '4')) if alt => {
+                let s = match c {
+                    '1' => Side::Explorer,
+                    '2' => Side::Scm,
+                    _ => Side::Search,
+                };
                 return self.show_side(s, s == Side::Search);
             }
             KeyCode::Char(c @ '1'..='3') if ctrl => {
@@ -2445,7 +2449,7 @@ impl App {
         }
         match self.focus {
             Focus::Find => self.find_key(k, ctrl || alt, shift),
-            Focus::SearchInput | Focus::CommitInput => self.input_key(k, ctrl, alt),
+            Focus::SearchInput => self.input_key(k, ctrl, alt),
             Focus::Side => self.side_key(k),
             Focus::Editor => self.editor_key(k, ctrl, alt, shift),
         }
@@ -2500,33 +2504,29 @@ impl App {
     }
 
     fn input_key(&mut self, k: KeyEvent, ctrl: bool, alt: bool) {
-        let commit = self.focus == Focus::CommitInput;
-        let s = if commit { &mut self.commit_msg } else { &mut self.query };
         match k.code {
-            // Ctrl+Enter is VS Code's commit key; legacy terminals send it as Enter, so Alt+Enter too.
-            KeyCode::Enter if commit && (ctrl || alt) => self.commit(),
-            KeyCode::Enter if commit => s.push('\n'),
             KeyCode::Enter => {
                 self.start_search();
                 self.focus = Focus::Side;
             }
-            KeyCode::Esc if !commit && (self.search.is_some() || self.queued_search.is_some()) => {
+            KeyCode::Esc if self.search.is_some() || self.queued_search.is_some() => {
                 self.queued_search = None;
                 self.stop_search();
                 self.msg = "search cancelled".into();
             }
-            KeyCode::Esc => self.focus = if commit { Focus::Editor } else { Focus::Side },
-            KeyCode::Down if !commit => self.focus = Focus::Side,
-            KeyCode::Tab if commit => self.focus = Focus::Side,
+            KeyCode::Esc | KeyCode::Down => self.focus = Focus::Side,
             KeyCode::Backspace => {
-                s.pop();
+                self.query.pop();
             }
-            KeyCode::Char(c) if !ctrl && !alt => s.push(c),
+            KeyCode::Char(c) if !ctrl && !alt => self.query.push(c),
             _ => {}
         }
     }
 
     fn side_key(&mut self, k: KeyEvent) {
+        if self.side == Side::Scm && crate::scm::key(self, k) {
+            return;
+        }
         let page = self.ui.side_rows.max(1) as isize;
         let s = self.side as usize;
         match k.code {
@@ -2545,17 +2545,15 @@ impl App {
                 }
             }
             KeyCode::Char('/') if self.side == Side::Search => self.focus = Focus::SearchInput,
+            // h: the file's history, in the TIMELINE under the tree.
             KeyCode::Char('h') if self.side == Side::Explorer => {
                 if let Some(n) = self.tree.get(self.sel[s]).filter(|n| !n.dir) {
-                    self.history_path = Some(n.path.clone());
-                    self.show_side(Side::History, false);
+                    let p = n.path.clone();
+                    self.open_file(self.ag, &p, true);
+                    self.gitui.timeline.open = true;
                 }
             }
             KeyCode::Char('r') => self.reload_all(),
-            KeyCode::Esc if self.side == Side::History && self.history_path.is_some() => {
-                self.history_path = None;
-                self.load_history(true);
-            }
             // Source Control list: + stage, - unstage, Delete discard (row or section header).
             KeyCode::Char('+' | '-') | KeyCode::Delete if self.side == Side::Scm => {
                 let op = match k.code {
@@ -2574,7 +2572,6 @@ impl App {
                 };
                 self.scm_action(act);
             }
-            KeyCode::BackTab if self.side == Side::Scm => self.focus = Focus::CommitInput,
             KeyCode::Esc | KeyCode::Tab => self.focus = Focus::Editor,
             _ => {}
         }
@@ -2601,7 +2598,7 @@ impl App {
         }
         let page = self.ui.groups.get(self.ag).map_or(20, |g| g.text.height.max(1) as isize);
         if self.ed().is_none() {
-            // Diff views: scroll only.
+            // Diff views: scroll only (F7 is routed in on_key).
             if let Some(t) = self.active_tab() {
                 let d = match k.code {
                     KeyCode::Up => -1,
@@ -2767,9 +2764,14 @@ impl App {
         if self.prompt.is_some() || self.quick.is_some() {
             return;
         }
+        if self.gitui.dlg.is_some() {
+            return crate::commitdlg::paste(self, text);
+        }
+        if self.gitui.cmds.picker.is_some() {
+            return crate::gitcmds::picker_paste(self, text);
+        }
         match self.focus {
             Focus::SearchInput => self.query.push_str(&text.replace(['\r', '\n'], " ")),
-            Focus::CommitInput => self.commit_msg.push_str(&text.replace("\r\n", "\n")),
             Focus::Find => {
                 if let Some(f) = self.find.as_mut() {
                     let s = if f.field == 1 { f.replace.get_or_insert_with(String::new) } else { &mut f.query };
@@ -2814,14 +2816,18 @@ impl App {
             MouseEventKind::ScrollDown => self.wheel(p, 3),
             MouseEventKind::Moved => {
                 let old = self.hover.replace(p);
+                let g = &self.gitui.hits;
                 let watched = |q: Position| {
                     self.ui.side_list.contains(q)
+                        || g.graph.contains(q)
+                        || g.timeline.contains(q)
                         || self.ui.groups.iter().any(|g| g.tabbar.contains(q))
                         || self.ui.scrollbars.iter().any(|s| s.track.contains(q))
                         || self.ui.minimaps.iter().any(|m| m.area.contains(q))
                         || self.ui.peek_zone.contains(q)
                 };
-                return old != Some(p) && (watched(p) || old.is_some_and(watched));
+                let redraw = old != Some(p) && (watched(p) || old.is_some_and(watched));
+                return crate::scm::moved(self, p) || redraw;
             }
             _ => return false,
         }
@@ -2846,6 +2852,9 @@ impl App {
             } else if !self.ui.quick.contains(p) {
                 self.quick = None;
             }
+            return;
+        }
+        if crate::scm::click(self, p, double) {
             return;
         }
         if self.ui.close.contains(p) {
@@ -2889,7 +2898,7 @@ impl App {
             return;
         }
         if self.ui.side_input.contains(p) {
-            self.focus = if self.side == Side::Scm { Focus::CommitInput } else { Focus::SearchInput };
+            self.focus = Focus::SearchInput;
             return;
         }
         if self.ui.commit_btn.contains(p) {
@@ -2994,6 +3003,7 @@ impl App {
             ScrollTarget::Editor(g) => self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map_or(0, |t| t.view.scroll),
             ScrollTarget::Side => self.off[self.side as usize],
             ScrollTarget::Quick => self.quick.as_ref().map_or(0, |q| q.off),
+            ScrollTarget::Git(w) => crate::scm::scroll_of(self, w),
         }
     }
 
@@ -3017,10 +3027,8 @@ impl App {
                 let n = self.side_count();
                 let h = self.ui.side_rows;
                 self.off[self.side as usize] = off.min(n.saturating_sub(h));
-                if self.side == Side::History && off + h + 20 >= n {
-                    self.load_history(false);
-                }
             }
+            ScrollTarget::Git(w) => crate::scm::set_scroll(self, w, off),
             ScrollTarget::Quick => {
                 let h = self.ui.quick_list.height.max(1) as usize;
                 if let Some(q) = self.quick.as_mut() {
@@ -3091,6 +3099,9 @@ impl App {
     }
 
     fn drag_to(&mut self, p: Position) {
+        if crate::scm::drag(self, p) {
+            return;
+        }
         match &mut self.drag {
             Drag::None => {}
             Drag::Divider => {
@@ -3142,6 +3153,9 @@ impl App {
     }
 
     fn release(&mut self) {
+        if crate::scm::release(self) {
+            return;
+        }
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Divider => self.save_layout(),
             Drag::File { rel, active: true, .. } => {
@@ -3168,6 +3182,9 @@ impl App {
             q.sel = (q.sel as isize + d).clamp(0, (q.items.len() as isize - 1).max(0)) as usize;
             return;
         }
+        if crate::scm::wheel(self, p, d) {
+            return;
+        }
         if self.ui.peek_zone.contains(p) {
             let max = self.ui.peek_max;
             if let Some(pk) = self.peek.as_mut() {
@@ -3187,9 +3204,6 @@ impl App {
             let n = self.side_count();
             let h = self.ui.side_rows;
             self.off[s] = (self.off[s] as isize + d).clamp(0, n.saturating_sub(h) as isize) as usize;
-            if self.side == Side::History && self.off[s] + h + 20 >= n {
-                self.load_history(false);
-            }
             return;
         }
         let Some(g) = self.ui.groups.iter().position(|g| g.area.contains(p)) else { return };
@@ -3238,7 +3252,7 @@ mod tests {
     fn wait(app: &mut App) {
         for _ in 0..300 {
             app.drain();
-            if app.search.is_none() && app.queued_search.is_none() && app.loading.is_empty() {
+            if app.search.is_none() && app.queued_search.is_none() && app.loading.is_empty() && !app.gitui.busy() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -3327,19 +3341,19 @@ mod tests {
         app.refresh();
         app.show_side(Side::Scm, false);
         let s = screen(&mut app, &mut t);
-        assert!(s.contains("Changes") && s.contains("main.rs") && s.contains("Commit"), "{s}");
+        assert!(s.contains("Changes") && s.contains("main.rs") && s.contains("Add commit"), "{s}");
         let i = app.scm_files.iter().position(|f| f.path == "src/main.rs").unwrap();
         app.open_diff(i, true);
         wait(&mut app);
         let s = screen(&mut app, &mut t);
         assert!(s.contains("main.rs (Working Tree)") && s.contains("// hi"), "{s}");
-        app.commit();
-        assert_eq!(app.msg, "No staged changes");
         app.scm_action(ScmAct::Stage(i));
         assert!(app.scm_files.iter().any(|f| f.section == Section::Staged && f.path == "src/main.rs"));
-        app.commit_msg = "edit main".into();
-        app.commit();
-        assert!(app.msg.starts_with("committed"), "{}", app.msg);
+        app.commit(); // "Add commit": the commit dialog, caret in its message
+        typ(&mut app, "edit main");
+        key(&mut app, KeyCode::Enter, KeyModifiers::ALT);
+        wait(&mut app);
+        assert!(app.gitui.dlg.is_none() && app.msg.starts_with("Committed"), "{}", app.msg);
         assert!(app.scm_files.is_empty());
 
         // Discard always asks; Cancel (the default) keeps the file, Discard deletes it.
@@ -3947,11 +3961,8 @@ mod tests {
         assert_eq!(app.peek.as_ref().unwrap().hunk, 1, "Alt+F5: next change");
         key(&mut app, KeyCode::F(7), KeyModifiers::SHIFT);
         assert_eq!(app.peek.as_ref().unwrap().hunk, 0, "Shift+F7: previous");
-        // Stage waits for the git backend.
+        // (Stage: peek_stage_stages_one_hunk_and_asks_to_save_first.)
         screen(&mut app, &mut t);
-        let stage = app.ui.peek_btns.iter().find(|(_, b)| *b == PeekBtn::Stage).unwrap().0;
-        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), stage.x, stage.y);
-        assert!(app.msg.contains("arrives with the git backend"), "{}", app.msg);
         // Revert (clicked where drawn) puts back the index line as one undo step.
         let revert = app.ui.peek_btns.iter().find(|(_, b)| *b == PeekBtn::Revert).unwrap().0;
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), revert.x + 1, revert.y);
@@ -4396,13 +4407,55 @@ mod tests {
         for k in &keys {
             assert!(app.qdiff[k].marks.iter().any(Option::is_some), "{k}: changed against the index");
         }
-        // An Explorer file's history follows its repo path.
-        app.history_path = Some("main.rs".into());
-        app.load_history(true);
-        assert_eq!(app.commits.len(), 1);
+        // An Explorer file's history (the TIMELINE) follows its repo path.
+        app.groups[0].active = 0;
+        let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        screen(&mut app, &mut t);
+        wait(&mut app);
+        assert_eq!(app.gitui.timeline.path.as_deref(), Some("main.rs"));
+        let tl: Vec<&str> = app.gitui.timeline.items.iter().map(|i| i.path.as_str()).collect();
+        assert_eq!(tl, ["src/main.rs"]);
         // Staging from a subfolder root stages the repo path.
         app.scm_action(ScmAct::Stage(1));
         assert!(app.scm_files.iter().any(|f| f.section == Section::Staged && f.path == "src/main.rs"), "{:?}", app.scm_files);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The peek's Stage stages that one hunk; an unsaved buffer asks to save first (Cancel by default).
+    #[test]
+    fn peek_stage_stages_one_hunk_and_asks_to_save_first() {
+        let root = repo("peekstage");
+        fs::write(root.join("README.md"), "1\n2\n3\n4\n5\n6\n7\n8\n").unwrap();
+        let ok = Command::new("git").arg("-C").arg(&root).args(["commit", "-qam", "lines"]).status().unwrap().success();
+        assert!(ok);
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "README.md", false);
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        for (line, text) in [(0, "one"), (7, "eight")] {
+            let (b, t) = app.ed().unwrap();
+            t.view.anchor = Some(Pos::new(line, 0));
+            t.view.cursor = Pos::new(line, 1);
+            b.insert(&mut t.view, text);
+        }
+        app.update_qdiff();
+        assert_eq!(app.hunks("file:README.md").len(), 2);
+        app.show_peek(0, "file:README.md".into(), 1);
+        app.peek_button(PeekBtn::Stage);
+        let p = app.prompt.as_ref().expect("save first?");
+        assert!(p.text[0].contains("Save the file and stage") && p.buttons[p.sel].0 == "Cancel", "{:?}", p.text);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(fs::read_to_string(root.join("README.md")).unwrap(), "1\n2\n3\n4\n5\n6\n7\n8\n", "Cancel: nothing saved");
+        app.peek_button(PeekBtn::Stage);
+        app.prompt.as_mut().unwrap().sel = 0;
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.msg.contains("staged"), "{}", app.msg);
+        let index = Command::new("git").arg("-C").arg(&root).args(["show", ":README.md"]).output().unwrap().stdout;
+        assert_eq!(String::from_utf8(index).unwrap(), "1\n2\n3\n4\n5\n6\n7\neight\n", "only that hunk");
+        assert_eq!(fs::read_to_string(root.join("README.md")).unwrap(), "one\n2\n3\n4\n5\n6\n7\neight\n", "saved");
+        wait(&mut app);
+        app.update_qdiff();
+        assert_eq!(app.hunks("file:README.md").len(), 1, "the base was refetched");
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4425,7 +4478,6 @@ mod tests {
         let s = screen(&mut app, &mut t);
         assert!(s.contains("The folder currently open") && s.contains("git repository."), "{s}");
         assert!(!s.contains("Commit") && !s.contains("Changes"), "{s}");
-        app.show_side(Side::History, false);
         app.open_quick();
         assert_eq!(app.quick.as_ref().unwrap().items, ["sub/a.txt"]);
         app.quick = None;
@@ -4660,6 +4712,49 @@ mod tests {
             }
         }
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The git UI's CHANGES list: each section header (Merge Changes, Staged Changes,
+    /// Changes) sticks over its files, and a click on it hits the header, not the
+    /// file drawn under it.
+    #[test]
+    fn changes_section_headers_stick_and_take_the_click() {
+        let root = repo("stickychg");
+        let mut app = App::new(root.clone(), None);
+        app.side = Side::Scm;
+        let file = |section, path: String, letter| ScmFile { section, path, orig: None, letter };
+        app.scm_files = (0..20)
+            .map(|i| file(Section::Changes, format!("m{i:02}.c"), '!'))
+            .chain((0..20).map(|i| file(Section::Staged, format!("s{i:02}.c"), 'M')))
+            .chain((0..20).map(|i| file(Section::Changes, format!("c{i:02}.c"), 'M')))
+            .collect();
+        let rows = app.scm_rows();
+        let at_row = |want: &dyn Fn(&SRow) -> bool| rows.iter().position(want).unwrap();
+        let heads = [
+            (at_row(&|r| matches!(r, SRow::MergeHead(_))), "Merge Changes"),
+            (at_row(&|r| matches!(r, SRow::Head(Section::Staged, _))), "Staged Changes"),
+            (at_row(&|r| matches!(r, SRow::Head(Section::Changes, _))), "Changes"),
+        ];
+        let mut t = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        for (h, name) in heads {
+            app.off[2] = h + 5;
+            screen(&mut app, &mut t);
+            assert_eq!(app.ui.sticky, [h], "{name}");
+            let (x, y) = (app.ui.side_list.x, app.ui.side_list.y);
+            assert!(side_line(&t, &app, y).contains(name), "{name}: {}", side_line(&t, &app, y));
+            assert!(side_line(&t, &app, y + 1).contains("05.c"), "{name}: the files go on below (file 04 is under it)");
+            let tabs = app.groups[0].tabs.len();
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 3, y);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 3, y);
+            assert_eq!((app.off[2], app.sel[2]), (h, h), "{name}: the header back on top");
+            assert_eq!(app.groups[0].tabs.len(), tabs, "{name}: no file under it opened");
+            // The wheel over it scrolls the list.
+            app.off[2] = h + 5;
+            screen(&mut app, &mut t);
+            mouse(&mut app, MouseEventKind::ScrollDown, x + 3, y);
+            assert_eq!(app.off[2], (h + 8).min(rows.len() - app.ui.side_rows), "{name}: clamped at the end");
+        }
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

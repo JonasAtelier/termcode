@@ -16,7 +16,7 @@ use crate::panel::{
 };
 use crate::theme::{git_color, icons, Rgba, P};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use syntect::highlighting::{FontStyle, Style as SStyle};
 use unicode_width::UnicodeWidthStr;
 
@@ -36,7 +36,7 @@ fn lay(app: &App) -> Lay {
 }
 
 /// Truncate to `w` display cells with an ellipsis.
-fn fit(s: &str, w: usize) -> String {
+pub(crate) fn fit(s: &str, w: usize) -> String {
     if s.width() <= w {
         return s.to_string();
     }
@@ -64,7 +64,7 @@ pub(crate) fn row(f: &mut Frame, r: Rect, bg: Color, spans: Vec<Span<'static>>) 
     f.render_widget(Line::from(spans), r);
 }
 
-fn width(spans: &[Span]) -> u16 {
+pub(crate) fn width(spans: &[Span]) -> u16 {
     spans.iter().map(|s| s.width() as u16).sum()
 }
 
@@ -92,12 +92,12 @@ pub(crate) fn sp(n: u16) -> String {
     " ".repeat(n as usize)
 }
 
-fn inset(r: Rect, pad: u16) -> Rect {
+pub(crate) fn inset(r: Rect, pad: u16) -> Rect {
     Rect::new(r.x + pad, r.y, r.width.saturating_sub(2 * pad), r.height)
 }
 
 /// A popup frame: rounded border with 2x1 padding (comfortable only).
-fn popup_block(bg: Color, fg: Color, (h, v): (u16, u16)) -> Block<'static> {
+pub(crate) fn popup_block(bg: Color, fg: Color, (h, v): (u16, u16)) -> Block<'static> {
     let b = Block::bordered()
         .border_style(Style::new().fg(P.widget_border).bg(bg))
         .style(Style::new().bg(bg).fg(fg))
@@ -138,6 +138,7 @@ pub fn lang_id(name: &str) -> String {
 
 pub fn draw(app: &mut App, f: &mut Frame) {
     app.ui = Hits::default();
+    app.gitui.hits = Default::default();
     let lay = lay(app);
     let area = f.area();
     f.render_widget(Block::new().style(Style::new().bg(P.editor_bg).fg(P.editor_fg)), area);
@@ -180,6 +181,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         }
     }
     crate::navui::draw(app, f);
+    crate::scm::draw_popups(app, f, area);
     if app.quick.is_some() {
         quick(app, f, area, lay);
     }
@@ -215,10 +217,9 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     fill(f, r, P.status_bg);
     let edge = sp(lay.s.status_padding);
     let sep = sp(lay.s.status_gap);
-    let branch_gap = if icons().branch.is_empty() { String::new() } else { sp(lay.s.icon_gap) };
-    // No repository: no branch item, as in VS Code.
-    let branch = if app.git_root.is_some() { format!("{}{branch_gap}{}", icons().branch, app.branch) } else { String::new() };
-    let mut left = vec![Span::styled(format!("{edge}{branch}"), st)];
+    // Branch, sync / Publish Branch or the running git op (clickable).
+    let lx = crate::gitcmds::status_left(app, f, r, lay.s.status_padding, lay.s.status_gap);
+    let mut left = Vec::new();
     if let Some(e) = &app.settings_err {
         left.push(Span::styled(sep.clone(), st));
         let err = Style::new().fg(P.status_err_fg).bg(P.status_err_bg);
@@ -244,9 +245,11 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         let items = [s, indent, enc, eol.to_string(), b.syntax_name().to_string()];
         right.push(Span::styled(format!("{}{edge}", items.join(&sep)), st));
     }
-    f.render_widget(Line::from(left), r);
+    f.render_widget(Line::from(left), Rect::new(lx, r.y, r.right().saturating_sub(lx), 1));
     let w = width(&right);
-    f.render_widget(Line::from(right), Rect::new(r.right().saturating_sub(w), r.y, w.min(r.width), 1));
+    let rx = r.right().saturating_sub(w);
+    f.render_widget(Line::from(right), Rect::new(rx, r.y, w.min(r.width), 1));
+    crate::gitcmds::status_blame(app, f, Rect::new(lx, r.y, rx.saturating_sub(lx), 1), lay.s.status_gap);
 }
 
 fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
@@ -262,7 +265,6 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             Side::Explorer => ic.files,
             Side::Search => ic.search,
             Side::Scm => ic.scm,
-            Side::History => ic.history,
         };
         let fg = if active { P.activity_fg } else { P.activity_inactive };
         let bar = if active { "▎" } else { " " };
@@ -293,7 +295,7 @@ fn side_title(app: &mut App, f: &mut Frame, r: Rect, title: &str, lay: Lay) {
 
 /// A slim scrollbar slider over `track`, composited over what is drawn there.
 #[allow(clippy::too_many_arguments)]
-fn scrollbar(app: &mut App, f: &mut Frame, track: Rect, target: ScrollTarget, total: usize, view: usize, off: usize, max_off: usize) {
+pub(crate) fn scrollbar(app: &mut App, f: &mut Frame, track: Rect, target: ScrollTarget, total: usize, view: usize, off: usize, max_off: usize) {
     let s = decor::slider(track.height, total, view, off, max_off);
     paint_slider(f, track, s, slider_color(app, track, target));
     app.ui.scrollbars.push(ScrollHit { track, target, slider: s, max_off, page: view.max(1) });
@@ -325,10 +327,14 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         Side::Explorer => "EXPLORER",
         Side::Search => "SEARCH",
         Side::Scm => "SOURCE CONTROL",
-        Side::History => "HISTORY",
     };
     side_title(app, f, Rect::new(r.x, r.y, r.width, 1), title, lay);
     let mut y = r.y + 1 + lay.s.section_gap;
+    if app.side == Side::Scm {
+        return crate::scm::draw_scm(app, f, Rect::new(r.x, y, r.width, r.bottom().saturating_sub(y)));
+    }
+    // The Explorer's TIMELINE pane takes the bottom of the sidebar.
+    let (r, timeline) = if app.side == Side::Explorer { crate::scm::split_timeline(app, r) } else { (r, Rect::default()) };
     let ic = icons();
     // Inputs and buttons line up with the rows' padding (at least one cell).
     let m = lay.pad.max(1);
@@ -366,57 +372,7 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
             row(f, inset(Rect::new(r.x, y, r.width, 1), lay.pad), P.sidebar_bg, vec![Span::styled(format!("  {summary}"), Style::new().fg(P.dim))]);
             y += 1;
         }
-        Side::Scm if app.git_root.is_none() => {
-            // VS Code's Source Control view for a folder without a repository.
-            let msg = "The folder currently open doesn't have a git repository.";
-            let area = inset(Rect::new(r.x, y, r.width, r.bottom().saturating_sub(y)), m);
-            f.render_widget(Paragraph::new(msg).wrap(Wrap { trim: true }).style(Style::new().fg(P.sidebar_fg)), area);
-            y = r.bottom();
-        }
-        Side::Scm => {
-            let lines = app.commit_msg.split('\n').count().clamp(1, 5) as u16;
-            let inp = field(y, lines);
-            let focused = app.focus == Focus::CommitInput;
-            fill(f, inp, P.input_bg);
-            if app.commit_msg.is_empty() {
-                let ph = format!(" Message (Alt+Enter to commit on '{}')", app.branch);
-                f.render_widget(Span::styled(fit(&ph, inp.width as usize - 1), Style::new().fg(P.placeholder)), inp);
-            } else {
-                let shown: Vec<Line> = app
-                    .commit_msg
-                    .split('\n')
-                    .rev()
-                    .take(lines as usize)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .map(|l| Line::styled(format!(" {l}"), Style::new().fg(P.input_fg)))
-                    .collect();
-                f.render_widget(Paragraph::new(shown), inp);
-            }
-            if focused {
-                let last = app.commit_msg.rsplit('\n').next().unwrap_or("");
-                let cx = inp.x + 1 + (last.width() as u16).min(inp.width.saturating_sub(2));
-                f.set_cursor_position((cx, inp.y + lines - 1));
-            }
-            app.ui.side_input = inp;
-            y += lines;
-            let btn = field(y, 1);
-            let label = format!("{}{}Commit", ic.check, sp(lay.s.icon_gap));
-            fill(f, btn, P.button_bg);
-            let bx = btn.x + btn.width.saturating_sub(label.width() as u16) / 2;
-            f.render_widget(Span::styled(label, Style::new().fg(P.button_fg).bg(P.button_bg)), Rect::new(bx, y, btn.right() - bx, 1));
-            app.ui.commit_btn = btn;
-            y += 1 + lay.s.section_gap.max(1); // blank rows between the commit box and the changes
-        }
-        Side::History => {
-            let t = match &app.history_path {
-                Some(p) => format!("  {} (Esc: all)", fit(p, r.width as usize - 12)),
-                None => "  all commits".into(),
-            };
-            row(f, inset(Rect::new(r.x, y, r.width, 1), lay.pad), P.sidebar_bg, vec![Span::styled(t, Style::new().fg(P.dim))]);
-            y += 1;
-        }
+        Side::Scm => {}
     }
     let list = Rect::new(r.x, y, r.width, r.bottom().saturating_sub(y));
     app.ui.side_list = list;
@@ -430,7 +386,6 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     app.sel[s] = app.sel[s].min(n.saturating_sub(1));
     app.off[s] = app.off[s].min(n.saturating_sub(1));
     let hover_row = app.hover.filter(|p| list.contains(*p)).and_then(|p| app.ui.side_item(p.y, app.off[s]));
-    let scm_rows = if app.side == Side::Scm { app.scm_rows() } else { Vec::new() };
     let search_rows = if app.side == Side::Search { app.search_rows() } else { Vec::new() };
     for k in 0..h {
         let i = app.off[s] + k;
@@ -442,10 +397,7 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
             break;
         }
         let rr = Rect::new(list.x, list.y + k as u16 * step, list.width, 1);
-        let gap = matches!(scm_rows.get(i), Some(SRow::Gap));
-        let bg = if gap {
-            P.sidebar_bg
-        } else if i == app.sel[s] && app.focus == Focus::Side {
+        let bg = if i == app.sel[s] && app.focus == Focus::Side {
             P.list_active_bg
         } else if i == app.sel[s] {
             P.list_inactive_bg
@@ -456,40 +408,30 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         };
         fill(f, rr, bg);
         let ir = inset(rr, lay.pad);
-        let hot = i == app.sel[s] || hover_row == Some(i);
         match app.side {
             Side::Explorer => explorer_row(app, f, ir, bg, i),
             Side::Search => search_row(app, f, ir, bg, &search_rows[i]),
-            Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hot),
-            Side::History => {
-                let c = &app.commits[i];
-                row(
-                    f,
-                    ir,
-                    bg,
-                    vec![
-                        Span::styled(format!(" {} ", c.short), Style::new().fg(P.dim)),
-                        Span::styled(fit(&c.subject, (ir.width as usize).saturating_sub(10)), Style::new().fg(P.sidebar_fg)),
-                        Span::styled(format!("  {} · {}", c.author, c.date), Style::new().fg(P.dim)),
-                    ],
-                );
-            }
+            Side::Scm => {}
         }
     }
-    sticky_rows(app, f, list, lay, &scm_rows, &search_rows);
+    sticky_rows(app, f, list, lay.pad, lay.s.list_gap, &[], &search_rows);
     if n > h && h > 0 {
         let track = Rect::new(list.right() - 1, list.y, 1, list.height);
         scrollbar(app, f, track, ScrollTarget::Side, n, h, app.off[s], n - h);
     }
+    if !timeline.is_empty() {
+        crate::scm::draw_timeline(app, f, timeline);
+    }
 }
 
 /// VS Code's tree sticky scroll over the list just drawn: the folders (Search file
-/// groups, SCM sections) holding the top rows, pinned over them, each drawn as its
-/// own row, with `sideBarStickyScroll.shadow` as a line under the last. At most
-/// `stickyScrollMaxItemCount` (default 1: the top-level folder), and never over
-/// 40% of the list.
-fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, lay: Lay, scm_rows: &[SRow], search_rows: &[HRow]) {
-    let step = 1 + lay.s.list_gap;
+/// groups, the CHANGES sections) holding the top rows, pinned over them, each drawn
+/// as its own row, with `sideBarStickyScroll.shadow` as a line under the last. At
+/// most `stickyScrollMaxItemCount` (default 1: the top-level folder), and never
+/// over 40% of the list. `pad`, `gap`: the list's row padding and listItemGap;
+/// `scm_rows` / `search_rows`: the rows of that view (empty for the others).
+pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, gap: u16, scm_rows: &[SRow], search_rows: &[HRow]) {
+    let step = 1 + gap;
     let cap = if app.settings.sticky { app.settings.sticky_max.min(list.height as usize * 2 / 5 / step as usize) } else { 0 };
     let s = app.side as usize;
     let pinned = crate::decor::sticky(&app.side_depths(), app.off[s], cap);
@@ -500,8 +442,10 @@ fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, lay: Lay, scm_rows: &[S
     // Rows hidden under the sticky rows keep none of their buttons.
     app.ui.scm_btns.retain(|(b, _)| !area.contains(b.as_position()));
     let hover = app.hover.filter(|p| area.contains(*p)).and_then(|p| app.ui.sticky_at(p.y));
+    // CHANGES shares the sidebar's focus with GRAPH.
+    let focused = app.focus == Focus::Side && !(app.side == Side::Scm && app.gitui.graph_focus);
     for (k, &i) in pinned.iter().enumerate() {
-        let bg = if i == app.sel[s] && app.focus == Focus::Side {
+        let bg = if i == app.sel[s] && focused {
             P.list_active_bg
         } else if i == app.sel[s] {
             P.list_inactive_bg
@@ -512,12 +456,11 @@ fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, lay: Lay, scm_rows: &[S
         };
         let y = list.y + k as u16 * step;
         fill(f, Rect::new(list.x, y, list.width, step), bg);
-        let ir = inset(Rect::new(list.x, y, list.width, 1), lay.pad);
+        let ir = inset(Rect::new(list.x, y, list.width, 1), pad);
         match app.side {
             Side::Explorer => explorer_row(app, f, ir, bg, i),
             Side::Search => search_row(app, f, ir, bg, &search_rows[i]),
             Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
-            Side::History => {}
         }
     }
     // The shadow: a line in the shadow colour along the sticky area's last row.
@@ -537,7 +480,7 @@ pub(crate) fn right(f: &mut Frame, r: Rect, spans: Vec<Span<'static>>) -> u16 {
     r.right() - w
 }
 
-fn badge(n: usize) -> Span<'static> {
+pub(crate) fn badge(n: usize) -> Span<'static> {
     Span::styled(format!(" {n} "), Style::new().fg(P.badge_fg).bg(P.badge_bg))
 }
 
@@ -626,11 +569,16 @@ fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
     }
 }
 
-fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: bool) {
+pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: bool) {
     let ic = icons();
     let g = app.settings.spacing.icon_gap;
     match sr {
         SRow::Gap => {}
+        SRow::MergeHead(n) => {
+            row(f, r, bg, vec![Span::styled(format!(" {}{}Merge Changes", ic.chev_down, sp(g)), Style::new().fg(P.sidebar_fg).bold())]);
+            let x0 = right(f, r, vec![Span::styled(format!("{} ", ic.add), Style::new().fg(P.icon_fg)), badge(*n)]);
+            app.ui.scm_btns.push((Rect::new(x0, r.y, 1, 1), ScmAct::StageMerge));
+        }
         SRow::Head(sec, n) => {
             let label = if *sec == Section::Staged { "Staged Changes" } else { "Changes" };
             row(f, r, bg, vec![Span::styled(format!(" {}{}{label}", ic.chev_down, sp(g)), Style::new().fg(P.sidebar_fg).bold())]);
@@ -701,7 +649,7 @@ fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: boo
     }
 }
 
-fn input(f: &mut Frame, r: Rect, text: &str, placeholder: &str, focused: bool) {
+pub(crate) fn input(f: &mut Frame, r: Rect, text: &str, placeholder: &str, focused: bool) {
     fill(f, r, P.input_bg);
     let (t, st) = if text.is_empty() {
         (placeholder.to_string(), Style::new().fg(P.placeholder))
@@ -745,7 +693,7 @@ fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
 fn tab_icon(app: &App, key: &str) -> (String, Color) {
     let path = match key.split_once(':') {
         Some(("file", p)) => p,
-        Some(("diff", rest)) => rest.split_once(':').map_or(rest, |(_, p)| p),
+        Some(("diff" | "cdiff", rest)) => rest.split_once(':').map_or(rest, |(_, p)| p),
         _ => return (icons().history.to_string(), P.icon_fg),
     };
     file_icon(base(path), &app.settings.file_icons)
@@ -907,6 +855,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
         app.ui.scrollbars.push(sb);
     }
     app.ui.groups.push(gh);
+    // Conflict colours and actions, blame ghost text.
+    crate::gitcmds::editor_overlay(app, f, g);
     if focused_group && app.find.is_some() {
         let text = app.ui.groups[g].text;
         find_widget(app, f, text, lay);
@@ -1495,7 +1445,7 @@ fn draw_peek(f: &mut Frame, zr: Rect, gx: u16, gutter: u16, tx: u16, pk: &PeekDr
 
 /// `blank`: columns kept empty between the text and the scrollbar.
 #[allow(clippy::too_many_arguments)]
-fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect, slider: Rgba, blank: u16, rulers: &[(usize, Color)]) -> Option<ScrollHit> {
+pub(crate) fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect, slider: Rgba, blank: u16, rulers: &[(usize, Color)]) -> Option<ScrollHit> {
     if let Some(note) = &d.note {
         f.render_widget(Paragraph::new(note.as_str()).style(Style::new().fg(P.dim)), area);
         return None;
@@ -1625,7 +1575,7 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
 }
 
 /// A `w`x`h` rect centred in `area` (`top`: one row below its top), always inside it.
-fn centered(area: Rect, w: u16, h: u16, top: bool) -> Rect {
+pub(crate) fn centered(area: Rect, w: u16, h: u16, top: bool) -> Rect {
     let (w, h) = (w.min(area.width), h.min(area.height.saturating_sub(u16::from(top))));
     let y = if top { area.y + 1 } else { area.y + (area.height - h) / 2 };
     Rect::new(area.x + (area.width - w) / 2, y, w, h).intersection(area)

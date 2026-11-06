@@ -4,8 +4,8 @@ herdr plugin, written in Rust. Run `herdr-code [PATH]` like VS Code's `code PATH
 Code-like editor for that folder, file or repo **in the same terminal**, like vim; quitting
 returns to the shell. `herdr-code --tab` opens it as a `Code: <name>` tab of the herdr workspace
 instead. It has an activity
-bar, a resizable Explorer / Search /
-Source Control / History sidebar, editor groups with preview tabs, a side-by-side diff, and
+bar, a resizable Explorer (with Timeline) / Search /
+Source Control (Changes over Graph) sidebar, editor groups with preview tabs, a side-by-side diff, and
 the "Visual Studio Dark - C++" colours (or any VS Code theme, see [Settings](#settings)).
 
 ## Install
@@ -92,7 +92,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | F1 (Ctrl+Shift+P where it reaches) | Command palette: Open Settings (JSON), Toggle Indent Rainbow, Toggle Minimap Ruler, … |
 | Alt+1, Ctrl+E | Explorer |
 | Alt+2 / F2, Ctrl+G | Source Control |
-| Alt+3 | History (`h` on an Explorer file: that file's history) |
+| `h` on an Explorer file | open it; the TIMELINE pane under the tree shows its history |
 | Alt+4 / F4 (Ctrl+Shift+F where it reaches) | Search in files |
 | click the active activity icon | hide or show the sidebar; drag the divider to resize |
 | Ctrl+P, Alt+P | Quick Open |
@@ -104,7 +104,8 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Ctrl+C / X / V, Ctrl+A | clipboard (whole line without a selection), select all |
 | Tab / Shift+Tab, Enter | indent / outdent, new line with auto-indent |
 | Ctrl+PgDn / PgUp, Ctrl+1/2/3 | next / previous tab, focus group (Ctrl+digit only with kitty keys) |
-| Alt+Enter (Ctrl+Enter) | commit the staged changes with the message |
+| Add commit (Source Control) | the commit dialog, see [Source Control](#source-control) |
+| F7 / Shift+F7 in a diff | next / previous change |
 | `r` in a list | refresh. Git status also refreshes on view switch and on pane focus |
 | scrollbars | click the track to page, drag the slider; the wheel scrolls the list or editor under it |
 | minimap | click: centre that line; drag the slider; the wheel scrolls the editor |
@@ -139,8 +140,69 @@ viewport slider while the mouse is over it (herdr forwards plain mouse motion to
 VS Code's `showSlider: "mouseover"` works). In a narrow editor it shrinks, then hides.
 
 Clicking a quick-diff marker opens VS Code's dirty-diff peek below the change: the index
-lines on red, the buffer lines on green with word highlights. Stage is disabled until the git
-backend lands; Revert edits the buffer only (nothing is written or staged).
+lines on red, the buffer lines on green with word highlights. Stage stages that one hunk (an
+unsaved buffer asks to save first: Save & Stage / Cancel); Revert edits the buffer only.
+
+## Source Control
+
+One view, VS Code's: the CHANGES pane over the GRAPH pane. Click a header to collapse it;
+drag the GRAPH header to move the split (kept in layout.json).
+
+- CHANGES: an **Add commit** button, then Merge Changes (conflicts), Staged Changes and
+  Changes (untracked files as `U`). Row actions open, stage `+`, unstage `−`, discard `↶`
+  (always asks). Merge Changes' `+` stages every conflict (marks it resolved); Changes' "Stage
+  All" leaves conflicts alone.
+- GRAPH: the history of HEAD in `--topo-order`, lanes in the `scmGraph.foreground1-5`
+  colours, ref badges (branch, remote, tag, detached HEAD). It loads 100 commits; the last row
+  "View more" loads the next 100 (scrolling never loads). Click a commit to list its files
+  inline (status letters in `gitDecoration.*` colours), click a file for a read-only
+  side-by-side diff: first parent left, commit right, rows aligned, F7 / Shift+F7 between
+  changes. Keys with the graph focused (Tab from CHANGES): arrows, Enter, Left/Right
+  collapse/expand, `i` the commit card, `r` reload.
+- Commit card: rest the pointer on a commit row (graph or Timeline) for 0.5 s, press `i`, or
+  click the ⓘ at the selected row's end. Author, relative and local date, the full message,
+  files changed with insertions and deletions, refs, the short hash, [Copy hash]
+  [Open changes] (opens its first file's diff).
+- Commit dialog (git-gui style): Unstaged Changes over Staged Changes (Will Commit) with
+  [Stage →] [Stage Changed] [← Unstage] (double-click or Enter on a row too), the selected
+  file's diff on the right, New Commit / Amend Last Commit (amend fills in the last message),
+  the message with a subject count (50) and a ruler at column 72, and [Rescan] (F5)
+  [Sign Off] (Ctrl+S) [Commit] (Alt+Enter, Ctrl+Enter where it reaches) [Commit & Push]
+  [Cancel]. An empty message is refused; with nothing staged it offers to stage everything
+  and commit. Esc or Cancel keeps the draft, also across restarts
+  (`$HERDR_PLUGIN_STATE_DIR/drafts/`). The commit runs in the background.
+- Explorer TIMELINE: the active file's commits (renames followed), 100 at a time; click one
+  for that commit's diff of the file.
+- Status bar: the branch (`*` unstaged, `+` staged changes; click: checkout a local, remote
+  or tag ref, Create new branch…, Create new branch from…), then `↓behind ↑ahead` (click:
+  VS Code's "This action will pull and push commits from and to '<upstream>'", OK by
+  default, then pull and push) or **Publish Branch** (`push -u` to `origin`, else the only remote), and the cursor line's blame
+  (rest on it or click it for the commit card).
+- Git commands: F1 "Git: …" or the "…" on the Source Control title: Pull, Push, Fetch, Fetch
+  (Prune), Sync, Publish Branch, Checkout to…, Create Branch (From)…, Delete Branch…, Merge
+  Branch…, Rebase Branch…, Stash, Stash (Include Untracked), Stash Staged, Apply / Pop Latest
+  Stash, Apply / Pop / Drop Stash…, Undo Last Commit, Commit (Amend), Abort Merge, Abort
+  Rebase, Continue Rebase, Show Git Output, Cancel Running Operation. Rebase, the aborts,
+  Drop Stash, deleting an unmerged branch and undoing a merge commit ask first, with Cancel
+  as the default.
+- Git work runs in the background with a spinner in the status bar; clicking the spinner
+  cancels it (its pipes close, git ends at its next write; nothing is signalled). ssh runs
+  with `BatchMode` and short timeouts, HTTP gives up below 1 KB/s for 30 s, and git runs in
+  its own session without a controlling terminal, so ssh, hooks and credential helpers can
+  never prompt over the panel. Your own `GIT_SSH_COMMAND` / `core.sshCommand` is used as it
+  is, without those timeouts: add `-o BatchMode=yes -o ConnectTimeout=15
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=2` to it, or a dead connection stalls
+  until ssh gives up (cancel it from the status bar). Push sends an explicit
+  `refs/heads/<branch>:<upstream>`, so a `+` in `remote.*.push` never forces. A failure shows
+  a notification with [Show Git Output].
+- Staging a hunk compares the index with the working file as git would stage it
+  (`core.autocrlf`, `eol`/`text`, `ident` and clean filters such as LFS applied).
+- Git Output (Show Git Output): every git command the panel ran, with its duration, exit
+  code and stderr; it follows new commands while open.
+- Merge conflicts: Merge Changes lists them. In the editor each block is coloured with
+  `merge.*` and its `<<<<<<<` line carries Accept Current Change | Accept Incoming Change |
+  Accept Both Changes | Compare Changes (short labels when narrow). Accepting edits the buffer
+  as one undoable change; save, then stage the file (`+`) to mark it resolved.
 
 ## Settings
 
@@ -180,6 +242,9 @@ the panel: the status bar shows the error and the last good settings stay.
 | `herdr-code.minimap.minEditorWidth` | `40` | The minimap shrinks (to 4 cells) so the code keeps this many columns, then hides |
 | `editor.minimap.size` | `"proportional"` | `"fill"`: the whole file over the height; `"fit"`: proportional while it fits |
 | `editor.gotoLocation.multipleDefinitions` | `"peek"` | Several definitions: `"peek"` shows them, `"gotoAndPeek"` opens the first and peeks, `"goto"` opens the first |
+| `git.blame.statusBarItem.enabled` | `true` | The cursor line's author and age in the status bar |
+| `git.blame.editorDecoration.enabled` | `false` | The same, with the commit subject, as ghost text after the cursor line |
+| `git.confirmSync` | `true` | Sync asks first (OK is the default, as in VS Code); "OK, Don't Show Again" sets it to `false` |
 
 `herdr-code.spacing` (comfortable / compact defaults):
 

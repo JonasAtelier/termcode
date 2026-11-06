@@ -355,7 +355,9 @@ fn open_item(app: &mut App, i: usize) {
 
 /// Every key goes through here: the nav keys, then the open peek, then the panel.
 pub fn on_key(app: &mut App, k: KeyEvent) {
-    if app.prompt.is_some() || app.quick.is_some() || !nav_key(app, k) {
+    // Modal UI (prompt, quick pick, the commit dialog, a git picker) takes every key.
+    let modal = app.prompt.is_some() || app.quick.is_some() || app.gitui.dlg.is_some() || app.gitui.cmds.picker.is_some();
+    if modal || !nav_key(app, k) {
         app.on_key(k);
     }
 }
@@ -376,7 +378,7 @@ fn nav_key(app: &mut App, k: KeyEvent) -> bool {
         KeyCode::Char('_' | '7') if ctrl => Some(Act::Forward),
         _ => None,
     };
-    let typing = matches!(app.focus, Focus::Find | Focus::SearchInput | Focus::CommitInput);
+    let typing = matches!(app.focus, Focus::Find | Focus::SearchInput);
     match act {
         Some(a @ (Act::Back | Act::Forward)) if !typing => return command_true(app, a),
         Some(a) if app.focus == Focus::Editor => return command_true(app, a),
@@ -426,7 +428,7 @@ fn peek_key(app: &mut App, k: KeyEvent, modded: bool) -> bool {
 
 /// Every mouse event goes through here: Ctrl+hover, the peek, Ctrl+click, then the panel.
 pub fn on_mouse(app: &mut App, m: MouseEvent) -> bool {
-    if app.prompt.is_some() || app.quick.is_some() {
+    if app.prompt.is_some() || app.quick.is_some() || app.gitui.dlg.is_some() || app.gitui.cmds.picker.is_some() {
         return app.on_mouse(m);
     }
     let p = Position::new(m.column, m.row);

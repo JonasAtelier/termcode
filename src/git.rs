@@ -161,11 +161,6 @@ pub fn discard(root: &Path, files: &[ScmFile]) -> Result<String, String> {
     Ok(String::new())
 }
 
-/// Commit what is staged; never stages anything itself.
-pub fn commit(root: &Path, message: &str) -> Result<String, String> {
-    run(root, &["commit", "-q", "-m", message])
-}
-
 /// Up to 1 MB of `git <args>` stdout, ignoring the exit code. Past the cap the
 /// pipe is closed, so git stops at its next write (EPIPE); no signal is sent.
 pub fn capped(root: &Path, args: &[&str]) -> Vec<u8> {
