@@ -891,6 +891,16 @@ pub fn drop_drags(app: &mut App) {
     }
 }
 
+/// Rows between the CHANGES list and the GRAPH header: a card's bottom and top frame and
+/// the gutter (cards), the shared line (lines), none (none).
+fn between(st: crate::blocks::BlockStyle) -> u16 {
+    match st {
+        crate::blocks::BlockStyle::Cards => 3,
+        crate::blocks::BlockStyle::Lines => 1,
+        crate::blocks::BlockStyle::None => 0,
+    }
+}
+
 /// Dragging the GRAPH header resizes the panes. True while that drag is on.
 pub fn drag(app: &mut App, p: Position) -> bool {
     if commitdlg::drag(app, p) {
@@ -901,7 +911,7 @@ pub fn drag(app: &mut App, p: Position) -> bool {
         *moved = true;
     }
     if *moved && app.gitui.changes_open && app.gitui.graph_open {
-        let top = app.gitui.hits.changes.y;
+        let top = app.gitui.hits.changes.y + between(app.settings.blocks);
         app.gitui.split = Some(p.y.saturating_sub(top).max(1));
     }
     true
@@ -1110,7 +1120,11 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
         return;
     }
     let (co, go) = (app.gitui.changes_open, app.gitui.graph_open);
-    let body = r.height.saturating_sub(2);
+    // CHANGES and GRAPH are two blocks: cards (2 frames and a gutter row), or a shared line.
+    let st = app.settings.blocks;
+    let between = between(st);
+    let frame = if st == crate::blocks::BlockStyle::Cards { 2 } else { 0 };
+    let body = r.height.saturating_sub(2 + between + if frame > 0 { 2 } else { 0 });
     let ch = match (co, go) {
         (true, true) => {
             let lo = body.min(3);
@@ -1120,13 +1134,21 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
         _ => 0,
     };
     let gh = if go { body - ch } else { 0 };
-    let chdr = Rect::new(r.x, r.y, r.width, 1).intersection(r);
-    let crect = Rect::new(r.x, r.y + 1, r.width, ch).intersection(r);
-    let ghdr = Rect::new(r.x, r.y + 1 + ch, r.width, 1).intersection(r);
-    let grect = Rect::new(r.x, ghdr.y + 1, r.width, gh).intersection(r);
-    crate::gitcmds::title_menu(app, f);
     let keys = app.focus == Focus::Side;
     let gf = app.gitui.graph_focus;
+    // CHANGES block, the row between (gutter or line), then the GRAPH block.
+    let (h1, sep) = (1 + ch + frame, u16::from(st != crate::blocks::BlockStyle::None));
+    let gy = (r.y + h1 + sep).min(r.bottom());
+    let gbot = Rect::new(r.x, gy, r.width, r.bottom() - gy);
+    let ctop = Rect::new(r.x, r.y, r.width, (h1 + sep).min(r.height));
+    let (ctop, gbot) = crate::blocks::stack(st, ctop, gbot, r.x.saturating_sub(1), r.right());
+    let ci = crate::blocks::card(st, f, ctop, P.sidebar_bg, keys && !gf);
+    let gi = crate::blocks::card(st, f, gbot, P.sidebar_bg, keys && gf);
+    let chdr = Rect::new(ci.x, ci.y, ci.width, 1).intersection(ci);
+    let crect = Rect::new(ci.x, ci.y + 1, ci.width, ch).intersection(ci);
+    let ghdr = Rect::new(gi.x, gi.y, gi.width, 1).intersection(gi);
+    let grect = Rect::new(gi.x, gi.y + 1, gi.width, gh).intersection(gi);
+    crate::gitcmds::title_menu(app, f);
     pane_header(app, f, chdr, "CHANGES", co, Hit::ChangesHead, "", keys && !gf);
     app.gitui.hits.changes = crect;
     app.ui.side_list = Rect::default();
@@ -1278,7 +1300,7 @@ fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: 
 
 fn file_row(app: &App, f: &mut Frame, r: Rect, bg: Color, indent: usize, fc: &FileChange) {
     let (glyph, gfg) = crate::icons::file_icon(base(&fc.path), &app.settings.file_icons);
-    let g = app.settings.spacing.icon_gap;
+    let g = crate::blocks::icon_gap(app.settings.icon_size, app.settings.spacing.icon_gap);
     let dir = fc.path.rsplit_once('/').map_or("", |(d, _)| d);
     let letter = Span::styled(format!(" {} ", fc.status), Style::new().fg(git_color(fc.status)));
     let room = (r.width as usize).saturating_sub(indent + 1 + g as usize + 4);
@@ -1305,7 +1327,9 @@ fn file_row(app: &App, f: &mut Frame, r: Rect, bg: Color, indent: usize, fc: &Fi
 
 /// The Explorer split: the tree above, TIMELINE (header, and list when open) below.
 pub fn split_timeline(app: &App, r: Rect) -> (Rect, Rect) {
-    let h = if app.gitui.timeline.open { (r.height / 3).clamp(4, 14) } else { 1 };
+    // A card's frame takes 2 rows: the pane keeps its rows inside it.
+    let frame = if app.settings.blocks == crate::blocks::BlockStyle::Cards { 2 } else { 0 };
+    let h = frame + if app.gitui.timeline.open { (r.height / 3).clamp(4, 14) } else { 1 };
     if r.height < h + 8 {
         return (r, Rect::default());
     }
@@ -1725,8 +1749,20 @@ pub(crate) mod ui_tests {
         let key = app.groups[app.ag].tabs[app.groups[app.ag].active].key.clone();
         assert!(key.starts_with("cdiff:") && key.ends_with(":f.txt"), "{key}");
         let s = screen(&mut app, &mut tm);
-        let (lx, ly) = at(&tm, "149");
-        let (rx, ry) = at(&tm, "150 ");
+        // In the diff editor only: the GRAPH list may show a c149 row above it.
+        let ed = app.ui.groups[app.ag].area;
+        let in_editor = |needle: &str| {
+            let b = tm.backend().buffer();
+            (ed.top()..ed.bottom())
+                .find_map(|y| {
+                    let line: String = (ed.left()..ed.right()).map(|x| b[(x, y)].symbol()).collect();
+                    let i = line.find(needle)?;
+                    Some((ed.x + line[..i].chars().count() as u16, y))
+                })
+                .unwrap_or_else(|| panic!("{needle:?} not in the editor: {s}"))
+        };
+        let (lx, ly) = in_editor("149");
+        let (rx, ry) = in_editor("150 ");
         assert_eq!(ly, ry, "rows aligned");
         assert!(rx > lx + 20, "parent left, commit right: {s}");
         assert!(!s.contains("diff --git") && !s.contains("@@"), "no raw patch text: {s}");
@@ -1801,13 +1837,15 @@ pub(crate) mod ui_tests {
         app.side_w = Some(90);
         app.show_side(Side::Scm, false);
         settle(&mut app);
+        // The sidebar's columns of that row (cards, lines or none alike).
+        let cols = |app: &App, row: String| row.chars().skip(app.ui.sidebar.x as usize).take(app.ui.sidebar.width as usize).collect::<String>();
         let row = row_of(&screen(&mut app, &mut tm));
-        let side = &row[..row.find('│').unwrap_or(row.len())];
+        let side = cols(&app, row);
         assert!(side.contains("Merge branch 'feature'") && side.contains("main") && side.contains("origin/main") && side.contains("v1"), "{side}");
         assert!(!side.contains('+'), "nothing collapsed: {side}");
-        app.side_w = Some(40);
+        app.side_w = Some(42); // outer width: 40 columns inside the card's frame
         let row = row_of(&screen(&mut app, &mut tm));
-        let side = &row[..row.find('│').unwrap_or(row.len())];
+        let side = cols(&app, row);
         assert!(side.contains("Merge branch 'featu") && side.contains('+'), "subject first, then +N: {side}");
         assert!(side.contains("ma"), "HEAD's badge stays: {side}");
     }

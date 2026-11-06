@@ -5,9 +5,11 @@
 //!   herdr-code --tab [PATH[:LINE[:COL]]]   launcher: a Code tab (also the plugin action)
 //!   herdr-code panel                       the TUI, the plugin's `[[panes]]` entrypoint
 
+mod blocks;
 mod decor;
 mod diff;
 mod editor;
+mod icondemo;
 mod git;
 mod minimap;
 mod icons;
@@ -54,6 +56,8 @@ Relative paths resolve against this folder.
 enum Cmd {
     Help,
     Panel,
+    /// Hidden: `--icon-demo` shows the icon sizes side by side.
+    IconDemo,
     Open { tab: bool, path: Option<String> },
 }
 
@@ -61,6 +65,9 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
     if let [a] = args {
         if a == "panel" {
             return Ok(Cmd::Panel);
+        }
+        if a == "--icon-demo" {
+            return Ok(Cmd::IconDemo);
         }
     }
     let (mut tab, mut path) = (false, None);
@@ -92,6 +99,7 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             Ok(())
         }
+        Cmd::IconDemo => icondemo::run(),
         // The launcher opens the pane with the workspace root as its cwd.
         Cmd::Panel => env::current_dir()
             .and_then(fs::canonicalize)
@@ -431,6 +439,12 @@ mod tests {
         assert_eq!(target(None, &plain), Ok((plain.clone(), None)));
         assert!(target(Some("/dev/null"), &d).unwrap_err().contains("not a regular file"));
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn icon_demo_is_a_hidden_flag() {
+        assert!(matches!(parse_args(&["--icon-demo".into()]), Ok(Cmd::IconDemo)));
+        assert!(!USAGE.contains("icon-demo"));
     }
 
     #[test]

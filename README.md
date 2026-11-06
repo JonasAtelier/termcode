@@ -78,6 +78,10 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
   theme mapped to `nf-seti-*`, coloured like VS Code (`cargo run --example gen_seti`). Both need a
   Nerd Font. `"herdr-code.icons": "ascii"` or `HERDR_CODE_ICONS=0` (always wins) gives plain
   ASCII. The sidebar width and visibility are kept in `$HERDR_PLUGIN_STATE_DIR/layout.json`.
+- Blocks: the activity bar, each sidebar section and each editor group are rounded cards with a
+  1-cell gutter between them (`herdr-code.blocks.style`); the borders are `editorGroup.border`,
+  the focused block's a little lighter. Icon sizes (`herdr-code.icons.size`):
+  `herdr-code --icon-demo` shows the three side by side in your terminal and font; any key quits.
 - `prefix+g` is herdr's default `goto`, so no keybinding is shipped. To add one, bind
   `plugin_action` `jonas.herdr-code.open` to a free key.
 
@@ -235,6 +239,8 @@ the panel: the status bar shows the error and the last good settings stay.
 | `workbench.density` | `"comfortable"` | `"compact"` is the original tight layout (no padding, no popup frames) |
 | `herdr-code.spacing` | see below | Each key overrides the density's value |
 | `herdr-code.icons` | `"nerd"` | `"ascii"`: no Nerd Font glyphs |
+| `herdr-code.icons.size` | `"wide"` | `"small"`: one cell per icon; `"wide"`: a 2-cell slot and a blank, room for a non-Mono Nerd Font glyph; `"large"`: 3x2 braille activity icons (tree rows as wide) |
+| `herdr-code.blocks.style` | `"cards"` (compact: `"lines"`) | `"cards"`: rounded blocks with a gutter; `"lines"`: one shared line between blocks, joined (`├┤┬┴`); `"none"`: flat |
 | `herdr-code.fileIcons` | `{}` | `extensions`, `fileNames`, `folderNames`: maps to `{ "glyph": "…", "color": "#rrggbb" }` (either half); `folder`, `folderOpen` |
 | `indentRainbow.enabled` | `true` | oderwat.indent-rainbow, same defaults |
 | `indentRainbow.colors` | the extension's four `rgba(…,0.07)` | Blended over the editor background |
@@ -263,14 +269,14 @@ the panel: the status bar shows the error and the last good settings stay.
 
 | Key | Comfortable | Compact | Meaning |
 |---|---|---|---|
-| `sidebarWidth` | 36 | 30 | Sidebar columns until you drag the divider (a dragged width is kept in layout.json) |
+| `sidebarWidth` | 38 | 30 | Sidebar columns, a card's frame included, until you drag the divider (a dragged width is kept in layout.json) |
 | `sidebarPadding` | 2 | 0 | Left/right padding of sidebar rows and inputs |
 | `sectionGap` | 1 | 0 | Blank rows under the sidebar title and between SCM sections |
 | `editorPadding` | 2 | 1 | Gutter gaps: `number␠␠marker␠␠code` in comfortable (compact: `number marker␠code`); 2 or more also leaves the blank row under the tab bar |
 | `tabPadding` | 2 | 1 | Spaces each side of a tab label |
 | `statusBarGap` | 3 | 3 | Spaces between status bar items |
 | `statusBarPadding` | 2 | 1 | Spaces at the status bar's left and right edges |
-| `activityBarWidth` | 5 | 3 | Activity bar columns, icons centred, a blank row between icons |
+| `activityBarWidth` | 7 | 3 | Activity bar columns, a card's frame included, icons centred, a blank row between icons |
 | `listItemGap` | 0 | 0 | 0 or 1 blank row between sidebar list items |
 | `popupPadding` | `[3, 1]` | `[0, 0]` | Horizontal and vertical padding in Quick Open, the command palette and dialogs |
 | `iconGap` | 2 | 1 | Blank cells after an icon (tree, tabs, SCM rows, title bar, buttons, find widget, status bar); at least 1, since a non-Mono Nerd Font icon can overflow its cell |
@@ -342,7 +348,9 @@ one cap of two running `rg`. Every jump (definitions, peek items, Back/Forward) 
 - Lines over 4000 bytes are not highlighted. The default token colours are VS Code's
   `cpptools_dark_vs_new.json` (MIT, Microsoft), embedded under `assets/`. `assets/seti.json`
   and `assets/vscode_dark_defaults.json` are data from VS Code (MIT, Microsoft) and Seti UI
-  (MIT, Jesse Weed); see `assets/vscode_LICENSE.txt`. syntect's Sublime
+  (MIT, Jesse Weed); see `assets/vscode_LICENSE.txt`. `assets/codicons.json` holds VS Code
+  codicons (CC BY 4.0, Microsoft) rasterized to braille by
+  `cargo run --example gen_codicons -- …/resources/app/out/media/codicon.ttf`. syntect's Sublime
   grammars name some scopes differently from VS Code's TextMate grammars; a small alias table
   renames the ones themes care about (`#include` and `#define` as `keyword.control.directive`,
   calls as `entity.name.function`, struct names as `entity.name.type`, …).

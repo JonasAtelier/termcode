@@ -649,7 +649,7 @@ pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> 
     }
 }
 
-fn setup() -> io::Result<()> {
+pub(crate) fn setup() -> io::Result<()> {
     setup_on(&mut io::stdout(), terminal::enable_raw_mode, terminal::disable_raw_mode)?;
     // Lets Ctrl+Shift chords through where the whole chain supports it; legacy otherwise.
     if terminal::supports_keyboard_enhancement().unwrap_or(false) {
@@ -688,7 +688,7 @@ fn restore_seq(w: &mut impl Write) -> io::Result<()> {
     )
 }
 
-fn restore() {
+pub(crate) fn restore() {
     let _ = restore_seq(&mut io::stdout());
     let _ = terminal::disable_raw_mode();
 }
@@ -3881,16 +3881,107 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_divider_stays_in_one_column() {
-        let root = repo("div");
+    fn lines_join_where_a_section_line_meets_the_vertical_ones() {
+        use crate::blocks::BlockStyle;
+        let root = repo("join");
+        let mut app = App::new(root.clone(), None);
+        app.settings.blocks = BlockStyle::Lines;
+        app.open_file(0, "src/main.rs", false); // the Explorer shows TIMELINE under the tree
+        let mut t = Terminal::new(TestBackend::new(110, 22)).unwrap();
+        screen(&mut app, &mut t);
+        let b = t.backend().buffer();
+        let (l, r) = (app.ui.sidebar.x - 1, app.ui.divider.x);
+        let y = (2..21).find(|&y| b[(l + 1, y)].symbol() == "─").expect("a line between the Explorer's sections");
+        assert_eq!((b[(l, y)].symbol(), b[(r, y)].symbol()), ("├", "┤"));
+        assert_eq!((b[(l, y - 1)].symbol(), b[(r, y + 1)].symbol()), ("│", "│"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_focused_card_is_a_little_lighter_never_blue() {
+        let root = repo("focuscard");
         let mut app = App::new(root.clone(), None);
         app.open_file(0, "src/main.rs", false);
-        let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        app.focus = Focus::Editor;
+        let mut t = Terminal::new(TestBackend::new(110, 22)).unwrap();
         screen(&mut app, &mut t);
-        let x = app.ui.divider.x;
         let b = t.backend().buffer();
-        for y in 1..19 {
-            assert_eq!(b[(x, y)].symbol(), "│", "row {y}");
+        let g = app.ui.groups[0].area;
+        let (ed, side) = (&b[(g.x - 1, g.y - 1)], &b[(app.ui.sidebar.x, app.ui.side_list.y - 2)]);
+        assert_eq!((ed.symbol(), ed.fg), ("╭", crate::blocks::border(true)), "the focused editor's card");
+        assert_eq!((side.symbol(), side.fg), ("╭", crate::blocks::border(false)), "the Explorer card, not focused");
+        // vs-dark: #444444, focused a little toward the foreground (~#5A5A5A), not focusBorder.
+        assert_eq!(crate::blocks::border(false), Color::Rgb(0x44, 0x44, 0x44));
+        let Color::Rgb(r, g, b) = crate::blocks::border(true) else { panic!() };
+        assert!([r, g, b].iter().all(|c| c.abs_diff(0x5A) <= 3), "{r:02X}{g:02X}{b:02X}");
+        assert_ne!(crate::blocks::border(true), crate::theme::P.focus_border);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn activity_icons_small_wide_and_large() {
+        use crate::blocks::IconSize;
+        let root = repo("icons");
+        for size in [IconSize::Small, IconSize::Wide, IconSize::Large] {
+            let mut app = App::new(root.clone(), None);
+            app.settings.icon_size = size;
+            let mut t = Terminal::new(TestBackend::new(110, 22)).unwrap();
+            screen(&mut app, &mut t);
+            let b = t.backend().buffer();
+            let (ar, side) = app.ui.activity[2];
+            assert_eq!(side, Side::Scm);
+            let row: Vec<&str> = (ar.x..ar.right()).map(|x| b[(x, ar.y)].symbol()).collect();
+            match size {
+                // One cell; wide: the same glyph with a blank cell kept after it.
+                IconSize::Small | IconSize::Wide => {
+                    let i = row.iter().position(|s| *s == crate::theme::icons().scm).expect("the glyph");
+                    assert_eq!(ar.height, 1);
+                    if size == IconSize::Wide {
+                        assert_eq!(row.get(i + 1), Some(&" "), "{size:?}: the slot's second cell is blank");
+                    }
+                }
+                // Two rows of three braille cells, the hit rect covering both.
+                IconSize::Large => {
+                    let rows = crate::blocks::large_icon("source-control").unwrap();
+                    assert_eq!(ar.height, 2);
+                    let line: String = row.concat();
+                    assert!(line.contains(rows[0].as_str()), "{line:?}");
+                    let below: String = (ar.x..ar.right()).map(|x| b[(x, ar.y + 1)].symbol()).collect();
+                    assert!(below.contains(rows[1].as_str()), "{below:?}");
+                }
+            }
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn sidebar_divider_stays_in_one_column() {
+        use crate::blocks::BlockStyle;
+        let root = repo("div");
+        for st in [BlockStyle::None, BlockStyle::Lines, BlockStyle::Cards] {
+            let mut app = App::new(root.clone(), None);
+            app.settings.blocks = st;
+            app.open_file(0, "src/main.rs", false);
+            let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+            screen(&mut app, &mut t);
+            let x = app.ui.divider.x;
+            let b = t.backend().buffer();
+            for y in 1..19 {
+                if st == BlockStyle::Cards {
+                    // The divider is the gutter: blank on every row; beside it only the section
+                    // cards' right edges (the title row and the gutter between cards are blank).
+                    assert_eq!(b[(x, y)].symbol(), " ", "{st:?} row {y}: the gutter");
+                    let edge = b[(x - 1, y)].symbol();
+                    assert!(["│", "╮", "╯", " "].contains(&edge), "{st:?} row {y}: {edge:?} in the card edge");
+                } else {
+                    // One straight line, joined where a section line meets it.
+                    let s = b[(x, y)].symbol();
+                    assert!(["│", "┤", "┼", "├"].contains(&s), "{st:?} row {y}: {s:?}");
+                }
+            }
+            if st == BlockStyle::Cards {
+                assert!((1..19).filter(|&y| b[(x - 1, y)].symbol() == "│").count() > 10, "the sidebar card's edge");
+            }
         }
         fs::remove_dir_all(&root).unwrap();
     }
@@ -4132,15 +4223,23 @@ mod tests {
                                   "editorPadding": 4, "tabPadding": 3, "activityBarWidth": 7, "statusBarGap": 5,
                                   "iconGap": 3, "treeIndent": 4, "titleBarPadding": 3, "buttonPadding": 3 }),
         );
-        for (tag, compact, sp) in [("hitf", false, Spacing::COMFORTABLE), ("hitc", true, Spacing::COMPACT), ("hitx", false, custom)] {
+        use crate::blocks::BlockStyle;
+        let styles = [BlockStyle::Cards, BlockStyle::Lines, BlockStyle::None];
+        let runs = [("hitf", false, Spacing::COMFORTABLE), ("hitc", true, Spacing::COMPACT), ("hitx", false, custom)];
+        for (tag, compact, sp, st) in runs.into_iter().flat_map(|r| styles.map(move |st| (r.0, r.1, r.2, st))) {
+            let tag = format!("{tag}{}", st as u8); // short: the repo's name is on screen
+            let tag = tag.as_str();
             let root = repo(tag);
             let mut app = App::new(root.clone(), None);
             app.settings.compact = compact;
             app.settings.spacing = sp;
+            app.settings.blocks = st;
+            let gap = crate::blocks::icon_gap(app.settings.icon_size, sp.icon_gap);
             let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
             screen(&mut app, &mut t);
             assert_eq!(app.ui.divider.x - app.ui.sidebar.x, sp.sidebar_width, "{tag}: default width until dragged");
-            assert_eq!(app.ui.sidebar.x, sp.activity_width);
+            // A gutter (cards) or a line (lines) between the activity bar and the sidebar.
+            assert_eq!(app.ui.sidebar.x, sp.activity_width + u16::from(st != BlockStyle::None), "{tag}");
             // The activity icon is drawn centred inside its hit rect.
             let (ar, _) = app.ui.activity[2];
             assert_eq!(t.backend().buffer()[(ar.x + ar.width / 2, ar.y)].symbol(), crate::theme::icons().scm, "{tag}");
@@ -4148,10 +4247,11 @@ mod tests {
             let (_, hy) = cell_of(&t, &app.repo.to_uppercase(), 0);
             assert_eq!(app.ui.side_list.y, hy + 1, "{tag}: tree rows start below it");
             let (x, y) = cell_of(&t, "README.md", 0);
-            // [icon][iconGap blanks][name]: the icon is one cell, then only blanks.
+            // [icon][gap blanks][name]: the icon is one cell, then only blanks (wide icons:
+            // at least the rest of their 2-cell slot and one more).
             let buf = t.backend().buffer();
-            assert_ne!(buf[(x - sp.icon_gap - 1, y)].symbol(), " ", "{tag}: the file icon");
-            for k in 1..=sp.icon_gap {
+            assert_ne!(buf[(x - gap - 1, y)].symbol(), " ", "{tag}: the file icon");
+            for k in 1..=gap {
                 assert_eq!(buf[(x - k, y)].symbol(), " ", "{tag}: gap after the icon");
             }
             if sp.list_gap > 0 {
@@ -4212,10 +4312,15 @@ mod tests {
                 "iconGap": 4, "treeIndent": 8, "titleBarPadding": 6, "buttonPadding": 4, "findWidgetPadding": 3,
                 "statusBarPadding": 6 }),
         );
-        for (compact, sp) in [(false, Spacing::COMFORTABLE), (true, Spacing::COMPACT), (false, max), (true, max)] {
+        use crate::blocks::{BlockStyle, IconSize};
+        let looks = [(BlockStyle::Cards, IconSize::Wide), (BlockStyle::Lines, IconSize::Large), (BlockStyle::None, IconSize::Small)];
+        let runs = [(false, Spacing::COMFORTABLE), (true, Spacing::COMPACT), (false, max), (true, max)];
+        for (compact, sp, (st, size)) in runs.into_iter().flat_map(|r| looks.map(move |l| (r.0, r.1, l))) {
             let mut app = App::new(root.clone(), None);
             app.settings.compact = compact;
             app.settings.spacing = sp;
+            app.settings.blocks = st;
+            app.settings.icon_size = size;
             app.settings.rulers = vec![(2, None), (90, None)];
             app.refresh();
             wait(&mut app);
