@@ -77,7 +77,7 @@ pub(crate) fn fit(s: &str, w: usize) -> String {
 pub(crate) fn fit_pair(main: &str, extra: &str, room: usize) -> (String, String) {
     let m = fit(main, room);
     let left = room.saturating_sub(m.width());
-    let x = if m.len() == main.len() && left >= 4 { fit(extra, left) } else { String::new() };
+    let x = if m == main && left >= 4 { fit(extra, left) } else { String::new() };
     (m, x)
 }
 
@@ -481,7 +481,8 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, lay: Lay) {
             let inp = field(y, 1);
             let focused = app.focus == crate::panel::Focus::SearchInput;
             let controls = if inp.width >= 8 { 6 } else { 0 };
-            let text = Rect::new(inp.x, inp.y, inp.width - controls, 1);
+            // The right cap needs its cell even with no toggles.
+            let text = Rect::new(inp.x, inp.y, inp.width.saturating_sub(controls.max(1)), 1);
             fill(f, inp, P.input_bg);
             // A pill: its caps take the padding cells either end, so the text and the
             // toggles keep their columns; the card border and the caret show focus.
