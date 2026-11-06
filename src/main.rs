@@ -11,6 +11,11 @@ mod editor;
 mod git;
 mod minimap;
 mod icons;
+// Git backend for History, branches, stash, hunks and blame; the UI is wired in later.
+#[allow(dead_code)]
+mod gitops;
+#[allow(dead_code)]
+mod graph;
 mod nav;
 mod navui;
 mod panel;
