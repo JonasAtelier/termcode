@@ -3797,8 +3797,17 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
+    /// The settled screen: draws again while highlighting catches up, as the event loop
+    /// does (one 6 ms frame is not enough under a loaded test run).
     pub fn screen(app: &mut App, t: &mut Terminal<TestBackend>) -> String {
         t.draw(|f| crate::ui::draw(app, f)).unwrap();
+        for _ in 0..10_000 {
+            if !app.hl_pending() {
+                break;
+            }
+            t.draw(|f| crate::ui::draw(app, f)).unwrap();
+        }
+        assert!(!app.hl_pending(), "highlighting never settled");
         let b = t.backend().buffer();
         (0..b.area.height)
             .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol()).collect::<String>())
