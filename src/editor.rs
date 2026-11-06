@@ -237,6 +237,21 @@ impl Buffer {
         b
     }
 
+    /// A read-only buffer of exactly `lines`, highlighted as `path`'s language (a
+    /// diff side for its minimap).
+    pub fn from_lines(path: &str, lines: Vec<String>, why: &str) -> Buffer {
+        let mut b = Buffer::empty(None);
+        if !lines.is_empty() {
+            b.lines = lines;
+        }
+        b.readonly = Some(why.into());
+        let (ss, p) = (syntaxes(), Path::new(path));
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        b.set_syntax(ss.find_syntax_by_extension(ext).or_else(|| ss.find_syntax_by_extension(name)));
+        b
+    }
+
     pub fn open(path: &Path) -> Buffer {
         let mut b = Buffer::empty(Some(path.to_path_buf()));
         match fs::metadata(path) {

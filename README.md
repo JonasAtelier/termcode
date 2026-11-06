@@ -163,6 +163,15 @@ drag the GRAPH header to move the split (kept in layout.json).
   side-by-side diff: first parent left, commit right, rows aligned, F7 / Shift+F7 between
   changes. Keys with the graph focused (Tab from CHANGES): arrows, Enter, Left/Right
   collapse/expand, `i` the commit card, `r` reload.
+- Side-by-side diffs (commit and working-tree) scroll as the editor does, both sides together:
+  one scrollbar at the right edge (drag the slider, click the track to page) whose overview
+  ruler marks removed rows in its left half and inserted ones in its right
+  (`diffEditorOverview.removedForeground` / `.insertedForeground`; unset, VS Code's text
+  backgrounds at twice the alpha) and the change F7 last reached; the editor's minimap on the
+  modified side, its git lane showing the changes. Wheel: vertical; Shift+wheel or the
+  horizontal wheel: sideways, no further than the longest visible line. Keys: Up/Down,
+  PgUp/PgDn, Ctrl+Home/End (top, bottom), Home/End (line starts, line ends); F7 / Shift+F7
+  reveal the next / previous change centred.
 - Commit card: rest the pointer on a commit row (graph or Timeline) for 0.5 s, press `i`, or
   click the ⓘ at the selected row's end. Author, relative and local date, the full message,
   files changed with insertions and deletions, refs, the short hash, [Copy hash]
@@ -329,7 +338,7 @@ one cap of two running `rg`. Every jump (definitions, peek items, Back/Forward) 
   read-only and can never be saved. If a file changes on disk, a clean buffer reloads; a dirty
   one keeps your edits, and the first Ctrl+S refuses so a second one is needed to overwrite.
 - Find is literal (Match Case and Whole Word toggles). Search in files can also use regex.
-  The diff editor is read-only and not syntax-highlighted.
+  The diff editor is read-only and its text is not syntax-highlighted (its minimap is).
 - Lines over 4000 bytes are not highlighted. The default token colours are VS Code's
   `cpptools_dark_vs_new.json` (MIT, Microsoft), embedded under `assets/`. `assets/seti.json`
   and `assets/vscode_dark_defaults.json` are data from VS Code (MIT, Microsoft) and Seti UI

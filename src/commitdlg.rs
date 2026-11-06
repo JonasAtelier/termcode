@@ -313,7 +313,7 @@ fn show_diff(app: &mut App) {
             (diff::align(&String::from_utf8_lossy(&old), &String::from_utf8_lossy(&new)), None)
         };
         let path = f.path.clone();
-        ScmMsg::Dlg(Msg::Diff(side, path, DiffDoc { title: f.path.clone(), rows, note, file: f }))
+        ScmMsg::Dlg(Msg::Diff(side, path, DiffDoc { title: f.path.clone(), rows, note, file: f, id: Default::default() }))
     });
 }
 
@@ -778,7 +778,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         d.hits.diff = body;
         fill(f, body, P.editor_bg);
         if let Some(doc) = &d.diff {
-            diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), &[]);
+            diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), &[], None);
         }
     }
     let mode = g.mode;

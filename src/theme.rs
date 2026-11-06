@@ -188,6 +188,10 @@ pub struct Pal {
     pub git_conflict: Color,
     pub diff_ins_bg: Color,
     pub diff_del_bg: Color,
+    /// The diff editor's overview ruler (VS Code: the text backgrounds at twice the
+    /// alpha when unset), composited over the scrollbar track where drawn.
+    pub diff_ruler_ins: Rgba,
+    pub diff_ruler_del: Rgba,
     pub diff_filler: Color,
     pub diff_ins_line: Color,
     pub diff_del_line: Color,
@@ -320,6 +324,8 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         git_conflict: on("gitDecoration.conflictingResourceForeground", sidebar_bg),
         diff_ins_bg: on("diffEditor.insertedTextBackground", editor_bg),
         diff_del_bg: on("diffEditor.removedTextBackground", editor_bg),
+        diff_ruler_ins: raw("diffEditorOverview.insertedForeground"),
+        diff_ruler_del: raw("diffEditorOverview.removedForeground"),
         diff_filler: on("diffEditor.diagonalFill", editor_bg),
         diff_ins_line: on("diffEditor.insertedLineBackground", editor_bg),
         diff_del_line: on("diffEditor.removedLineBackground", editor_bg),

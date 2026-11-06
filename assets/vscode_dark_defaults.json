@@ -96,6 +96,8 @@
   "diffEditor.insertedTextBackground": "#9CCC2C33",
   "diffEditor.removedTextBackground": "#FF000033",
   "diffEditor.diagonalFill": "#CCCCCC33",
+  "diffEditorOverview.insertedForeground": ["diffEditor.insertedTextBackground", 2],
+  "diffEditorOverview.removedForeground": ["diffEditor.removedTextBackground", 2],
   "diffEditor.insertedLineBackground": "#9BB95533",
   "diffEditor.removedLineBackground": "#FF000033",
   "minimap.background": "editor.background",

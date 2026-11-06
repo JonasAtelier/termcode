@@ -24,7 +24,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -68,6 +68,20 @@ pub struct DiffDoc {
     pub rows: Vec<diff::Row>,
     pub note: Option<String>,
     pub file: ScmFile,
+    /// Keys the minimap's buffer of this diff in `App::diff_minis`.
+    pub id: DiffId,
+}
+
+/// One DiffDoc, unique per construction (`Default` draws the next number): the
+/// minimap's buffer is not Send, so it lives in the panel, not in the doc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffId(u64);
+
+impl Default for DiffId {
+    fn default() -> DiffId {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        DiffId(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
 }
 
 pub enum Doc {
@@ -565,6 +579,9 @@ pub struct App {
     /// Each Explorer row's parent folder row (usize::MAX at the top), for sticky
     /// scroll; empty until needed and after the tree changes.
     tree_parents: std::cell::RefCell<Vec<usize>>,
+    /// Per diff tab: the modified side as a buffer (one line per row) and each
+    /// row's mark, for its minimap; rebuilt when the doc is replaced.
+    pub diff_minis: HashMap<String, (DiffId, Buffer, Vec<Option<Mark>>)>,
     /// Go to Definition / Peek / References state.
     pub nav: crate::navui::Nav,
     /// Source Control view, Timeline, hover card and commit dialog state.
@@ -852,6 +869,7 @@ impl App {
             qdiff: HashMap::new(),
             qdiff_due: None,
             tree_parents: Default::default(),
+            diff_minis: HashMap::new(),
             nav: Default::default(),
             gitui: crate::scm::GitUi::new(&saved),
         };
@@ -1758,7 +1776,7 @@ impl App {
             } else {
                 (diff::align(&String::from_utf8_lossy(&old), &String::from_utf8_lossy(&new)), None)
             };
-            Load::Diff(DiffDoc { title, rows, note, file: f })
+            Load::Diff(DiffDoc { title, rows, note, file: f, id: Default::default() })
         });
     }
 
@@ -1800,6 +1818,7 @@ impl App {
         if !used && !dirty {
             self.docs.remove(key);
             self.loading.remove(key);
+            self.diff_minis.remove(key);
         }
     }
 
@@ -2812,16 +2831,28 @@ impl App {
         }
         let page = self.ui.groups.get(self.ag).map_or(20, |g| g.text.height.max(1) as isize);
         if self.ed().is_none() {
-            // Diff views: scroll only (F7 is routed in on_key).
+            // Diff views scroll, both sides at once (F7 is routed in on_key).
+            let rows = match self.active_tab().map(|t| t.key.clone()).and_then(|k| self.docs.get(&k)) {
+                Some(Doc::Diff(d)) => d.rows.len(),
+                _ => 0,
+            };
             if let Some(t) = self.active_tab() {
-                let d = match k.code {
-                    KeyCode::Up => -1,
-                    KeyCode::Down => 1,
-                    KeyCode::PageUp => -page,
-                    KeyCode::PageDown => page,
-                    _ => 0,
-                };
-                t.view.scroll = (t.view.scroll as isize + d).max(0) as usize;
+                let v = &mut t.view;
+                let last = rows.saturating_sub(1) as isize;
+                let to = |d: isize| (v.scroll as isize + d).clamp(0, last) as usize;
+                match k.code {
+                    KeyCode::Up => v.scroll = to(-1),
+                    KeyCode::Down => v.scroll = to(1),
+                    KeyCode::PageUp => v.scroll = to(-page),
+                    KeyCode::PageDown => v.scroll = to(page),
+                    KeyCode::Home if ctrl => v.scroll = 0,
+                    // The last row at the bottom.
+                    KeyCode::End if ctrl => v.scroll = rows.saturating_sub(page as usize),
+                    KeyCode::Home => v.hscroll = 0,
+                    // Clamped where drawn: as far as the longest visible line needs.
+                    KeyCode::End => v.hscroll = 1 << 30,
+                    _ => {}
+                }
             }
             return;
         }
@@ -3026,6 +3057,11 @@ impl App {
             }
             MouseEventKind::Drag(MouseButton::Left) => self.drag_to(p),
             MouseEventKind::Up(MouseButton::Left) => self.release(),
+            // Shift+wheel and the horizontal wheel scroll a diff sideways.
+            MouseEventKind::ScrollUp if shift && self.hwheel(p, -6) => {}
+            MouseEventKind::ScrollDown if shift && self.hwheel(p, 6) => {}
+            MouseEventKind::ScrollLeft => _ = self.hwheel(p, -6),
+            MouseEventKind::ScrollRight => _ = self.hwheel(p, 6),
             MouseEventKind::ScrollUp => self.wheel(p, -3),
             MouseEventKind::ScrollDown => self.wheel(p, 3),
             // Redraw only when what the frame shows for the pointer changes.
@@ -3486,6 +3522,18 @@ impl App {
         self.ag = dst;
         self.focus = Focus::Editor;
         self.find_refresh();
+    }
+
+    /// Sideways scroll of the diff tab under `p` (both sides; clamped where drawn).
+    /// False when no diff is there, so the wheel scrolls as usual.
+    fn hwheel(&mut self, p: Position, d: isize) -> bool {
+        let Some(g) = self.ui.groups.iter().position(|g| g.area.contains(p)) else { return false };
+        let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) else { return false };
+        if !matches!(self.docs.get(&t.key), Some(Doc::Diff(_))) {
+            return false;
+        }
+        t.view.hscroll = (t.view.hscroll as isize + d).max(0) as usize;
+        true
     }
 
     fn wheel(&mut self, p: Position, d: isize) {
@@ -5389,6 +5437,156 @@ mod tests {
             }
         }
         assert!(stuck > 0, "some tiny size is in a sticky state");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A diff tab of a 300-line file changed in three places (line 20 replaced, five
+    /// lines inserted after 150, three removed at 260) with one long line at 100.
+    fn open_big_diff(app: &mut App) -> Vec<diff::Row> {
+        let old: Vec<String> = (0..300).map(|i| if i == 100 { format!("line 100 {}", "x".repeat(300)) } else { format!("line {i:03}") }).collect();
+        let mut new = old.clone();
+        new[20] = "line 020 changed".into();
+        for k in 0..5 {
+            new.insert(151 + k, format!("inserted {k}"));
+        }
+        new.drain(265..268);
+        let rows = diff::align(&(old.join("\n") + "\n"), &(new.join("\n") + "\n"));
+        let file = ScmFile { section: Section::Changes, path: "big.c".into(), orig: None, letter: 'M' };
+        let doc = DiffDoc { title: "big.c".into(), rows: rows.clone(), note: None, file, id: Default::default() };
+        app.docs.insert("cdiff:abc:big.c".into(), Doc::Diff(doc));
+        app.show_tab(0, "cdiff:abc:big.c".into(), false);
+        app.focus = Focus::Editor;
+        rows
+    }
+
+    fn line_of(t: &Terminal<TestBackend>, y: u16) -> String {
+        let b = t.backend().buffer();
+        (0..b.area.width).map(|x| b[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn diff_tabs_scroll_like_the_editor() {
+        let d = std::env::temp_dir().join(format!("herdr-code-dscroll-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let mut app = App::new(d.canonicalize().unwrap(), None);
+        let rows = open_big_diff(&mut app);
+        let n = rows.len();
+        // Wide enough that the modified side keeps minEditorWidth beside its minimap.
+        let mut t = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        screen(&mut app, &mut t);
+        let view = |app: &App| app.groups[0].tabs[0].view.clone();
+        // One scrollbar for both sides, at the right edge, the editor's geometry.
+        let sb = *app.ui.scrollbars.iter().find(|s| s.target == ScrollTarget::Editor(0)).unwrap();
+        let (th, text) = (sb.track.height, app.ui.groups[0].text);
+        assert_eq!(sb.track.right(), text.right(), "the right edge");
+        assert_eq!((sb.slider, sb.max_off, sb.page), (decor::slider(th, n + th as usize - 1, th as usize, 0, n - 1), n - 1, th as usize));
+        // The overview ruler: removed in the left half, inserted in the right, both split.
+        let row_of = |i: usize| sb.track.y + (i * th as usize / n).min(th as usize - 1) as u16;
+        let buf = t.backend().buffer();
+        let ic = crate::theme::icons();
+        let first = |k: diff::Kind| rows.iter().position(|r| r.kind == k).unwrap();
+        let (chg, ins, del) = (first(diff::Kind::Change), first(diff::Kind::Ins), first(diff::Kind::Del));
+        let c = &buf[(sb.track.x, row_of(ins))];
+        assert_eq!((c.symbol(), c.fg), (ic.lane_right, crate::theme::P.diff_ruler_ins.over(c.bg)), "inserted");
+        let c = &buf[(sb.track.x, row_of(del))];
+        assert_eq!((c.symbol(), c.fg), (ic.lane_left, crate::theme::P.diff_ruler_del.over(c.bg)), "removed");
+        let c = &buf[(sb.track.x, row_of(chg))];
+        assert!(c.symbol() == ic.lane_left && c.bg != crate::theme::P.editor_bg, "replaced: both halves");
+        assert_eq!(buf[(sb.track.x, row_of(220))].symbol(), " ", "unchanged rows: no mark");
+        // The minimap sits on the modified side, between its text and the scrollbar.
+        let mm = app.ui.minimaps.iter().find(|m| m.group == 0).copied().expect("a minimap");
+        assert!(mm.area.x > text.x + text.width / 2 && mm.area.right() < sb.track.x, "{:?} {text:?}", mm.area);
+        assert!((mm.area.y..mm.area.bottom()).any(|y| buf[(mm.area.x, y)].symbol() != " "), "its git lane marks the change");
+        // The wheel scrolls both sides together.
+        let (cx, cy) = (text.x + 10, text.y + 5);
+        mouse(&mut app, MouseEventKind::ScrollDown, cx, cy);
+        screen(&mut app, &mut t);
+        assert_eq!(view(&app).scroll, 3);
+        assert_eq!(line_of(&t, text.y).matches("line 003").count(), 2, "{}", line_of(&t, text.y));
+        // Shift+wheel and the horizontal wheel scroll both sides sideways, no further than needed.
+        app.on_mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: cx, row: cy, modifiers: KeyModifiers::SHIFT });
+        screen(&mut app, &mut t);
+        assert_eq!(view(&app).hscroll, 0, "short lines: nothing to scroll");
+        app.groups[0].tabs[0].view.scroll = 98;
+        app.on_mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: cx, row: cy, modifiers: KeyModifiers::SHIFT });
+        mouse(&mut app, MouseEventKind::ScrollRight, cx, cy);
+        screen(&mut app, &mut t);
+        assert_eq!((view(&app).scroll, view(&app).hscroll), (98, 12));
+        let long = line_of(&t, text.y + 2);
+        assert!(!long.contains("line 100") && long.matches("xxxxxxxx").count() >= 2, "both sides moved: {long}");
+        mouse(&mut app, MouseEventKind::ScrollLeft, cx, cy);
+        assert_eq!(view(&app).hscroll, 6);
+        // Keys: Home / End sideways, Ctrl+Home / Ctrl+End, Up / Down, PgUp / PgDn.
+        key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        screen(&mut app, &mut t);
+        // End: the 309-column line's end in view on the narrower side, not past it.
+        let (hs, side) = (view(&app).hscroll, text.width as usize / 2);
+        assert!(hs < 309 && hs + side > 309, "End: hscroll {hs}, side {side}");
+        assert!(line_of(&t, text.y + 2).contains("xxx"));
+        key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(view(&app).hscroll, 0);
+        key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+        assert_eq!(view(&app).scroll, n - text.height as usize);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Home, KeyModifiers::CONTROL);
+        assert_eq!(view(&app).scroll, 0);
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(view(&app).scroll, text.height as usize + 1);
+        key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(view(&app).scroll, 0);
+        // F7: the next change, revealed centred, marked as the cursor on the ruler.
+        key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
+        key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
+        assert_eq!(view(&app).scroll, ins - text.height as usize / 2);
+        screen(&mut app, &mut t);
+        assert_eq!(t.backend().buffer()[(sb.track.x, row_of(ins))].symbol(), ic.lane_cursor);
+        // A track click pages; the slider drags.
+        app.groups[0].tabs[0].view.scroll = 0;
+        screen(&mut app, &mut t);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sb.track.x, sb.track.bottom() - 1);
+        assert_eq!(view(&app).scroll, sb.page);
+        screen(&mut app, &mut t);
+        let sb = *app.ui.scrollbars.iter().find(|s| s.target == ScrollTarget::Editor(0)).unwrap();
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sb.track.x, sb.track.y + sb.slider.0);
+        assert!(matches!(app.drag, Drag::Scroll(..)));
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), sb.track.x, sb.track.bottom() + 5);
+        assert_eq!(view(&app).scroll, n - 1, "dragged to the end");
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sb.track.x, sb.track.bottom());
+        // A minimap click scrolls too.
+        app.groups[0].tabs[0].view.scroll = 0;
+        screen(&mut app, &mut t);
+        let mm = app.ui.minimaps[0];
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), mm.area.x + 2, mm.area.bottom() - 1);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), mm.area.x + 2, mm.area.bottom() - 1);
+        assert!(view(&app).scroll > 0);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn tiny_terminals_with_a_diff_tab_never_panic() {
+        let d = std::env::temp_dir().join(format!("herdr-code-dtiny-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let mut app = App::new(d.canonicalize().unwrap(), None);
+        open_big_diff(&mut app);
+        for (w, h) in [(1, 1), (10, 3), (30, 5), (31, 6), (40, 8), (60, 10), (80, 12)] {
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            app.groups[0].tabs[0].view.scroll = 98;
+            screen(&mut app, &mut t);
+            for kind in [MouseEventKind::ScrollDown, MouseEventKind::ScrollRight, MouseEventKind::Down(MouseButton::Left)] {
+                for (x, y) in [(0, 0), (w - 1, h - 1), (w / 2, h / 2)] {
+                    mouse(&mut app, kind, x, y);
+                    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+                    screen(&mut app, &mut t);
+                }
+            }
+            app.focus = Focus::Editor;
+            for k in [KeyCode::End, KeyCode::PageDown, KeyCode::F(7), KeyCode::Home] {
+                key(&mut app, k, KeyModifiers::NONE);
+                screen(&mut app, &mut t);
+            }
+        }
         fs::remove_dir_all(&d).unwrap();
     }
 

@@ -553,7 +553,7 @@ pub fn commit_diff_doc(root: &std::path::Path, hash: &str, short: &str, f: FileC
         Ok((a, b)) if a.binary || b.binary => (Vec::new(), Some("binary file: no text diff".to_string())),
         Ok((a, b)) => (diff::align(&String::from_utf8_lossy(&a.bytes), &String::from_utf8_lossy(&b.bytes)), None),
     };
-    DiffDoc { title, rows, note, file }
+    DiffDoc { title, rows, note, file, id: Default::default() }
 }
 
 /// Open (or show again) the read-only side-by-side diff of `f` in commit `hash`.
@@ -605,7 +605,8 @@ pub fn jump_change(app: &mut App, dir: isize) {
         Some(i) => {
             tab.view.cursor.line = i;
             tab.view.want_x = Some(0);
-            tab.view.scroll = i.saturating_sub((h / 3).min(3));
+            // Revealed centred, as VS Code's diff editor does.
+            tab.view.scroll = i.saturating_sub(h / 2);
         }
         None => app.msg = "No changes".into(),
     }

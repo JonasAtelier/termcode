@@ -11,7 +11,7 @@ use crate::git::Section;
 use crate::icons::{file_icon, folder_icon};
 use crate::settings::Spacing;
 use crate::panel::{
-    base, App, DiffDoc, Doc, Drag, Find, FindBtn, Focus, GroupHit, HRow, Hits, MiniHit, PeekBtn, ScmAct, ScrollHit,
+    base, App, DiffDoc, DiffId, Doc, Drag, Find, FindBtn, Focus, GroupHit, HRow, Hits, MiniHit, PeekBtn, ScmAct, ScrollHit,
     ScrollTarget, Side, SRow, Zone, COMMANDS, SIDES,
 };
 use crate::theme::{git_color, icons, Rgba, P};
@@ -827,8 +827,19 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
             None
         }
         Some(Doc::Diff(d)) => {
+            // The modified side's minimap, as VS Code's diff editor shows it.
+            let mini = (app.minimap_on && d.note.is_none()).then_some(()).and_then(|_| diff_mini(&mut app.diff_minis, &key, d)).map(|(buf, marks)| DiffMini {
+                buf,
+                marks,
+                cfg: app.settings.minimap,
+                hover: app.hover,
+                drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
+            });
             let view = &mut app.groups[g].tabs[active].view;
-            let sb = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), &rulers);
+            let (sb, mm) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), &rulers, mini);
+            if let Some((area, mini)) = mm {
+                app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.scroll });
+            }
             gh.text = body;
             sb
         }
@@ -1459,21 +1470,75 @@ fn draw_peek(f: &mut Frame, zr: Rect, gx: u16, gutter: u16, tx: u16, pk: &PeekDr
     }
 }
 
-/// `blank`: columns kept empty between the text and the scrollbar.
+/// A diff's minimap: the modified side as a buffer and each row's mark, the
+/// settings, and the mouse over or dragging it.
+pub(crate) struct DiffMini<'a> {
+    pub buf: &'a mut Buffer,
+    pub marks: &'a [Option<Mark>],
+    pub cfg: minimap::Cfg,
+    pub hover: Option<Position>,
+    pub drag: bool,
+}
+
+/// The minimap buffer and marks of diff tab `key`, built once per doc: the
+/// modified side, one buffer line per row (empty on a filler row).
+pub(crate) fn diff_mini<'a>(cache: &'a mut std::collections::HashMap<String, (DiffId, Buffer, Vec<Option<Mark>>)>, key: &str, d: &DiffDoc) -> Option<(&'a mut Buffer, &'a [Option<Mark>])> {
+    if cache.get(key).is_none_or(|e| e.0 != d.id) {
+        let lines = d.rows.iter().map(|r| r.right.as_ref().map_or(String::new(), |(_, t)| t.clone())).collect();
+        let marks = d
+            .rows
+            .iter()
+            .map(|r| match r.kind {
+                Kind::Same => None,
+                Kind::Ins => Some(Mark::Added),
+                Kind::Del => Some(Mark::Deleted),
+                Kind::Change => Some(Mark::Modified),
+            })
+            .collect();
+        cache.insert(key.to_string(), (d.id, Buffer::from_lines(&d.file.path, lines, "diff"), marks));
+    }
+    cache.get_mut(key).map(|e| (&mut e.1, e.2.as_slice()))
+}
+
+/// VS Code's side-by-side diff editor: [original][│][modified][minimap][blank]
+/// [scrollbar with the overview ruler]. Both sides share `v` (scroll, hscroll),
+/// so they always move together; only the visible rows are drawn. `blank`:
+/// columns between the text and the scrollbar. Returns the scrollbar and the
+/// minimap, for hit-testing.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect, slider: Rgba, blank: u16, rulers: &[(usize, Color)]) -> Option<ScrollHit> {
+pub(crate) fn diff_view(
+    f: &mut Frame,
+    d: &DiffDoc,
+    v: &mut View,
+    area: Rect,
+    slider: Rgba,
+    blank: u16,
+    rulers: &[(usize, Color)],
+    mini: Option<DiffMini>,
+) -> (Option<ScrollHit>, Option<(Rect, Mini)>) {
     if let Some(note) = &d.note {
         f.render_widget(Paragraph::new(note.as_str()).style(Style::new().fg(P.dim)), area);
-        return None;
+        return (None, None);
     }
-    v.scroll = v.scroll.min(d.rows.len().saturating_sub(1));
+    let n = d.rows.len();
+    v.scroll = v.scroll.min(n.saturating_sub(1));
     let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
     let area = Rect::new(area.x, area.y, area.width.saturating_sub(1 + blank), area.height);
-    let half = area.width.saturating_sub(1) / 2;
-    let sides = [Rect::new(area.x, area.y, half, area.height), Rect::new(area.x + half + 1, area.y, area.width - half - 1, area.height)];
+    let digits = n.to_string().len().max(3) as u16;
+    let gw = digits + 2;
+    // The minimap takes its columns from the modified side, as in the editor.
+    let right_w = area.width.saturating_sub(area.width.saturating_sub(1) / 2 + 1);
+    let mw = mini.as_ref().map_or(0, |m| minimap::width(right_w.saturating_sub(gw), area.width, m.cfg.max_column, m.cfg.min_text));
+    let text_area = Rect::new(area.x, area.y, area.width - mw, area.height);
+    let half = text_area.width.saturating_sub(1) / 2;
+    let sides = [Rect::new(area.x, area.y, half, area.height), Rect::new(area.x + half + 1, area.y, text_area.width.saturating_sub(half + 1), area.height)];
+    // Sideways no further than the longest visible line needs, on the narrower side.
+    let tw = sides[0].width.min(sides[1].width).saturating_sub(gw) as usize;
+    let visible = d.rows.iter().skip(v.scroll).take(area.height as usize);
+    let longest = visible.flat_map(|r| [&r.left, &r.right]).flatten().map(|(_, t)| editor::display_col(t, t.len())).max().unwrap_or(0);
+    v.hscroll = v.hscroll.min(longest.saturating_sub(tw));
     let sep: Vec<Line> = (0..area.height).map(|_| Line::raw("│")).collect();
     f.render_widget(Paragraph::new(sep).style(Style::new().fg(P.group_border)), Rect::new(area.x + half, area.y, 1, area.height));
-    let digits = d.rows.len().to_string().len().max(3) as u16;
     for (k, r) in d.rows.iter().skip(v.scroll).take(area.height as usize).enumerate() {
         let y = area.y + k as u16;
         for (s, cell) in [&r.left, &r.right].into_iter().enumerate() {
@@ -1501,7 +1566,6 @@ pub(crate) fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect, sl
                     };
                     fill(f, sr, bg);
                     let g = Span::styled(format!("{:>w$} {sign}", n + 1, w = digits as usize), Style::new().fg(P.line_nr).bg(bg));
-                    let gw = digits + 2;
                     f.render_widget(g, Rect::new(sr.x, y, gw.min(sr.width), 1));
                     let tr = Rect::new(sr.x + gw.min(sr.width), y, sr.width.saturating_sub(gw), 1);
                     f.render_widget(render_line(text, None, &[], None, v.hscroll, tr.width as usize, Style::new().fg(P.editor_fg).bg(bg)), tr);
@@ -1510,13 +1574,80 @@ pub(crate) fn diff_view(f: &mut Frame, d: &DiffDoc, v: &mut View, area: Rect, sl
             }
         }
     }
-    let (n, h) = (d.rows.len(), track.height as usize);
+    let mut out_mini = None;
+    if let Some(m) = mini.filter(|_| mw > 0) {
+        let mr = Rect::new(text_area.right(), area.y, mw, area.height);
+        let hovered = m.hover.is_some_and(|p| mr.contains(p));
+        let ms = (m.cfg.slider_always || hovered || m.drag).then_some(if m.drag {
+            P.mini_slider_active
+        } else if hovered {
+            P.mini_slider_hover
+        } else {
+            P.mini_slider
+        });
+        let deco = Deco {
+            comfy: false,
+            gap: 0,
+            icon_gap: 1,
+            marks: m.marks,
+            rainbow: None,
+            guides: false,
+            ruler: false,
+            find: None,
+            slider,
+            minimap: Some(m.cfg),
+            hover: m.hover,
+            mini_drag: m.drag,
+            peek: None,
+            rulers: &[],
+        };
+        out_mini = Some((mr, draw_minimap(f, m.buf, v, mr, &m.cfg, &deco, ms)));
+    }
+    let h = track.height as usize;
     if h == 0 {
-        return None;
+        return (None, out_mini);
     }
     let s = decor::slider(track.height, n + h - 1, h, v.scroll, n.saturating_sub(1));
     paint_slider(f, track, s, slider);
-    Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h })
+    diff_overview(f, &d.rows, v, track);
+    (Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h }), out_mini)
+}
+
+/// The diff's overview ruler on its scrollbar track, as VS Code's two lanes:
+/// removed rows in the cell's left half (`▌`), inserted in its right (`▐`), both
+/// splitting the cell; the change F7 last jumped to as the cursor.
+fn diff_overview(f: &mut Frame, rows: &[crate::diff::Row], v: &View, track: Rect) {
+    let (n, th) = (rows.len(), track.height as usize);
+    if n == 0 || th == 0 {
+        return;
+    }
+    let row_of = |i: usize| (i * th / n).min(th - 1);
+    let mut lanes = vec![(false, false); th];
+    for (i, r) in rows.iter().enumerate() {
+        let (del, ins) = match r.kind {
+            Kind::Same => continue,
+            Kind::Del => (true, false),
+            Kind::Ins => (false, true),
+            Kind::Change => (r.left.is_some(), r.right.is_some()),
+        };
+        let l = &mut lanes[row_of(i)];
+        (l.0, l.1) = (l.0 || del, l.1 || ins);
+    }
+    let ic = icons();
+    let buf = f.buffer_mut();
+    for (k, lane) in lanes.into_iter().enumerate() {
+        let cell = &mut buf[(track.x, track.y + k as u16)];
+        let under = cell.bg;
+        match lane {
+            (true, true) => cell.set_symbol(ic.lane_left).set_fg(P.diff_ruler_del.over(under)).set_bg(P.diff_ruler_ins.over(under)),
+            (true, false) => cell.set_symbol(ic.lane_left).set_fg(P.diff_ruler_del.over(under)),
+            (false, true) => cell.set_symbol(ic.lane_right).set_fg(P.diff_ruler_ins.over(under)),
+            (false, false) => continue,
+        };
+    }
+    if v.want_x.is_some() {
+        buf[(track.x, track.y + row_of(v.cursor.line) as u16)].set_symbol(ic.lane_cursor).set_fg(P.cursor);
+    }
 }
 
 fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
