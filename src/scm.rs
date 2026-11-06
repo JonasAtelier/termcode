@@ -139,8 +139,6 @@ pub enum GitAct {
 }
 
 pub enum Msg {
-    /// HEAD after a refresh (Debug of gitops::Head), for the graph.
-    Head(Option<String>),
     Page(u64, usize, Result<Page<Commit>, String>),
     Files(String, Result<Vec<FileChange>, String>),
     Diff(String, DiffDoc),
@@ -494,17 +492,23 @@ pub fn load_graph(app: &mut App, reset: bool) {
     app.gitui.spawn(move || Msg::Page(gen, skip, gitops::log_page(&root, skip, PAGE)));
 }
 
-/// After `App::refresh`: a new HEAD reloads a visible graph; an open dialog relists.
+/// After a status landed (HEAD came with it, in the sync state): a new HEAD reloads a
+/// visible graph; an open dialog relists. No git runs here.
 pub fn on_refresh(app: &mut App) {
-    let Some(root) = app.git_root.clone() else { return };
+    if app.git_root.is_none() {
+        return;
+    }
     if app.side == Side::Scm && app.side_visible {
-        // Read off the UI thread; Msg::Head reloads the graph if it moved.
-        app.gitui.spawn(move || Msg::Head(gitops::head(&root).ok().map(|h| format!("{h:?}"))));
+        let head = app.gitui.cmds.sync.as_ref().map(|s| format!("{:?}", s.head));
+        let g = &mut app.gitui.graph;
+        if head != g.head || !g.loaded && !g.loading {
+            g.head = head;
+            load_graph(app, true);
+        }
     }
     if app.gitui.dlg.is_some() {
         commitdlg::relist(app);
     }
-    crate::gitcmds::on_refresh(app);
 }
 
 fn load_timeline(app: &mut App) {
@@ -553,13 +557,6 @@ pub fn drain(app: &mut App) -> bool {
             m => m,
         };
         match m {
-            Msg::Head(head) => {
-                let g = &mut app.gitui.graph;
-                if head != g.head || !g.loaded && !g.loading {
-                    g.head = head;
-                    load_graph(app, true);
-                }
-            }
             Msg::Page(gen, skip, page) => {
                 let g = &mut app.gitui.graph;
                 if gen != g.gen {

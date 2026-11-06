@@ -271,7 +271,6 @@ impl State {
 
 pub enum Msg {
     Done(u64, Op, Result<String, String>),
-    Sync(Result<SyncStatus, String>),
     Blame((String, u64, usize), Result<BlameLine, String>),
 }
 
@@ -397,7 +396,6 @@ pub fn drain(app: &mut App, m: Msg) {
                 crate::scm::load_graph(app, true);
             }
         }
-        Msg::Sync(r) => app.gitui.cmds.sync = r.ok(),
         // A reply for a spot the cursor (or the buffer) has left is dropped.
         Msg::Blame(at, r) => {
             app.gitui.cmds.blame.inflight = false;
@@ -406,12 +404,6 @@ pub fn drain(app: &mut App, m: Msg) {
             }
         }
     }
-}
-
-/// After `App::refresh`: re-read the sync state in the background.
-pub fn on_refresh(app: &mut App) {
-    let Some(root) = app.git_root.clone() else { return };
-    app.gitui.spawn(move || ScmMsg::Cmd(Msg::Sync(gitops::sync_status(&root))));
 }
 
 /// Timers: blame after the cursor settles; true while the spinner turns.
@@ -647,8 +639,11 @@ fn stash_picker(app: &mut App, c: GitCmd) {
 
 /// Sync item / "Git: Sync": VS Code's confirmation, then pull and push.
 pub fn sync_clicked(app: &mut App) {
-    let Some(g) = repo(app) else { return };
-    let up = app.gitui.cmds.sync.as_ref().and_then(|s| s.upstream.clone()).or_else(|| app.gitui.logged(|| gitops::sync_status(&g)).ok().and_then(|s| s.upstream));
+    if repo(app).is_none() {
+        return;
+    }
+    // The status job's sync state (no git here); None: no upstream (or no HEAD).
+    let up = app.gitui.cmds.sync.as_ref().and_then(|s| s.upstream.clone());
     match up {
         Some(_) if !app.settings.confirm_sync => run_op(app, Op::Sync),
         // OK is the default, as in VS Code (the user's decision).

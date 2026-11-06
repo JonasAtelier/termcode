@@ -193,7 +193,16 @@ impl Detached {
 /// Run a write; Ok(stdout) or Err(first lines of stderr).
 pub fn run(root: &Path, args: &[&str]) -> Result<String, String> {
     let mut d = spawn_detached(write_cmd(root).args(args), None).map_err(|e| format!("git: {e}"))?;
-    let status = d.child.wait().map_err(|e| format!("git: {e}"))?;
+    // Polled, not wait(): a `clean` of a huge untracked tree must not fill the disk.
+    let status = loop {
+        match d.child.try_wait().map_err(|e| format!("git: {e}"))? {
+            Some(s) => break s,
+            None => {
+                d.cap(CAP);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    };
     let (out, err) = d.read(CAP);
     if status.success() {
         Ok(String::from_utf8_lossy(&out).into_owned())
@@ -311,6 +320,22 @@ pub fn diff_sides(root: &Path, f: &ScmFile) -> (Vec<u8>, Vec<u8>) {
 mod tests {
     use super::*;
     use crate::parse::parse_porcelain_z;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn detached_output_is_cut_back_to_the_cap_while_it_runs() {
+        let mut c = Command::new("sh");
+        c.args(["-c", "head -c 2000000 /dev/zero; sleep 0.2"]);
+        let mut d = spawn_detached(&mut c, None).unwrap();
+        let t0 = Instant::now();
+        while d.out.metadata().unwrap().len() < 2_000_000 && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        d.cap(1000);
+        assert_eq!(d.out.metadata().unwrap().len(), 1000, "cut while git still runs");
+        assert!(d.child.wait().unwrap().success());
+        assert_eq!(d.read(CAP).0.len(), 1000);
+    }
 
     #[test]
     fn scm_rows_follow_vscode_sections() {

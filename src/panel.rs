@@ -165,8 +165,11 @@ fn file_stamps(g: &Path, files: &[ScmFile]) -> Vec<Option<(SystemTime, u64)>> {
     files.iter().map(|f| fs::symlink_metadata(g.join(&f.path)).ok().and_then(|m| Some((m.modified().ok()?, m.len())))).collect()
 }
 
-/// The branch label and `git status -z` of the repo at `g` (runs git; off the UI thread).
-fn read_status(g: &Path) -> (String, Vec<u8>) {
+/// The branch label, `git status -z` and the sync state (HEAD, upstream, ahead/behind).
+type Status = (String, Vec<u8>, Option<crate::gitops::SyncStatus>);
+
+/// The `Status` of the repo at `g` (runs git: off the UI thread, but for the first frame).
+fn read_status(g: &Path) -> Status {
     let run = |args: &[&str]| git::cmd(g).args(args).stderr(Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| o.stdout);
     let line = |args: &[&str]| String::from_utf8_lossy(&run(args).unwrap_or_default()).trim().to_string();
     let b = line(&["branch", "--show-current"]);
@@ -178,7 +181,8 @@ fn read_status(g: &Path) -> (String, Vec<u8>) {
             h => format!("detached {h}"),
         }
     };
-    (branch, run(&["status", "--porcelain=v1", "-z", "--untracked-files=all"]).unwrap_or_default())
+    let raw = run(&["status", "--porcelain=v1", "-z", "--untracked-files=all"]).unwrap_or_default();
+    (branch, raw, crate::gitops::sync_status(g).ok())
 }
 
 // The perf batch-2 behaviours, switchable only in tests (to measure before and after).
@@ -477,8 +481,8 @@ pub struct GroupHit {
 
 enum Load {
     Diff(DiffDoc),
-    /// `git status` off the UI thread: the branch label and the porcelain bytes.
-    Status(String, Vec<u8>),
+    /// `git status` and the sync state, off the UI thread.
+    Status(Status),
     /// Quick-diff base (the index blob) for a `file:` document.
     Base(Option<Vec<u8>>),
     Cancelled,
@@ -653,16 +657,7 @@ pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> 
     // The terminal first: saving backups and the session never holds the shell back.
     restore();
     finish(&mut app);
-    app.stop_search();
-    if let Some(p) = token_file.filter(|_| app.token.is_some()) {
-        let _ = fs::remove_file(p);
-    }
-    // Git writes still queued or running finish before the process ends, everything
-    // else done first so Ctrl+C there loses nothing. After HUP/TERM or a panic: briefly.
-    if app.gitui.writes() > 0 {
-        let hurry = SIGNALED.load(Ordering::SeqCst) || res.is_err();
-        crate::scm::finish_writes(&mut app, hurry.then_some(Duration::from_secs(2)));
-    }
+    leave(&mut app, token_file, SIGNALED.load(Ordering::SeqCst) || res.is_err());
     // Quitting just ends this process: herdr then closes the tab. Nothing here
     // signals or closes anything else.
     match res {
@@ -676,6 +671,19 @@ pub fn run(root: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> 
 fn finish(app: &mut App) {
     app.sync_backups();
     crate::session::save_guarded(app);
+}
+
+/// The exit once the terminal is restored. Git writes still queued or running finish
+/// before the process ends (after HUP/TERM or a panic, `hurry`: 2 s at most), everything
+/// else done first: Ctrl+C in that wait ends the process (SIGINT is not caught).
+fn leave(app: &mut App, token_file: Option<PathBuf>, hurry: bool) {
+    app.stop_search();
+    if let Some(p) = token_file.filter(|_| app.token.is_some()) {
+        let _ = fs::remove_file(p);
+    }
+    if app.gitui.writes() > 0 {
+        crate::scm::finish_writes(app, hurry.then_some(Duration::from_secs(2)));
+    }
 }
 
 pub(crate) fn setup() -> io::Result<()> {
@@ -966,8 +974,7 @@ impl App {
                 crate::gitops::refresh_index(&gw);
                 crate::scm::Msg::Wrote(Ok(String::new()), false)
             });
-            let (branch, raw) = read_status(&g);
-            a.apply_status(branch, raw);
+            a.apply_status(a.gitui.logged(|| read_status(&g)));
         }
         a.tree = a.read_dir("", 0);
         let pending = a.pending_backups();
@@ -1568,24 +1575,23 @@ impl App {
     fn refresh_status(&mut self) {
         let Some(g) = self.git_root.clone() else { return };
         if !async_status() {
-            let (branch, raw) = read_status(&g);
-            return self.apply_status(branch, raw);
+            return self.apply_status(self.gitui.logged(|| read_status(&g)));
         }
         if self.loading.contains_key(STATUS_KEY) {
             self.status_again = true;
             return;
         }
         self.status_since = Some(Instant::now());
-        self.load(STATUS_KEY.into(), move |_| {
-            let (branch, raw) = read_status(&g);
-            Load::Status(branch, raw)
-        });
+        let log = self.gitui.log.clone();
+        self.load(STATUS_KEY.into(), move |_| Load::Status(crate::gitops::with_log(&log, || read_status(&g))));
     }
 
-    /// The status `git status` reported: SCM rows, Explorer marks, then what follows them.
-    fn apply_status(&mut self, branch: String, raw: Vec<u8>) {
+    /// The status `git status` reported: SCM rows, Explorer marks, the sync state, then
+    /// what follows them. Until it lands the last status shows.
+    fn apply_status(&mut self, (branch, raw, sync): Status) {
         self.status_since = None;
         self.branch = branch;
+        self.gitui.cmds.sync = sync;
         self.status = parse::parse_porcelain_z(&raw);
         let (staged, changes) = git::split(&self.status);
         self.scm_files = staged.into_iter().chain(changes).collect();
@@ -1811,9 +1817,9 @@ impl App {
                 continue;
             }
             self.loading.remove(&key);
-            if let Load::Status(branch, raw) = load {
+            if let Load::Status(st) = load {
                 let since = self.status_since;
-                self.apply_status(branch, raw);
+                self.apply_status(st);
                 if std::mem::take(&mut self.status_again) {
                     // What landed is already older than the refresh asked for meanwhile:
                     // the spinner keeps its start, so it stays on until the rerun lands.
@@ -5581,6 +5587,26 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Status, HEAD and the sync state come in one job: a refresh runs no git on the UI
+    /// thread, and the last sync state shows until the new one lands.
+    #[test]
+    fn a_refresh_runs_no_git_on_the_ui_thread() {
+        let root = repo("uigit");
+        let mut app = App::new(root.clone(), None);
+        app.show_side(Side::Scm, false);
+        wait(&mut app);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let before = git::CALLS.with(|n| n.get());
+        app.refresh();
+        assert!(app.gitui.cmds.sync.is_some(), "the last sync state shows meanwhile");
+        wait(&mut app);
+        screen(&mut app, &mut t);
+        assert_eq!(git::CALLS.with(|n| n.get()), before, "git ran on the UI thread");
+        assert!(app.gitui.cmds.sync.is_some());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn a_folder_without_git_has_no_scm_and_runs_no_git() {
         let d = std::env::temp_dir().join(format!("herdr-code-nogit-{}", std::process::id()));
@@ -6718,6 +6744,33 @@ mod tests {
         fs::write(&hook, "#!/bin/sh\nsleep 0.4\nexit 1\n").unwrap();
         let _ = Command::new("chmod").arg("+x").arg(&hook).status();
         let _ = Command::new("git").arg("-C").arg(root).args(["config", "core.fsmonitor"]).arg(&hook).status();
+    }
+
+    /// A Ctrl+C in run()'s git wait ends the process there: the token file (what herdr
+    /// requests go through) is already gone when the wait starts.
+    #[test]
+    fn leaving_removes_the_token_before_the_git_wait() {
+        let root = repo("leave");
+        let mut app = App::new(root.clone(), None);
+        wait(&mut app);
+        let token = root.join(".git/test-token");
+        fs::write(&token, "t").unwrap();
+        app.token = Some("t".into());
+        // The queued write watches for the token during the wait (3 s at most).
+        let (gone, tok) = (Arc::new(AtomicBool::new(false)), token.clone());
+        let g = gone.clone();
+        app.gitui.write("watch the token", move || {
+            let t0 = Instant::now();
+            while tok.exists() && t0.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            g.store(!tok.exists(), Ordering::SeqCst);
+            crate::scm::Msg::Wrote(Ok(String::new()), false)
+        });
+        leave(&mut app, Some(token.clone()), false);
+        assert!(gone.load(Ordering::SeqCst), "the token was still there while git ran");
+        assert_eq!(app.gitui.writes(), 0, "and the wait still let git finish");
+        fs::remove_dir_all(&root).unwrap();
     }
 
     /// Quitting with git still writing asks first, [Wait] by default: it quits once the
