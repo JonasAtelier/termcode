@@ -146,6 +146,11 @@ struct Hl {
     /// because the sequential pass is not there yet; shown until it is, then dropped. One
     /// region per view (editor groups, the peek), so views do not rebuild each other's.
     spec: Vec<(usize, Vec<Segs>)>,
+    /// The last view was drawn before its lines were all exact (a later call this
+    /// frame, the minimap's, may have finished them): draw it once more.
+    /// ponytail: one flag per buffer, so an exact second view of it drawn later in the
+    /// frame masks a stale first one (cosmetic, next event fixes it); per-frame id if seen.
+    stale_view: bool,
 }
 
 /// One line's highlighted segments: `(end byte, style)`.
@@ -391,7 +396,7 @@ impl Buffer {
             HighlightState::new(&Highlighter::new(&look.theme), ScopeStack::new()),
             semantic::Ctx::default(),
         );
-        self.hl = Some(Box::new(Hl { syntax: syn, states: vec![start], front: None, segs: Vec::new(), gen: look.gen, want: 0, spec: Vec::new() }));
+        self.hl = Some(Box::new(Hl { syntax: syn, states: vec![start], front: None, segs: Vec::new(), gen: look.gen, want: 0, spec: Vec::new(), stale_view: false }));
     }
 
     fn set_text(&mut self, text: &str) {
@@ -520,6 +525,9 @@ impl Buffer {
             done += 1;
         }
         let have = h.segs.len();
+        if start < end {
+            h.stale_view = have < end;
+        }
         h.spec.retain(|(f, v)| have < f + v.len()); // the exact pass has caught up with these
         // Only a view (start < end) gets speculative lines: the minimap asks with none.
         let from = start.saturating_sub(HL_SPEC_CONTEXT).max(have);
@@ -539,7 +547,7 @@ impl Buffer {
     /// true while the buffer is drawn: every frame does at least one line, toward a target
     /// no larger than the buffer.
     pub fn hl_pending(&self) -> bool {
-        self.hl.as_ref().is_some_and(|h| h.segs.len() < h.want.min(self.lines.len()))
+        self.hl.as_ref().is_some_and(|h| h.segs.len() < h.want.min(self.lines.len()) || h.stale_view)
     }
 
     /// A line's segments: exact, else the speculative ones of a far view, else None
@@ -1264,6 +1272,33 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frame that draws a view one line short of exact, then finishes that line in a
+    /// later call (the minimap's), must still ask for one more frame: else the view stays
+    /// drawn with that line's speculative colours.
+    #[test]
+    fn a_view_drawn_before_its_last_line_was_exact_asks_for_one_more_frame() {
+        let mut lines = vec!["/* a comment opened far above".to_string()];
+        lines.extend((1..40).map(|i| format!("int v{i} = {i};")));
+        lines.push("*/".into());
+        let mut b = Buffer::from_lines("a.c", lines, "test");
+        let (scroll, end) = (20, 30);
+        b.highlight_upto(end - 2); // outside a frame: unbudgeted, two lines short of the view's end
+        set_frame_budget(Some(Duration::ZERO)); // one line per call
+        {
+            let _frame = FrameBudget::start();
+            b.highlight_view(scroll, end); // the text: line 28 exact, line 29 drawn speculative
+            assert_eq!(b.hl.as_ref().unwrap().segs.len(), end - 1);
+            b.highlight_upto(end); // the minimap, after the text: finishes line 29
+        }
+        set_frame_budget(Some(FRAME_BUDGET));
+        assert!(b.hl_pending(), "line 29 was drawn speculative: one more frame");
+        {
+            let _frame = FrameBudget::start();
+            b.highlight_view(scroll, end);
+        }
+        assert!(!b.hl_pending(), "drawn exact: settled");
+    }
 
     #[test]
     fn backup_round_trip_restores_unsaved_text() {
