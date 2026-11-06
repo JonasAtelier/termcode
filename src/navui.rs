@@ -609,7 +609,8 @@ fn peek(app: &mut App, f: &mut Frame, c: &Cols) {
     ui::row(f, title, c.title_bg, vec![Span::styled(format!("{}{name}", ui::sp(pad)), Style::new().fg(c.title_fg)), Span::styled(format!("  {dir}"), dim(c.title_bg))]);
     ui::right(f, title, vec![Span::styled(format!("  {}{}", pk.title, ui::sp(pad)), dim(c.title_bg).bg(c.title_bg))]);
     let body = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
-    let lw = (body.width * 3 / 10).clamp(16.min(body.width / 2), 60);
+    // The preview about 2/3, the list about 1/3 and kept readable.
+    let lw = (body.width / 3).clamp(24.min(body.width / 2), 60);
     let list = Rect::new(body.right() - lw, body.y, lw, body.height);
     let preview = Rect::new(body.x, body.y, body.width - lw - 1, body.height);
     // The result list.
@@ -657,6 +658,12 @@ fn peek(app: &mut App, f: &mut Frame, c: &Cols) {
     let code = Rect::new(preview.x + gutter, preview.y, preview.width - gutter, preview.height);
     ui::fill(f, preview, c.peek_bg);
     ui::fill(f, Rect::new(preview.x, preview.y, gutter, preview.height), c.gutter_bg);
+    // Scroll the whole preview sideways when the match would end past its right edge.
+    let s = sel.col.saturating_sub(1);
+    let hs = b.lines.get(target).map_or(0, |l| {
+        let (x0, x1, w) = (editor::display_col(l, s), editor::display_col(l, s + pk.sym.len()), code.width as usize);
+        if x1 < w { 0 } else { x0.saturating_sub(w / 4) }
+    });
     for (k, li) in (top..b.lines.len()).take(rows).enumerate() {
         let y = preview.y + k as u16;
         let nr = if li == target { P.line_nr_active } else { P.line_nr };
@@ -667,10 +674,9 @@ fn peek(app: &mut App, f: &mut Frame, c: &Cols) {
         if li == target {
             ui::fill(f, r, c.target);
             base = base.bg(c.target);
-            let s = sel.col.saturating_sub(1);
             ov.push((s, s + pk.sym.len(), c.matched));
         }
-        f.render_widget(ui::render_line(&b.lines[li], b.segs(li), &ov, None, 0, code.width as usize, base), r);
+        f.render_widget(ui::render_line(&b.lines[li], b.segs(li), &ov, None, hs, code.width as usize, base), r);
     }
     app.nav.hits = PeekHits { pop, list, preview };
 }
@@ -691,13 +697,15 @@ mod tests {
     const A_C: &str = "int twice(int v)\n{\n\treturn 2 * v;\n}\n";
     const B_C: &str = "int twice(int v)\n{\n\treturn v + v;\n}\n";
     const USER_C: &str = "#include \"dsa.h\"\nint user(void)\n{\n\t/* 中文 */\tdsa_port_change_master(0, twice(1));\n\treturn dsa_port_change_master(1, 2);\n}\nstruct dsa_port *last;\n";
+    /// A definition whose name sits far right on its line.
+    const FAR_C: &str = "static unsigned long long a_type_name_long_enough_to_push_the_name_far_right far_away(void) { return 0; }\n";
     /// 0-based line of the call in user.c.
     const CALL: usize = 3;
 
     fn app(tag: &str) -> (App, PathBuf) {
         let d = std::env::temp_dir().join(format!("herdr-code-navui-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
-        for (p, t) in [("inc/dsa.h", DSA_H), ("net/port.c", PORT_C), ("net/a.c", A_C), ("net/b.c", B_C), ("net/user.c", USER_C)] {
+        for (p, t) in [("inc/dsa.h", DSA_H), ("net/port.c", PORT_C), ("net/a.c", A_C), ("net/b.c", B_C), ("net/user.c", USER_C), ("net/far.c", FAR_C), ("net/far_use.c", "int f(void)\n{\n\treturn far_away();\n}\n")] {
             let f = d.join(p);
             fs::create_dir_all(f.parent().unwrap()).unwrap();
             fs::write(f, t).unwrap();
@@ -936,6 +944,86 @@ mod tests {
         finish(&mut app);
         assert_eq!((file(&app).as_str(), cursor(&app)), ("net/port.c", (2, 1)), "the definition, not the prototype");
         assert!(app.nav.flash.is_some() && app.nav.peek.is_none());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ctrl_click_and_hover_follow_the_horizontal_scroll() {
+        let (mut app, root) = app("hscroll");
+        let mut t = term(90, 30); // narrower than the call line: the view scrolls sideways
+        draw(&mut app, &mut t);
+        let line = USER_C.lines().nth(CALL).unwrap();
+        put(&mut app, CALL, "));");
+        app.reveal();
+        draw(&mut app, &mut t);
+        let hs = active(&app).unwrap().2.hscroll;
+        assert!(hs > 0, "the cursor at the end scrolls the view");
+        let b = line.find("twice").unwrap();
+        let p = cell(&app, CALL, b + 1);
+        assert_eq!(symbol_under(&app, p).map(|s| s.3).as_deref(), Some("twice"));
+        // The first text cell shows the char at display column `hs`, not the line's first.
+        let first = Position::new(app.ui.groups[0].text.x, p.y);
+        let shown = byte_under(line, hs);
+        let want = nav::symbol_at(line, shown).filter(|_| line.as_bytes()[shown].is_ascii_alphanumeric()).map(|s| s.0);
+        assert_eq!(symbol_under(&app, first).map(|s| s.3), want);
+        mouse(&mut app, MouseEventKind::Moved, p, KeyModifiers::CONTROL);
+        draw(&mut app, &mut t);
+        let c = t.backend().buffer()[(cell(&app, CALL, b).x, p.y)].clone();
+        assert!(c.modifier.contains(Modifier::UNDERLINED) && c.symbol() == "t", "{c:?}");
+        click(&mut app, p, KeyModifiers::CONTROL);
+        finish(&mut app);
+        assert_eq!(app.nav.peek.as_ref().map(|p| p.title.as_str()), Some("2 definitions"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_preview_scrolls_sideways_to_a_far_right_match() {
+        let (mut app, root) = app("far");
+        let mut t = term(100, 30);
+        app.open_file(0, "net/far_use.c", false);
+        draw(&mut app, &mut t);
+        put(&mut app, 2, "far_away");
+        press(&mut app, KeyCode::F(12), KeyModifiers::ALT);
+        finish(&mut app);
+        draw(&mut app, &mut t);
+        let h = app.nav.hits;
+        assert!(h.list.width >= 24, "a readable list: {h:?}");
+        let rows: Vec<String> = (h.preview.y..h.preview.bottom()).map(|y| text(&t, y, h.preview)).collect();
+        assert!(rows.iter().any(|r| r.contains("far_away(void)")), "match not in view: {rows:?}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// What is drawn is what is hit: at several h-scroll offsets (including one that splits
+    /// the CJK pair at the left edge), every cell of a drawn word maps to it, and Ctrl+hover
+    /// underlines exactly those cells.
+    #[test]
+    fn ctrl_click_and_hover_map_what_is_drawn_at_every_hscroll() {
+        let (mut app, root) = app("hsprobe");
+        let mut t = term(160, 30);
+        draw(&mut app, &mut t);
+        for hs in [0usize, 4, 8, 9, 20] {
+            app.groups[0].tabs[0].view.hscroll = hs;
+            draw(&mut app, &mut t);
+            let gh = app.ui.groups[0].clone();
+            for (line, word) in [(1usize, "user"), (CALL, "twice")].into_iter().filter(|&(l, _)| l == CALL || hs <= 4) {
+                let y = app.line_y(0, line).unwrap();
+                let cells: Vec<String> = (gh.text.x..gh.text.right()).map(|x| t.backend().buffer()[(x, y)].symbol().to_string()).collect();
+                let w: Vec<String> = word.chars().map(|c| c.to_string()).collect();
+                let i = (0..cells.len() - w.len()).find(|&i| cells[i..i + w.len()] == w[..]).unwrap_or_else(|| panic!("hs {hs}: {word} not drawn: {cells:?}"));
+                for k in 0..w.len() {
+                    let p = Position::new(gh.text.x + (i + k) as u16, y);
+                    assert_eq!(symbol_under(&app, p).map(|s| s.3).as_deref(), Some(word), "hs {hs} line {line} cell {k}");
+                }
+                let p = Position::new(gh.text.x + i as u16, y);
+                mouse(&mut app, MouseEventKind::Moved, p, KeyModifiers::CONTROL);
+                draw(&mut app, &mut t);
+                for k in 0..w.len() {
+                    let c = &t.backend().buffer()[(gh.text.x + (i + k) as u16, y)];
+                    assert!(c.modifier.contains(Modifier::UNDERLINED), "hs {hs} {word} cell {k} not underlined");
+                }
+                mouse(&mut app, MouseEventKind::Moved, p, KeyModifiers::NONE);
+            }
+        }
         fs::remove_dir_all(&root).unwrap();
     }
 
