@@ -3600,10 +3600,12 @@ impl App {
         let can_split = self.groups.len() < MAX_GROUPS;
         self.ui.groups.iter().enumerate().find(|(_, g)| g.area.contains(p)).map(|(i, g)| {
             let rx = (p.x - g.area.x) as u32 * 10 / g.area.width.max(1) as u32;
-            let zone = if bar && g.tabbar.contains(p) {
+            // The accent row above the tabs counts as the tab bar.
+            let tabs = Rect { y: g.area.y, height: g.tabbar.bottom().saturating_sub(g.area.y), ..g.tabbar };
+            let zone = if bar && tabs.contains(p) {
                 // Before the first drawn tab whose middle is right of the pointer.
                 Zone::Tab(g.tabs.iter().take_while(|(r, x)| p.x >= (r.x + x.right()) / 2).count())
-            } else if g.tabbar.contains(p) || !can_split {
+            } else if tabs.contains(p) || !can_split {
                 Zone::Center
             } else if rx < 3 {
                 Zone::Left
@@ -3960,6 +3962,21 @@ mod tests {
                 app.quick = None;
             }
         }
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_accent_row_is_part_of_the_tab_bar() {
+        let root = repo("accent-row");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/main.rs", false);
+        let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
+        screen(&mut app, &mut t);
+        let (a, bar) = (app.ui.groups[0].area, app.ui.groups[0].tabbar);
+        assert_eq!(bar.y, a.y + 1, "comfortable: the accent row is above the tabs");
+        assert!(matches!(app.drop_target(Position::new(bar.x + 1, a.y), true), Some((0, Zone::Tab(_)))), "a tab dropped on the accent row is inserted");
+        assert_eq!(t.backend().buffer()[(a.right() - 3, a.y)].bg, crate::theme::P.tabs_bg, "no editor-coloured band");
         wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }

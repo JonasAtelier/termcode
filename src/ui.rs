@@ -855,7 +855,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
     let accent = u16::from((lay.comfy || lay.s.editor_padding >= 2) && area.height >= 2);
     let tabbar = Rect::new(area.x, area.y + accent, area.width, 1);
     gh.tabbar = tabbar;
-    fill(f, tabbar, P.tabs_bg);
+    fill(f, Rect::new(area.x, area.y, area.width, 1 + accent), P.tabs_bg);
     let focused_group = g == app.ag;
     let ic = icons();
     // Split Editor button at the right end of the tab bar.
