@@ -335,6 +335,9 @@ pub struct Hits {
     pub sidebar: Rect,
     pub side_rows: usize,
     pub side_gap: u16,
+    /// Sticky scroll: the list items pinned over slots 0, 1, …, and how many may be.
+    pub sticky: Vec<usize>,
+    pub sticky_cap: usize,
     pub minimaps: Vec<MiniHit>,
     pub peek_btns: Vec<(Rect, PeekBtn)>,
     /// The peek zone, and its body rows (for the wheel).
@@ -350,6 +353,12 @@ impl Hits {
         let rel = y.checked_sub(self.side_list.y)?;
         let step = 1 + self.side_gap;
         (rel % step == 0 && rel < self.side_list.height).then(|| off + (rel / step) as usize)
+    }
+
+    /// The pinned (sticky) item drawn at screen row `y`: its slot's item row and gap row.
+    pub fn sticky_at(&self, y: u16) -> Option<usize> {
+        let rel = y.checked_sub(self.side_list.y)?;
+        self.sticky.get((rel / (1 + self.side_gap)) as usize).copied()
     }
 }
 
@@ -2234,6 +2243,31 @@ impl App {
         self.focus = Focus::Editor;
     }
 
+    /// Tree depth of each sidebar row, for sticky scroll: Explorer folders over their
+    /// contents, Search file groups over their hits, SCM sections over their files.
+    pub fn side_depths(&self) -> Vec<usize> {
+        match self.side {
+            Side::Explorer => self.tree.iter().map(|n| n.depth).collect(),
+            Side::Search => self.search_rows().iter().map(|r| matches!(r, HRow::Hit(_)) as usize).collect(),
+            Side::Scm => self.scm_rows().iter().map(|r| matches!(r, SRow::File(_)) as usize).collect(),
+            Side::History => Vec::new(),
+        }
+    }
+
+    /// The scroll offset that shows item `i` right under its pinned ancestors.
+    fn under_pinned(&self, i: usize) -> usize {
+        let depth = self.side_depths().get(i).copied().unwrap_or(0);
+        i - depth.min(self.ui.sticky_cap).min(i)
+    }
+
+    /// A click on a sticky row: that folder (header) scrolls to the top and is selected.
+    fn reveal_pinned(&mut self, i: usize) {
+        let s = self.side as usize;
+        self.off[s] = self.under_pinned(i);
+        self.sel[s] = i;
+        self.focus = Focus::Side;
+    }
+
     fn move_side(&mut self, d: isize) {
         let n = self.side_count();
         if n == 0 {
@@ -2256,6 +2290,10 @@ impl App {
             self.off[s] = self.sel[s];
         } else if self.sel[s] >= self.off[s] + h {
             self.off[s] = self.sel[s] + 1 - h;
+        }
+        // A row under the sticky rows is hidden: show it just below its pinned folders.
+        if self.sel[s] < self.off[s] + decor::sticky(&self.side_depths(), self.off[s], self.ui.sticky_cap).len() {
+            self.off[s] = self.under_pinned(self.sel[s]);
         }
         if self.side == Side::History && self.sel[s] + 20 >= n {
             self.load_history(false);
@@ -2862,6 +2900,9 @@ impl App {
         }
         if let Some(&(_, g)) = self.ui.split_btns.iter().find(|(r, _)| r.contains(p)) {
             return self.split_right(g);
+        }
+        if let Some(i) = self.ui.sticky_at(p.y).filter(|_| self.ui.side_list.contains(p)) {
+            return self.reveal_pinned(i);
         }
         if self.ui.side_list.contains(p) {
             let s = self.side as usize;
@@ -3656,14 +3697,9 @@ mod tests {
             // The activity icon is drawn centred inside its hit rect.
             let (ar, _) = app.ui.activity[2];
             assert_eq!(t.backend().buffer()[(ar.x + ar.width / 2, ar.y)].symbol(), crate::theme::icons().scm, "{tag}");
-            // Explorer header: the worktree name, then its parent folder (not a tree row).
-            let (hx, hy) = cell_of(&t, &app.repo.to_uppercase(), 0);
-            let (px, py) = cell_of(&t, root.parent().unwrap().to_str().unwrap(), 0);
-            assert_eq!((px, py), (hx, hy + 1), "{tag}: line 2, aligned with the name");
-            assert_eq!(t.backend().buffer()[(px, py)].fg, crate::theme::P.dim, "{tag}");
-            assert_eq!(app.ui.side_list.y, py + 1, "{tag}: tree rows start below it");
-            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), px, py);
-            assert!(app.groups[0].tabs.is_empty() && app.sel[0] == 0, "{tag}: line 2 is not clickable");
+            // Explorer header: the root's name; the tree starts on the next row.
+            let (_, hy) = cell_of(&t, &app.repo.to_uppercase(), 0);
+            assert_eq!(app.ui.side_list.y, hy + 1, "{tag}: tree rows start below it");
             let (x, y) = cell_of(&t, "README.md", 0);
             // [icon][iconGap blanks][name]: the icon is one cell, then only blanks.
             let buf = t.backend().buffer();
@@ -4435,6 +4471,224 @@ mod tests {
         app.on_paste("hi");
         assert!(text(&app, "file:src/main.rs").contains("    herdr-code:bad:open:/x:1:1hiprintln!"));
         fs::remove_file(&out).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A non-git tree arch/{sh/{boards/b00..b59.c, kernel.c}, x86/x.c}, block/blk.c,
+    /// zz.txt, with arch, sh and boards expanded.
+    fn deep_tree(tag: &str) -> (PathBuf, App) {
+        let d = std::env::temp_dir().join(format!("herdr-code-sticky-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        for dir in ["arch/sh/boards", "arch/x86", "block"] {
+            fs::create_dir_all(d.join(dir)).unwrap();
+        }
+        for i in 0..60 {
+            fs::write(d.join(format!("arch/sh/boards/b{i:02}.c")), "x\n").unwrap();
+        }
+        for f in ["arch/sh/kernel.c", "arch/x86/x.c", "block/blk.c", "zz.txt"] {
+            fs::write(d.join(f), "x\n").unwrap();
+        }
+        let d = d.canonicalize().unwrap();
+        let mut app = App::new(d.clone(), None);
+        for p in ["arch", "arch/sh", "arch/sh/boards"] {
+            let i = at(&app, p);
+            app.toggle(i);
+        }
+        (d, app)
+    }
+
+    fn at(app: &App, path: &str) -> usize {
+        app.tree.iter().position(|n| n.path == path).unwrap()
+    }
+
+    /// The sidebar list's cells on screen row `y`.
+    fn side_line(t: &Terminal<TestBackend>, app: &App, y: u16) -> String {
+        let (b, l) = (t.backend().buffer(), app.ui.side_list);
+        (l.x..l.right()).map(|x| b[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn explorer_sticky_scroll_pins_the_top_level_folder() {
+        let (d, mut app) = deep_tree("one");
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let (arch, block, b10) = (at(&app, "arch"), at(&app, "block"), at(&app, "arch/sh/boards/b10.c"));
+        app.toggle(block);
+        app.off[0] = b10;
+        screen(&mut app, &mut t);
+        // The default, one row: arch (not boards) under the root header, then the tree.
+        assert_eq!((app.settings.sticky_max, app.ui.sticky.clone()), (1, vec![arch]));
+        let (x, y) = (app.ui.side_list.x, app.ui.side_list.y);
+        let (_, hy) = cell_of(&t, &app.repo.to_uppercase(), 0);
+        assert_eq!(y, hy + 1);
+        assert!(side_line(&t, &app, y).contains("arch") && side_line(&t, &app, y + 1).contains("b11.c"));
+        let c = &t.backend().buffer()[(x + 1, y)];
+        assert!(c.modifier.contains(Modifier::UNDERLINED) && c.underline_color == crate::theme::P.sticky_shadow);
+        // arch's last row under the sticky row: still arch; one more and block's own row is on top.
+        app.off[0] = block - 1;
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.sticky, [arch]);
+        app.off[0] = block;
+        screen(&mut app, &mut t);
+        assert!(app.ui.sticky.is_empty() && side_line(&t, &app, y).contains("block"));
+        app.off[0] = block + 1;
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.sticky, [block], "replaced by the next top-level folder");
+        // A click on it: block back on top.
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 4, y);
+        assert_eq!((app.off[0], app.sel[0]), (block, block));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn explorer_sticky_scroll_pins_the_ancestors() {
+        let (d, mut app) = deep_tree("pin");
+        app.settings.sticky_max = 7;
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        screen(&mut app, &mut t);
+        assert!(app.ui.sticky.is_empty(), "at the top");
+        let (arch, sh, boards, b10) = (at(&app, "arch"), at(&app, "arch/sh"), at(&app, "arch/sh/boards"), at(&app, "arch/sh/boards/b10.c"));
+        app.off[0] = b10;
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.sticky, [arch, sh, boards], "above 1: outermost first");
+        let (x, y) = (app.ui.side_list.x, app.ui.side_list.y);
+        let rows: Vec<String> = (0..4).map(|k| side_line(&t, &app, y + k)).collect();
+        // Each pinned row is drawn as in the tree: its own indent, chevron and icon.
+        let col = |r: &str, name: &str| r.find(name).map(|i| r[..i].chars().count()).unwrap_or_else(|| panic!("{name} in {r:?}"));
+        let ind = app.settings.spacing.tree_indent as usize;
+        assert_eq!(col(&rows[1], "sh"), col(&rows[0], "arch") + ind, "{rows:?}");
+        assert_eq!(col(&rows[2], "boards"), col(&rows[1], "sh") + ind, "{rows:?}");
+        assert!(rows[..3].iter().all(|r| r.contains(crate::theme::icons().chev_down)), "{rows:?}");
+        assert!(rows[3].contains("b13.c"), "the tree goes on under them: {rows:?}");
+        // The shadow: the last pinned row is underlined in sideBarStickyScroll.shadow.
+        let buf = t.backend().buffer();
+        let c = &buf[(x + 1, y + 2)];
+        assert!(c.modifier.contains(Modifier::UNDERLINED) && c.underline_color == crate::theme::P.sticky_shadow);
+        assert!(!buf[(x + 1, y + 3)].modifier.contains(Modifier::UNDERLINED));
+        // The wheel over a sticky row scrolls the tree.
+        mouse(&mut app, MouseEventKind::ScrollDown, x + 2, y);
+        assert_eq!(app.off[0], b10 + 3);
+        assert!(app.groups[0].tabs.is_empty());
+        // Up from the first row under them: that row would hide, so it shows just below them.
+        app.off[0] = b10;
+        screen(&mut app, &mut t);
+        (app.focus, app.sel[0]) = (Focus::Side, b10 + 3);
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!((app.sel[0], app.off[0]), (b10 + 2, b10 - 1));
+        screen(&mut app, &mut t);
+        assert!(side_line(&t, &app, y + 3).contains("b12.c"));
+        // A click on a sticky row reveals that folder right under its own parents.
+        app.off[0] = b10;
+        screen(&mut app, &mut t);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 4, y + 1);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 4, y + 1);
+        assert_eq!((app.sel[0], app.off[0]), (sh, arch));
+        assert!(app.tree[sh].open, "it reveals, it does not collapse");
+        screen(&mut app, &mut t);
+        assert!(app.ui.sticky.is_empty() && side_line(&t, &app, y + 1).contains("sh"));
+        // A real row below the sticky ones is hit as itself.
+        app.off[0] = b10;
+        screen(&mut app, &mut t);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 4, y + 3);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 4, y + 3);
+        assert_eq!(app.groups[0].tabs[0].key, "file:arch/sh/boards/b13.c");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn sticky_scroll_caps_densities_gaps_and_off() {
+        use crate::settings::Spacing;
+        let (d, mut app) = deep_tree("cap");
+        let (arch, sh, boards, b10) = (at(&app, "arch"), at(&app, "arch/sh"), at(&app, "arch/sh/boards"), at(&app, "arch/sh/boards/b10.c"));
+        // Clamped like VS Code's setting: 1..=10.
+        for (v, want) in [(0, 1), (3, 3), (99, 10)] {
+            let user = serde_json::json!({ "workbench.tree.stickyScrollMaxItemCount": v });
+            let s = settings::from_maps(user.as_object().unwrap(), None, &[]).unwrap();
+            assert_eq!(s.sticky_max, want);
+        }
+        app.off[0] = b10;
+        app.settings.sticky_max = 2;
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.sticky, [arch, sh], "stickyScrollMaxItemCount");
+        app.settings.sticky_max = 3;
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.sticky, [arch, sh, boards], "3: all three, outermost first");
+        app.settings.sticky_max = 1;
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.sticky, [arch], "1: the outermost, not boards");
+        app.settings.sticky_max = 7;
+        for h in [10, 12, 16] {
+            let mut t = Terminal::new(TestBackend::new(100, h)).unwrap();
+            screen(&mut app, &mut t);
+            let lh = app.ui.side_list.height as usize;
+            assert_eq!(app.ui.sticky.len(), 3.min(lh * 2 / 5), "never over 40% of {lh} rows");
+        }
+        // Both densities and listItemGap 1: slot k is its item row and its gap row.
+        let gap = Spacing::parse(Spacing::COMFORTABLE, &serde_json::json!({ "listItemGap": 1 }));
+        for (tag, compact, sp) in [("comfortable", false, Spacing::COMFORTABLE), ("compact", true, Spacing::COMPACT), ("gap", false, gap)] {
+            (app.settings.compact, app.settings.spacing) = (compact, sp);
+            app.off[0] = b10;
+            let mut t = Terminal::new(TestBackend::new(100, 40)).unwrap();
+            screen(&mut app, &mut t);
+            let (x, y, step) = (app.ui.side_list.x, app.ui.side_list.y, 1 + sp.list_gap);
+            assert_eq!(app.ui.sticky, [arch, sh, boards], "{tag}");
+            for (k, name) in ["arch", "sh", "boards"].into_iter().enumerate() {
+                let row = y + k as u16 * step;
+                assert!(side_line(&t, &app, row).contains(name), "{tag}: slot {k}");
+                for r in row..row + step {
+                    assert_eq!(app.ui.sticky_at(r), Some(app.ui.sticky[k]), "{tag}: row {r}");
+                }
+            }
+            assert_eq!(app.ui.sticky_at(y + 3 * step), None, "{tag}: the tree below");
+            assert_eq!(app.ui.side_item(y + 3 * step, app.off[0]), Some(b10 + 3), "{tag}");
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 3, y + 3 * step - 1);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 3, y + 3 * step - 1);
+            assert_eq!(app.sel[0], boards, "{tag}: boards' last row");
+        }
+        // workbench.tree.enableStickyScroll off: the top row is the tree's own.
+        (app.settings.sticky, app.off[0]) = (false, b10);
+        screen(&mut app, &mut t);
+        assert!(app.ui.sticky.is_empty() && side_line(&t, &app, app.ui.side_list.y).contains("b10.c"));
+        // A tiny terminal never panics, in any view.
+        app.settings.sticky = true;
+        for (w, h) in [(1, 1), (10, 3), (20, 5), (40, 8)] {
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            for side in SIDES {
+                app.side = side;
+                app.off[0] = b10;
+                screen(&mut app, &mut t);
+            }
+        }
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn search_groups_and_scm_sections_stick_too() {
+        let root = repo("stickyscm");
+        for i in 0..40 {
+            fs::write(root.join(format!("n{i:02}.txt")), "x\n").unwrap();
+        }
+        fs::write(root.join("many.txt"), "needle\n".repeat(30)).unwrap();
+        let mut app = App::new(root.clone(), None);
+        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        app.show_side(Side::Scm, false);
+        app.off[2] = 5;
+        screen(&mut app, &mut t);
+        let head = app.scm_rows().iter().position(|r| matches!(r, SRow::Head(Section::Changes, _))).unwrap();
+        assert_eq!(app.ui.sticky, [head]);
+        assert!(side_line(&t, &app, app.ui.side_list.y).contains("Changes"));
+        app.show_side(Side::Search, false);
+        app.query = "needle".into();
+        app.start_search();
+        wait(&mut app);
+        let g = app.search_rows().iter().position(|r| matches!(r, HRow::File(p, _) if p == "many.txt")).unwrap();
+        app.off[1] = g + 5;
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.sticky, [g]);
+        let (x, y) = (app.ui.side_list.x, app.ui.side_list.y);
+        assert!(side_line(&t, &app, y).contains("many.txt"));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 3, y);
+        assert_eq!((app.off[1], app.sel[1]), (g, g), "the group's header back on top");
         fs::remove_dir_all(&root).unwrap();
     }
 }

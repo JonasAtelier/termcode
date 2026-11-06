@@ -119,33 +119,6 @@ fn popup_block(bg: Color, fg: Color, (h, v): (u16, u16)) -> Block<'static> {
     }
 }
 
-/// The worktree's parent directory for the Explorer header: `~` for $HOME, and
-/// cut from the left at a folder boundary (`…/work/fetched`) to fit `width` cells.
-pub fn parent_label(root: &std::path::Path, home: Option<&std::path::Path>, width: usize) -> String {
-    let parent = root.parent().unwrap_or(root);
-    let full = match home.and_then(|h| parent.strip_prefix(h).ok()) {
-        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-        Some(rest) => format!("~/{}", rest.display()),
-        None => parent.display().to_string(),
-    };
-    if full.width() <= width {
-        return full;
-    }
-    // Drop leading folders until "…/rest" fits; the last folder alone may still be cut.
-    let mut rest = full.as_str();
-    while let Some((_, tail)) = rest.split_once('/') {
-        rest = tail;
-        if rest.width() + 2 <= width {
-            return format!("…/{rest}");
-        }
-    }
-    let keep: String = rest.chars().rev().scan(0, |w, c| {
-        *w += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-        (*w < width).then_some(c)
-    }).collect::<Vec<_>>().into_iter().rev().collect();
-    format!("…{keep}")
-}
-
 /// VS Code language id for a syntect syntax name (indent-rainbow's language lists).
 pub fn lang_id(name: &str) -> String {
     match name {
@@ -366,15 +339,7 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
             fill(f, hr, P.section_bg);
             let hdr = format!("{}{}{}", ic.chev_down, sp(lay.s.icon_gap), app.repo.to_uppercase());
             row(f, inset(hr, lay.pad), P.section_bg, vec![Span::styled(hdr, Style::new().fg(P.section_fg).bold())]);
-            // Line 2: where the worktree lives, under the name. Not a tree row.
-            let pr = Rect::new(r.x, y + 1, r.width, 1);
-            fill(f, pr, P.section_bg);
-            let indent = 1 + lay.s.icon_gap as usize;
-            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-            let room = (inset(pr, lay.pad).width as usize).saturating_sub(indent + 1);
-            let parent = parent_label(&app.root, home.as_deref(), room);
-            row(f, inset(pr, lay.pad), P.section_bg, vec![Span::styled(format!("{}{parent}", " ".repeat(indent)), Style::new().fg(P.dim))]);
-            y += 2;
+            y += 1;
         }
         Side::Search => {
             let inp = field(y, 1);
@@ -511,9 +476,57 @@ fn sidebar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
             }
         }
     }
+    sticky_rows(app, f, list, lay, &scm_rows, &search_rows);
     if n > h && h > 0 {
         let track = Rect::new(list.right() - 1, list.y, 1, list.height);
         scrollbar(app, f, track, ScrollTarget::Side, n, h, app.off[s], n - h);
+    }
+}
+
+/// VS Code's tree sticky scroll over the list just drawn: the folders (Search file
+/// groups, SCM sections) holding the top rows, pinned over them, each drawn as its
+/// own row, with `sideBarStickyScroll.shadow` as a line under the last. At most
+/// `stickyScrollMaxItemCount` (default 1: the top-level folder), and never over
+/// 40% of the list.
+fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, lay: Lay, scm_rows: &[SRow], search_rows: &[HRow]) {
+    let step = 1 + lay.s.list_gap;
+    let cap = if app.settings.sticky { app.settings.sticky_max.min(list.height as usize * 2 / 5 / step as usize) } else { 0 };
+    let s = app.side as usize;
+    let pinned = crate::decor::sticky(&app.side_depths(), app.off[s], cap);
+    app.ui.sticky_cap = cap;
+    app.ui.sticky = pinned.clone();
+    let Some(last) = pinned.len().checked_sub(1) else { return };
+    let area = Rect::new(list.x, list.y, list.width, pinned.len() as u16 * step);
+    // Rows hidden under the sticky rows keep none of their buttons.
+    app.ui.scm_btns.retain(|(b, _)| !area.contains(b.as_position()));
+    let hover = app.hover.filter(|p| area.contains(*p)).and_then(|p| app.ui.sticky_at(p.y));
+    for (k, &i) in pinned.iter().enumerate() {
+        let bg = if i == app.sel[s] && app.focus == Focus::Side {
+            P.list_active_bg
+        } else if i == app.sel[s] {
+            P.list_inactive_bg
+        } else if hover == Some(i) {
+            P.list_hover_bg
+        } else {
+            P.sticky_bg
+        };
+        let y = list.y + k as u16 * step;
+        fill(f, Rect::new(list.x, y, list.width, step), bg);
+        let ir = inset(Rect::new(list.x, y, list.width, 1), lay.pad);
+        match app.side {
+            Side::Explorer => explorer_row(app, f, ir, bg, i),
+            Side::Search => search_row(app, f, ir, bg, &search_rows[i]),
+            Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
+            Side::History => {}
+        }
+    }
+    // The shadow: a line in the shadow colour along the sticky area's last row.
+    let y = list.y + last as u16 * step + step - 1;
+    let buf = f.buffer_mut();
+    for x in list.x..list.right() {
+        let c = &mut buf[(x, y)];
+        c.modifier.insert(Modifier::UNDERLINED);
+        c.underline_color = P.sticky_shadow;
     }
 }
 
@@ -1745,22 +1758,4 @@ fn prompt(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
         btns.push((br, i));
     }
     app.ui.prompt_btns = btns;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parent_label;
-    use std::path::Path;
-
-    #[test]
-    fn parent_folder_label_abbreviates_home_and_cuts_from_the_left() {
-        let home = Some(Path::new("/home/user"));
-        let root = Path::new("/home/user/work/fetched/linux_5_10");
-        assert_eq!(parent_label(root, home, 40), "~/work/fetched");
-        assert_eq!(parent_label(root, home, 12), "…/fetched", "nearest folders kept");
-        assert_eq!(parent_label(root, home, 6), "…tched", "one folder too long: cut by characters");
-        assert_eq!(parent_label(Path::new("/home/user/repo"), home, 40), "~");
-        assert_eq!(parent_label(Path::new("/tmp/x/repo"), home, 40), "/tmp/x");
-        assert_eq!(parent_label(Path::new("/srv/a/b/c/d/repo"), None, 9), "…/a/b/c/d", "cut at a folder boundary");
-    }
 }

@@ -153,6 +153,9 @@ pub struct Pal {
     pub list_active_bg: Color,
     pub list_inactive_bg: Color,
     pub list_hover_bg: Color,
+    /// Sticky scroll rows over the sidebar lists, and the line under them.
+    pub sticky_bg: Color,
+    pub sticky_shadow: Color,
     pub input_bg: Color,
     pub input_fg: Color,
     pub placeholder: Color,
@@ -279,6 +282,8 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         list_active_bg: on("list.activeSelectionBackground", sidebar_bg),
         list_inactive_bg: on("list.inactiveSelectionBackground", sidebar_bg),
         list_hover_bg: on("list.hoverBackground", sidebar_bg),
+        sticky_bg: on("sideBarStickyScroll.background", sidebar_bg),
+        sticky_shadow: on("sideBarStickyScroll.shadow", sidebar_bg),
         input_bg,
         input_fg: on("input.foreground", input_bg),
         placeholder: on("input.placeholderForeground", input_bg),

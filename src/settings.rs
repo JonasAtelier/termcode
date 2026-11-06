@@ -122,6 +122,9 @@ pub struct Settings {
     pub file_icons: FileIcons,
     pub rainbow: Rainbow,
     pub guides: bool,
+    /// `workbench.tree.enableStickyScroll`, `workbench.tree.stickyScrollMaxItemCount`.
+    pub sticky: bool,
+    pub sticky_max: usize,
     pub tab_size: usize,
     /// `editor.rulers`: display columns, each with an optional own colour.
     pub rulers: Vec<(usize, Option<Rgba>)>,
@@ -152,6 +155,9 @@ impl Default for Settings {
             file_icons: FileIcons::default(),
             rainbow: Rainbow::default(),
             guides: true,
+            sticky: true,
+            // One row: the top-level folder holding the top row (VS Code's default is 7).
+            sticky_max: 1,
             tab_size: 4,
             rulers: vec![(90, None)],
             follow_vscode: false,
@@ -257,6 +263,8 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         file_icons: g("herdr-code.fileIcons").map(FileIcons::parse).unwrap_or_default(),
         rainbow,
         guides: g("editor.guides.indentation").and_then(Value::as_bool).unwrap_or(d.guides),
+        sticky: g("workbench.tree.enableStickyScroll").and_then(Value::as_bool).unwrap_or(d.sticky),
+        sticky_max: g("workbench.tree.stickyScrollMaxItemCount").and_then(Value::as_u64).map_or(d.sticky_max, |n| n.clamp(1, 10) as usize),
         tab_size: g("editor.tabSize").and_then(Value::as_u64).filter(|n| (1..=16).contains(n)).map_or(d.tab_size, |n| n as usize),
         rulers: g("editor.rulers").and_then(Value::as_array).map_or(d.rulers, |a| rulers(a)),
         follow_vscode: vscode.is_some(),
@@ -485,6 +493,8 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "indentRainbow.enabled": true,
     // "indentRainbow.indicatorStyle": "classic",   // or "light"
     // "editor.guides.indentation": true,
+    // "workbench.tree.enableStickyScroll": true,      // pin the folders above the top row
+    // "workbench.tree.stickyScrollMaxItemCount": 1,  // up to 10: arch, then sh, boards, …
     // "editor.tabSize": 4,
     // "editor.rulers": [90],   // [] for none; [{ "column": 80, "color": "#5A5A5A" }, 100]
     // "editor.minimap.enabled": true,

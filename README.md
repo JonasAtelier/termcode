@@ -117,8 +117,15 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Alt+← / Alt+→ | Go Back / Go Forward (also VS Code Linux's Ctrl+Alt+- / Ctrl+Shift+- where they reach, and F1) |
 | Ctrl+hover | underlines the identifier under the mouse (`editorLink.activeForeground`) |
 
-The Explorer header shows the root's name and, under it, its parent folder (`~` for
-$HOME, cut from the left as `…/work/fetched` when narrow).
+Sticky scroll, as in VS Code: while a sidebar list is scrolled, the top-level folder holding
+its top row stays pinned under the root header (deep in `arch/sh/boards` the row under
+`LINUX_5_10` is `arch`), and it is replaced once its last row has scrolled under it. With
+`workbench.tree.stickyScrollMaxItemCount` above 1 the next folders follow, outermost first
+(`arch`, `sh`, `boards`), each with its own indent, chevron and icon. Search pins the file over its hits, Source Control the section
+over its files. Click a pinned row to scroll its folder back to the top; the wheel over them
+scrolls the list. At most `workbench.tree.stickyScrollMaxItemCount` rows, never over 40% of
+the list, coloured `sideBarStickyScroll.background` with a `sideBarStickyScroll.shadow`
+underline below the last.
 
 The editor gutter shows VS Code's quick diff against the git index (`:0:path`): green `▎`
 added, blue `▎` modified, red `▸` lines deleted below. Staging a hunk clears its marker. It
@@ -162,6 +169,8 @@ the panel: the status bar shows the error and the last good settings stay.
 | `indentRainbow.ignoreLinePatterns` | `["/[ \t]* [*]/g", "/[ \t]+[/]{2}/g"]` | JS regex literals; a matching line never gets the error colour |
 | `editor.guides.indentation` | `true` | Indent guides (`editorIndentGuide.background` / `.activeBackground`) |
 | `editor.tabSize` | `4` | Tab stops, the indent unit, rainbow and guides |
+| `workbench.tree.enableStickyScroll` | `true` | Sticky scroll in the Explorer, Search and Source Control lists |
+| `workbench.tree.stickyScrollMaxItemCount` | `1` | Pinned rows at most (1 to 10), outermost first; VS Code's default is 7 |
 | `editor.rulers` | `[90]` | Vertical rulers after N display columns (tabs and wide characters counted), in `editorRuler.foreground`; `[]` for none; `[{ "column": 80, "color": "#rrggbb" }, 100]` gives one its own colour. Drawn behind the text, in the editor and both sides of the diff. F1 "View: Toggle Rulers" for the session |
 | `editor.minimap.enabled` | `true` | The minimap (F1 "View: Toggle Minimap" for the session) |
 | `editor.minimap.maxColumn` | `120` | Characters the minimap covers (about 8 per cell, 8 to 16 cells, at most 15% of the editor, shrunk to leave minEditorWidth) |
