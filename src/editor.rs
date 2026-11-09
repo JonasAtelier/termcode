@@ -916,6 +916,69 @@ impl Buffer {
         self.insert_kind(v, &s, if typing { Kind::Type } else { Kind::Other });
     }
 
+    /// The lines an edit of whole lines acts on: the selection's, without a last line it
+    /// only touches at column 0, or the cursor's.
+    fn line_span(&self, v: &View) -> (usize, usize) {
+        match v.selection() {
+            Some((a, e)) if e.col == 0 && e.line > a.line => (a.line, e.line - 1),
+            Some((a, e)) => (a.line, e.line),
+            None => (self.clamp(v.cursor).line, self.clamp(v.cursor).line),
+        }
+    }
+
+    fn shift_view(v: &mut View, down: bool, by: usize) {
+        let shift = |p: Pos| Pos::new(if down { p.line + by } else { p.line - by }, p.col);
+        v.cursor = shift(v.cursor);
+        v.anchor = v.anchor.map(shift);
+        v.want_x = None;
+    }
+
+    /// Alt+Up/Down: the current lines swap with the line above or below. One undo step.
+    pub fn move_lines(&mut self, v: &mut View, down: bool) {
+        let (start, end) = self.line_span(v);
+        let n = self.lines.len();
+        if self.readonly.is_some() || if down { end + 1 >= n } else { start == 0 } {
+            return;
+        }
+        self.begin(v, Kind::Other);
+        if down {
+            let below = self.lines[end + 1].clone();
+            if end + 2 < n {
+                self.do_del(Pos::new(end + 1, 0), Pos::new(end + 2, 0));
+            } else {
+                self.do_del(Pos::new(end, self.lines[end].len()), Pos::new(end + 1, below.len()));
+            }
+            self.do_ins(Pos::new(start, 0), &format!("{below}\n"));
+        } else {
+            let above = self.lines[start - 1].clone();
+            self.do_del(Pos::new(start - 1, 0), Pos::new(start, 0));
+            if end < self.lines.len() {
+                self.do_ins(Pos::new(end, 0), &format!("{above}\n"));
+            } else {
+                self.do_ins(Pos::new(end - 1, self.lines[end - 1].len()), &format!("\n{above}"));
+            }
+        }
+        Self::shift_view(v, down, 1);
+        self.end(v);
+    }
+
+    /// Shift+Alt+Down: the current lines again below themselves, the cursor on the copy.
+    pub fn duplicate_lines(&mut self, v: &mut View) {
+        let (start, end) = self.line_span(v);
+        if self.readonly.is_some() {
+            return;
+        }
+        let block = self.lines[start..=end].join("\n");
+        self.begin(v, Kind::Other);
+        if end + 1 < self.lines.len() {
+            self.do_ins(Pos::new(end + 1, 0), &format!("{block}\n"));
+        } else {
+            self.do_ins(Pos::new(end, self.lines[end].len()), &format!("\n{block}"));
+        }
+        Self::shift_view(v, true, end - start + 1);
+        self.end(v);
+    }
+
     /// A character typed in the editor, closing brackets and quotes: a selection is wrapped,
     /// a closer already there is stepped over, and a pair opens only where nothing would be
     /// swallowed by it. A quote after a word or a backslash stays single.
@@ -1704,6 +1767,72 @@ mod tests {
         let re = find_regex(r"(\w+)=(\d+)", true, false).unwrap();
         assert_eq!(expand(&re, "a=1 bc=22", 4, "$2:$1"), "22:bc", "the match at that column");
         assert_eq!(expand(&re, "a=1", 0, "$$"), "$");
+    }
+
+    fn at(text: &str, line: usize, col: usize) -> (Buffer, View) {
+        let mut b = buf(text);
+        let mut v = View::default();
+        b.clamp_view(&mut v);
+        b.move_to(&mut v, Pos::new(line, col), false);
+        (b, v)
+    }
+
+    #[test]
+    fn a_line_moves_down_and_up_with_the_cursor() {
+        let (mut b, mut v) = at("a\nb\nc", 0, 1);
+        b.move_lines(&mut v, true);
+        assert_eq!((b.lines.clone(), v.cursor), (vec!["b".to_string(), "a".into(), "c".into()], Pos::new(1, 1)));
+        b.move_lines(&mut v, true);
+        assert_eq!(b.lines, ["b", "c", "a"], "onto the last line");
+        b.move_lines(&mut v, false);
+        assert_eq!((b.lines.clone(), v.cursor.line), (vec!["b".to_string(), "a".into(), "c".into()], 1));
+    }
+
+    #[test]
+    fn a_line_at_the_edge_stays_and_leaves_no_undo_step() {
+        let (mut b, mut v) = at("a\nb", 0, 0);
+        b.move_lines(&mut v, false);
+        assert_eq!(b.lines, ["a", "b"]);
+        assert!(!b.undo(&mut v), "nothing happened");
+        let (mut b, mut v) = at("a\nb", 1, 0);
+        b.move_lines(&mut v, true);
+        assert_eq!(b.lines, ["a", "b"]);
+    }
+
+    #[test]
+    fn moving_takes_every_selected_line_and_keeps_the_selection() {
+        let (mut b, mut v) = at("a\nb\nc\nd", 0, 0);
+        b.move_to(&mut v, Pos::new(1, 1), true);
+        b.move_lines(&mut v, true);
+        assert_eq!(b.lines, ["c", "a", "b", "d"]);
+        assert_eq!((v.anchor, v.cursor), (Some(Pos::new(1, 0)), Pos::new(2, 1)));
+        assert!(b.undo(&mut v));
+        assert_eq!(b.lines, ["a", "b", "c", "d"], "one undo step");
+    }
+
+    #[test]
+    fn a_selection_ending_at_column_zero_leaves_that_line_out() {
+        let (mut b, mut v) = at("a\nb\nc", 0, 0);
+        b.move_to(&mut v, Pos::new(1, 0), true);
+        b.move_lines(&mut v, true);
+        assert_eq!(b.lines, ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn duplicating_copies_below_and_follows_the_copy() {
+        let (mut b, mut v) = at("a\nb", 0, 1);
+        b.duplicate_lines(&mut v);
+        assert_eq!((b.lines.clone(), v.cursor), (vec!["a".to_string(), "a".into(), "b".into()], Pos::new(1, 1)));
+        let (mut b, mut v) = at("a", 0, 0);
+        b.duplicate_lines(&mut v);
+        assert_eq!(b.lines, ["a", "a"], "the last line too");
+        let (mut b, mut v) = at("a\nb\nc", 0, 0);
+        b.move_to(&mut v, Pos::new(1, 1), true);
+        b.duplicate_lines(&mut v);
+        assert_eq!(b.lines, ["a", "b", "a", "b", "c"]);
+        assert_eq!((v.anchor, v.cursor), (Some(Pos::new(2, 0)), Pos::new(3, 1)));
+        assert!(b.undo(&mut v));
+        assert_eq!(b.lines, ["a", "b", "c"], "one undo step");
     }
 
     fn typed(start: &str, col: usize, keys: &str) -> (Vec<String>, usize) {

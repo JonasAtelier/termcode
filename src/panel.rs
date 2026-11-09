@@ -3378,6 +3378,9 @@ impl App {
                 KeyCode::Delete => b.delete(v),
                 KeyCode::Left => b.left(v, shift, ctrl),
                 KeyCode::Right => b.right(v, shift, ctrl),
+                KeyCode::Up if alt => b.move_lines(v, false),
+                KeyCode::Down if alt && shift => b.duplicate_lines(v),
+                KeyCode::Down if alt => b.move_lines(v, true),
                 KeyCode::Up if ctrl => v.scroll = v.shift_line(v.scroll, -1),
                 KeyCode::Down if ctrl => v.scroll = v.shift_line(v.scroll, 1).min(b.lines.len() - 1),
                 KeyCode::Up => b.vertical(v, -1, shift),
@@ -5804,6 +5807,30 @@ mod tests {
         app.find_button(FindBtn::ReplaceAll);
         let Some(Doc::Text(b)) = app.docs.get("file:a.c") else { panic!() };
         assert_eq!(b.lines[..3], ["bar1 = 1;", "bar", "bar22 = 2;"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_arrows_move_lines_and_shift_arrows_still_select() {
+        let root = repo("move-lines");
+        fs::write(root.join("a.c"), "one\ntwo\nthree\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "a.c", false);
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        let lines = |app: &App| match app.docs.get("file:a.c") {
+            Some(Doc::Text(b)) => b.lines.clone(),
+            _ => unreachable!(),
+        };
+        key(&mut app, KeyCode::Down, KeyModifiers::ALT);
+        assert_eq!(lines(&app), ["two", "one", "three"]);
+        key(&mut app, KeyCode::Up, KeyModifiers::ALT);
+        assert_eq!(lines(&app), ["one", "two", "three"]);
+        key(&mut app, KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT);
+        assert_eq!(lines(&app), ["one", "one", "two", "three"]);
+        key(&mut app, KeyCode::Down, KeyModifiers::SHIFT);
+        assert!(app.groups[0].tabs[0].view.selection().is_some(), "Shift+Down extends a selection");
+        assert_eq!(lines(&app).len(), 4, "and changes nothing");
         let _ = fs::remove_dir_all(&root);
     }
 
