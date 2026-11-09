@@ -150,7 +150,7 @@ struct HoverKey {
     scrollbar: Option<usize>,
     minimap: Option<usize>,
     peek: Option<usize>,
-    /// A commit-dialog splitter, or the GRAPH one (usize::MAX): sash.hoverBorder.
+    /// A commit-dialog or sidebar splitter (usize::MAX): sash.hoverBorder.
     sash: Option<usize>,
     /// An activity bar item (its icon lights up).
     activity: Option<usize>,
@@ -3436,7 +3436,7 @@ impl App {
             minimap: self.ui.minimaps.iter().position(|m| m.area.contains(p)),
             peek: self.ui.peek_btns.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.peek_zone.contains(p).then_some(usize::MAX)),
             sash: self.gitui.dlg.as_ref().and_then(|d| d.hits.sashes.iter().position(|r| r.contains(p))).or_else(|| {
-                g.areas.iter().any(|(r, h)| *h == crate::scm::Hit::GraphSash && r.contains(p)).then_some(usize::MAX)
+                g.areas.iter().any(|(r, h)| matches!(h, crate::scm::Hit::GraphSash | crate::scm::Hit::TimelineSash) && r.contains(p)).then_some(usize::MAX)
             }),
             activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)),
         }

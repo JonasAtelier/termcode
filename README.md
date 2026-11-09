@@ -239,7 +239,9 @@ split (kept in layout.json).
   [Cancel]. An empty message is refused; with nothing staged it offers to stage everything
   and commit. Esc or Cancel keeps the draft, also across restarts
   (`$HERDR_PLUGIN_STATE_DIR/drafts/`). The commit runs in the background.
-- Explorer TIMELINE: the active file's commits (renames followed), 100 at a time; click one
+- Explorer TIMELINE: drag the border above it to resize the tree and history; the height
+  is remembered across files and restarts. Click its header to collapse or expand it.
+  The active file's commits (renames followed), 100 at a time; click one
   for that commit's diff of the file.
 - Status bar: the branch (`*` unstaged, `+` staged changes; click: checkout a local, remote
   or tag ref, Create new branch…, Create new branch from…), then `↓behind ↑ahead` (click:

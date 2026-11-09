@@ -97,6 +97,7 @@ pub enum Hit {
     /// The ⓘ at a commit row's end.
     Info(usize),
     TimelineHead,
+    TimelineSash,
     Timeline(usize),
     TimelineMore,
     CardCopy,
@@ -185,6 +186,10 @@ pub struct GitUi {
     pub graph_focus: bool,
     pub graph: Graph,
     pub timeline: Timeline,
+    /// Timeline content rows, including its header, once resized.
+    timeline_height: Option<u16>,
+    /// Grabbed border row and original Timeline content height.
+    timeline_drag: Option<(u16, u16)>,
     pub card: Option<Card>,
     /// The commit under a resting pointer: hash, its row, since when.
     hover: Option<(String, Rect, Instant)>,
@@ -228,6 +233,8 @@ impl GitUi {
             graph_focus: false,
             graph: Graph::default(),
             timeline: Timeline { open: true, ..Default::default() },
+            timeline_height: None,
+            timeline_drag: None,
             card: None,
             hover: None,
             dlg: None,
@@ -256,6 +263,9 @@ impl GitUi {
         self.changes_open = s["changes_open"].as_bool().unwrap_or(self.changes_open);
         self.graph_open = s["graph_open"].as_bool().unwrap_or(self.graph_open);
         self.timeline.open = s["timeline_open"].as_bool().unwrap_or(self.timeline.open);
+        if let Some(h) = s["timeline_height"].as_u64() {
+            self.timeline_height = Some(h.clamp(4, 500) as u16);
+        }
         if let Some(v) = s["split"].as_u64() {
             self.split = Some(v.clamp(1, 500) as u16);
         }
@@ -274,6 +284,9 @@ impl GitUi {
         });
         if let Some(s) = self.split {
             v["split"] = s.into();
+        }
+        if let Some(h) = self.timeline_height {
+            v["timeline_height"] = h.into();
         }
         let dlg: serde_json::Map<String, serde_json::Value> =
             commitdlg::SASHES.iter().zip(self.dlg_split).filter_map(|(k, r)| Some((k.name().to_string(), r?.into()))).collect();
@@ -930,6 +943,7 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
             let anchor = app.gitui.hits.hovers.iter().find(|(_, h)| *h == hash).map_or(Rect::new(p.x, p.y, 1, 1), |x| x.0);
             open_card(app, hash, anchor);
         }
+        Hit::TimelineSash => app.gitui.timeline_drag = Some((p.y, app.gitui.hits.timeline.height + 1)),
         Hit::TimelineHead => {
             app.gitui.timeline.open = !app.gitui.timeline.open;
             save_layout(app);
@@ -965,9 +979,10 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
     true
 }
 
-/// Forget a drag whose release never arrived: the GRAPH header's, a dialog splitter's.
+/// Forget a drag whose release never arrived: a sidebar or dialog splitter's.
 pub fn drop_drags(app: &mut App) {
     app.gitui.drag = None;
+    app.gitui.timeline_drag = None;
     if let Some(d) = app.gitui.dlg.as_mut() {
         d.drag = None;
     }
@@ -979,9 +994,15 @@ fn between(st: crate::blocks::BlockStyle) -> u16 {
     u16::from(st != crate::blocks::BlockStyle::None)
 }
 
-/// Dragging the GRAPH header resizes the panes. True while that drag is on.
+/// Dragging a sidebar splitter resizes its panes. True while that drag is on.
 pub fn drag(app: &mut App, p: Position) -> bool {
     if commitdlg::drag(app, p) {
+        return true;
+    }
+    if let Some((y, h)) = app.gitui.timeline_drag {
+        if app.side == Side::Explorer && app.side_visible && app.gitui.timeline.open {
+            app.gitui.timeline_height = Some((i32::from(h) + i32::from(y) - i32::from(p.y)).clamp(4, 500) as u16);
+        }
         return true;
     }
     let Some((y0, moved, off)) = app.gitui.drag.as_mut() else { return false };
@@ -998,6 +1019,10 @@ pub fn drag(app: &mut App, p: Position) -> bool {
 /// Releasing the GRAPH header: a click (no drag) collapses or expands it.
 pub fn release(app: &mut App) -> bool {
     if commitdlg::release(app) {
+        return true;
+    }
+    if app.gitui.timeline_drag.take().is_some() {
+        save_layout(app);
         return true;
     }
     let Some((_, moved, _)) = app.gitui.drag.take() else { return false };
@@ -1416,10 +1441,13 @@ fn file_row(app: &App, f: &mut Frame, r: Rect, bg: Color, indent: usize, fc: &Fi
 pub fn split_timeline(app: &App, r: Rect) -> (Rect, Rect) {
     // A card's frame takes 2 rows: the pane keeps its rows inside it.
     let frame = if app.settings.blocks == crate::blocks::BlockStyle::Cards { 2 } else { 0 };
-    let h = frame + if app.gitui.timeline.open { (r.height / 3).clamp(4, 14) } else { 1 };
-    if r.height < h + 8 {
+    let min = if app.gitui.timeline.open { 4 } else { 1 };
+    if r.height < frame + min + 8 {
         return (r, Rect::default());
     }
+    let h = frame + if app.gitui.timeline.open {
+        app.gitui.timeline_height.unwrap_or((r.height / 3).clamp(4, 14)).clamp(4, r.height - frame - 8)
+    } else { 1 };
     (Rect::new(r.x, r.y, r.width, r.height - h), Rect::new(r.x, r.bottom() - h, r.width, h))
 }
 
@@ -1428,6 +1456,13 @@ pub fn draw_timeline(app: &mut App, f: &mut Frame, r: Rect) {
     fill(f, r, P.sidebar_bg);
     let name = app.gitui.timeline.path.as_deref().map(base).unwrap_or("").to_string();
     let open = app.gitui.timeline.open;
+    if open && r.y > app.ui.side_list.bottom() {
+        let sash = Rect::new(r.x, r.y - 1, r.width, 1);
+        app.gitui.hits.areas.push((sash, Hit::TimelineSash));
+        if app.gitui.timeline_drag.is_some() || app.hover.is_some_and(|p| sash.contains(p)) {
+            crate::blocks::hot(sash);
+        }
+    }
     pane_header(app, f, Rect::new(r.x, r.y, r.width, 1), "TIMELINE", open, Hit::TimelineHead, &name, false);
     let list = Rect::new(r.x, r.y + 1, r.width, r.height.saturating_sub(1));
     app.gitui.hits.timeline = list;
@@ -2047,6 +2082,71 @@ pub(crate) mod ui_tests {
         let info = app.gitui.hits.areas.iter().find(|(_, h)| matches!(h, Hit::Info(_))).map(|x| x.0).unwrap();
         click(&mut app, (info.x, info.y));
         assert!(app.gitui.card.is_some());
+    }
+
+    #[test]
+    fn timeline_border_resizes_and_remembers_its_height() {
+        use crate::blocks::BlockStyle;
+        let (t, r) = repo("timeline-resize", "echo 1 > f.txt; echo 2 > g.txt; git add .; git commit -qm one");
+        for (st, compact) in [(BlockStyle::Cards, false), (BlockStyle::Lines, true)] {
+            let state = t.0.join(format!("state-{st:?}/layout.json"));
+            let setup = |app: &mut App| {
+                app.settings.blocks = st;
+                app.settings.compact = compact;
+                app.settings.spacing = if compact { crate::settings::Spacing::COMPACT } else { crate::settings::Spacing::COMFORTABLE };
+            };
+            let mut app = App::new(r.clone(), Some(state.clone()));
+            setup(&mut app);
+            app.open_file(0, "f.txt", false);
+            let mut tm = Terminal::new(TestBackend::new(110, 30)).unwrap();
+            screen(&mut app, &mut tm);
+            settle(&mut app);
+            screen(&mut app, &mut tm);
+            let (x, y) = at(&tm, "TIMELINE");
+            let border = (x + 3, y - 1);
+            let height = app.gitui.hits.timeline.height;
+            assert!(app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: border.0, row: border.1, modifiers: KeyModifiers::NONE }), "{st:?}: hovering the border redraws");
+            screen(&mut app, &mut tm);
+            assert_eq!(tm.backend().buffer()[border].fg, P.sash_hover, "{st:?}: the border lights up");
+            click(&mut app, border);
+            assert!(app.gitui.timeline.open, "a border click never folds Timeline");
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), border);
+            mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), (border.0, border.1 - 3));
+            screen(&mut app, &mut tm);
+            assert_eq!(app.gitui.hits.timeline.height, height + 3, "{st:?}: dragging up grows Timeline");
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), (border.0, border.1 - 3));
+            let saved: serde_json::Value = serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();
+            assert_eq!(saved["scm"]["timeline_height"], height + 4, "height includes the header");
+            app.open_file(0, "g.txt", false);
+            screen(&mut app, &mut tm);
+            assert_eq!(app.gitui.hits.timeline.height, height + 3, "switching files retains the split");
+            click(&mut app, at(&tm, "TIMELINE"));
+            screen(&mut app, &mut tm);
+            assert!(!app.gitui.timeline.open);
+            click(&mut app, at(&tm, "TIMELINE"));
+            screen(&mut app, &mut tm);
+            assert_eq!(app.gitui.hits.timeline.height, height + 3, "unfolding restores the split");
+            let mut restored = App::new(r.clone(), Some(state));
+            setup(&mut restored);
+            screen(&mut restored, &mut tm);
+            assert_eq!(restored.gitui.hits.timeline.height, height + 3, "reopening restores the split");
+            let (x, y) = at(&tm, "TIMELINE");
+            mouse(&mut restored, MouseEventKind::Down(MouseButton::Left), (x + 3, y - 1));
+            mouse(&mut restored, MouseEventKind::Drag(MouseButton::Left), (x + 3, 500));
+            screen(&mut restored, &mut tm);
+            assert_eq!(restored.gitui.hits.timeline.height, 3, "Timeline keeps a header and three rows");
+            mouse(&mut restored, MouseEventKind::Drag(MouseButton::Left), (x + 3, 0));
+            screen(&mut restored, &mut tm);
+            assert!(restored.ui.side_list.height >= 4 && !restored.gitui.hits.timeline.is_empty(), "both panes remain usable");
+            mouse(&mut restored, MouseEventKind::Up(MouseButton::Left), (x + 3, 0));
+            for height in 5..31 {
+                let mut tiny = Terminal::new(TestBackend::new(40, height)).unwrap();
+                screen(&mut restored, &mut tiny);
+                assert!(restored.ui.side_list.bottom() <= height);
+            }
+            settle(&mut app);
+            settle(&mut restored);
+        }
     }
 
     #[test]
