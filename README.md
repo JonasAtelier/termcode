@@ -179,8 +179,11 @@ Comments are limited to 80 lines; a popup can be scrolled without scrolling the 
 The folding gutter uses the same chevrons as Explorer, with two clickable columns and a
 hover highlight. Code folding follows indentation (VS Code's fallback strategy), including nested functions
 and blocks. A folded header shows an ellipsis; original line numbers and file contents are
-preserved. Go to Definition and find reveal hidden results. Editing reveals folded blocks;
-fold state is local to each editor view and resets after text changes or restarting.
+preserved. Go to Definition and find reveal hidden results. Edits preserve unaffected
+folds and move them with their original headers when lines are inserted or removed,
+including undo/redo and split views. Editing inside hidden text reveals that block.
+Fold state is local to each editor view and resets on restart.
+Undo retains the latest 1,000 steps, with normal typing still grouped into one step.
 
 The editor gutter shows VS Code's quick diff against the git index (`:0:path`): green `▎`
 added, blue `▎` modified, red `▸` lines deleted below. Staging a hunk clears its marker. It

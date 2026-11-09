@@ -6,12 +6,13 @@ use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
 /// Typing pauses longer than this start a new undo step (VS Code-like).
 const UNDO_PAUSE: Duration = Duration::from_secs(1);
+const UNDO_LIMIT: usize = 1000;
 use syntect::highlighting::{Color as SColor, HighlightState, Highlighter, RangedHighlightIterator, Style as SStyle};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use unicode_width::UnicodeWidthChar;
@@ -107,14 +108,16 @@ pub struct View {
     pub collapsed: std::collections::BTreeSet<usize>,
     pub(crate) visible: Vec<usize>,
     pub(crate) fold_version: Option<(u64, usize)>,
+    pub(crate) fold_ids: Vec<u64>,
 }
 
 impl View {
     /// ponytail: indentation fallback; a syntax provider is needed for unindented bodies.
     /// Blank lines belong to
     /// their surrounding block; a dedented closing brace stays visible.
-    fn sync_folds(&mut self, lines: &[String], version: u64) {
-        if self.fold_version == Some((version, tab())) { return; }
+    fn sync_folds(&mut self, lines: &[String], ids: &[u64], version: u64) {
+        if self.fold_version == Some((version, tab())) && self.fold_ids.first() == ids.first() { return; }
+        let keep: std::collections::BTreeSet<u64> = self.collapsed.iter().filter_map(|&i| self.fold_ids.get(i).copied()).collect();
         self.fold_version = Some((version, tab()));
         self.collapsed.clear();
         self.visible.clear();
@@ -134,6 +137,10 @@ impl View {
             previous = Some((i, indent));
         }
         for (start, _) in stack { self.fold_ends[start] = Some(lines.len() - 1); }
+        self.collapsed.extend(ids.iter().enumerate().filter_map(|(i, id)| (self.fold_ends[i].is_some() && keep.contains(id)).then_some(i)));
+        self.fold_ids.clear();
+        self.fold_ids.extend_from_slice(ids);
+        self.rebuild_folds();
     }
 
     pub fn rebuild_folds(&mut self) {
@@ -239,6 +246,8 @@ fn tokenise(line: &str, st: &mut (ParseState, HighlightState, semantic::Ctx), hl
 pub struct Buffer {
     pub path: Option<PathBuf>,
     pub lines: Vec<String>,
+    /// Stable line identities let independent views retain their folded headers.
+    line_ids: Vec<u64>,
     pub crlf: bool,
     pub final_newline: bool,
     /// Why this buffer can never be saved (truncated, not UTF-8, binary, …).
@@ -389,11 +398,18 @@ pub(crate) fn find_in<'a>(lines: impl IntoIterator<Item = (usize, &'a str)>, q: 
     out
 }
 
+fn fresh_line_ids(n: usize) -> std::ops::Range<u64> {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let start = NEXT.fetch_add(n as u64, Ordering::Relaxed);
+    start..start + n as u64
+}
+
 impl Buffer {
     fn empty(path: Option<PathBuf>) -> Buffer {
         Buffer {
             path,
             lines: vec![String::new()],
+            line_ids: fresh_line_ids(1).collect(),
             crlf: false,
             final_newline: true,
             readonly: None,
@@ -430,6 +446,7 @@ impl Buffer {
         let mut b = Buffer::empty(None);
         if !lines.is_empty() {
             b.lines = lines;
+            b.line_ids = fresh_line_ids(b.lines.len()).collect();
         }
         b.readonly = Some(why.into());
         let (ss, p) = (syntaxes(), Path::new(path));
@@ -479,6 +496,7 @@ impl Buffer {
         b.set_text(&text);
         if capped || b.lines.len() > MAX_LINES {
             b.lines.truncate(MAX_LINES);
+            b.line_ids.truncate(MAX_LINES);
             b.readonly = Some(format!("truncated to 1 MB / {MAX_LINES} lines: read-only, cannot be saved"));
         }
         let ss = syntaxes();
@@ -506,6 +524,7 @@ impl Buffer {
 
     fn set_text(&mut self, text: &str) {
         (self.lines, self.crlf, self.final_newline) = split_lines(text);
+        self.line_ids = fresh_line_ids(self.lines.len()).collect();
         let tabs = self.lines.iter().take(2000).filter(|l| l.starts_with('\t')).count();
         let spaces = self.lines.iter().take(2000).filter(|l| l.starts_with(' ')).count();
         self.indent = if tabs > spaces { "\t".into() } else { " ".repeat(tab()) };
@@ -541,7 +560,7 @@ impl Buffer {
     }
 
     pub fn clamp_view(&self, v: &mut View) {
-        v.sync_folds(&self.lines, self.version());
+        v.sync_folds(&self.lines, &self.line_ids, self.version());
         v.cursor = self.clamp(v.cursor);
         v.anchor = v.anchor.map(|a| self.clamp(a));
         v.scroll = v.line_of(v.row_of(v.scroll.min(self.lines.len() - 1)));
@@ -679,6 +698,11 @@ impl Buffer {
             Some(last) => Pos::new(at.line + rest.len(), last.len()),
         };
         self.lines.splice(at.line + 1..at.line + 1, rest);
+        self.line_ids.splice(at.line + 1..at.line + 1, fresh_line_ids(end.line - at.line));
+        if at.col == 0 {
+            // At a line's start, its original text (and fold) moves after the insertion.
+            self.line_ids.swap(at.line, end.line);
+        }
         self.lines[end.line].push_str(&tail);
         self.invalidate(at.line);
         end
@@ -691,6 +715,10 @@ impl Buffer {
             return s;
         }
         let tail = self.lines[b.line][b.col..].to_string();
+        if a.col == 0 {
+            self.line_ids[a.line] = if b.col == 0 { self.line_ids[b.line] } else { fresh_line_ids(1).next().unwrap() };
+        }
+        self.line_ids.drain(a.line + 1..=b.line);
         let mut removed = self.lines[a.line].split_off(a.col);
         let mid: Vec<String> = self.lines.drain(a.line + 1..=b.line).collect();
         let n = mid.len();
@@ -706,10 +734,8 @@ impl Buffer {
     // ---- undo groups -------------------------------------------------------
 
     fn begin(&mut self, v: &mut View, kind: Kind) {
-        // An edit reveals the buffer before changing text; stale fold endpoints
-        // must never hide a different block after an insertion or deletion.
-        v.collapsed.clear();
-        v.rebuild_folds();
+        self.clamp_view(v);
+        v.unfold_at(v.cursor.line);
         let merge = kind != Kind::Other
             && self.open_kind == Some(kind)
             && self.last_edit.is_some_and(|t| t.elapsed() < UNDO_PAUSE)
@@ -726,7 +752,7 @@ impl Buffer {
         self.open_kind = (kind != Kind::Other).then_some(kind);
     }
 
-    fn end(&mut self, v: &View) {
+    fn end(&mut self, v: &mut View) {
         if self.undo.last().is_some_and(|g| g.ops.is_empty()) {
             self.undo.pop();
             return;
@@ -736,7 +762,10 @@ impl Buffer {
             g.ver_after = self.version;
         }
         self.last_edit = Some(Instant::now());
+        let excess = self.undo.len().saturating_sub(UNDO_LIMIT);
+        self.undo.drain(..excess);
         self.redo.clear();
+        self.clamp_view(v);
     }
 
     fn bump(&mut self) {
@@ -762,6 +791,7 @@ impl Buffer {
     }
 
     pub fn undo(&mut self, v: &mut View) -> bool {
+        self.clamp_view(v);
         self.open_kind = None;
         let Some(g) = self.undo.pop() else { return false };
         for op in g.ops.iter().rev() {
@@ -778,10 +808,12 @@ impl Buffer {
         (v.cursor, v.anchor) = g.before;
         v.want_x = None;
         self.redo.push(g);
+        self.clamp_view(v);
         true
     }
 
     pub fn redo(&mut self, v: &mut View) -> bool {
+        self.clamp_view(v);
         self.open_kind = None;
         let Some(g) = self.redo.pop() else { return false };
         for op in &g.ops {
@@ -798,6 +830,7 @@ impl Buffer {
         (v.cursor, v.anchor) = g.after;
         v.want_x = None;
         self.undo.push(g);
+        self.clamp_view(v);
         true
     }
 
@@ -1521,11 +1554,84 @@ mod tests {
         v.rebuild_folds();
         b.insert(&mut v, "changed ");
         b.clamp_view(&mut v);
-        assert!(v.collapsed.is_empty(), "edits invalidate fold locations");
+        assert!(v.collapsed.is_empty(), "editing inside hidden text reveals that block");
         assert!(b.undo(&mut v));
         assert_eq!(b.lines[2], "\t\twork()");
         b.clamp_view(&mut v);
         assert_eq!(v.fold_ends[0], Some(4));
+    }
+
+    #[test]
+    fn folded_blocks_survive_edits_line_moves_and_undo_in_both_views() {
+        let mut b = buf("fn one() {\n    first();\n}\n\nfn two() {\n    second();\n}\nafter();");
+        let mut v = View::default();
+        b.clamp_view(&mut v);
+        v.collapsed.extend([0, 4]);
+        v.rebuild_folds();
+        let mut other = v.clone();
+        b.insert(&mut v, "// header\n");
+        b.clamp_view(&mut v);
+        b.clamp_view(&mut other);
+        assert_eq!(v.collapsed.iter().copied().collect::<Vec<_>>(), vec![1, 5], "insertion at a folded header moves its identity");
+        assert_eq!(other.collapsed, v.collapsed);
+        assert!(b.undo(&mut v));
+        b.clamp_view(&mut v);
+        b.clamp_view(&mut other);
+        assert_eq!(v.collapsed.iter().copied().collect::<Vec<_>>(), vec![0, 4]);
+        v.cursor = Pos::new(7, 0);
+        b.insert(&mut v, "// ");
+        b.clamp_view(&mut v);
+        b.clamp_view(&mut other);
+        assert_eq!(v.collapsed.iter().copied().collect::<Vec<_>>(), vec![0, 4], "typing outside folds preserves them");
+        assert_eq!(other.collapsed, v.collapsed, "a second view preserves its folds too");
+        v.cursor = Pos::new(3, 0);
+        b.insert(&mut v, "prefix\n");
+        b.clamp_view(&mut v);
+        b.clamp_view(&mut other);
+        assert_eq!(v.collapsed.iter().copied().collect::<Vec<_>>(), vec![0, 5]);
+        assert_eq!(other.collapsed, v.collapsed);
+        assert!(v.hidden(1) && v.hidden(6));
+        assert!(b.undo(&mut v));
+        b.clamp_view(&mut v);
+        assert_eq!(v.collapsed.iter().copied().collect::<Vec<_>>(), vec![0, 4]);
+        assert!(b.redo(&mut v));
+        b.clamp_view(&mut v);
+        assert_eq!(v.collapsed.iter().copied().collect::<Vec<_>>(), vec![0, 5]);
+        assert!(b.replace_lines(&mut v, 3, 5, &[]));
+        b.clamp_view(&mut v);
+        b.clamp_view(&mut other);
+        assert_eq!(v.collapsed.iter().copied().collect::<Vec<_>>(), vec![0, 3], "deleting lines above a fold moves it");
+        assert_eq!(other.collapsed, v.collapsed);
+        assert!(b.replace_lines(&mut v, 3, 6, &[]));
+        b.clamp_view(&mut v);
+        assert_eq!(v.collapsed.iter().copied().collect::<Vec<_>>(), vec![0], "only the deleted block loses its fold");
+    }
+
+    #[test]
+    fn deleting_a_fold_header_never_folds_another_identical_header() {
+        let mut b = buf("fn same() {\n    first();\n}\nfn same() {\n    second();\n}");
+        let mut v = View::default();
+        b.clamp_view(&mut v);
+        v.collapsed.insert(0);
+        v.rebuild_folds();
+        assert!(b.replace_lines(&mut v, 0, 3, &[]));
+        b.clamp_view(&mut v);
+        assert!(v.collapsed.is_empty());
+        assert_eq!(b.lines[1], "    second();");
+    }
+
+    #[test]
+    fn undo_keeps_only_the_latest_thousand_steps_and_noops_do_not_evict() {
+        let mut b = buf("");
+        let mut v = View::default();
+        for _ in 0..1005 { b.insert(&mut v, "xx"); }
+        b.delete(&mut v); // Delete at EOF does not consume history.
+        for _ in 0..1000 { assert!(b.undo(&mut v)); }
+        assert!(!b.undo(&mut v), "older steps were discarded");
+        assert_eq!(b.text(), "x".repeat(10));
+        for _ in 0..1000 { assert!(b.redo(&mut v)); }
+        assert!(!b.redo(&mut v));
+        assert_eq!(b.text(), "x".repeat(2010));
     }
 
     fn buf(text: &str) -> Buffer {
