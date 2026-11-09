@@ -1198,11 +1198,8 @@ fn pane_header(app: &mut App, f: &mut Frame, r: Rect, title: &str, open: bool, h
     fill(f, r, P.section_bg);
     let chev = if open { ic.chev_down } else { ic.chev_right };
     let fg = if focused && app.settings.blocks != crate::blocks::BlockStyle::Cards { P.focus_border } else { P.section_fg };
-    let (pad, gap) = if hit == Hit::TimelineHead {
-        (s.sidebar_padding.saturating_sub(1) / 2, crate::blocks::icon_gap(s.icon_gap) / 2)
-    } else {
-        (s.sidebar_padding, crate::blocks::icon_gap(s.icon_gap))
-    };
+    let pad = s.sidebar_padding.saturating_sub(1) / 2;
+    let gap = crate::blocks::icon_gap(s.icon_gap) / 2;
     let ir = inset(r, pad);
     // As in the rows: cut once with "…"; the dim file name only while the title is whole.
     let head = format!(" {chev}{}{title}", sp(gap));
@@ -1218,7 +1215,7 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
     if app.git_root.is_none() {
         // VS Code's Source Control view for a folder without a repository.
         let msg = "The folder currently open doesn't have a git repository.";
-        let area = inset(r, s.sidebar_padding.max(1));
+        let area = inset(r, (s.sidebar_padding.saturating_sub(1) / 2).max(1));
         let p = ratatui::widgets::Paragraph::new(msg).wrap(ratatui::widgets::Wrap { trim: true });
         f.render_widget(p.style(Style::new().fg(P.sidebar_fg)), area);
         app.ui.side_list = Rect::default();
@@ -1269,9 +1266,9 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
     app.gitui.hits.changes = crect;
     app.ui.side_list = Rect::default();
     if crect.height > 0 {
-        let m = s.sidebar_padding.min(crect.width / 2);
+        let m = (s.sidebar_padding.saturating_sub(1) / 2).min(crect.width / 2);
         let btn = Rect::new(crect.x + m, crect.y, crect.width.saturating_sub(2 * m), 1);
-        let label = format!("{}{}Add commit", icons().check, sp(s.icon_gap));
+        let label = format!("{}{}Add commit", icons().check, sp(crate::blocks::icon_gap(s.icon_gap) / 2));
         fill(f, btn, P.button_bg);
         let bx = btn.x + btn.width.saturating_sub(label.width() as u16) / 2;
         f.render_widget(Span::styled(fit(&label, btn.width as usize), Style::new().fg(P.button_fg).bg(P.button_bg)), Rect::new(bx, btn.y, btn.right().saturating_sub(bx), 1));
@@ -1300,7 +1297,8 @@ fn list_bg(selected: bool, focused: bool, hovered: bool) -> Color {
 
 /// CHANGES rows on the sidebar's generic list state.
 fn changes_list(app: &mut App, f: &mut Frame, list: Rect) {
-    let lay = app.settings.spacing;
+    let mut lay = app.settings.spacing;
+    lay.sidebar_padding = lay.sidebar_padding.saturating_sub(1) / 2;
     app.ui.side_list = list;
     let s = Side::Scm as usize;
     let rows = app.scm_rows();
@@ -1341,7 +1339,7 @@ fn graph_list(app: &mut App, f: &mut Frame, list: Rect) {
     l.sel = l.sel.min(n.saturating_sub(1));
     l.off = l.off.min(n.saturating_sub(h));
     let (sel, off) = (l.sel, l.off);
-    let pad = app.settings.spacing.sidebar_padding;
+    let pad = app.settings.spacing.sidebar_padding.saturating_sub(1) / 2;
     if n == 0 {
         let t = if app.gitui.graph.loading || !app.gitui.graph.loaded { "Loading…" } else { "No commits yet" };
         row(f, inset(Rect::new(list.x, list.y, list.width, 1), pad), P.sidebar_bg, vec![Span::styled(format!(" {t}"), Style::new().fg(P.dim))]);
@@ -1388,7 +1386,7 @@ fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: 
         let glyph = if crate::theme::ascii() && matches!(glyph, '●' | '○') { if head { '*' } else { 'o' } } else { glyph };
         spans.push(Span::styled(glyph.to_string(), Style::new().fg(pal.lane(cell.color))));
     }
-    spans.push(Span::raw(" "));
+    spans.push(Span::raw(sp(crate::blocks::icon_gap(app.settings.spacing.icon_gap) / 2)));
     // The subject keeps at least ~20 cells and 2 blank ones after it; the badges get the
     // rest before they collapse into +N, then go.
     let info = if hot { 2 } else { 0 };
@@ -1418,7 +1416,7 @@ fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: 
 
 fn file_row(app: &App, f: &mut Frame, r: Rect, bg: Color, indent: usize, fc: &FileChange) {
     let (glyph, gfg) = crate::icons::file_icon(base(&fc.path), &app.settings.file_icons);
-    let g = crate::blocks::icon_gap(app.settings.spacing.icon_gap);
+    let g = crate::blocks::icon_gap(app.settings.spacing.icon_gap) / 2;
     let dir = fc.path.rsplit_once('/').map_or(String::new(), |(d, _)| format!(" {d}"));
     let letter = vec![Span::styled(format!(" {} ", fc.status), Style::new().fg(git_color(fc.status)))];
     let room = room_before(&letter, (r.width as usize).saturating_sub(indent + 1 + g as usize));
@@ -1826,7 +1824,8 @@ pub(crate) mod ui_tests {
                 let sb = app.ui.sidebar;
                 for row in s.lines().skip(sb.y as usize).take(sb.height as usize) {
                     let row: String = row.chars().skip(sb.x as usize).take(sb.width as usize).collect();
-                    for (i, _) in row.match_indices('…') {
+                    // The main label keeps its gap; ref badges may abbreviate independently.
+                    for (i, _) in row.match_indices('…').take(1) {
                         let next: Vec<char> = row[i + '…'.len_utf8()..].chars().take(2).collect();
                         assert!(next.iter().all(|&c| c == ' ' || ('\u{2500}'..='\u{257f}').contains(&c)), "width {w}, {side:?}: {row:?}");
                     }

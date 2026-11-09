@@ -452,7 +452,7 @@ fn paint_slider(f: &mut Frame, track: Rect, (start, len): (u16, u16), c: Rgba) {
 }
 
 fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
-    if app.side == Side::Explorer {
+    if matches!(app.side, Side::Explorer | Side::Scm) {
         // Halve the padding plus the row's leading blank, keeping whole cells.
         lay.pad = lay.pad.saturating_sub(1) / 2;
     }
@@ -817,7 +817,7 @@ fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
 
 pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: bool) {
     let ic = icons();
-    let g = crate::blocks::icon_gap(app.settings.spacing.icon_gap);
+    let g = crate::blocks::icon_gap(app.settings.spacing.icon_gap) / 2;
     match sr {
         SRow::Gap => {}
         SRow::MergeHead(n) => {

@@ -4986,6 +4986,8 @@ mod tests {
                 assert_eq!(section, icon, "{compact}/{style:?}: root label aligns with file icons");
                 assert_eq!(cell_of(&t, "TIMELINE", 0).0, section, "{compact}/{style:?}: Timeline and Explorer headers align");
                 println!("{style:?} compact={compact} padding={}: title={title}, section={section}, file_icon={icon}", spacing.sidebar_padding);
+                let explorer_title = title;
+                let explorer_refresh = app.ui.find_btns.iter().find(|(_, b)| *b == FindBtn::Refresh).unwrap().0;
                 app.show_side(Side::Search, true);
                 screen(&mut app, &mut t);
                 let input = app.ui.side_input;
@@ -5003,8 +5005,13 @@ mod tests {
                 }
                 app.show_side(Side::Scm, false);
                 screen(&mut app, &mut t);
-                assert_eq!((app.ui.commit_btn.x, app.ui.commit_btn.right()), (input.x, input.right()));
-                assert_eq!(cell_of(&t, "CHANGES", 0).0, title + 1 + crate::blocks::icon_gap(spacing.icon_gap));
+                let refresh = app.ui.find_btns.iter().find(|(_, b)| *b == FindBtn::Refresh).unwrap().0;
+                assert_eq!(cell_of(&t, "SOURCE CONTROL", 0).0, explorer_title, "SCM title matches Explorer");
+                assert_eq!(refresh, explorer_refresh, "SCM refresh matches Explorer");
+                assert_eq!(app.ui.commit_btn.x, app.ui.side_list.x + spacing.sidebar_padding.saturating_sub(1) / 2);
+                assert_eq!(app.ui.commit_btn.right(), refresh.right());
+                assert_eq!(cell_of(&t, "CHANGES", 0).0, section, "CHANGES matches Explorer's section label");
+                assert_eq!(cell_of(&t, "GRAPH", 0).0, section, "GRAPH matches Explorer's section label");
                 let menu = app.gitui.hits.cmds.iter().find(|(_, h)| *h == crate::gitcmds::Hit::Menu).unwrap().0;
                 assert_eq!(menu.x + 3, refresh.x, "SCM menu anchored to Refresh");
                 mouse(&mut app, MouseEventKind::Down(MouseButton::Left), menu.x, menu.y);
