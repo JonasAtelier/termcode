@@ -128,6 +128,9 @@ pub struct Settings {
     pub sticky_max: usize,
     pub tab_size: usize,
     /// `files.trimTrailingWhitespace` and `files.insertFinalNewline`, applied on save.
+    /// `editor.autoClosingBrackets`, `editor.autoClosingQuotes`.
+    pub auto_brackets: bool,
+    pub auto_quotes: bool,
     pub trim_trailing: bool,
     pub final_newline: bool,
     /// `editor.rulers`: display columns, each with an optional own colour.
@@ -175,6 +178,8 @@ impl Default for Settings {
             // One row: the top-level folder holding the top row (VS Code's default is 7).
             sticky_max: 1,
             tab_size: 4,
+            auto_brackets: true,
+            auto_quotes: true,
             trim_trailing: true,
             final_newline: true,
             rulers: vec![(90, None)],
@@ -289,6 +294,8 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         guides: g("editor.guides.indentation").and_then(Value::as_bool).unwrap_or(d.guides),
         sticky: g("workbench.tree.enableStickyScroll").and_then(Value::as_bool).unwrap_or(d.sticky),
         sticky_max: g("workbench.tree.stickyScrollMaxItemCount").and_then(Value::as_u64).map_or(d.sticky_max, |n| n.clamp(1, 10) as usize),
+        auto_brackets: g("editor.autoClosingBrackets").and_then(Value::as_str) != Some("never"),
+        auto_quotes: g("editor.autoClosingQuotes").and_then(Value::as_str) != Some("never"),
         trim_trailing: g("files.trimTrailingWhitespace").and_then(Value::as_bool).unwrap_or(d.trim_trailing),
         final_newline: g("files.insertFinalNewline").and_then(Value::as_bool).unwrap_or(d.final_newline),
         tab_size: g("editor.tabSize").and_then(Value::as_u64).filter(|n| (1..=16).contains(n)).map_or(d.tab_size, |n| n as usize),
@@ -640,6 +647,8 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "workbench.tree.enableStickyScroll": true,      // pin the folders above the top row
     // "workbench.tree.stickyScrollMaxItemCount": 1,  // up to 10: arch, then sh, boards, …
     // "editor.tabSize": 4,
+    // "editor.autoClosingBrackets": "always",  // or "never"
+    // "editor.autoClosingQuotes": "always",    // or "never"
     // "files.trimTrailingWhitespace": true,   // on save, edited lines only; not Markdown or patches
     // "files.insertFinalNewline": true,
     // "editor.rulers": [90],   // [] for none; [{ "column": 80, "color": "#5A5A5A" }, 100]
@@ -663,6 +672,18 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn auto_closing_is_on_unless_set_to_never() {
+        let on = |text: &str| {
+            let s = from_maps(&parse_jsonc(text).unwrap(), None, &[]).unwrap();
+            (s.auto_brackets, s.auto_quotes)
+        };
+        assert_eq!(on("{}"), (true, true));
+        assert_eq!(on(r#"{"editor.autoClosingBrackets": "never"}"#), (false, true));
+        assert_eq!(on(r#"{"editor.autoClosingQuotes": "never"}"#), (true, false));
+        assert_eq!(on(r#"{"editor.autoClosingBrackets": "always"}"#), (true, true));
     }
 
     #[test]

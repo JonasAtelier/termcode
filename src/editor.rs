@@ -916,6 +916,72 @@ impl Buffer {
         self.insert_kind(v, &s, if typing { Kind::Type } else { Kind::Other });
     }
 
+    /// A character typed in the editor, closing brackets and quotes: a selection is wrapped,
+    /// a closer already there is stepped over, and a pair opens only where nothing would be
+    /// swallowed by it. A quote after a word or a backslash stays single.
+    pub fn type_char(&mut self, v: &mut View, c: char, brackets: bool, quotes: bool) {
+        let is_quote = matches!(c, '"' | '\'' | '`');
+        let close = match c {
+            '(' if brackets => Some(')'),
+            '[' if brackets => Some(']'),
+            '{' if brackets => Some('}'),
+            _ if quotes && is_quote => Some(c),
+            _ => None,
+        };
+        let cur = self.clamp(v.cursor);
+        let line = &self.lines[cur.line];
+        let (before, after) = (line[..cur.col].chars().next_back(), line[cur.col..].chars().next());
+        let closer = (brackets && matches!(c, ')' | ']' | '}')) || (quotes && is_quote);
+        if self.readonly.is_some() {
+            return self.insert(v, &c.to_string());
+        }
+        if let (Some(close), Some((a, e))) = (close, v.selection()) {
+            self.begin(v, Kind::Other);
+            self.do_ins(e, &close.to_string());
+            self.do_ins(a, &c.to_string());
+            let inside = |p: Pos| if p.line == a.line { Pos::new(p.line, p.col + c.len_utf8()) } else { p };
+            (v.anchor, v.cursor) = (Some(inside(a)), inside(e));
+            v.want_x = None;
+            return self.end(v);
+        }
+        if closer && after == Some(c) && v.selection().is_none() {
+            v.cursor = Pos::new(cur.line, cur.col + c.len_utf8());
+            v.want_x = None;
+            return;
+        }
+        let room = after.is_none_or(|a| a.is_whitespace() || ")]}>,;:.".contains(a));
+        let single = is_quote && before.is_some_and(|b| b.is_alphanumeric() || b == '_' || b == '\\');
+        match close.filter(|_| room && !single && v.selection().is_none()) {
+            Some(close) => {
+                self.begin(v, Kind::Type);
+                self.do_ins(cur, &format!("{c}{close}"));
+                v.cursor = Pos::new(cur.line, cur.col + c.len_utf8());
+                v.want_x = None;
+                self.end(v);
+            }
+            None => self.insert(v, &c.to_string()),
+        }
+    }
+
+    /// Backspace in the editor: inside an empty pair both halves go.
+    pub fn backspace_pair(&mut self, v: &mut View, brackets: bool, quotes: bool) {
+        let c = self.clamp(v.cursor);
+        let line = &self.lines[c.line];
+        let pair = match (line[..c.col].chars().next_back(), line[c.col..].chars().next()) {
+            (Some('('), Some(')')) | (Some('['), Some(']')) | (Some('{'), Some('}')) => brackets,
+            (Some(a @ ('"' | '\'' | '`')), Some(b)) if a == b => quotes,
+            _ => false,
+        };
+        if !pair || self.readonly.is_some() || v.selection().is_some() {
+            return self.backspace(v);
+        }
+        self.begin(v, Kind::Erase);
+        self.do_del(Pos::new(c.line, c.col - 1), Pos::new(c.line, c.col + 1));
+        v.cursor = Pos::new(c.line, c.col - 1);
+        v.want_x = None;
+        self.end(v);
+    }
+
     /// Enter: new line keeping the current line's indentation.
     pub fn newline(&mut self, v: &mut View) {
         let c = self.clamp(v.cursor);
@@ -1252,10 +1318,6 @@ impl Buffer {
         self.open_kind = None;
     }
 
-    // ---- find ----------------------------------------------------------------
-
-    /// Literal matches of `q` (ASCII case folding unless `case`; `word` = whole
-    /// word only), capped at 10k.
     // ---- disk ------------------------------------------------------------------
 
     /// Save. Normally atomic: temp file in the same directory (created with the
@@ -1642,6 +1704,91 @@ mod tests {
         let re = find_regex(r"(\w+)=(\d+)", true, false).unwrap();
         assert_eq!(expand(&re, "a=1 bc=22", 4, "$2:$1"), "22:bc", "the match at that column");
         assert_eq!(expand(&re, "a=1", 0, "$$"), "$");
+    }
+
+    fn typed(start: &str, col: usize, keys: &str) -> (Vec<String>, usize) {
+        let mut b = buf(start);
+        let mut v = View::default();
+        b.clamp_view(&mut v);
+        b.move_to(&mut v, Pos::new(0, col), false);
+        for c in keys.chars() {
+            b.type_char(&mut v, c, true, true);
+        }
+        (b.lines.clone(), v.cursor.col)
+    }
+
+    #[test]
+    fn typing_an_opener_closes_it_where_nothing_follows() {
+        assert_eq!(typed("", 0, "("), (vec!["()".to_string()], 1));
+        assert_eq!(typed(")", 0, "["), (vec!["[])".to_string()], 1), "before a closer");
+        assert_eq!(typed("x", 0, "("), (vec!["(x".to_string()], 1), "not in front of a word");
+        assert_eq!(typed("", 0, "(("), (vec!["(())".to_string()], 2), "nested");
+    }
+
+    #[test]
+    fn typing_the_closer_steps_over_it() {
+        assert_eq!(typed("", 0, "()"), (vec!["()".to_string()], 2));
+        assert_eq!(typed("", 0, "\"\""), (vec!["\"\"".to_string()], 2));
+    }
+
+    #[test]
+    fn quotes_stay_single_after_a_word_or_a_backslash() {
+        assert_eq!(typed("", 0, "'"), (vec!["''".to_string()], 1));
+        assert_eq!(typed("a", 1, "'"), (vec!["a'".to_string()], 2), "an apostrophe");
+        assert_eq!(typed("\\", 1, "\""), (vec!["\\\"".to_string()], 2), "an escape");
+    }
+
+    #[test]
+    fn typing_an_opener_wraps_a_selection() {
+        let mut b = buf("ab cd");
+        let mut v = View::default();
+        b.clamp_view(&mut v);
+        b.move_to(&mut v, Pos::new(0, 2), true);
+        b.type_char(&mut v, '(', true, true);
+        assert_eq!(b.lines, ["(ab) cd"]);
+        assert_eq!(b.selected_text(&v).as_deref(), Some("ab"), "the text stays selected");
+        assert!(b.undo(&mut v));
+        assert_eq!(b.lines, ["ab cd"], "one undo step");
+    }
+
+    #[test]
+    fn backspace_in_an_empty_pair_removes_both_halves() {
+        let mut b = buf("()");
+        let mut v = View::default();
+        b.clamp_view(&mut v);
+        b.move_to(&mut v, Pos::new(0, 1), false);
+        b.backspace_pair(&mut v, true, true);
+        assert_eq!((b.lines.clone(), v.cursor.col), (vec![String::new()], 0));
+        let mut b = buf("(x)");
+        b.move_to(&mut v, Pos::new(0, 2), false);
+        b.backspace_pair(&mut v, true, true);
+        assert_eq!(b.lines, ["()"], "only an empty pair");
+    }
+
+    #[test]
+    fn a_closed_pair_is_one_undo_step() {
+        let mut b = buf("");
+        let mut v = View::default();
+        b.clamp_view(&mut v);
+        b.type_char(&mut v, '(', true, true);
+        assert!(b.undo(&mut v));
+        assert_eq!(b.lines, [""]);
+    }
+
+    #[test]
+    fn auto_closing_can_be_turned_off_per_kind() {
+        let mut b = buf("");
+        let mut v = View::default();
+        b.clamp_view(&mut v);
+        b.type_char(&mut v, '(', false, true);
+        assert_eq!(b.lines, ["("], "brackets off");
+        b.type_char(&mut v, '"', false, true);
+        assert_eq!(b.lines, ["(\"\""], "quotes still on");
+        let mut b = buf("()");
+        b.clamp_view(&mut v);
+        b.move_to(&mut v, Pos::new(0, 1), false);
+        b.backspace_pair(&mut v, false, true);
+        assert_eq!(b.lines, [")"], "off: a plain Backspace");
     }
 
     #[test]

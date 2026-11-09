@@ -3350,6 +3350,7 @@ impl App {
             return;
         }
         let mut readonly_hit = None;
+        let (brackets, quotes) = (self.settings.auto_brackets, self.settings.auto_quotes);
         {
             let Some((b, tab)) = self.ed() else { return };
             let v = &mut tab.view;
@@ -3369,11 +3370,11 @@ impl App {
                     _ => return,
                 },
                 KeyCode::Char(_) if alt => return,
-                KeyCode::Char(c) => b.insert(v, &c.to_string()),
+                KeyCode::Char(c) => b.type_char(v, c, brackets, quotes),
                 KeyCode::Enter => b.newline(v),
                 KeyCode::Tab => b.indent(v),
                 KeyCode::BackTab => b.outdent(v),
-                KeyCode::Backspace => b.backspace(v),
+                KeyCode::Backspace => b.backspace_pair(v, brackets, quotes),
                 KeyCode::Delete => b.delete(v),
                 KeyCode::Left => b.left(v, shift, ctrl),
                 KeyCode::Right => b.right(v, shift, ctrl),
