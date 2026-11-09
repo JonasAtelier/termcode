@@ -795,6 +795,45 @@ pub(crate) fn restore() {
     let _ = terminal::disable_raw_mode();
 }
 
+/// What a wait on the terminal's input found.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Input {
+    Ready,
+    Idle,
+    Gone,
+}
+
+/// Wait up to `wait` for input on `fd`. A signal ends the wait early, as `Idle`.
+fn wait_input(fd: libc::c_int, wait: Duration) -> Input {
+    let mut poll = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    let ms = wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
+    // SAFETY: one valid pollfd.
+    if unsafe { libc::poll(&mut poll, 1, ms) } <= 0 {
+        return Input::Idle;
+    }
+    if poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+        Input::Gone
+    } else {
+        Input::Ready
+    }
+}
+
+/// The next input event, waiting up to `wait`. crossterm is only ever asked without
+/// waiting, after a look at the terminal: once the terminal is gone its read loop never
+/// returns. A vanished terminal ends the event loop the way HUP does.
+fn next_event(wait: Duration) -> io::Result<Option<Event>> {
+    for wait in [Duration::ZERO, wait] {
+        if wait_input(libc::STDIN_FILENO, wait) == Input::Gone {
+            SIGNALED.store(true, Ordering::SeqCst);
+            return Ok(None);
+        }
+        if event::poll(Duration::ZERO)? {
+            return event::read().map(Some);
+        }
+    }
+    Ok(None)
+}
+
 /// A fresh random token in `path` (0600, written whole by a rename).
 fn write_token(path: &Path) -> io::Result<String> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -1499,8 +1538,7 @@ impl App {
             if SIGNALED.load(Ordering::SeqCst) {
                 return Ok(()); // run() flushes the backups
             }
-            let next = |wait| event::poll(wait).and_then(|ready| if ready { event::read().map(Some) } else { Ok(None) });
-            self.step(t, &mut dirty, next)?;
+            self.step(t, &mut dirty, next_event)?;
         }
         Ok(())
     }
@@ -5657,6 +5695,32 @@ mod tests {
         app.update_qdiff();
         assert_eq!(app.qdiff["file:long.c"].hunks.len(), 3);
         (root, app)
+    }
+
+    #[test]
+    fn input_wait_tells_idle_ready_and_a_closed_terminal_apart() {
+        let (mut master, mut slave) = (0, 0);
+        // SAFETY: valid out pointers; the name, termios and winsize arguments may be null.
+        let opened = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) };
+        assert_eq!(opened, 0);
+        // SAFETY: both descriptors are open. A child forked by another test must not inherit them.
+        unsafe {
+            libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(slave, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+        let start = Instant::now();
+        assert_eq!(wait_input(slave, Duration::from_millis(30)), Input::Idle);
+        assert!(start.elapsed() >= Duration::from_millis(25), "it waited");
+        // SAFETY: both are open descriptors from openpty and the buffer is 2 bytes.
+        unsafe { assert_eq!(libc::write(master, b"x\n".as_ptr().cast(), 2), 2) };
+        assert_eq!(wait_input(slave, Duration::from_secs(1)), Input::Ready);
+        // SAFETY: each descriptor is closed once.
+        unsafe { libc::close(master) };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while wait_input(slave, Duration::from_millis(20)) != Input::Gone {
+            assert!(Instant::now() < deadline, "the other end closed");
+        }
+        unsafe { libc::close(slave) };
     }
 
     /// 162 lines whose first block (lines 1..=60) folds away, opened in a proportional minimap.
