@@ -305,6 +305,8 @@ the panel: the status bar shows the error and the last good settings stay.
 | `indentRainbow.ignoreLinePatterns` | `["/[ \t]* [*]/g", "/[ \t]+[/]{2}/g"]` | JS regex literals; a matching line never gets the error colour |
 | `editor.guides.indentation` | `true` | Indent guides (`editorIndentGuide.background` / `.activeBackground`) |
 | `editor.tabSize` | `4` | Tab stops, the indent unit, rainbow and guides |
+| `files.trimTrailingWhitespace` | `true` | On save, on the lines edited since the file on disk; not in Markdown or patches |
+| `files.insertFinalNewline` | `true` | On save, a file with content ends with a newline |
 | `workbench.tree.enableStickyScroll` | `true` | Sticky scroll in the Explorer, Search and Source Control lists |
 | `herdr-code.restoreSession` | `true` | Reopen the last session's groups, tabs and sidebar for this launch folder |
 | `workbench.editor.restoreViewState` | `true` | Restore each file's cursor, selection and scroll: in the restored tabs, and when a closed file is opened again |

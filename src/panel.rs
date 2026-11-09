@@ -1491,6 +1491,12 @@ impl App {
         if !b.dirty() {
             return Ok(());
         }
+        let (trim, newline) = (self.settings.trim_trailing, self.settings.final_newline);
+        let mut spare = View::default();
+        let view = self.groups.iter_mut().flat_map(|g| g.tabs.iter_mut()).find(|t| t.key == key).map_or(&mut spare, |t| &mut t.view);
+        let Some(Doc::Text(b)) = self.docs.get_mut(key) else { return Ok(()) };
+        b.tidy(view, trim, newline);
+        let b = &*b;
         if let Some(dir) = &self.backup_dir {
             editor::write_backup(dir, &self.backup_scope, &self.backup_instance, b).map_err(|e| format!("backup before save failed: {e}"))?;
             self.backed.insert(key.to_string(), b.version());
@@ -5721,6 +5727,25 @@ mod tests {
             assert!(Instant::now() < deadline, "the other end closed");
         }
         unsafe { libc::close(slave) };
+    }
+
+    #[test]
+    fn ctrl_s_tidies_the_file_it_saves() {
+        let root = repo("save-tidy");
+        fs::write(root.join("a.c"), "x\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "a.c", false);
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        typ(&mut app, "y  ");
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(fs::read_to_string(root.join("a.c")).unwrap(), "y  x\n", "spaces inside the line stay");
+        let t = &mut app.groups[0].tabs[0].view;
+        t.cursor = Pos::new(0, 4);
+        typ(&mut app, "  ");
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(fs::read_to_string(root.join("a.c")).unwrap(), "y  x\n", "trailing ones go");
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// 162 lines whose first block (lines 1..=60) folds away, opened in a proportional minimap.

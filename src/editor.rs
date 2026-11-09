@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 /// Typing pauses longer than this start a new undo step (VS Code-like).
 const UNDO_PAUSE: Duration = Duration::from_secs(1);
 const UNDO_LIMIT: usize = 1000;
+use similar::{capture_diff_slices_deadline, Algorithm, DiffTag};
 use syntect::highlighting::{Color as SColor, HighlightState, Highlighter, RangedHighlightIterator, Style as SStyle};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use unicode_width::UnicodeWidthChar;
@@ -1017,6 +1018,50 @@ impl Buffer {
         true
     }
 
+    /// Before a save: trailing whitespace goes from the lines edited since the file on disk
+    /// (every line of a new file), so a save never adds noise to a diff, and the file ends
+    /// with a newline. Markdown and patches keep theirs, where it can mean something.
+    pub fn tidy(&mut self, v: &mut View, trim: bool, final_newline: bool) {
+        if self.readonly.is_some() {
+            return;
+        }
+        let extension = self.path.as_ref().and_then(|p| p.extension()).and_then(|e| e.to_str()).unwrap_or("");
+        if trim && !matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown" | "mdx" | "patch" | "diff") {
+            let bare = |l: &String| l.trim_end_matches([' ', '\t']).len();
+            let spans: Vec<(usize, usize)> = self.edited_lines().into_iter().map(|l| (l, bare(&self.lines[l]))).filter(|&(l, keep)| keep < self.lines[l].len()).collect();
+            if !spans.is_empty() {
+                self.begin(v, Kind::Other);
+                for &(line, keep) in spans.iter().rev() {
+                    let end = self.lines[line].len();
+                    self.do_del(Pos::new(line, keep), Pos::new(line, end));
+                }
+                v.cursor = self.clamp(v.cursor);
+                v.anchor = v.anchor.map(|a| self.clamp(a));
+                self.end(v);
+            }
+        }
+        if final_newline && self.lines.iter().any(|l| !l.is_empty()) {
+            self.final_newline = true;
+        }
+    }
+
+    /// The lines that differ from the file on disk, or all of them without one.
+    fn edited_lines(&self) -> Vec<usize> {
+        let Some(disk) = self.path.as_ref().and_then(|p| fs::read_to_string(p).ok()) else {
+            return (0..self.lines.len()).collect();
+        };
+        let (old, ..) = split_lines(&disk);
+        let a: Vec<&str> = old.iter().map(String::as_str).collect();
+        let b: Vec<&str> = self.lines.iter().map(String::as_str).collect();
+        capture_diff_slices_deadline(Algorithm::Myers, &a, &b, Some(Instant::now() + Duration::from_millis(100)))
+            .into_iter()
+            .flat_map(|op| {
+                let (tag, _, new) = op.as_tag_tuple();
+                if matches!(tag, DiffTag::Insert | DiffTag::Replace) { new } else { 0..0 }
+            })
+            .collect()
+    }
+
     /// Replace every match (back to front so earlier positions stay valid). One undo step.
     pub fn replace_all(&mut self, v: &mut View, matches: &[(Pos, Pos)], with: &str) -> usize {
         if self.readonly.is_some() || matches.is_empty() {
@@ -1534,6 +1579,79 @@ mod tests {
         }
         b.undo(&mut v);
         assert_eq!(b.text(), "ab");
+    }
+
+    #[test]
+    fn a_save_tidies_only_the_lines_that_were_edited() {
+        let d = tmpdir("tidy-edited");
+        let p = d.join("a.c");
+        fs::write(&p, "old  \nkeep\n").unwrap();
+        let mut b = Buffer::open(&p);
+        let mut v = View::default();
+        b.move_to(&mut v, Pos::new(1, 4), false);
+        b.insert(&mut v, "  ");
+        b.tidy(&mut v, true, true);
+        assert_eq!(b.lines, ["old  ", "keep"], "an untouched line keeps its spaces");
+        assert_eq!(v.cursor, Pos::new(1, 4), "pulled back to the new end of the line");
+        assert!(b.undo(&mut v));
+        assert_eq!(b.lines, ["old  ", "keep  "], "one undo step brings them back");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_new_file_is_tidied_on_every_line() {
+        let d = tmpdir("tidy-new");
+        let mut b = Buffer::empty(Some(d.join("new.c")));
+        let mut v = View::default();
+        b.insert(&mut v, "a  \n\tb\t");
+        b.tidy(&mut v, true, true);
+        assert_eq!(b.lines, ["a", "\tb"], "only trailing whitespace goes");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_save_ends_the_file_with_a_newline() {
+        let d = tmpdir("tidy-eof");
+        let p = d.join("a.c");
+        fs::write(&p, "x").unwrap();
+        let mut b = Buffer::open(&p);
+        let mut v = View::default();
+        b.tidy(&mut v, true, false);
+        assert!(!b.final_newline, "off when the setting is off");
+        b.tidy(&mut v, true, true);
+        assert!(b.final_newline);
+        let empty = d.join("empty.c");
+        fs::write(&empty, "").unwrap();
+        let mut e = Buffer::open(&empty);
+        e.tidy(&mut v, true, true);
+        assert!(!e.final_newline, "an empty file stays empty");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn markdown_and_patches_keep_their_trailing_spaces() {
+        let d = tmpdir("tidy-exempt");
+        for name in ["a.md", "a.patch", "a.diff"] {
+            fs::write(d.join(name), "").unwrap();
+            let mut b = Buffer::open(&d.join(name));
+            let mut v = View::default();
+            b.insert(&mut v, "x  ");
+            b.tidy(&mut v, true, true);
+            assert_eq!(b.lines, ["x  "], "{name}");
+        }
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn trimming_can_be_turned_off() {
+        let d = tmpdir("tidy-off");
+        fs::write(d.join("a.c"), "").unwrap();
+        let mut b = Buffer::open(&d.join("a.c"));
+        let mut v = View::default();
+        b.insert(&mut v, "x  ");
+        b.tidy(&mut v, false, true);
+        assert_eq!(b.lines, ["x  "]);
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
