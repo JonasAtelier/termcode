@@ -5835,6 +5835,26 @@ mod tests {
     }
 
     #[test]
+    fn the_bracket_pair_at_the_cursor_is_highlighted() {
+        let root = repo("bracket");
+        fs::write(root.join("a.c"), "f(x);\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "a.c", false);
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        app.groups[0].tabs[0].view.cursor = Pos::new(0, 1);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let buf = t.backend().buffer();
+        let at = |s: &str| (0..120).flat_map(|x| (0..30).map(move |y| (x, y))).find(|&p| buf[p].symbol() == s).unwrap();
+        let (open, close, x) = (at("("), at(")"), at("x"));
+        assert_eq!(buf[open].bg, crate::theme::P.bracket);
+        assert_eq!(buf[close].bg, crate::theme::P.bracket);
+        assert_ne!(buf[x].bg, crate::theme::P.bracket, "only the pair");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn ctrl_s_tidies_the_file_it_saves() {
         let root = repo("save-tidy");
         fs::write(root.join("a.c"), "x\n").unwrap();

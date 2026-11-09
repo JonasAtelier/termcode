@@ -20,6 +20,7 @@
   "editorCursor.foreground": "#AEAFAD",
   "editorRuler.foreground": "#5A5A5A",
   "editorWhitespace.foreground": "#E3E4E229",
+  "editorBracketMatch.background": "#88888859",
   "editorIndentGuide.background": "editorWhitespace.foreground",
   "editorIndentGuide.activeBackground": "editorWhitespace.foreground",
   "editorError.foreground": "#F14C4C",

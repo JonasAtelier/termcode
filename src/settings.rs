@@ -128,6 +128,8 @@ pub struct Settings {
     pub sticky_max: usize,
     pub tab_size: usize,
     /// `files.trimTrailingWhitespace` and `files.insertFinalNewline`, applied on save.
+    /// `editor.matchBrackets`: highlight the bracket pair at the cursor.
+    pub match_brackets: bool,
     /// `editor.autoClosingBrackets`, `editor.autoClosingQuotes`.
     pub auto_brackets: bool,
     pub auto_quotes: bool,
@@ -178,6 +180,7 @@ impl Default for Settings {
             // One row: the top-level folder holding the top row (VS Code's default is 7).
             sticky_max: 1,
             tab_size: 4,
+            match_brackets: true,
             auto_brackets: true,
             auto_quotes: true,
             trim_trailing: true,
@@ -294,6 +297,7 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         guides: g("editor.guides.indentation").and_then(Value::as_bool).unwrap_or(d.guides),
         sticky: g("workbench.tree.enableStickyScroll").and_then(Value::as_bool).unwrap_or(d.sticky),
         sticky_max: g("workbench.tree.stickyScrollMaxItemCount").and_then(Value::as_u64).map_or(d.sticky_max, |n| n.clamp(1, 10) as usize),
+        match_brackets: g("editor.matchBrackets").and_then(Value::as_str) != Some("never"),
         auto_brackets: g("editor.autoClosingBrackets").and_then(Value::as_str) != Some("never"),
         auto_quotes: g("editor.autoClosingQuotes").and_then(Value::as_str) != Some("never"),
         trim_trailing: g("files.trimTrailingWhitespace").and_then(Value::as_bool).unwrap_or(d.trim_trailing),
@@ -647,6 +651,7 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "workbench.tree.enableStickyScroll": true,      // pin the folders above the top row
     // "workbench.tree.stickyScrollMaxItemCount": 1,  // up to 10: arch, then sh, boards, …
     // "editor.tabSize": 4,
+    // "editor.matchBrackets": "always",        // or "never"
     // "editor.autoClosingBrackets": "always",  // or "never"
     // "editor.autoClosingQuotes": "always",    // or "never"
     // "files.trimTrailingWhitespace": true,   // on save, edited lines only; not Markdown or patches
@@ -672,6 +677,13 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn matching_brackets_are_on_unless_set_to_never() {
+        let on = |text: &str| from_maps(&parse_jsonc(text).unwrap(), None, &[]).unwrap().match_brackets;
+        assert!(on("{}"));
+        assert!(!on(r#"{"editor.matchBrackets": "never"}"#));
     }
 
     #[test]

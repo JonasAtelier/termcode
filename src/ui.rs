@@ -1132,6 +1132,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 minimap: app.minimap_on.then_some(app.settings.minimap),
                 hover: app.hover,
                 mini_drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
+                match_brackets: app.settings.match_brackets,
                 peek,
                 rulers: &rulers,
             };
@@ -1261,6 +1262,7 @@ struct Deco<'a> {
     hover: Option<Position>,
     /// This editor's minimap slider is being dragged.
     mini_drag: bool,
+    match_brackets: bool,
     peek: Option<PeekDraw<'a>>,
     rulers: &'a [(usize, Color)],
 }
@@ -1360,6 +1362,7 @@ fn text_editor(
     let sel = v.selection();
     let sel_bg = if group_focus { P.selection } else { P.sel_inactive };
     let tab = editor::tab();
+    let brackets = (d.match_brackets && group_focus).then(|| b.bracket_pair(c)).flatten();
     let guides = d.guides.then(|| Guides::new(&b.lines, tab));
     let active = guides.as_ref().and_then(|g| g.active(c.line));
     let visible = |col: usize| (col >= v.hscroll && col < v.hscroll + text.width as usize).then(|| text.x + (col - v.hscroll) as u16);
@@ -1417,6 +1420,9 @@ fn text_editor(
                     Paint::Tabmix => overlays.push((s, e, rb.tabmix.unwrap_or(rb.error).over(bg))),
                 }
             }
+        }
+        for p in brackets.iter().flat_map(|&(a, e)| [a, e]).filter(|p| p.line == i) {
+            overlays.push((p.col, p.col + 1, P.bracket));
         }
         if let Some(fd) = d.find {
             for (n, (a, e)) in fd.matches.iter().enumerate().filter(|(_, (a, _))| a.line == i) {
@@ -1934,6 +1940,7 @@ pub(crate) fn diff_view(
             minimap: Some(m.cfg),
             hover: m.hover,
             mini_drag: m.drag,
+            match_brackets: false,
             peek: None,
             rulers: &[],
         };

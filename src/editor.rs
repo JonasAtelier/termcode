@@ -11,6 +11,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
 /// Typing pauses longer than this start a new undo step (VS Code-like).
+/// How far a bracket search goes from the cursor, each way.
+const BRACKET_LINES: usize = 5000;
 const UNDO_PAUSE: Duration = Duration::from_secs(1);
 const UNDO_LIMIT: usize = 1000;
 use fancy_regex::Regex;
@@ -916,6 +918,50 @@ impl Buffer {
         self.insert_kind(v, &s, if typing { Kind::Type } else { Kind::Other });
     }
 
+    /// The bracket beside `cur` (just before it first, as VS Code picks) and its partner.
+    /// Text only: a bracket inside a string or a comment counts like any other.
+    pub fn bracket_pair(&self, cur: Pos) -> Option<(Pos, Pos)> {
+        let line = self.lines.get(cur.line)?.as_bytes();
+        let beside = [cur.col.checked_sub(1), Some(cur.col)];
+        let col = beside.into_iter().flatten().find(|&c| line.get(c).is_some_and(|b| b"()[]{}".contains(b)))?;
+        let mine = line[col];
+        let (other, down) = match mine {
+            b'(' => (b')', true),
+            b'[' => (b']', true),
+            b'{' => (b'}', true),
+            b')' => (b'(', false),
+            b']' => (b'[', false),
+            _ => (b'{', false),
+        };
+        let mut depth = 0usize;
+        let mut step = |c: u8| {
+            if c == mine {
+                depth += 1;
+            } else if c == other {
+                depth -= 1;
+            }
+            depth == 0
+        };
+        if down {
+            for l in cur.line..self.lines.len().min(cur.line + BRACKET_LINES) {
+                let bytes = self.lines[l].as_bytes();
+                let from = if l == cur.line { col } else { 0 };
+                if let Some(c) = (from..bytes.len()).find(|&c| step(bytes[c])) {
+                    return Some((Pos::new(cur.line, col), Pos::new(l, c)));
+                }
+            }
+        } else {
+            for l in (cur.line.saturating_sub(BRACKET_LINES)..=cur.line).rev() {
+                let bytes = self.lines[l].as_bytes();
+                let to = if l == cur.line { col + 1 } else { bytes.len() };
+                if let Some(c) = (0..to).rev().find(|&c| step(bytes[c])) {
+                    return Some((Pos::new(cur.line, col), Pos::new(l, c)));
+                }
+            }
+        }
+        None
+    }
+
     /// The lines an edit of whole lines acts on: the selection's, without a last line it
     /// only touches at column 0, or the cursor's.
     fn line_span(&self, v: &View) -> (usize, usize) {
@@ -927,9 +973,9 @@ impl Buffer {
     }
 
     fn shift_view(v: &mut View, down: bool, by: usize) {
-        let shift = |p: Pos| Pos::new(if down { p.line + by } else { p.line - by }, p.col);
-        v.cursor = shift(v.cursor);
-        v.anchor = v.anchor.map(shift);
+        let line = |p: Pos| if down { p.line + by } else { p.line - by };
+        v.cursor = Pos::new(line(v.cursor), v.cursor.col);
+        v.anchor = v.anchor.map(|a| Pos::new(line(a), a.col));
         v.want_x = None;
     }
 
@@ -1833,6 +1879,30 @@ mod tests {
         assert_eq!((v.anchor, v.cursor), (Some(Pos::new(2, 0)), Pos::new(3, 1)));
         assert!(b.undo(&mut v));
         assert_eq!(b.lines, ["a", "b", "c"], "one undo step");
+    }
+
+    #[test]
+    fn the_cursor_finds_the_partner_of_the_bracket_beside_it() {
+        let b = buf("f(a, (b))[c]");
+        assert_eq!(b.bracket_pair(Pos::new(0, 1)), Some((Pos::new(0, 1), Pos::new(0, 8))), "in front of it");
+        assert_eq!(b.bracket_pair(Pos::new(0, 2)), Some((Pos::new(0, 1), Pos::new(0, 8))), "just after it");
+        assert_eq!(b.bracket_pair(Pos::new(0, 9)), Some((Pos::new(0, 8), Pos::new(0, 1))), "from the closer, the inner pair skipped");
+        assert_eq!(b.bracket_pair(Pos::new(0, 3)), None, "no bracket beside it");
+    }
+
+    #[test]
+    fn a_bracket_pair_can_span_lines_and_may_have_no_partner() {
+        let b = buf("if (x) {\n  y;\n}");
+        assert_eq!(b.bracket_pair(Pos::new(0, 7)), Some((Pos::new(0, 7), Pos::new(2, 0))));
+        assert_eq!(b.bracket_pair(Pos::new(2, 0)), Some((Pos::new(2, 0), Pos::new(0, 7))));
+        assert_eq!(buf("(oops").bracket_pair(Pos::new(0, 0)), None);
+        assert_eq!(buf("oops)").bracket_pair(Pos::new(0, 4)), None);
+    }
+
+    #[test]
+    fn bracket_search_ignores_other_kinds_and_text_after_multibyte_characters() {
+        let b = buf("中[(中]");
+        assert_eq!(b.bracket_pair(Pos::new(0, 3)), Some((Pos::new(0, 3), Pos::new(0, 8))), "a [ does not count ( as nesting");
     }
 
     fn typed(start: &str, col: usize, keys: &str) -> (Vec<String>, usize) {
