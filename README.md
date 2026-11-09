@@ -79,7 +79,8 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
   Nerd Font. `"herdr-code.icons": "ascii"` or `HERDR_CODE_ICONS=0` (always wins) gives plain
   ASCII. The sidebar width and visibility are kept in `$HERDR_PLUGIN_STATE_DIR/layout.json`.
 - Blocks: the activity bar, each sidebar section and each editor group are rounded cards with a
-  1-cell gutter between them side by side, while stacked sections share one border row (`├─┤`)
+  no blank gutter beside the sidebar and a 1-cell gutter between editor groups, while
+  stacked sections share one border row (`├─┤`)
   (`herdr-code.blocks.style`); the borders are `editorGroup.border`, the focused block's a
   little lighter. Each icon keeps a blank cell after it, room for a
   non-Mono Nerd Font glyph. Activity bar items are 3 rows tall (2 in compact), the icon
@@ -289,7 +290,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `workbench.density` | `"comfortable"` | `"compact"` is the original tight layout (no padding, no popup frames) |
 | `herdr-code.spacing` | see below | Each key overrides the density's value |
 | `herdr-code.icons` | `"nerd"` | `"ascii"`: no Nerd Font glyphs |
-| `herdr-code.blocks.style` | `"cards"` (compact: `"lines"`) | `"cards"`: rounded blocks, a gutter between side-by-side ones, one shared border between stacked ones; `"lines"`: one shared line between blocks, joined (`├┤┬┴`); `"none"`: flat |
+| `herdr-code.blocks.style` | `"cards"` (compact: `"lines"`) | `"cards"`: rounded blocks, no blank gutter beside the sidebar, a gutter between editor groups, one shared border between stacked ones; `"lines"`: one shared line between blocks, joined (`├┤┬┴`); `"none"`: flat |
 | `herdr-code.fileIcons` | `{}` | `extensions`, `fileNames`, `folderNames`: maps to `{ "glyph": "…", "color": "#rrggbb" }` (either half); `folder`, `folderOpen` |
 | `indentRainbow.enabled` | `true` | oderwat.indent-rainbow, same defaults |
 | `indentRainbow.colors` | the extension's four `rgba(…,0.07)` | Blended over the editor background |

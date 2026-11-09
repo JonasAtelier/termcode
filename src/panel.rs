@@ -4694,9 +4694,9 @@ mod tests {
             let b = t.backend().buffer();
             for y in 1..19 {
                 if st == BlockStyle::Cards {
-                    // The divider is the gutter: blank on every row; beside it only the section
-                    // cards' right edges (the title row is blank, stacked cards share a row).
-                    assert_eq!(b[(x, y)].symbol(), " ", "{st:?} row {y}: the gutter");
+                    // The editor's left border is the resize handle; no blank gutter.
+                    assert_eq!(app.ui.editor_area.x, x);
+                    assert!(["│", "╭", "╰"].contains(&b[(x, y)].symbol()), "{st:?} row {y}: editor border");
                     let edge = b[(x - 1, y)].symbol();
                     assert!(["│", "╮", "╯", "┤", " "].contains(&edge), "{st:?} row {y}: {edge:?} in the card edge");
                 } else {
@@ -4708,6 +4708,12 @@ mod tests {
             if st == BlockStyle::Cards {
                 assert!((1..19).filter(|&y| b[(x - 1, y)].symbol() == "│").count() > 10, "the sidebar card's edge");
             }
+            let width = app.ui.sidebar.width;
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, 10);
+            mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x + 3, 10);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 3, 10);
+            screen(&mut app, &mut t);
+            assert_eq!(app.ui.sidebar.width, width + 3, "{st:?}: resize follows the border");
         }
         fs::remove_dir_all(&root).unwrap();
     }
@@ -5053,8 +5059,8 @@ mod tests {
             let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
             screen(&mut app, &mut t);
             assert_eq!(app.ui.divider.x - app.ui.sidebar.x, sp.sidebar_width + fr, "{tag}: default width (and frame) until dragged");
-            // A gutter (cards) or a line (lines) between the activity bar and the sidebar.
-            assert_eq!(app.ui.sidebar.x, sp.activity_width + fr + u16::from(st != BlockStyle::None), "{tag}");
+            // Cards touch at their borders; lines reserve one separator column.
+            assert_eq!(app.ui.sidebar.x, sp.activity_width + fr + u16::from(st == BlockStyle::Lines), "{tag}");
             // The activity icon is drawn centred inside its hit rect: the middle row, its
             // 2-cell slot centred right of the indicator column.
             let (ar, _) = app.ui.activity[2];

@@ -209,8 +209,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let body = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
     title_bar(app, f, title, lay);
     status_bar(app, f, status, lay);
-    // Between blocks: a gutter (cards), a shared line (lines), or only the sidebar's
-    // divider (none). Each block draws inside what `blocks::card` leaves of its rect.
+    // Cards touch at their borders beside the sidebar. Lines reserve a shared line;
+    // none keeps only the sidebar's divider. Each card draws inside its own frame.
     let st = app.settings.blocks;
     crate::blocks::begin();
     // The spacing widths are the content's; a card adds its frame.
@@ -220,10 +220,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let inner = crate::blocks::card(st, f, act, P.activity_bg, false);
     activity_bar(app, f, inner);
     let mut x = act.right();
-    if st != BlockStyle::None {
-        if st == BlockStyle::Lines {
-            crate::blocks::vline(x, body.y, body.bottom() - 1);
-        }
+    if st == BlockStyle::Lines {
+        crate::blocks::vline(x, body.y, body.bottom() - 1);
         x += 1;
     }
     if app.side_visible {
@@ -232,7 +230,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         app.ui.sidebar = Rect::new(x, body.y, w, body.height);
         sidebar(app, f, app.ui.sidebar, lay);
         x += w;
-        // The resize handle: the line, or the gutter between the cards.
+        // Cards use the editor's left border as the resize handle.
         let d = Rect::new(x, body.y, 1, body.height);
         app.ui.divider = d;
         match st {
@@ -243,7 +241,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
             BlockStyle::Lines => crate::blocks::vline(x, body.y, body.bottom() - 1),
             BlockStyle::Cards => {}
         }
-        x += 1;
+        x += u16::from(st != BlockStyle::Cards);
     }
     let ed = Rect::new(x, body.y, body.right().saturating_sub(x), body.height);
     app.ui.editor_area = ed;
