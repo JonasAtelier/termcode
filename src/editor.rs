@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 /// Typing pauses longer than this start a new undo step (VS Code-like).
 const UNDO_PAUSE: Duration = Duration::from_secs(1);
 const UNDO_LIMIT: usize = 1000;
+use fancy_regex::Regex;
 use similar::{capture_diff_slices_deadline, Algorithm, DiffTag};
 use syntect::highlighting::{Color as SColor, HighlightState, Highlighter, RangedHighlightIterator, Style as SStyle};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
@@ -368,6 +369,43 @@ fn end_pos(at: Pos, s: &str) -> Pos {
 }
 
 /// Literal find over numbered lines, also used by either side of a diff.
+/// Find's query as a regular expression, honouring its case and whole-word toggles.
+pub(crate) fn find_regex(q: &str, case: bool, word: bool) -> Result<Regex, String> {
+    let body = if word { format!(r"\b(?:{q})\b") } else { q.to_string() };
+    Regex::new(&format!("{}{body}", if case { "" } else { "(?i)" })).map_err(|e| e.to_string())
+}
+
+/// Every non-empty match of `re`, line by line: a match never spans lines.
+pub(crate) fn find_re<'a>(lines: impl IntoIterator<Item = (usize, &'a str)>, re: &Regex) -> Vec<(Pos, Pos)> {
+    let mut out = Vec::new();
+    for (li, l) in lines {
+        let mut at = 0;
+        while let Ok(Some(m)) = re.find_from_pos(l, at) {
+            if m.end() > m.start() {
+                out.push((Pos::new(li, m.start()), Pos::new(li, m.end())));
+                if out.len() >= 10_000 {
+                    return out;
+                }
+                at = m.end();
+            } else {
+                let Some(c) = l[m.end()..].chars().next() else { break };
+                at = m.end() + c.len_utf8();
+            }
+        }
+    }
+    out
+}
+
+/// The replacement for the match of `re` at byte `at` of `line`: `$1`, `${name}`, `$$`.
+pub(crate) fn expand(re: &Regex, line: &str, at: usize, with: &str) -> String {
+    let mut out = String::new();
+    match re.captures_from_pos(line, at) {
+        Ok(Some(c)) => fancy_regex::Expander::default().append_expansion(&mut out, with, &c),
+        _ => out.push_str(with),
+    }
+    out
+}
+
 pub(crate) fn find_in<'a>(lines: impl IntoIterator<Item = (usize, &'a str)>, q: &str, case: bool, word: bool) -> Vec<(Pos, Pos)> {
     let mut out = Vec::new();
     if q.is_empty() || q.contains('\n') {
@@ -1062,15 +1100,15 @@ impl Buffer {
             .collect()
     }
 
-    /// Replace every match (back to front so earlier positions stay valid). One undo step.
-    pub fn replace_all(&mut self, v: &mut View, matches: &[(Pos, Pos)], with: &str) -> usize {
+    /// Replace every match with its own text (back to front so earlier positions stay valid). One undo step.
+    pub fn replace_each(&mut self, v: &mut View, matches: &[(Pos, Pos, String)]) -> usize {
         if self.readonly.is_some() || matches.is_empty() {
             return 0;
         }
         self.begin(v, Kind::Other);
-        for &(a, b) in matches.iter().rev() {
-            self.do_del(a, b);
-            self.do_ins(a, with);
+        for (a, b, with) in matches.iter().rev() {
+            self.do_del(*a, *b);
+            self.do_ins(*a, with);
         }
         v.anchor = None;
         v.cursor = self.clamp(v.cursor);
@@ -1218,10 +1256,6 @@ impl Buffer {
 
     /// Literal matches of `q` (ASCII case folding unless `case`; `word` = whole
     /// word only), capped at 10k.
-    pub fn find_all(&self, q: &str, case: bool, word: bool) -> Vec<(Pos, Pos)> {
-        find_in(self.lines.iter().enumerate().map(|(i, s)| (i, s.as_str())), q, case, word)
-    }
-
     // ---- disk ------------------------------------------------------------------
 
     /// Save. Normally atomic: temp file in the same directory (created with the
@@ -1582,6 +1616,35 @@ mod tests {
     }
 
     #[test]
+    fn regex_find_reports_every_match_on_every_line() {
+        let re = find_regex(r"foo\d+", true, false).unwrap();
+        let hits = find_re([(0, "foo1 bar"), (1, "x foo22 foo3")], &re);
+        assert_eq!(hits, vec![(Pos::new(0, 0), Pos::new(0, 4)), (Pos::new(1, 2), Pos::new(1, 7)), (Pos::new(1, 8), Pos::new(1, 12))]);
+    }
+
+    #[test]
+    fn regex_find_follows_the_case_and_word_toggles() {
+        let line = [(0, "Foo foo food")];
+        assert_eq!(find_re(line, &find_regex("foo", true, false).unwrap()).len(), 2, "exact case: foo, food");
+        assert_eq!(find_re(line, &find_regex("foo", false, false).unwrap()).len(), 3, "any case");
+        assert_eq!(find_re(line, &find_regex("foo", false, true).unwrap()).len(), 2, "whole words: Foo, foo");
+        assert_eq!(find_re([(0, "abc")], &find_regex("a|b", true, true).unwrap()).len(), 0, "the word test covers the whole alternation");
+    }
+
+    #[test]
+    fn regex_find_skips_empty_matches_and_rejects_bad_patterns() {
+        assert_eq!(find_re([(0, "aaé")], &find_regex("x*", true, false).unwrap()), vec![], "x* matches nothing visible");
+        assert!(find_regex("(", true, false).is_err());
+    }
+
+    #[test]
+    fn a_regex_replacement_expands_groups_in_their_line() {
+        let re = find_regex(r"(\w+)=(\d+)", true, false).unwrap();
+        assert_eq!(expand(&re, "a=1 bc=22", 4, "$2:$1"), "22:bc", "the match at that column");
+        assert_eq!(expand(&re, "a=1", 0, "$$"), "$");
+    }
+
+    #[test]
     fn a_save_tidies_only_the_lines_that_were_edited() {
         let d = tmpdir("tidy-edited");
         let p = d.join("a.c");
@@ -1752,6 +1815,10 @@ mod tests {
         assert_eq!(b.text(), "x".repeat(2010));
     }
 
+    fn find_all(b: &Buffer, q: &str, case: bool, word: bool) -> Vec<(Pos, Pos)> {
+        find_in(b.lines.iter().enumerate().map(|(i, s)| (i, s.as_str())), q, case, word)
+    }
+
     fn buf(text: &str) -> Buffer {
         let mut b = Buffer::empty(None);
         b.set_text(text);
@@ -1891,13 +1958,14 @@ mod tests {
     #[test]
     fn find_and_replace_all_is_one_undo() {
         let mut b = buf("Foo foo\nbar FOO 中foo\n");
-        assert_eq!(b.find_all("foo", true, false).len(), 2);
-        assert_eq!(b.find_all("foo", false, true).len(), 3); // 中foo: 中 is a word char
-        let m = b.find_all("foo", false, false);
+        assert_eq!(find_all(&b, "foo", true, false).len(), 2);
+        assert_eq!(find_all(&b, "foo", false, true).len(), 3); // 中foo: 中 is a word char
+        let m = find_all(&b, "foo", false, false);
         assert_eq!(m.len(), 4);
         assert_eq!(m[3], (Pos::new(1, 11), Pos::new(1, 14)));
         let mut v = View::default();
-        assert_eq!(b.replace_all(&mut v, &m, "x"), 4);
+        let each: Vec<_> = m.iter().map(|&(a, e)| (a, e, "x".to_string())).collect();
+        assert_eq!(b.replace_each(&mut v, &each), 4);
         assert_eq!(b.text(), "x x\nbar x 中x\n");
         b.undo(&mut v);
         assert_eq!(b.text(), "Foo foo\nbar FOO 中foo\n");

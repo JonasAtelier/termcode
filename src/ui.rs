@@ -2043,19 +2043,20 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     let q = Rect::new(r.x + 1 + ig, r.y, iw, 1);
     input(f, q, &fd.query, "Find", app.focus == Focus::Find && fd.field == 0);
     let mut btns = if fd.diff_side.is_none() { vec![(toggle, FindBtn::ToggleReplace)] } else { Vec::new() };
-    for (k, (icon, on, b)) in [(ic.case, fd.case, FindBtn::Case), (ic.word, fd.word, FindBtn::Word)].into_iter().enumerate() {
-        let tr = Rect::new(q.right() - 4 + 2 * k as u16, r.y, 1, 1);
+    for (k, (icon, on, b)) in [(ic.case, fd.case, FindBtn::Case), (ic.word, fd.word, FindBtn::Word), (ic.regex, fd.regex, FindBtn::Regex)].into_iter().enumerate() {
+        let tr = Rect::new(q.right() - 6 + 2 * k as u16, r.y, 1, 1);
         let st = if on { Style::new().fg(P.option_fg).bg(P.option_bg) } else { Style::new().fg(P.input_fg).bg(P.input_bg) };
         f.render_widget(Span::styled(icon, st), tr);
         btns.push((tr, b));
     }
     let count = match (fd.matches.len(), fd.cur) {
+        _ if fd.invalid => "Bad regex".to_string(),
         (0, _) if !fd.query.is_empty() => "No results".to_string(),
         (0, _) => String::new(),
         (n, Some(c)) => format!("{} of {n}", c + 1),
         (n, None) => format!("? of {n}"),
     };
-    let count_st = Style::new().fg(if count == "No results" { P.error_fg } else { P.widget_fg });
+    let count_st = Style::new().fg(if count == "No results" || fd.invalid { P.error_fg } else { P.widget_fg });
     f.render_widget(Span::styled(format!(" {count}"), count_st), Rect::new(q.right(), r.y, 13, 1));
     let bx = r.right() - 7;
     for (k, (icon, b)) in [(ic.up, FindBtn::Prev), (ic.down, FindBtn::Next), (ic.close, FindBtn::Close)].into_iter().enumerate() {

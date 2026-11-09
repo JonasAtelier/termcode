@@ -128,7 +128,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Ctrl+P, Alt+P | Quick Open |
 | click / double-click | open as preview (italic tab) / keep open. Ctrl+K Enter also pins |
 | drag an Explorer file to an editor edge | open it in a new group (max 3); centre or tab bar = that group |
-| Ctrl+F, Ctrl+H | find / replace in the current file. Enter or F3 next, Shift+F3 previous, Esc closes |
+| Ctrl+F, Ctrl+H | find / replace in the current file. Enter or F3 next, Shift+F3 previous, Alt+R regular expression (`$1` in the replacement), Esc closes |
 | Ctrl+S, Ctrl+W, Ctrl+Q | save (atomic), close tab, quit (all prompt for unsaved changes) |
 | Ctrl+Z, Ctrl+Y | undo, redo |
 | gutter fold button, Ctrl+Shift+[ / ] | fold / unfold the current block |
@@ -411,7 +411,7 @@ one cap of two running `rg`. Every jump (definitions, peek items, Back/Forward) 
 - Files that were truncated (over 1 MB or 20k lines), are not UTF-8, or are binary open
   read-only and can never be saved. If a file changes on disk, a clean buffer reloads; a dirty
   one keeps your edits, and the first Ctrl+S refuses so a second one is needed to overwrite.
-- Find is literal (Match Case and Whole Word toggles). In a diff, Ctrl+F searches the
+- Find (Match Case, Whole Word and regular expression toggles) works line by line: a match never spans lines. In a diff, Ctrl+F searches the
   side under the pointer (otherwise the active side); the find widget stays in place.
   Enter / Shift+Enter jump between results. Diff search is read-only.
   Search in files can also use regex.

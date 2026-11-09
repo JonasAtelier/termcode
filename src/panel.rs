@@ -111,9 +111,19 @@ pub struct Find {
     /// Match Case / Match Whole Word toggles.
     pub case: bool,
     pub word: bool,
+    /// Use Regular Expression; `invalid` when the query does not compile.
+    pub regex: bool,
+    pub invalid: bool,
     /// Diff side chosen when opening Find; None for a regular editor.
     pub diff_side: Option<u8>,
-    stamp: (String, u64, String, bool, bool, Option<u8>),
+    stamp: (String, u64, String, bool, bool, bool, Option<u8>),
+}
+
+impl Find {
+    /// The regular expression in use, when the toggle is on and the query compiles.
+    fn compiled(&self) -> Option<fancy_regex::Regex> {
+        self.regex.then(|| editor::find_regex(&self.query, self.case, self.word).ok()).flatten()
+    }
 }
 
 /// Prompt actions. Tab actions name the document, not a (group, index) that
@@ -402,6 +412,7 @@ pub enum FindBtn {
     ReplaceAll,
     Case,
     Word,
+    Regex,
     /// Search view toggles and the sidebar refresh action share this hit list.
     SearchCase,
     SearchWord,
@@ -2478,7 +2489,9 @@ impl App {
             case: false,
             word: false,
             diff_side,
-            stamp: (String::new(), u64::MAX, String::new(), false, false, None),
+            regex: false,
+            invalid: false,
+            stamp: (String::new(), u64::MAX, String::new(), false, false, false, None),
         });
         f.diff_side = diff_side;
         if diff_side.is_some() {
@@ -2522,14 +2535,26 @@ impl App {
                 d.id.0
             }
         };
-        let stamp = (tab.key.clone(), version, f.query.clone(), f.case, f.word, f.diff_side);
+        let stamp = (tab.key.clone(), version, f.query.clone(), f.case, f.word, f.regex, f.diff_side);
         if stamp != f.stamp {
-            f.matches = match doc {
-                Doc::Text(b) => b.find_all(&f.query, f.case, f.word),
-                Doc::Diff(d) => editor::find_in(d.rows.iter().enumerate().filter_map(|(i, r)| {
+            let lines: Vec<(usize, &str)> = match doc {
+                Doc::Text(b) => b.lines.iter().enumerate().map(|(i, l)| (i, l.as_str())).collect(),
+                Doc::Diff(d) => d.rows.iter().enumerate().filter_map(|(i, r)| {
                     let cell = if f.diff_side == Some(0) { &r.left } else { &r.right };
                     cell.as_ref().map(|(_, text)| (i, text.as_str()))
-                }), &f.query, f.case, f.word),
+                }).collect(),
+            };
+            f.invalid = false;
+            f.matches = if f.regex && !f.query.is_empty() {
+                match editor::find_regex(&f.query, f.case, f.word) {
+                    Ok(re) => editor::find_re(lines, &re),
+                    Err(_) => {
+                        f.invalid = true;
+                        Vec::new()
+                    }
+                }
+            } else {
+                editor::find_in(lines, &f.query, f.case, f.word)
             };
             f.stamp = stamp;
         }
@@ -2572,9 +2597,11 @@ impl App {
         self.find_refresh();
         let Some(f) = self.find.as_ref() else { return };
         let with = f.replace.clone().unwrap_or_default();
-        if f.cur.is_some() {
+        let re = f.compiled();
+        if let Some(at) = f.cur.map(|i| f.matches[i].0) {
             if let Some((b, tab)) = self.ed() {
-                b.insert(&mut tab.view, &with);
+                let text = re.as_ref().map_or_else(|| with.clone(), |re| editor::expand(re, &b.lines[at.line], at.col, &with));
+                b.insert(&mut tab.view, &text);
                 tab.preview = false;
             }
         }
@@ -2584,9 +2611,13 @@ impl App {
     fn replace_all(&mut self) {
         self.find_refresh();
         let Some(f) = self.find.as_ref() else { return };
-        let (matches, with) = (f.matches.clone(), f.replace.clone().unwrap_or_default());
+        let (matches, with, re) = (f.matches.clone(), f.replace.clone().unwrap_or_default(), f.compiled());
         if let Some((b, tab)) = self.ed() {
-            let n = b.replace_all(&mut tab.view, &matches, &with);
+            let each: Vec<_> = matches
+                .iter()
+                .map(|&(a, e)| (a, e, re.as_ref().map_or_else(|| with.clone(), |re| editor::expand(re, &b.lines[a.line], a.col, &with))))
+                .collect();
+            let n = b.replace_each(&mut tab.view, &each);
             if n > 0 {
                 tab.preview = false;
             }
@@ -2618,6 +2649,12 @@ impl App {
                     } else {
                         f.word = !f.word;
                     }
+                }
+                self.find_refresh();
+            }
+            FindBtn::Regex => {
+                if let Some(f) = self.find.as_mut() {
+                    f.regex = !f.regex;
                 }
                 self.find_refresh();
             }
@@ -3146,6 +3183,9 @@ impl App {
     }
 
     fn find_key(&mut self, k: KeyEvent, modded: bool, shift: bool) {
+        if k.modifiers.contains(KeyModifiers::ALT) && k.code == KeyCode::Char('r') {
+            return self.find_button(FindBtn::Regex);
+        }
         let Some(f) = self.find.as_mut() else { return };
         let field = if f.field == 1 { f.replace.as_mut() } else { Some(&mut f.query) };
         match k.code {
@@ -5727,6 +5767,43 @@ mod tests {
             assert!(Instant::now() < deadline, "the other end closed");
         }
         unsafe { libc::close(slave) };
+    }
+
+    fn regex_app(tag: &str) -> (PathBuf, App) {
+        let root = repo(tag);
+        fs::write(root.join("a.c"), "foo1 = 1;\nbar\nfoo22 = 2;\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "a.c", false);
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        app.open_find(false);
+        (root, app)
+    }
+
+    #[test]
+    fn the_regex_toggle_switches_find_to_a_regular_expression() {
+        let (root, mut app) = regex_app("find-regex");
+        typ(&mut app, r"foo\d+");
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 0, "literal text");
+        app.find_button(FindBtn::Regex);
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 2);
+        typ(&mut app, "(");
+        app.find_refresh();
+        let f = app.find.as_ref().unwrap();
+        assert!(f.invalid && f.matches.is_empty(), "a pattern that does not compile says so");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn replace_all_expands_regex_groups() {
+        let (root, mut app) = regex_app("find-regex-replace");
+        typ(&mut app, r"foo(\d+)");
+        app.find_button(FindBtn::Regex);
+        app.find.as_mut().unwrap().replace = Some("bar$1".into());
+        app.find_button(FindBtn::ReplaceAll);
+        let Some(Doc::Text(b)) = app.docs.get("file:a.c") else { panic!() };
+        assert_eq!(b.lines[..3], ["bar1 = 1;", "bar", "bar22 = 2;"]);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
