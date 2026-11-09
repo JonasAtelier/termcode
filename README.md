@@ -175,7 +175,7 @@ changes (left half), find matches (right half) and the cursor line.
 
 The minimap (VS Code's `editor.minimap`) sits between the code and the scrollbar and shows
 the code's silhouette, like VS Code's default `renderCharacters`: braille cells of 2 × 4 dots,
-one dot row per line and one dot per run of columns (so `maxColumn` fits), lit where that run
+one dot row per slot of the file's height and one dot per run of columns (so `maxColumn` fits), lit where that run
 has code, so indentation and line lengths show. Each cell takes the most frequent token
 colour of its dots, muted towards the background (`minimap.foregroundOpacity` scales it). The
 git changes are on its left edge, find matches and the selection behind the dots, and the
@@ -297,7 +297,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `editor.minimap.showSlider` | `"always"` | or `"mouseover"` |
 | `editor.minimap.side` | `"right"` | or `"left"` |
 | `herdr-code.minimap.minEditorWidth` | `40` | The minimap shrinks (to 4 cells) so the code keeps this many columns, then hides |
-| `editor.minimap.size` | `"proportional"` | `"fill"`: the whole file over the height; `"fit"`: proportional while it fits |
+| `editor.minimap.size` | `"fill"` | The whole file over the height (at most a line per row); `"proportional"`: a line per dot row, a long file scrolls; `"fit"`: proportional while it fits, else fill |
 | `editor.gotoLocation.multipleDefinitions` | `"peek"` | Several definitions: `"peek"` shows them, `"gotoAndPeek"` opens the first and peeks, `"goto"` opens the first |
 | `git.blame.statusBarItem.enabled` | `true` | The cursor line's author and age in the status bar |
 | `git.blame.editorDecoration.enabled` | `false` | The same, with the commit subject, as ghost text after the cursor line |

@@ -1093,7 +1093,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             let view = &mut app.groups[g].tabs[active].view;
             let (sb, mm, texts) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group);
             if let Some((area, mini)) = mm {
-                app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.scroll });
+                app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.row_of(view.scroll) });
             }
             gh.text = body;
             gh.diff_text = texts;
@@ -1137,7 +1137,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             gh.folds_x = out.folds_x;
             gh.zone = out.zone.map(|z| (z.y, z.height));
             if let Some((area, mini)) = out.mini {
-                app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.scroll });
+                app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.row_of(view.scroll) });
             }
             if let Some(z) = out.zone {
                 app.ui.peek_zone = z;
@@ -1534,13 +1534,14 @@ fn text_editor(
 /// silhouette); find matches and the selection as cell backgrounds, and (when
 /// shown) the slider as a translucent overlay.
 fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap::Cfg, d: &Deco, slider: Option<Rgba>) -> Mini {
-    let n = b.lines.len();
+    // Editor rows, not buffer lines: a folded block is not drawn here either.
+    let n = v.row_of(b.lines.len().saturating_sub(1)) + 1;
+    let scroll = v.row_of(v.scroll);
     let view = r.height as usize; // the editor shows as many rows as the minimap is tall
     let braille = cfg.render_characters;
     let slots = if braille { 4 } else { 2 };
     let mini = Mini::new(r.height, n, view, slots, cfg.size);
-    let start = mini.start(v.scroll);
-    let end = (start + r.height as usize * mini.lines_per_row()).min(n);
+    let end = v.line_of(mini.slot_rows(scroll, r.height.saturating_sub(1), slots - 1).end.saturating_sub(1)) + 1;
     // Only lines near the viewport are tokenised for the minimap; farther ones (fill and
     // fit on a long file) are sampled in the editor colour, not tokenised on every edit.
     b.highlight_upto(end.min(v.scroll + 2 * view));
@@ -1552,18 +1553,19 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
     let tab = editor::tab();
     let ascii = crate::theme::ascii();
     // At most 4 sampled lines per slot: a squeezed huge file stays cheap.
-    let slot_lines = |l0: usize, l1: usize| -> Vec<usize> {
-        let l1 = l1.min(n);
-        if l1 <= l0 {
-            return Vec::new();
-        }
-        let step = (l1 - l0).div_ceil(4).max(1);
-        (l0..l1).step_by(step).collect()
+    let slot_lines = |rows: std::ops::Range<usize>| -> Vec<usize> {
+        let step = rows.len().div_ceil(4).max(1);
+        rows.step_by(step).map(|row| v.line_of(row)).collect()
     };
-    let slot_bg = |lines: &[usize]| {
-        if lines.iter().any(|l| finds.binary_search(l).is_ok()) {
+    // The whole span, not the sampled lines: a match between them still shows.
+    let slot_bg = |rows: &std::ops::Range<usize>| {
+        if rows.is_empty() {
+            return P.mini_bg;
+        }
+        let (l0, l1) = (v.line_of(rows.start), v.line_of(rows.end - 1));
+        if finds.get(finds.partition_point(|&l| l < l0)).is_some_and(|&l| l <= l1) {
             P.mini_find
-        } else if sel.is_some_and(|(a, e)| lines.iter().any(|l| (a.line..=e.line).contains(l))) {
+        } else if sel.is_some_and(|(a, e)| a.line <= l1 && e.line >= l0) {
             P.mini_sel
         } else {
             P.mini_bg
@@ -1572,10 +1574,11 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
     let ink = |c: Option<Color>, under: Color| c.map_or(under, |c| minimap::ink(c, P.mini_fg_opacity, under));
     for row in 0..r.height {
         let y = r.y + row;
-        let l0 = mini.slot_line(v.scroll, row, 0);
+        let span = mini.slot_rows(scroll, row, 0).start..mini.slot_rows(scroll, row, slots - 1).end;
         // Git lane: the strongest mark among the row's lines.
-        let lane = (l0..(l0 + mini.lines_per_row()).min(n))
-            .filter_map(|l| d.marks.get(l).copied().flatten())
+        let lane = span
+            .clone()
+            .filter_map(|row| d.marks.get(v.line_of(row)).copied().flatten())
             .max_by_key(|m| match m {
                 Mark::Modified => 3,
                 Mark::Added => 2,
@@ -1589,19 +1592,17 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
         };
         let cell = &mut f.buffer_mut()[(r.x, y)];
         cell.set_symbol(lg).set_fg(lc).set_bg(P.mini_bg);
-        let slot_samples: Vec<(Vec<usize>, Vec<Option<Color>>)> = (0..slots)
+        let slot_samples: Vec<(std::ops::Range<usize>, Vec<Option<Color>>)> = (0..slots)
             .map(|k| {
-                let ls = slot_lines(mini.slot_line(v.scroll, row, k), mini.slot_line(v.scroll, row, k) + mini.lps);
+                let rows = mini.slot_rows(scroll, row, k);
+                let ls = slot_lines(rows.clone());
                 let samples = minimap::sample(ls.iter().map(|&l| (b.lines[l].as_str(), b.segs(l))), dcols, dcpc, cfg.max_column, P.editor_fg, tab);
-                (ls, samples)
+                (rows, samples)
             })
             .collect();
         // Slot backgrounds (find, selection) are per row, not per column.
         let bgs: Vec<Color> = slot_samples.iter().map(|(l, _)| slot_bg(l)).collect();
-        let cell_bg = {
-            let all: Vec<usize> = slot_samples.iter().flat_map(|(l, _)| l.iter().copied()).collect();
-            slot_bg(&all)
-        };
+        let cell_bg = slot_bg(&span);
         for col in 0..cols {
             let x = r.x + 1 + col as u16;
             let cell = &mut f.buffer_mut()[(x, y)];
@@ -1624,7 +1625,7 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
     // Translucent, like VS Code's slider layer: over the background, and over a
     // half block's upper half (it is area too), but not over braille dots.
     if let Some(sc) = slider {
-        let (top, len) = mini.slider(v.scroll);
+        let (top, len) = mini.slider(scroll);
         let buf = f.buffer_mut();
         for y in r.y + top..(r.y + top + len).min(r.bottom()) {
             for x in r.x..r.right() {

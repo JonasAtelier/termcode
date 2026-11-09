@@ -1,7 +1,8 @@
 //! The minimap (VS Code `editor.minimap`): settings, geometry and colour
 //! sampling, kept free of drawing for tests. Each cell row covers `slots`
 //! slots (4 braille dot rows, VS Code's default `renderCharacters`, or 2
-//! half-block halves) of `lps` source lines; each dot (or half-block) column
+//! half-block halves) of editor rows: one row a slot, or the file's share of the
+//! height when it fills; each dot (or half-block) column
 //! covers `cpc` characters, so `maxColumn` fits the width. A dot is on where
 //! its run of a line has code: indentation and short lines show as VS Code's
 //! silhouette. Colours come from the editor's highlight cache (per line,
@@ -11,15 +12,16 @@
 use crate::theme::Rgba;
 use ratatui::style::Color;
 use serde_json::{Map, Value};
+use std::ops::Range;
 use syntect::highlighting::Style as SStyle;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Size {
     /// 1 line per slot; the minimap scrolls with long files.
     Proportional,
-    /// The whole file stretched (or squeezed) over the minimap height.
+    /// The whole file over the minimap height, at most one row of it per cell row.
     Fill,
-    /// Proportional while the file fits, else squeezed.
+    /// Proportional while the file fits, else filled.
     Fit,
 }
 
@@ -45,7 +47,7 @@ impl Default for Cfg {
             render_characters: true,
             slider_always: true,
             left: false,
-            size: Size::Proportional,
+            size: Size::Fill,
             min_text: 40,
         }
     }
@@ -62,9 +64,10 @@ impl Cfg {
             slider_always: g("showSlider").and_then(Value::as_str).map_or(d.slider_always, |s| s == "always"),
             left: g("side").and_then(Value::as_str) == Some("left"),
             size: match g("size").and_then(Value::as_str) {
+                Some("proportional") => Size::Proportional,
                 Some("fill") => Size::Fill,
                 Some("fit") => Size::Fit,
-                _ => Size::Proportional,
+                _ => d.size,
             },
             min_text: user
                 .get("herdr-code.minimap.minEditorWidth")
@@ -112,65 +115,73 @@ pub fn ink(c: Color, opacity: u8, bg: Color) -> Color {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Mini {
     pub rows: u16,
-    /// Buffer lines and the editor's visible lines.
+    /// The editor's rows (buffer lines less those a fold hides) and how many it shows.
     pub n: usize,
     pub view: usize,
     pub slots: usize,
-    /// Source lines per slot.
-    pub lps: usize,
     proportional: bool,
 }
 
 impl Mini {
     pub fn new(rows: u16, n: usize, view: usize, slots: usize, size: Size) -> Mini {
-        let cap = (rows as usize * slots).max(1);
-        let squeezed = n.div_ceil(cap).max(1);
-        let (lps, proportional) = match size {
-            Size::Proportional => (1, true),
-            Size::Fill => (squeezed, false),
-            Size::Fit if n <= cap => (1, false),
-            Size::Fit => (squeezed, false),
+        let proportional = match size {
+            Size::Proportional => true,
+            Size::Fill => false,
+            Size::Fit => n <= rows as usize * slots,
         };
-        Mini { rows, n, view, slots, lps, proportional }
+        Mini { rows, n, view, slots, proportional }
     }
 
-    pub fn lines_per_row(&self) -> usize {
-        self.slots * self.lps
+    /// Editor rows per minimap row: fractional, so a fill always reaches the bottom.
+    fn lines_per_row(&self) -> f64 {
+        if self.proportional {
+            self.slots as f64
+        } else {
+            (self.n as f64 / self.rows.max(1) as f64).max(1.0)
+        }
     }
 
-    /// First line the minimap shows: a long file scrolls proportionally (VS Code).
+    /// First editor row the minimap shows: a long file scrolls proportionally,
+    /// reaching its end as the editor's last screenful does (VS Code).
     pub fn start(&self, scroll: usize) -> usize {
-        let cap = self.rows as usize * self.lines_per_row();
+        let cap = self.rows as usize * self.slots;
         if !self.proportional || self.n <= cap {
             return 0;
         }
-        let max = self.n.saturating_sub(1).max(1);
+        let max = self.n.saturating_sub(self.view).max(1);
         ((scroll.min(max) as f64 * (self.n - cap) as f64) / max as f64).round() as usize
     }
 
-    /// First source line of `slot` in `row`.
-    pub fn slot_line(&self, scroll: usize, row: u16, slot: usize) -> usize {
-        self.start(scroll) + row as usize * self.lines_per_row() + slot * self.lps
+    /// The editor rows `slot` of minimap row `row` covers: at least one, none past the end.
+    pub fn slot_rows(&self, scroll: usize, row: u16, slot: usize) -> Range<usize> {
+        let first = |slot: usize| {
+            self.start(scroll) + ((row as f64 + slot as f64 / self.slots as f64) * self.lines_per_row()) as usize
+        };
+        let a = first(slot).min(self.n);
+        a..first(slot + 1).max(a + 1).min(self.n)
     }
 
-    /// The row a source line is drawn on, if visible.
+    /// The minimap row an editor row is drawn on, if visible.
     #[cfg(test)]
     pub fn row_of(&self, scroll: usize, line: usize) -> Option<u16> {
-        let r = line.checked_sub(self.start(scroll))? / self.lines_per_row();
+        let r = (line.checked_sub(self.start(scroll))? as f64 / self.lines_per_row()) as usize;
         (r < self.rows as usize).then_some(r as u16)
     }
 
-    /// Slider (first row, rows) over the editor's viewport.
+    /// Slider (first row, rows) over the rows the editor shows, fewer once the file
+    /// ends inside the viewport. Nearest cell: a constant length while scrolling.
     pub fn slider(&self, scroll: usize) -> (u16, u16) {
         let lpr = self.lines_per_row();
-        let len = self.view.div_ceil(lpr).clamp(1, self.rows.max(1) as usize) as u16;
-        let top = (scroll.saturating_sub(self.start(scroll)) / lpr).min(u16::MAX as usize) as u16;
+        let scroll = scroll.min(self.n.saturating_sub(1));
+        let shown = self.view.min(self.n - scroll);
+        let len = ((shown as f64 / lpr).round() as u16).clamp(1, self.rows.max(1));
+        let top = (scroll.saturating_sub(self.start(scroll)) as f64 / lpr).round() as u16;
         (top.min(self.rows.saturating_sub(len)), len)
     }
 
-    /// Scroll that centres the line under a click on `row`.
+    /// Scroll that centres the row under a click on minimap row `row`.
     pub fn click_scroll(&self, scroll: usize, row: u16) -> usize {
-        let line = self.slot_line(scroll, row, 0) + self.lines_per_row() / 2;
+        let line = self.slot_rows(scroll, row, 0).start + (self.lines_per_row() / 2.0) as usize;
         line.saturating_sub(self.view / 2).min(self.n.saturating_sub(1))
     }
 
@@ -335,7 +346,7 @@ mod tests {
         assert_eq!(m.start(0), 0);
         assert_eq!(m.start(299), 260, "at the end the last lines are shown");
         assert_eq!(m.slider(0), (0, 15));
-        assert_eq!(m.slider(299), (5, 15), "clamped to the bottom");
+        assert_eq!(m.slider(299), (19, 1), "only the last line is left");
         assert_eq!(m.row_of(0, 7), Some(3));
         // A click centres the clicked line.
         assert_eq!(m.click_scroll(0, 10), 6, "row 10 = lines 20..22, centred: 21 - 15");
@@ -347,10 +358,56 @@ mod tests {
         assert_eq!(m.drag_scroll(99), 299);
         // A short file: no scrolling, a line per slot from the top.
         let short = Mini::new(20, 10, 30, 2, Size::Proportional);
-        assert_eq!((short.start(5), short.slider(5)), (0, (2, 15)));
+        assert_eq!((short.start(5), short.slider(5)), (0, (3, 3)), "5 lines left at 2 a row");
         // Fill squeezes the whole file into the rows.
         let fill = Mini::new(10, 1000, 30, 2, Size::Fill);
-        assert_eq!((fill.lps, fill.start(500), fill.row_of(500, 999)), (50, 0, Some(9)));
-        assert_eq!(Mini::new(10, 15, 30, 2, Size::Fit).lps, 1, "fit: proportional while it fits");
+        assert_eq!((fill.start(500), fill.row_of(500, 999)), (0, Some(9)));
+    }
+
+    #[test]
+    fn slider_tracks_the_viewport_to_the_end_of_a_long_file() {
+        // 8000 lines, 47 rows of 4 lines, 47 lines on screen.
+        let m = Mini::new(47, 8000, 47, 4, Size::Proportional);
+        for scroll in [0, 2000, 4000, 6000, 7000, 7953] {
+            let (top, len) = m.slider(scroll);
+            let first = m.start(scroll) + top as usize * 4;
+            assert!(first.abs_diff(scroll) <= 2, "scroll {scroll}: slider starts at line {first}");
+            assert_eq!(len, 12, "47 lines at 4 a row");
+        }
+    }
+
+    #[test]
+    fn slider_shrinks_when_the_file_ends_inside_the_viewport() {
+        let m = Mini::new(47, 8000, 47, 4, Size::Proportional);
+        assert_eq!(m.slider(7975).1, 6, "25 lines left at 4 a row");
+        assert_eq!(m.slider(7999), (46, 1), "only the last line is left");
+    }
+
+    #[test]
+    fn fill_reaches_the_last_row_at_any_length() {
+        for n in [100, 250, 600, 8000] {
+            assert_eq!(Mini::new(47, n, 47, 4, Size::Fill).row_of(0, n - 1), Some(46), "{n} lines");
+        }
+    }
+
+    #[test]
+    fn fill_gives_a_file_shorter_than_the_editor_one_row_a_line() {
+        let m = Mini::new(47, 20, 47, 4, Size::Fill);
+        assert_eq!(m.row_of(0, 19), Some(19));
+        assert_eq!(m.slider(0), (0, 20), "the whole file is on screen");
+    }
+
+    #[test]
+    fn fit_keeps_a_file_that_fits_and_fills_with_a_longer_one() {
+        assert_eq!(Mini::new(47, 100, 47, 4, Size::Fit).row_of(0, 99), Some(24), "4 lines a row");
+        assert_eq!(Mini::new(47, 250, 47, 4, Size::Fit).row_of(0, 249), Some(46));
+    }
+
+    #[test]
+    fn the_size_setting_defaults_to_the_whole_file() {
+        let size = |v: Value| Cfg::parse(v.as_object().unwrap()).size;
+        assert_eq!(size(serde_json::json!({})), Size::Fill);
+        assert_eq!(size(serde_json::json!({ "editor.minimap.size": "proportional" })), Size::Proportional);
+        assert_eq!(size(serde_json::json!({ "editor.minimap.size": "fit" })), Size::Fit);
     }
 }

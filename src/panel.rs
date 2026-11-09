@@ -351,7 +351,7 @@ pub struct MiniHit {
     pub area: Rect,
     pub group: usize,
     pub mini: Mini,
-    /// The editor's scroll when it was drawn.
+    /// The editor's first row when it was drawn (folded lines do not count).
     pub scroll: usize,
 }
 
@@ -3616,18 +3616,12 @@ impl App {
         if (top..top + len).contains(&row) {
             self.drag = Drag::Minimap(m, row - top);
         } else {
-            self.minimap_scroll(m.group, m.mini.click_scroll(m.scroll, row));
+            self.set_scroll(ScrollTarget::Editor(m.group), m.mini.click_scroll(m.scroll, row));
             // Keep dragging from here, as VS Code does after a jump.
-            let (top, _) = m.mini.slider(self.groups[m.group].tabs[self.groups[m.group].active].view.scroll);
+            let view = &self.groups[m.group].tabs[self.groups[m.group].active].view;
+            let (top, _) = m.mini.slider(view.row_of(view.scroll));
             self.drag = Drag::Minimap(m, row.saturating_sub(top));
         }
-    }
-
-    fn minimap_scroll(&mut self, g: usize, line: usize) {
-        let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) else { return };
-        t.view.unfold_at(line);
-        let off = t.view.row_of(line);
-        self.set_scroll(ScrollTarget::Editor(g), off);
     }
 
     fn scrollbar_click(&mut self, sb: ScrollHit, p: Position) {
@@ -3843,7 +3837,7 @@ impl App {
             Drag::Minimap(m, grab) => {
                 let (m, grab) = (*m, *grab);
                 let off = m.mini.drag_scroll(p.y as i32 - m.area.y as i32 - grab as i32);
-                self.minimap_scroll(m.group, off);
+                self.set_scroll(ScrollTarget::Editor(m.group), off);
             }
             Drag::Scroll(sb, grab) => {
                 let (sb, grab) = (*sb, *grab);
@@ -5557,6 +5551,81 @@ mod tests {
         app.update_qdiff();
         assert_eq!(app.qdiff["file:long.c"].hunks.len(), 3);
         (root, app)
+    }
+
+    /// 162 lines whose first block (lines 1..=60) folds away, opened in a proportional minimap.
+    fn foldable_file(tag: &str) -> (PathBuf, App, Terminal<TestBackend>) {
+        let root = repo(tag);
+        let mut lines = vec!["void a() {".to_string()];
+        lines.extend((1..=60).map(|i| format!("    int body_{i} = {i};")));
+        lines.push("}".into());
+        lines.extend((1..=100).map(|i| format!("int tail_{i} = {i};")));
+        fs::write(root.join("f.c"), lines.join("\n") + "\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "f.c", false);
+        wait(&mut app);
+        app.settings.minimap.size = crate::minimap::Size::Proportional;
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let v = &mut app.groups[0].tabs[0].view;
+        v.collapsed.insert(0);
+        v.rebuild_folds();
+        screen(&mut app, &mut t);
+        (root, app, t)
+    }
+
+    #[test]
+    fn minimap_counts_only_the_rows_a_fold_leaves() {
+        let (root, mut app, mut t) = foldable_file("mini-fold");
+        // The first cell's 4 dot rows are lines 0, 61, 62, 63; only "}" stops at the first dot column.
+        let m = app.ui.minimaps[0];
+        assert_eq!(t.backend().buffer()[(m.area.x + 1, m.area.y)].symbol(), "\u{28EF}");
+        app.groups[0].tabs[0].view.scroll = 70;
+        screen(&mut app, &mut t);
+        let m = app.ui.minimaps[0];
+        assert_eq!(m.mini.n, 102, "162 lines less the 60 folded away");
+        assert_eq!(m.scroll, 10, "line 70: row 0 is line 0, row k is line 60 + k");
+        // Row 10 at 4 rows a cell: the slider starts on cell 3 (2.5 rounded).
+        let bg = |y: u16| t.backend().buffer()[(m.area.right() - 1, m.area.y + y)].bg;
+        assert_eq!(bg(2), crate::theme::P.mini_bg, "above the slider");
+        assert_ne!(bg(3), crate::theme::P.mini_bg, "the slider's first cell");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn minimap_click_past_a_fold_leaves_the_fold_closed() {
+        let (root, mut app, _t) = foldable_file("mini-fold-click");
+        let m = app.ui.minimaps[0];
+        let want = m.mini.click_scroll(m.scroll, 8);
+        assert!(want >= 1, "lands below the folded header");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), m.area.x + 3, m.area.y + 8);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), m.area.x + 3, m.area.y + 8);
+        let v = &app.groups[0].tabs[0].view;
+        assert!(v.collapsed.contains(&0), "the click scrolls, it does not unfold");
+        assert_eq!(v.scroll, want + 60, "row k is line 60 + k");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_find_match_shows_in_a_squeezed_minimap_wherever_it_falls() {
+        let root = repo("mini-find");
+        let mut lines: Vec<String> = (0..2000).map(|i| format!("int line_{i} = {i};")).collect();
+        lines[1] = "int needle = 1;".into();
+        fs::write(root.join("big.c"), lines.join("\n") + "\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "big.c", false);
+        wait(&mut app);
+        app.settings.minimap.size = crate::minimap::Size::Fill;
+        app.settings.minimap.slider_always = false;
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        app.open_find(false);
+        typ(&mut app, "needle");
+        app.focus = Focus::Editor;
+        screen(&mut app, &mut t);
+        let m = app.ui.minimaps[0];
+        let cell = &t.backend().buffer()[(m.area.right() - 1, m.area.y)];
+        assert_eq!(cell.bg, crate::theme::P.mini_find, "line 1 lies between the sampled lines");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

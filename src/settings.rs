@@ -639,7 +639,7 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "editor.minimap.renderCharacters": true,    // braille dots; false: half blocks
     // "editor.minimap.showSlider": "mouseover",    // or "always"
     // "editor.minimap.side": "right",              // or "left"
-    // "editor.minimap.size": "proportional",       // or "fill", "fit"
+    // "editor.minimap.size": "fill",               // or "proportional", "fit"
     // "herdr-code.minimap.minEditorWidth": 40,     // shrink, then hide, below this
     // "editor.gotoLocation.multipleDefinitions": "peek",   // or "gotoAndPeek", "goto"
 }
