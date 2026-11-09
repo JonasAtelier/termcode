@@ -367,8 +367,10 @@ pub fn embedded_theme() -> &'static Value {
                 ("tab.activeBorderTop", "#007ACC"),
                 ("list.activeSelectionBackground", "#303E4C"),
                 ("list.inactiveSelectionBackground", "#303034"),
-                ("diffEditor.insertedLineBackground", "#66884418"),
-                ("diffEditor.removedLineBackground", "#AA555518"),
+                ("diffEditor.insertedLineBackground", "#66884440"),
+                ("diffEditor.removedLineBackground", "#AA555540"),
+                ("diffEditor.insertedTextBackground", "#9CCC2C4D"),
+                ("diffEditor.removedTextBackground", "#FF00004D"),
             ] {
                 colors.insert(key.into(), value.into());
             }
