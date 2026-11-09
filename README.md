@@ -136,6 +136,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Ctrl+K Ctrl+0 / Ctrl+K Ctrl+J | fold all / unfold all (also available from F1) |
 | Ctrl+C / X / V, Ctrl+A | clipboard (whole line without a selection), select all |
 | Tab / Shift+Tab, Enter | indent / outdent, new line with auto-indent |
+| Ctrl+Shift+Up / Down | add a cursor on the line above / below: typing, Enter, Backspace, Delete, paste and the arrows act at every cursor; Esc or any other key leaves one |
 | Alt+Up / Alt+Down, Shift+Alt+Down | move the current or selected lines, duplicate them below |
 | Ctrl+PgDn / PgUp, Ctrl+1/2/3 | next / previous tab, focus group (Ctrl+digit only with kitty keys) |
 | Add commit (Source Control) | the commit dialog, see [Source Control](#source-control) |

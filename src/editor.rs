@@ -101,6 +101,8 @@ impl Pos {
 pub struct View {
     pub cursor: Pos,
     pub anchor: Option<Pos>,
+    /// More cursors (multi-cursor mode). Never alongside a selection.
+    pub extra: Vec<Pos>,
     /// In a side-by-side diff: the side the cursor and selection are on (0 the
     /// original, 1 the modified); their lines are diff rows.
     pub side: u8,
@@ -190,7 +192,7 @@ enum Op {
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Kind {
+pub(crate) enum Kind {
     Type,
     Erase,
     Other,
@@ -271,6 +273,8 @@ pub struct Buffer {
     undo: Vec<Group>,
     redo: Vec<Group>,
     open_kind: Option<Kind>,
+    /// Inside `at_cursors`: the edits share its one undo step.
+    batch: bool,
     last_edit: Option<Instant>,
     /// Boxed: a far jump's state makes it big, and every `Doc::Text` carries one.
     hl: Option<Box<Hl>>,
@@ -396,6 +400,28 @@ fn class(c: char) -> u8 {
     }
 }
 
+/// Where a position ends up after an edit elsewhere in the text.
+fn through(p: Pos, op: &Op) -> Pos {
+    match op {
+        Op::Ins(at, s) if p >= *at => {
+            let end = end_pos(*at, s);
+            let col = if p.line == at.line { end.col + (p.col - at.col) } else { p.col };
+            Pos::new(p.line + (end.line - at.line), col)
+        }
+        Op::Del(at, s) if p > *at => {
+            let end = end_pos(*at, s);
+            if p <= end {
+                *at
+            } else if p.line == end.line {
+                Pos::new(at.line, at.col + (p.col - end.col))
+            } else {
+                Pos::new(p.line - (end.line - at.line), p.col)
+            }
+        }
+        _ => p,
+    }
+}
+
 fn end_pos(at: Pos, s: &str) -> Pos {
     match s.rfind('\n') {
         None => Pos::new(at.line, at.col + s.len()),
@@ -500,6 +526,7 @@ impl Buffer {
             undo: Vec::new(),
             redo: Vec::new(),
             open_kind: None,
+            batch: false,
             last_edit: None,
             hl: None,
         }
@@ -637,6 +664,7 @@ impl Buffer {
         v.sync_folds(&self.lines, &self.line_ids, self.version());
         v.cursor = self.clamp(v.cursor);
         v.anchor = v.anchor.map(|a| self.clamp(a));
+        self.settle_cursors(v);
         v.scroll = v.line_of(v.row_of(v.scroll.min(self.lines.len() - 1)));
     }
 
@@ -808,6 +836,9 @@ impl Buffer {
     // ---- undo groups -------------------------------------------------------
 
     fn begin(&mut self, v: &mut View, kind: Kind) {
+        if self.batch {
+            return;
+        }
         self.clamp_view(v);
         v.unfold_at(v.cursor.line);
         let merge = kind != Kind::Other
@@ -827,6 +858,9 @@ impl Buffer {
     }
 
     fn end(&mut self, v: &mut View) {
+        if self.batch {
+            return;
+        }
         if self.undo.last().is_some_and(|g| g.ops.is_empty()) {
             self.undo.pop();
             return;
@@ -881,6 +915,7 @@ impl Buffer {
         self.version = g.ver_before;
         (v.cursor, v.anchor) = g.before;
         v.want_x = None;
+        v.extra.clear();
         self.redo.push(g);
         self.clamp_view(v);
         true
@@ -902,6 +937,7 @@ impl Buffer {
         }
         self.version = g.ver_after;
         (v.cursor, v.anchor) = g.after;
+        v.extra.clear();
         v.want_x = None;
         self.undo.push(g);
         self.clamp_view(v);
@@ -993,6 +1029,81 @@ impl Buffer {
             }
         }
         None
+    }
+
+    /// Ctrl+Shift+Up/Down: one more cursor past the outermost one, at the same column.
+    /// It becomes the main cursor, so the view follows it.
+    pub fn add_cursor(&mut self, v: &mut View, down: bool) {
+        self.clamp_view(v);
+        let lines = v.extra.iter().chain([&v.cursor]).map(|p| p.line);
+        let edge = if down { lines.max() } else { lines.min() }.unwrap_or(v.cursor.line);
+        let next = v.shift_line(edge, if down { 1 } else { -1 }).min(self.lines.len() - 1);
+        if next == edge {
+            return;
+        }
+        let x = v.want_x.unwrap_or_else(|| display_col(&self.lines[v.cursor.line], v.cursor.col));
+        v.extra.push(v.cursor);
+        v.anchor = None;
+        v.cursor = Pos::new(next, byte_at_display(&self.lines[next], x));
+        v.want_x = Some(x);
+        self.settle_cursors(v);
+    }
+
+    /// Extra cursors in order, inside the text, none on another.
+    fn settle_cursors(&self, v: &mut View) {
+        if v.extra.is_empty() {
+            return;
+        }
+        let main = self.clamp(v.cursor);
+        let mut extra: Vec<Pos> = v.extra.iter().map(|p| self.clamp(*p)).filter(|p| *p != main).collect();
+        extra.sort();
+        extra.dedup();
+        v.extra = extra;
+    }
+
+    /// Run an edit at every cursor, as one undo step. Each edit moves the text under the
+    /// other cursors, so they follow the operations it recorded.
+    pub(crate) fn at_cursors(&mut self, v: &mut View, kind: Kind, mut edit: impl FnMut(&mut Buffer, &mut View)) {
+        if v.extra.is_empty() {
+            return edit(self, v);
+        }
+        self.begin(v, kind);
+        let mut cursors: Vec<Pos> = std::iter::once(v.cursor).chain(v.extra.drain(..)).collect();
+        self.batch = true;
+        for i in 0..cursors.len() {
+            (v.cursor, v.anchor, v.want_x) = (cursors[i], None, None);
+            let done = self.undo.last().map_or(0, |g| g.ops.len());
+            edit(self, v);
+            cursors[i] = v.cursor;
+            let ops = self.undo.last().map_or(Vec::new(), |g| g.ops[done..].to_vec());
+            for (_, c) in cursors.iter_mut().enumerate().filter(|(j, _)| *j != i) {
+                *c = ops.iter().fold(*c, through);
+            }
+        }
+        self.batch = false;
+        v.cursor = cursors[0];
+        v.extra = cursors[1..].to_vec();
+        self.settle_cursors(v);
+        self.end(v);
+    }
+
+    /// Move every cursor the same way; cursors that meet become one.
+    pub fn move_cursors(&mut self, v: &mut View, mut step: impl FnMut(&mut Buffer, &mut View)) {
+        if v.extra.is_empty() {
+            return step(self, v);
+        }
+        let extras = std::mem::take(&mut v.extra);
+        step(self, v);
+        let (main, want) = (v.cursor, v.want_x);
+        let mut moved = Vec::with_capacity(extras.len());
+        for p in extras {
+            (v.cursor, v.anchor, v.want_x) = (p, None, None);
+            step(self, v);
+            moved.push(v.cursor);
+        }
+        (v.cursor, v.anchor, v.want_x) = (main, None, want);
+        v.extra = moved;
+        self.settle_cursors(v);
     }
 
     /// The lines an edit of whole lines acts on: the selection's, without a last line it
@@ -1327,6 +1438,7 @@ impl Buffer {
     // ---- movement ----------------------------------------------------------
 
     pub fn move_to(&mut self, v: &mut View, p: Pos, extend: bool) {
+        v.extra.clear();
         v.unfold_at(p.line);
         if extend {
             v.anchor.get_or_insert(v.cursor);
@@ -1968,6 +2080,95 @@ mod tests {
         assert_eq!(marks(line, Whitespace::Selection, Some((1, 4))), spaces(&[1, 3]));
         assert_eq!(marks(line, Whitespace::Selection, None), vec![]);
         assert_eq!(marks("   ", Whitespace::Trailing, None), spaces(&[0, 1, 2]), "a blank line is all trailing");
+    }
+
+    fn multi(text: &str, at: &[(usize, usize)]) -> (Buffer, View) {
+        let b = buf(text);
+        let mut v = View::default();
+        b.clamp_view(&mut v);
+        v.cursor = Pos::new(at[0].0, at[0].1);
+        v.extra = at[1..].iter().map(|&(l, c)| Pos::new(l, c)).collect();
+        (b, v)
+    }
+
+    #[test]
+    fn a_new_cursor_lands_on_the_next_line_at_the_same_column() {
+        let (mut b, mut v) = multi("abcd\nef\nghij", &[(0, 3)]);
+        b.add_cursor(&mut v, true);
+        assert_eq!((v.cursor, v.extra.clone()), (Pos::new(1, 2), vec![Pos::new(0, 3)]), "a short line ends the column");
+        b.add_cursor(&mut v, true);
+        assert_eq!(v.cursor, Pos::new(2, 3), "the column is remembered");
+        assert_eq!(v.extra.len(), 2);
+        b.add_cursor(&mut v, true);
+        assert_eq!(v.extra.len(), 2, "no line below: nothing added");
+        let (mut b, mut v) = multi("a\nb", &[(1, 0)]);
+        b.add_cursor(&mut v, false);
+        assert_eq!((v.cursor, v.extra.clone()), (Pos::new(0, 0), vec![Pos::new(1, 0)]), "upward");
+    }
+
+    #[test]
+    fn adding_a_cursor_drops_the_selection() {
+        let (mut b, mut v) = multi("ab\ncd", &[(0, 0)]);
+        b.move_to(&mut v, Pos::new(0, 2), true);
+        b.add_cursor(&mut v, true);
+        assert_eq!(v.anchor, None);
+    }
+
+    #[test]
+    fn typing_goes_to_every_cursor_as_one_undo_step() {
+        let (mut b, mut v) = multi("ab\ncd", &[(1, 1), (0, 1)]);
+        for c in "XY".chars() {
+            b.at_cursors(&mut v, Kind::Type, |b, v| b.type_char(v, c, true, true));
+        }
+        assert_eq!(b.lines, ["aXYb", "cXYd"]);
+        assert_eq!((v.cursor, v.extra.clone()), (Pos::new(1, 3), vec![Pos::new(0, 3)]));
+        assert!(b.undo(&mut v));
+        assert_eq!(b.lines, ["ab", "cd"]);
+        assert_eq!(v.extra, [], "undo leaves one cursor");
+    }
+
+    #[test]
+    fn cursors_keep_their_places_when_an_edit_moves_text() {
+        let (mut b, mut v) = multi("ab\ncd", &[(0, 1), (1, 1)]);
+        b.at_cursors(&mut v, Kind::Other, |b, v| b.newline(v));
+        assert_eq!(b.lines, ["a", "b", "c", "d"], "Enter adds a line above the later cursor");
+        assert_eq!((v.cursor, v.extra.clone()), (Pos::new(1, 0), vec![Pos::new(3, 0)]));
+        let (mut b, mut v) = multi("ab\ncd", &[(0, 2), (1, 2)]);
+        b.at_cursors(&mut v, Kind::Erase, |b, v| b.backspace(v));
+        assert_eq!((b.lines.clone(), v.cursor, v.extra.clone()), (vec!["a".to_string(), "c".into()], Pos::new(0, 1), vec![Pos::new(1, 1)]));
+        let (mut b, mut v) = multi("a b", &[(0, 0), (0, 2)]);
+        b.at_cursors(&mut v, Kind::Type, |b, v| b.type_char(v, 'X', false, false));
+        assert_eq!(b.lines, ["Xa Xb"], "two cursors on one line");
+        assert_eq!((v.cursor, v.extra.clone()), (Pos::new(0, 1), vec![Pos::new(0, 4)]));
+        let (mut b, mut v) = multi("ab\ncd", &[(1, 2), (0, 2)]);
+        b.at_cursors(&mut v, Kind::Other, |b, v| b.insert(v, "x\ny"));
+        assert_eq!(b.lines, ["abx", "y", "cdx", "y"], "a paste of several lines");
+        assert_eq!((v.cursor, v.extra.clone()), (Pos::new(3, 1), vec![Pos::new(1, 1)]));
+    }
+
+    #[test]
+    fn auto_closing_works_at_every_cursor() {
+        let (mut b, mut v) = multi("\n\n", &[(0, 0), (1, 0)]);
+        b.at_cursors(&mut v, Kind::Type, |b, v| b.type_char(v, '(', true, true));
+        assert_eq!(b.lines, ["()", "()"]);
+        assert_eq!((v.cursor, v.extra.clone()), (Pos::new(0, 1), vec![Pos::new(1, 1)]));
+    }
+
+    #[test]
+    fn arrows_move_every_cursor_and_cursors_that_meet_merge() {
+        let (mut b, mut v) = multi("ab\ncd", &[(0, 1), (1, 1)]);
+        b.move_cursors(&mut v, |b, v| b.left(v, false, false));
+        assert_eq!((v.cursor, v.extra.clone()), (Pos::new(0, 0), vec![Pos::new(1, 0)]));
+        let (mut b, mut v) = multi("ab", &[(0, 0), (0, 1)]);
+        b.move_cursors(&mut v, |b, v| b.left(v, false, false));
+        assert_eq!((v.cursor, v.extra.clone()), (Pos::new(0, 0), vec![]), "they became one");
+    }
+
+    #[test]
+    fn jumping_somewhere_ends_multi_cursor_mode() {
+        let (mut b, mut v) = multi("ab\ncd", &[(0, 1), (1, 1)]);
+        b.move_to(&mut v, Pos::new(0, 0), false);
+        assert_eq!(v.extra, []);
     }
 
     fn typed(start: &str, col: usize, keys: &str) -> (Vec<String>, usize) {

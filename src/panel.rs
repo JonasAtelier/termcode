@@ -806,6 +806,18 @@ pub(crate) fn restore() {
     let _ = terminal::disable_raw_mode();
 }
 
+/// Whether a key acts at every cursor (or adds one). Any other key leaves one cursor.
+fn keeps_cursors(code: KeyCode, ctrl: bool, alt: bool, shift: bool) -> bool {
+    match code {
+        KeyCode::Char('v') if ctrl => !alt && !shift,
+        KeyCode::Char(_) | KeyCode::Enter | KeyCode::Backspace | KeyCode::Delete => !ctrl && !alt,
+        KeyCode::Left | KeyCode::Right => !alt && !shift,
+        KeyCode::Up | KeyCode::Down => !alt && ctrl == shift,
+        KeyCode::Home | KeyCode::End => !ctrl && !alt && !shift,
+        _ => false,
+    }
+}
+
 /// What a wait on the terminal's input found.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Input {
@@ -3292,6 +3304,11 @@ impl App {
     }
 
     fn editor_key(&mut self, k: KeyEvent, ctrl: bool, alt: bool, shift: bool) {
+        if !keeps_cursors(k.code, ctrl, alt, shift) {
+            if let Some((_, tab)) = self.ed() {
+                tab.view.extra.clear();
+            }
+        }
         if ctrl && shift && matches!(k.code, KeyCode::Char('[' | ']' | '{' | '}')) {
             return self.fold_command(if matches!(k.code, KeyCode::Char('[' | '{')) { Cmd::Fold } else { Cmd::Unfold }, None);
         }
@@ -3370,21 +3387,23 @@ impl App {
                     _ => return,
                 },
                 KeyCode::Char(_) if alt => return,
-                KeyCode::Char(c) => b.type_char(v, c, brackets, quotes),
-                KeyCode::Enter => b.newline(v),
+                KeyCode::Char(c) => b.at_cursors(v, editor::Kind::Type, |b, v| b.type_char(v, c, brackets, quotes)),
+                KeyCode::Enter => b.at_cursors(v, editor::Kind::Other, |b, v| b.newline(v)),
                 KeyCode::Tab => b.indent(v),
                 KeyCode::BackTab => b.outdent(v),
-                KeyCode::Backspace => b.backspace_pair(v, brackets, quotes),
-                KeyCode::Delete => b.delete(v),
-                KeyCode::Left => b.left(v, shift, ctrl),
-                KeyCode::Right => b.right(v, shift, ctrl),
+                KeyCode::Backspace => b.at_cursors(v, editor::Kind::Erase, |b, v| b.backspace_pair(v, brackets, quotes)),
+                KeyCode::Delete => b.at_cursors(v, editor::Kind::Other, |b, v| b.delete(v)),
+                KeyCode::Left => b.move_cursors(v, |b, v| b.left(v, shift, ctrl)),
+                KeyCode::Right => b.move_cursors(v, |b, v| b.right(v, shift, ctrl)),
+                KeyCode::Up if ctrl && shift => b.add_cursor(v, false),
+                KeyCode::Down if ctrl && shift => b.add_cursor(v, true),
                 KeyCode::Up if alt => b.move_lines(v, false),
                 KeyCode::Down if alt && shift => b.duplicate_lines(v),
                 KeyCode::Down if alt => b.move_lines(v, true),
                 KeyCode::Up if ctrl => v.scroll = v.shift_line(v.scroll, -1),
                 KeyCode::Down if ctrl => v.scroll = v.shift_line(v.scroll, 1).min(b.lines.len() - 1),
-                KeyCode::Up => b.vertical(v, -1, shift),
-                KeyCode::Down => b.vertical(v, 1, shift),
+                KeyCode::Up => b.move_cursors(v, |b, v| b.vertical(v, -1, shift)),
+                KeyCode::Down => b.move_cursors(v, |b, v| b.vertical(v, 1, shift)),
                 KeyCode::PageUp => {
                     b.vertical(v, -page, shift);
                     v.scroll = v.shift_line(v.scroll, -page);
@@ -3399,8 +3418,8 @@ impl App {
                     let p = Pos::new(last, b.lines[last].len());
                     b.move_to(v, p, shift);
                 }
-                KeyCode::Home => b.home(v, shift),
-                KeyCode::End => b.end_of_line(v, shift),
+                KeyCode::Home => b.move_cursors(v, |b, v| b.home(v, shift)),
+                KeyCode::End => b.move_cursors(v, |b, v| b.end_of_line(v, shift)),
                 KeyCode::Esc => v.anchor = None,
                 _ => return,
             }
@@ -3532,7 +3551,7 @@ impl App {
             Focus::Side => {}
             Focus::Editor => {
                 if let Some((b, tab)) = self.ed() {
-                    b.insert(&mut tab.view, text);
+                    b.at_cursors(&mut tab.view, editor::Kind::Other, |b, v| b.insert(v, text));
                     if b.readonly.is_none() {
                         tab.preview = false;
                     }
@@ -5866,6 +5885,38 @@ mod tests {
         app.hover = Some(Position::new(commit.x + 2, commit.y));
         screen(&mut app, &mut t);
         assert_eq!(bg(&t, commit), P.button_hover);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_shift_arrows_edit_several_lines_at_once() {
+        let root = repo("multi-cursor");
+        fs::write(root.join("a.c"), "aa\nbb\ncc\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "a.c", false);
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        let both = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        let lines = |app: &App| match app.docs.get("file:a.c") {
+            Some(Doc::Text(b)) => b.lines.clone(),
+            _ => unreachable!(),
+        };
+        key(&mut app, KeyCode::Down, both);
+        typ(&mut app, "X");
+        assert_eq!(lines(&app), ["Xaa", "Xbb", "cc"]);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let buf = t.backend().buffer();
+        let (x, y) = (0..30).flat_map(|y| (0..119).map(move |x| (x, y))).find(|&(x, y)| buf[(x, y)].symbol() == "X" && buf[(x + 1, y)].symbol() == "a").unwrap();
+        assert!(buf[(x + 1, y)].modifier.contains(Modifier::REVERSED), "the other cursor is drawn");
+        app.paste_text("Z");
+        assert_eq!(lines(&app), ["XZaa", "XZbb", "cc"], "a paste goes to both");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.groups[0].tabs[0].view.extra.is_empty(), "Esc leaves one cursor");
+        key(&mut app, KeyCode::Up, both);
+        assert_eq!(app.groups[0].tabs[0].view.extra.len(), 1);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert!(app.groups[0].tabs[0].view.extra.is_empty(), "a key that cannot apply to all leaves one cursor");
         let _ = fs::remove_dir_all(&root);
     }
 

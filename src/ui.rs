@@ -1492,6 +1492,11 @@ fn text_editor(
             }
             col = editor::advance(col, ch);
         }
+        for p in v.extra.iter().filter(|p| group_focus && p.line == i) {
+            if let Some(x) = visible(editor::display_col(line, p.col)) {
+                f.buffer_mut()[(x, y)].set_style(Style::new().add_modifier(Modifier::REVERSED));
+            }
+        }
         draw_rulers(f, tr, v.hscroll, d.rulers, bg);
         let next = v.shift_line(i, 1);
         i = if next > i { next } else { b.lines.len() };
