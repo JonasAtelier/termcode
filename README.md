@@ -158,8 +158,9 @@ With `workbench.tree.stickyScrollMaxItemCount` above 1 the folders are nested ro
 outermost first (`arch`, `sh`, `boards`), as VS Code draws them. Search pins the file over
 its hits, Source Control the section over its files; the wheel over them scrolls the list.
 A thin line (`sideBarStickyScroll.border`, here the cards' border colour) separates them
-from the list, on its own row (or the last row's listItemGap row). Never over 40% of the
-list; the background is `sideBarStickyScroll.background`.
+from the list along the last pinned row's bottom edge, without a separator-only row
+(or in its configured listItemGap). Its underline colour has the same transport limitation
+noted above. Never over 40% of the list; the background is `sideBarStickyScroll.background`.
 
 The folding gutter uses the same chevrons as Explorer, with three clickable columns and a
 hover highlight. Code folding follows indentation (VS Code's fallback strategy), including nested functions

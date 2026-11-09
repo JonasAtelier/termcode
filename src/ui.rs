@@ -580,15 +580,14 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, lay: Lay) {
 
 /// VS Code's tree sticky scroll over the list just drawn: the folders (Search file
 /// groups, the CHANGES sections) holding the top rows, pinned over them, then a thin
-/// separator line in `sideBarStickyScroll.border` (its own row, or the last pinned
-/// item's listItemGap row). One Explorer row (the default) is the breadcrumb of the
+/// separator line in `sideBarStickyScroll.border` along the last pinned row's bottom
+/// (or its configured listItemGap). One Explorer row (the default) is the breadcrumb of the
 /// folder you are in. At most `stickyScrollMaxItemCount` rows, never over 40% of the
 /// list. `pad`, `gap`: the list's row padding and listItemGap; `scm_rows` /
 /// `search_rows`: the rows of that view (empty for the others).
 pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, gap: u16, scm_rows: &[SRow], search_rows: &[HRow]) {
     let step = 1 + gap;
-    let sep = u16::from(gap == 0);
-    let room = (list.height as usize * 2 / 5).saturating_sub(sep as usize) / step as usize;
+    let room = (list.height as usize * 2 / 5) / step as usize;
     let cap = if app.settings.sticky { app.settings.sticky_max.min(room) } else { 0 };
     let s = app.side as usize;
     let pinned = app.pinned(app.off[s], cap, search_rows, scm_rows);
@@ -597,7 +596,7 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
     if pinned.is_empty() {
         return;
     }
-    let h = pinned.len() as u16 * step + sep;
+    let h = pinned.len() as u16 * step;
     app.ui.sticky_h = h;
     let area = Rect::new(list.x, list.y, list.width, h);
     // Rows hidden under the sticky rows keep none of their buttons.
@@ -628,9 +627,14 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
             Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
         }
     }
-    // The separator: a thin line along the area's last row, on the sidebar, in its own
-    // colour only (no selection or text colour carries over).
-    let line = if crate::theme::ascii() { "-" } else { "▔" };
+    // Share the last header's row rather than reserving an empty separator row.
+    // With an explicit listItemGap, reuse that gap for the separator instead.
+    if gap == 0 {
+        f.buffer_mut().set_style(Rect::new(list.x, list.y + h - 1, list.width, 1),
+            Style::new().underline_color(P.sticky_line).add_modifier(Modifier::UNDERLINED));
+        return;
+    }
+    let line = if crate::theme::ascii() { "_" } else { "▁" };
     let buf = f.buffer_mut();
     for x in list.x..list.right() {
         let c = &mut buf[(x, list.y + h - 1)];

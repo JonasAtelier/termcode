@@ -2722,10 +2722,9 @@ impl App {
         (self.tree[a].depth == k).then_some(a)
     }
 
-    /// Rows the sticky separator line adds below the pinned rows: one, unless a
-    /// listItemGap row already sits there for it.
+    /// The separator shares the last pinned row (or its configured listItemGap).
     pub fn sticky_sep(&self) -> usize {
-        usize::from(self.settings.spacing.list_gap == 0)
+        0
     }
 
     /// Sticky scroll's pinned rows for the sidebar scrolled to `off`: Explorer folders
@@ -6397,27 +6396,30 @@ mod tests {
         assert_eq!(y, hy + 1);
         // Nothing of the row it covers shows through after the path.
         assert!(side_line(&t, &app, y).trim_end().ends_with("arch › sh › boards"), "{}", side_line(&t, &app, y));
-        // b10 under the row, b11 under its separator line, b12 the first one visible.
-        assert!(side_line(&t, &app, y + 2).contains("b12.c"));
-        // The separator: a thin line in the muted border colour, not the text colour.
+        // The separator shares the path row: the next file immediately follows it.
+        assert_eq!(app.ui.sticky_h, 1, "the separator must not reserve an empty row");
+        assert!(side_line(&t, &app, y + 1).contains("b11.c"));
         let buf = t.backend().buffer();
         for cx in x..app.ui.side_list.right() {
-            let c = &buf[(cx, y + 1)];
-            assert_eq!((c.symbol(), c.fg, c.bg, c.modifier), ("▔", crate::theme::P.sticky_line, crate::theme::P.sidebar_bg, Modifier::empty()), "col {cx}");
+            let c = &buf[(cx, y)];
+            assert!(c.modifier.contains(Modifier::UNDERLINED), "separator at the path row's bottom: col {cx}");
+            assert_eq!(c.underline_color, crate::theme::P.sticky_line);
         }
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 3, y + 1);
+        assert_eq!(app.sel[0], b10 + 1, "first visible file is clickable, not a sticky row");
         assert!(![crate::theme::P.sidebar_fg, crate::theme::P.editor_fg, Color::White].contains(&crate::theme::P.sticky_line));
         // It follows the folder ends: boards' last file visible, then sh's next row.
         app.off[0] = b59 - 2;
         screen(&mut app, &mut t);
         assert_eq!(app.ui.sticky, [boards]);
-        app.off[0] = b59 - 1;
+        app.off[0] = b59;
         screen(&mut app, &mut t);
         assert_eq!(app.ui.sticky, [sh], "kernel.c, sh's, is the first visible row");
         assert!(side_line(&t, &app, y).contains("arch › sh") && !side_line(&t, &app, y).contains("boards"));
-        app.off[0] = x86 - 2;
+        app.off[0] = x86 - 1;
         screen(&mut app, &mut t);
         assert!(app.ui.sticky.len() == 1 && app.tree[app.ui.sticky[0]].path == "arch", "x86, arch's, is the first visible row");
-        app.off[0] = x86 - 1;
+        app.off[0] = x86;
         screen(&mut app, &mut t);
         assert!(app.ui.sticky.is_empty(), "block, top level, is the first visible row");
         // Each name is its own target: sh scrolls back so it is visible again.
@@ -6461,8 +6463,8 @@ mod tests {
         for (r, name) in rows.iter().zip(["arch", "sh", "boards"]) {
             assert!(r.trim_end().ends_with(name), "{rows:?}");
         }
-        // Their separator line covers b13; the tree goes on with b14.
-        assert!(rows[3].chars().all(|c| c == '▔') && rows[4].contains("b14.c"), "{rows:?}");
+        // No separator-only row hides b13.
+        assert!(rows[3].contains("b13.c") && rows[4].contains("b14.c"), "{rows:?}");
         // The wheel over a sticky row scrolls the tree.
         mouse(&mut app, MouseEventKind::ScrollDown, x + 2, y);
         assert_eq!(app.off[0], b10 + 3);
@@ -6470,11 +6472,11 @@ mod tests {
         // Up from the first row under them: that row would hide, so it shows just below them.
         app.off[0] = b10;
         screen(&mut app, &mut t);
-        (app.focus, app.sel[0]) = (Focus::Side, b10 + 4);
+        (app.focus, app.sel[0]) = (Focus::Side, b10 + 3);
         key(&mut app, KeyCode::Up, KeyModifiers::NONE);
-        assert_eq!((app.sel[0], app.off[0]), (b10 + 3, b10 - 1));
+        assert_eq!((app.sel[0], app.off[0]), (b10 + 2, b10 - 1));
         screen(&mut app, &mut t);
-        assert!(side_line(&t, &app, y + 4).contains("b13.c"));
+        assert!(side_line(&t, &app, y + 3).contains("b12.c"));
         // A click on a sticky row reveals that folder right under its own parents.
         app.off[0] = b10;
         screen(&mut app, &mut t);
@@ -6522,7 +6524,7 @@ mod tests {
             screen(&mut app, &mut t);
             let lh = app.ui.side_list.height as usize;
             // With their separator row: never over 40% of the list.
-            assert_eq!(app.ui.sticky.len(), 3.min((lh * 2 / 5).saturating_sub(1)), "{lh} rows");
+            assert_eq!(app.ui.sticky.len(), 3.min(lh * 2 / 5), "{lh} rows");
             assert!(app.ui.sticky_h as usize <= lh * 2 / 5, "{lh} rows");
         }
         // Both densities and listItemGap 1: slot k is its item row and its gap row.
@@ -6541,8 +6543,8 @@ mod tests {
                     assert_eq!(app.ui.sticky_at(r), Some(app.ui.sticky[k]), "{tag}: row {r}");
                 }
             }
-            // The separator line: its own row, or the last pinned item's gap row.
-            let sep = u16::from(sp.list_gap == 0);
+            // The separator does not add a row, including with a configured gap.
+            let sep = 0;
             assert_eq!(app.ui.sticky_h, 3 * step + sep, "{tag}");
             assert_eq!(app.ui.sticky_at(y + 3 * step + sep), None, "{tag}: the tree below");
             assert_eq!(app.ui.side_item(y + 3 * step, app.off[0]), Some(b10 + 3), "{tag}");
@@ -6596,8 +6598,8 @@ mod tests {
             assert_eq!(app.ui.sticky, [h], "{name}");
             let (x, y) = (app.ui.side_list.x, app.ui.side_list.y);
             assert!(side_line(&t, &app, y).contains(name), "{name}: {}", side_line(&t, &app, y));
-            assert!(side_line(&t, &app, y + 1).chars().all(|c| c == '▔'), "{name}: its separator line");
-            assert!(side_line(&t, &app, y + 2).contains("06.c"), "{name}: the files go on below (04 and 05 under them)");
+            assert!(t.backend().buffer()[(x, y)].modifier.contains(Modifier::UNDERLINED), "{name}: separator shares the header row");
+            assert!(side_line(&t, &app, y + 1).contains("05.c"), "{name}: files follow the header immediately");
             let tabs = app.groups[0].tabs.len();
             mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 3, y);
             mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 3, y);
