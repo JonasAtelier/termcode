@@ -148,6 +148,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | in the peek | Up/Down, PgUp/PgDn, Enter or click opens, wheel scrolls the list or the preview, Esc or a click outside closes |
 | Alt+← / Alt+→ | Go Back / Go Forward (also VS Code Linux's Ctrl+Alt+- / Ctrl+Shift+- where they reach, and F1) |
 | Ctrl+hover | underlines the identifier under the mouse (`editorLink.activeForeground`) |
+| rest the pointer on a function name for 0.5 s | preview its documentation; move away or press Esc to close; wheel inside the popup scrolls long comments |
 
 Sticky scroll: while the Explorer is scrolled, one row under the root header shows the full
 path of the folder the first visible row is in, breadcrumb style (deep in `arch/sh/boards`:
@@ -161,6 +162,18 @@ A thin line (`sideBarStickyScroll.border`, here the cards' border colour) separa
 from the list along the last pinned row's bottom edge, without a separator-only row
 (or in its configured listItemGap). Its underline colour has the same transport limitation
 noted above. Never over 40% of the list; the background is `sideBarStickyScroll.background`.
+
+Function documentation hover uses the existing bounded F12 lookup, including the repo
+outside a subfolder workspace. It shows adjacent C/kernel-doc/JSDoc blocks, Rust/Go
+line comments and Python docstrings, using open buffers' unsaved comments. Like VS Code's
+hover, it shows a syntax-coloured function signature above the documentation, with a
+separator, formatted parameters/returns and basic Markdown (emphasis, inline code,
+fenced examples and link labels). It uses `editorHoverWidget.background`, `.foreground`
+and `.border`; it prefers the space above the function and falls below when needed. If no
+comment is found, the popup shows only the signature, without an empty documentation section.
+No language server is started. It recognises call-shaped names (`name(`); lookup is
+heuristic, so overloads, generated definitions and complex generic calls may not resolve.
+Comments are limited to 80 lines; a popup can be scrolled without scrolling the editor.
 
 The folding gutter uses the same chevrons as Explorer, with two clickable columns and a
 hover highlight. Code folding follows indentation (VS Code's fallback strategy), including nested functions

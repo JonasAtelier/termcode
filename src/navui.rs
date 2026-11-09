@@ -81,6 +81,7 @@ pub struct PeekHits {
 #[derive(Default)]
 pub struct Nav {
     req: Option<Req>,
+    pub hover: crate::hover::State,
     pub history: NavHistory,
     pub peek: Option<Peek>,
     /// Doc key and 0-based line highlighted for a moment after a jump.
@@ -91,9 +92,11 @@ pub struct Nav {
 }
 
 impl Nav {
+    pub fn req_running(&self) -> bool { self.req.is_some() }
+
     /// The event loop wakes often while a lookup runs or a flash fades.
     pub fn busy(&self) -> bool {
-        self.req.is_some() || self.flash.is_some()
+        self.req.is_some() || self.flash.is_some() || self.hover.pending.is_some()
     }
 }
 
@@ -217,7 +220,7 @@ fn request(app: &mut App, act: Act) {
 
 /// Take a finished lookup and expire the flash; true when the screen changed.
 pub fn poll(app: &mut App) -> bool {
-    let mut changed = false;
+    let mut changed = crate::hover::poll(app);
     if app.nav.flash.as_ref().is_some_and(|f| f.2.elapsed() >= FLASH) {
         app.nav.flash = None;
         changed = true;
@@ -334,6 +337,7 @@ fn go(app: &mut App, back: bool) {
 
 /// F1 palette entries and their keys.
 pub fn command(app: &mut App, a: Act) {
+    crate::hover::dismiss(app);
     match a {
         Act::Back | Act::Forward => {
             app.nav.peek = None;
@@ -369,6 +373,7 @@ fn open_item(app: &mut App, i: usize) {
 
 /// Every key goes through here: the nav keys, then the open peek, then the panel.
 pub fn on_key(app: &mut App, k: KeyEvent) {
+    if crate::hover::dismiss(app) && k.code == KeyCode::Esc { return; }
     // Modal UI (prompt, quick pick, the commit dialog, a git picker) takes every key.
     let modal = app.prompt.is_some() || app.quick.is_some() || app.gitui.dlg.is_some() || app.gitui.cmds.picker.is_some();
     if modal || !nav_key(app, k) {
@@ -442,13 +447,16 @@ fn peek_key(app: &mut App, k: KeyEvent, modded: bool) -> bool {
 
 /// Every mouse event goes through here: Ctrl+hover, the peek, Ctrl+click, then the panel.
 pub fn on_mouse(app: &mut App, m: MouseEvent) -> bool {
+    let visible = app.nav.hover.card.is_some();
+    if let Some(redraw) = crate::hover::on_mouse(app, m) { return redraw; }
+    let hover_redraw = visible && app.nav.hover.card.is_none();
     if app.prompt.is_some() || app.quick.is_some() || app.gitui.dlg.is_some() || app.gitui.cmds.picker.is_some() {
-        return app.on_mouse(m);
+        return app.on_mouse(m) || hover_redraw;
     }
     let p = Position::new(m.column, m.row);
     let ctrl = m.modifiers.contains(KeyModifiers::CONTROL);
     let link = (ctrl && m.kind == MouseEventKind::Moved).then(|| symbol_under(app, p)).flatten().map(|(g, pos, r, _)| (g, pos.line, r));
-    let relink = link != app.nav.link;
+    let relink = link != app.nav.link || hover_redraw;
     app.nav.link = link;
     if let Some(redraw) = peek_mouse(app, m, p) {
         return redraw || relink;
@@ -547,7 +555,7 @@ fn split(path: &str) -> (String, String) {
 /// After the editors: the jump flash, the Ctrl+hover link, the peek.
 pub fn draw(app: &mut App, f: &mut Frame) {
     app.nav.hits = PeekHits::default();
-    if app.nav.flash.is_none() && app.nav.link.is_none() && app.nav.peek.is_none() {
+    if app.nav.flash.is_none() && app.nav.link.is_none() && app.nav.peek.is_none() && app.nav.hover.card.is_none() {
         return;
     }
     let c = Cols::new(app);
@@ -569,6 +577,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         link(app, f, *g, *line, r.clone(), c.link);
     }
     peek(app, f, &c);
+    crate::hover::draw(app, f);
 }
 
 fn link(app: &App, f: &mut Frame, g: usize, line: usize, r: Range<usize>, fg: Color) -> Option<()> {
@@ -984,6 +993,97 @@ mod tests {
         assert!(app.nav.flash.is_some() && app.nav.peek.is_none());
         wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn finish_doc_hover(app: &mut App) {
+        app.nav.hover.due = Some(Instant::now());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            poll(app);
+            if app.nav.hover.pending.is_none() && app.nav.hover.due.is_none() { break; }
+            assert!(Instant::now() < deadline, "documentation lookup never completed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn function_hover_reads_unsaved_comments_and_closes_on_tab_switch() {
+        let (mut app, root) = app("hover-unsaved");
+        app.open_file(0, "net/port.c", false);
+        let mut t = fitting_term(&mut app);
+        wait_idle(&mut app);
+        let (b, tab) = app.ed().unwrap();
+        b.insert(&mut tab.view, "/* Unsaved function documentation. */\n");
+        app.open_file(0, "net/user.c", false);
+        draw(&mut app, &mut t);
+        let p = cell(&app, CALL, USER_C.lines().nth(CALL).unwrap().find("dsa_port_change_master").unwrap());
+        mouse(&mut app, MouseEventKind::Moved, p, KeyModifiers::NONE);
+        finish_doc_hover(&mut app);
+        draw(&mut app, &mut t);
+        let screen = (0..t.backend().buffer().area.height).map(|y| text(&t, y, t.backend().buffer().area)).collect::<Vec<_>>().join("\n");
+        assert!(screen.contains("Unsaved function documentation."), "{screen}");
+        assert_eq!(fs::read_to_string(root.join("net/port.c")).unwrap(), PORT_C);
+        assert!(matches!(app.docs.get("file:net/port.c"), Some(Doc::Text(b)) if b.dirty()));
+        app.open_file(0, "net/a.c", false);
+        draw(&mut app, &mut t);
+        assert!(app.nav.hover.card.is_none(), "a tooltip cannot outlive its source tab");
+        wait_idle(&mut app);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn function_hover_finds_header_docs_outside_a_subfolder_workspace() {
+        let (original, root) = app("hover-repo");
+        drop(original);
+        fs::write(root.join("inc/dsa.h"), format!("/** Header function documentation. */\n{DSA_H}")).unwrap();
+        let mut app = App::new(root.join("net"), None);
+        app.open_file(0, "user.c", false);
+        let mut t = fitting_term(&mut app);
+        wait_idle(&mut app);
+        app.msg = "Keep this status".into();
+        let p = cell(&app, CALL, USER_C.lines().nth(CALL).unwrap().find("dsa_port_change_master").unwrap());
+        mouse(&mut app, MouseEventKind::Moved, p, KeyModifiers::NONE);
+        finish_doc_hover(&mut app);
+        draw(&mut app, &mut t);
+        let screen = (0..t.backend().buffer().area.height).map(|y| text(&t, y, t.backend().buffer().area)).collect::<Vec<_>>().join("\n");
+        assert!(screen.contains("Header function documentation."), "{screen}");
+        assert_eq!(app.msg, "Keep this status");
+        assert_eq!(file(&app), "user.c");
+        wait_idle(&mut app);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resting_on_a_function_previews_its_comment_without_moving_the_cursor() {
+        let (mut app, root) = app("function-comment-hover");
+        fs::write(root.join("net/port.c"), format!("/**\n * Change the uplink master.\n * @dp: 中文 port description\n */\n{PORT_C}")).unwrap();
+        let mut t = fitting_term(&mut app);
+        wait_idle(&mut app);
+        let original = (file(&app), cursor(&app));
+        let pos = cell(&app, CALL, USER_C.lines().nth(CALL).unwrap().find("dsa_port_change_master").unwrap());
+        mouse(&mut app, MouseEventKind::Moved, pos, KeyModifiers::NONE);
+        draw(&mut app, &mut t);
+        let contents = |t: &Terminal<TestBackend>| (0..t.backend().buffer().area.height).map(|y| text(t, y, t.backend().buffer().area)).collect::<Vec<_>>().join("\n");
+        assert!(!contents(&t).contains("Change the uplink master."), "wait for the pointer to rest");
+        let wait = app.step(&mut t, &mut false, |_| Ok(None)).unwrap();
+        assert!(wait <= Duration::from_millis(500), "hover timer must wake an idle panel: {wait:?}");
+        std::thread::sleep(Duration::from_millis(510));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            app.drain();
+            draw(&mut app, &mut t);
+            if contents(&t).contains("Change the uplink master.") { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(contents(&t).contains("Change the uplink master."), "resting on a call shows the definition's comment");
+        assert!(contents(&t).contains("port description") && contents(&t).contains("中") && contents(&t).contains("文"));
+        assert_eq!((file(&app), cursor(&app)), original);
+        assert!(!active(&app).unwrap().1.dirty());
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        draw(&mut app, &mut t);
+        assert!(!contents(&t).contains("Change the uplink master."));
+        wait_idle(&mut app);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

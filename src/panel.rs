@@ -1539,7 +1539,7 @@ impl App {
             || self.nav.busy()
             || self.gitui.busy();
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
-        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due].into_iter().flatten() {
+        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
         // A far jump's first highlighting catches up one budgeted slice per frame
@@ -1603,6 +1603,7 @@ impl App {
                 crate::navui::on_mouse(self, m)
             }
             Event::Paste(s) => {
+                crate::hover::dismiss(self);
                 self.on_paste(&s);
                 self.schedule_backup();
                 crate::session::touch(self);
@@ -1617,7 +1618,8 @@ impl App {
                 self.refresh_due.get_or_insert(Instant::now() + FOCUS_DEBOUNCE);
                 false
             }
-            Event::Resize(..) => true,
+            Event::FocusLost => crate::hover::dismiss(self),
+            Event::Resize(..) => { crate::hover::dismiss(self); true },
             _ => false,
         };
         // Any edit (keys, paste, a Replace All click) re-diffs the gutter shortly after.

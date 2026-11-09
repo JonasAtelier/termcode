@@ -394,7 +394,7 @@ fn label_at(sym: &str, line: &str) -> Option<usize> {
 }
 
 /// The first `MAX_CONTEXT_BYTES` of a file, as lines.
-fn read_lines(path: &Path) -> Vec<String> {
+pub(crate) fn read_lines(path: &Path) -> Vec<String> {
     let mut v = Vec::new();
     let _ = File::open(path).and_then(|f| f.take(MAX_CONTEXT_BYTES).read_to_end(&mut v));
     String::from_utf8_lossy(&v).lines().map(String::from).collect()

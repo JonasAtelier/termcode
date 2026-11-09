@@ -17,6 +17,7 @@ mod gitops;
 mod graph;
 mod nav;
 mod navui;
+mod hover;
 mod panel;
 mod parse;
 mod semantic;
