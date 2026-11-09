@@ -21,9 +21,7 @@ pub struct Spacing {
     pub sidebar_padding: u16,
     /// Blank rows between sidebar sections and headers.
     pub section_gap: u16,
-    /// Columns before the line numbers in editors, diffs and peeks (the number, its
-    /// marker cell, then the code: VS Code's gutter); 2 or more also leaves a blank
-    /// row under the tab bar in compact (comfortable always has it).
+    /// Extra columns before the right-aligned line numbers in editors, diffs and peeks.
     pub editor_padding: u16,
     /// Spaces each side of a tab label.
     pub tab_padding: u16,
@@ -56,8 +54,8 @@ impl Spacing {
         sidebar_width: 36,
         sidebar_padding: 2,
         section_gap: 1,
-        // `␠number▎code`: one cell after the card border, VS Code's gutter.
-        editor_padding: 1,
+        // The number field already reserves room for at least two digits.
+        editor_padding: 0,
         tab_padding: 2,
         status_gap: 3,
         activity_width: 5,
@@ -613,7 +611,7 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // },
     // "workbench.density": "comfortable",   // or "compact"
     // "herdr-code.spacing": {   // overrides the density's values, one key at a time
-    //     "sidebarWidth": 36, "sidebarPadding": 2, "sectionGap": 1, "editorPadding": 1,
+    //     "sidebarWidth": 36, "sidebarPadding": 2, "sectionGap": 1, "editorPadding": 0,
     //     "tabPadding": 2, "statusBarGap": 3, "activityBarWidth": 5, "listItemGap": 0,
     //     "popupPadding": [3, 1], "iconGap": 2, "treeIndent": 2, "titleBarPadding": 2,
     //     "buttonPadding": 2, "findWidgetPadding": 1, "statusBarPadding": 2,

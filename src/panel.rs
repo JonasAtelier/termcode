@@ -4157,16 +4157,18 @@ mod tests {
         let gh = app.ui.groups[0].clone();
         let (x, y) = (gh.folds_x.unwrap(), gh.text.y);
         let original = app.ed().unwrap().0.text();
-        for dx in [2, 0, 1] {
+        assert_eq!(gh.marks_x.unwrap() - 1 - gh.area.x, 1, "one blank cell before a single-digit line number");
+        assert_eq!(x - (gh.marks_x.unwrap() - 1) - 1, 1, "one cell between the number and the arrow");
+        for dx in [0, 1] {
             mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + dx, y);
             assert!(!screen(&mut app, &mut t).contains("println!"), "button column {dx} folds");
-            assert_eq!(t.backend().buffer()[(x + 1, y)].symbol(), crate::theme::icons().chev_right);
+            assert_eq!(t.backend().buffer()[(x, y)].symbol(), crate::theme::icons().chev_right);
             mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + dx, y);
             assert!(screen(&mut app, &mut t).contains("println!"), "button column {dx} unfolds");
-            assert_eq!(t.backend().buffer()[(x + 1, y)].symbol(), crate::theme::icons().chev_down);
+            assert_eq!(t.backend().buffer()[(x, y)].symbol(), crate::theme::icons().chev_down);
         }
         let normal_bg = t.backend().buffer()[(x, y)].bg;
-        assert!(app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: x + 2, row: y, modifiers: KeyModifiers::NONE }));
+        assert!(app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: x + 1, row: y, modifiers: KeyModifiers::NONE }));
         screen(&mut app, &mut t);
         assert_ne!(t.backend().buffer()[(x, y)].bg, normal_bg, "hover lights the whole button");
         assert_eq!(gh.marks_x.unwrap() + 1, x, "Git marker remains separate");
@@ -5765,16 +5767,16 @@ mod tests {
     #[test]
     fn gutters_are_one_cell_and_line_up() {
         let (root, mut app) = changed_file("gutter");
-        assert_eq!(app.settings.spacing.editor_padding, 1);
+        assert_eq!(app.settings.spacing.editor_padding, 0);
         let mut t = Terminal::new(TestBackend::new(120, 34)).unwrap();
         let sym = |t: &Terminal<TestBackend>, x: u16, y: u16| t.backend().buffer()[(x, y)].symbol().to_string();
-        // A short file: one padding cell after the card's border, a 2-digit number.
+        // A short file: a two-digit field gives one blank before a single digit.
         app.open_file(0, "README.md", false);
         screen(&mut app, &mut t);
         let gh = app.ui.groups[0].clone();
         let (x, y) = cell_of(&t, "hello", 0);
-        assert_eq!((x, gh.marks_x, gh.text.x), (gh.area.x + 4, Some(gh.area.x + 3), x), "pad, two digits, the marker, the code");
-        assert_eq!((sym(&t, gh.area.x, y), sym(&t, gh.area.x + 1, y), sym(&t, gh.area.x + 2, y), sym(&t, x - 1, y)), (" ".into(), " ".into(), "1".into(), " ".into()));
+        assert_eq!((x, gh.marks_x, gh.text.x), (gh.area.x + 3, Some(gh.area.x + 2), x), "two digits, the marker, the code");
+        assert_eq!((sym(&t, gh.area.x, y), sym(&t, gh.area.x + 1, y), sym(&t, x - 1, y)), (" ".into(), "1".into(), " ".into()));
         assert_eq!(gh.text.y, gh.area.y + 1, "the accent uses the border without reserving a row");
         // long.c, 100 lines: the marker of a changed line sits right between number and code.
         app.open_file(0, "long.c", false);

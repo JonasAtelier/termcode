@@ -1336,10 +1336,10 @@ fn text_editor(
     let ic = icons();
     let digits = b.lines.len().to_string().len().max(2) as u16;
     // Gutter: [pad][number][Git marker][fold button?]text [blank][scrollbar].
-    // The fold button includes clickable padding on both sides of the shared chevron.
+    // The chevron follows the Git lane directly; its trailing blank is clickable.
     let (pad, blank) = (d.gap, u16::from(d.comfy));
     let nums = pad + digits;
-    let fold_width = if v.fold_ends.iter().any(Option::is_some) { 3 } else { 0 };
+    let fold_width = if v.fold_ends.iter().any(Option::is_some) { 2 } else { 0 };
     let gutter = nums + 1 + fold_width;
     let base_text = area.width.saturating_sub(gutter + 1 + blank);
     let mw = d.minimap.map_or(0, |m| minimap::width(base_text, area.width, m.max_column, m.min_text));
@@ -1399,7 +1399,7 @@ fn text_editor(
             let hot = foldable && d.hover.is_some_and(|p| button.contains(p));
             let glyph = if !foldable { " " } else if v.collapsed.contains(&i) { ic.chev_right } else { ic.chev_down };
             let st = Style::new().fg(if hot { P.icon_fg } else { P.line_nr_active }).bg(if hot { P.widget_bg } else { P.editor_bg });
-            f.render_widget(Span::styled(format!(" {glyph} "), st), button);
+            f.render_widget(Span::styled(format!("{glyph} "), st), button);
         }
         let line = &b.lines[i];
         let mut overlays: Vec<(usize, usize, Color)> = Vec::new();

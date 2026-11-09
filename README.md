@@ -162,7 +162,7 @@ from the list along the last pinned row's bottom edge, without a separator-only 
 (or in its configured listItemGap). Its underline colour has the same transport limitation
 noted above. Never over 40% of the list; the background is `sideBarStickyScroll.background`.
 
-The folding gutter uses the same chevrons as Explorer, with three clickable columns and a
+The folding gutter uses the same chevrons as Explorer, with two clickable columns and a
 hover highlight. Code folding follows indentation (VS Code's fallback strategy), including nested functions
 and blocks. A folded header shows an ellipsis; original line numbers and file contents are
 preserved. Go to Definition and find reveal hidden results. Editing reveals folded blocks;
@@ -310,7 +310,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `sidebarWidth` | 36 | 30 | Sidebar content columns (a card adds its 2-cell frame) until you drag the divider (a dragged width is kept in layout.json) |
 | `sidebarPadding` | 2 | 0 | Left/right padding of sidebar rows and inputs |
 | `sectionGap` | 1 | 0 | Blank rows under the sidebar title (not above a card) and between SCM sections |
-| `editorPadding` | 1 | 0 | Cells before the line numbers in editors, diffs and peeks; the number, then one cell (the quick-diff marker, else blank), then the code, as VS Code: `␠12▎code`. Comfortable, or 2 or more, also leaves the blank row under the tab bar |
+| `editorPadding` | 0 | 0 | Extra cells before the right-aligned line numbers in editors, diffs and peeks; the number field reserves at least two digits. The Git marker follows the number, then the fold arrow and its clickable trailing blank where folding is available |
 | `tabPadding` | 2 | 1 | Spaces each side of a tab label |
 | `statusBarGap` | 3 | 3 | Spaces between status bar items |
 | `statusBarPadding` | 2 | 1 | Spaces at the status bar's left and right edges |
