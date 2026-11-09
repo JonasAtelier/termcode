@@ -100,6 +100,7 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
   alike). A no-argument launch from `arch/sh` keeps its own session though its root is the
   repo; a reused `--tab` keeps the session of the folder it was opened from.
   `herdr-code FILE:L` opens that file on top of it.
+- Hover: an inactive tab (`tab.hoverBackground`), the clickable status bar items (`statusBarItem.hoverBackground`) and buttons (`button.hoverBackground`, `button.secondaryHoverBackground`) light up under the pointer.
 - Visuals: the built-in theme uses layered grey surfaces, muted selections and diff line
   backgrounds, with stronger word highlights. The card border stays continuous and keeps
   its own colour. A separate blue underline marks the active tab's top edge without an

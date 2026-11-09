@@ -291,6 +291,16 @@ fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     f.render_widget(Span::styled(close, Style::new().fg(P.status_err_fg).bg(P.status_err_bg)), app.ui.close);
 }
 
+/// A button's colours, lit while the pointer is on it.
+pub(crate) fn button_style(primary: bool, hot: bool) -> Style {
+    match (primary, hot) {
+        (true, false) => Style::new().fg(P.button_fg).bg(P.button_bg),
+        (true, true) => Style::new().fg(P.button_fg).bg(P.button_hover),
+        (false, false) => Style::new().fg(P.button2_fg).bg(P.button2_bg),
+        (false, true) => Style::new().fg(P.button2_fg).bg(P.button2_hover),
+    }
+}
+
 fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let st = Style::new().fg(P.status_fg).bg(P.status_bg);
     fill(f, r, P.status_bg);
@@ -992,18 +1002,18 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         if x + w > split.x {
             break;
         }
+        let tr = Rect::new(x, tabbar.y, w, 1);
+        let hovered = hover.is_some_and(|p| tr.contains(p));
         let (bg, fg) = if active {
             (P.tab_active_bg, if focused_group { P.tab_active_fg } else { P.tab_unfocused_fg })
         } else {
-            (P.tab_inactive_bg, P.tab_inactive_fg)
+            (if hovered { P.tab_hover } else { P.tab_inactive_bg }, P.tab_inactive_fg)
         };
         let mut st = Style::new().fg(fg).bg(bg);
         if t.preview {
             st = st.add_modifier(Modifier::ITALIC);
         }
-        let tr = Rect::new(x, tabbar.y, w, 1);
         let xr = Rect::new(x + w - tail_w + 1, tabbar.y, 1, 1);
-        let hovered = hover.is_some_and(|p| tr.contains(p));
         let dot = if dirty { ic.dirty } else { " " };
         let tail = if active || hovered { ic.close } else { " " };
         let lead = edge.to_string();
@@ -1723,7 +1733,7 @@ fn draw_peek(f: &mut Frame, zr: Rect, gx: u16, gutter: u16, tx: u16, pk: &PeekDr
         let st = if !enabled {
             desc.add_modifier(Modifier::DIM)
         } else if matches!(b, PeekBtn::Stage | PeekBtn::Revert) {
-            Style::new().fg(P.button_fg).bg(P.button_bg)
+            button_style(true, d.hover.is_some_and(|p| r.contains(p)))
         } else {
             Style::new().fg(P.peek_title_fg).bg(P.peek_title_bg)
         };
@@ -2235,9 +2245,9 @@ fn prompt(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
         let t = format!("{}{label}{}", sp(bp), sp(bp));
         let bw = t.width() as u16;
         x = x.saturating_sub(bw + gap);
-        let st = if i == p.sel { Style::new().fg(P.button_fg).bg(P.button_bg) } else { Style::new().fg(P.button2_fg).bg(P.button2_bg) };
         // Too small a terminal: a button cut by the edge is drawn (and hit) only where visible.
         let br = Rect::new(x, by, bw, 1).intersection(r);
+        let st = button_style(i == p.sel, app.hover.is_some_and(|h| br.contains(h)));
         if br.is_empty() {
             continue;
         }

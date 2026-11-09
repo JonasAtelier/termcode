@@ -1058,7 +1058,8 @@ pub fn status_left(app: &mut App, f: &mut Frame, r: Rect, edge: u16, gap: u16) -
             break;
         }
         let ir = Rect::new(x, r.y, w, 1);
-        f.render_widget(Span::styled(t, st), ir);
+        let item = if app.hover.is_some_and(|p| ir.contains(p)) { st.bg(P.status_hover) } else { st };
+        f.render_widget(Span::styled(t, item), ir);
         app.gitui.hits.cmds.push((ir, hit));
         x += w;
     }
@@ -1128,8 +1129,8 @@ fn draw_toast(app: &mut App, f: &mut Frame, area: Rect) {
     let mut x = inner.x;
     for (label, hit, primary) in [("Show Git Output", Hit::ToastOutput, true), ("Close", Hit::ToastClose, false)] {
         let t = format!("{bp}{label}{bp}");
-        let st = if primary { Style::new().fg(P.button_fg).bg(P.button_bg) } else { Style::new().fg(P.button2_fg).bg(P.button2_bg) };
         let br = Rect::new(x, by, t.width() as u16, 1).intersection(inner);
+        let st = crate::ui::button_style(primary, app.hover.is_some_and(|p| br.contains(p)));
         f.render_widget(Span::styled(t.clone(), st), br);
         app.gitui.hits.cmds.push((br, hit));
         x += t.width() as u16 + 1;

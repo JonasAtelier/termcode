@@ -709,8 +709,8 @@ pub fn wheel(app: &mut App, p: Position, delta: isize) {
 // ---------------------------------------------------------------- drawing
 
 /// A button: a pill whose caps take the padding cells (`pad` is 0 or 1), or the bare label.
-fn button_spans(label: &str, primary: bool, pad: u16) -> Vec<Span<'static>> {
-    let st = if primary { Style::new().fg(P.button_fg).bg(P.button_bg) } else { Style::new().fg(P.button2_fg).bg(P.button2_bg) };
+fn button_spans(label: &str, primary: bool, pad: u16, hot: bool) -> Vec<Span<'static>> {
+    let st = crate::ui::button_style(primary, hot);
     if pad == 0 {
         return vec![Span::styled(label.to_string(), st)];
     }
@@ -718,21 +718,23 @@ fn button_spans(label: &str, primary: bool, pad: u16) -> Vec<Span<'static>> {
 }
 
 /// Buttons left to right from `x`; each is drawn and hit only where it fits.
-fn buttons(f: &mut Frame, hits: &mut Vec<(Rect, Btn)>, r: Rect, items: &[(&str, Btn, bool)], pad: u16) {
+fn buttons(f: &mut Frame, hits: &mut Vec<(Rect, Btn)>, r: Rect, items: &[(&str, Btn, bool)], pad: u16, hover: Option<Position>) {
     let mut x = r.x;
     for (label, b, primary) in items {
-        let s = Line::from(button_spans(label, *primary, pad));
-        let br = Rect::new(x, r.y, s.width() as u16, 1).intersection(r);
-        if br.width < s.width() as u16 {
+        let width = Line::from(button_spans(label, *primary, pad, false)).width() as u16;
+        let br = Rect::new(x, r.y, width, 1).intersection(r);
+        if br.width < width {
             break;
         }
-        f.render_widget(s, br);
+        let hot = hover.is_some_and(|p| br.contains(p));
+        f.render_widget(Line::from(button_spans(label, *primary, pad, hot)), br);
         hits.push((br, *b));
         x += br.width + 1;
     }
 }
 
-fn file_pane(f: &mut Frame, d: &mut CommitDlg, k: usize, r: Rect, title: &str, btns: &[(&str, Btn, bool)], pad: u16) {
+#[allow(clippy::too_many_arguments)]
+fn file_pane(f: &mut Frame, d: &mut CommitDlg, k: usize, r: Rect, title: &str, btns: &[(&str, Btn, bool)], pad: u16, hover: Option<Position>) {
     if r.height == 0 {
         return;
     }
@@ -762,7 +764,7 @@ fn file_pane(f: &mut Frame, d: &mut CommitDlg, k: usize, r: Rect, title: &str, b
         row(f, Rect::new(list.x, list.y, list.width, 1), P.widget_bg, vec![Span::styled(" (none)", Style::new().fg(P.dim))]);
     }
     if r.height >= 2 {
-        buttons(f, &mut d.hits.btns, Rect::new(r.x + 1, r.bottom() - 1, r.width.saturating_sub(1), 1), btns, pad);
+        buttons(f, &mut d.hits.btns, Rect::new(r.x + 1, r.bottom() - 1, r.width.saturating_sub(1), 1), btns, pad, hover);
     }
 }
 
@@ -789,8 +791,8 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     for (s, r) in SASHES.into_iter().zip(g.sashes) {
         sash(f, r, d.drag == Some(s) || hover.is_some_and(|p| r.contains(p)), P.widget_border, P.widget_bg);
     }
-    file_pane(f, d, 0, g.unstaged, "Unstaged Changes", &[("Stage →", Btn::Stage, false), ("Stage Changed", Btn::StageChanged, false)], pad);
-    file_pane(f, d, 1, g.staged, "Staged Changes (Will Commit)", &[("← Unstage", Btn::Unstage, false)], pad);
+    file_pane(f, d, 0, g.unstaged, "Unstaged Changes", &[("Stage →", Btn::Stage, false), ("Stage Changed", Btn::StageChanged, false)], pad, hover);
+    file_pane(f, d, 1, g.staged, "Staged Changes (Will Commit)", &[("← Unstage", Btn::Unstage, false)], pad, hover);
     if diff.width > 4 && diff.height > 1 {
         let name = d.lists[d.side].get(d.sel[d.side]).map_or(String::new(), |f| f.path.clone());
         let which = if d.side == 0 { "Working Tree" } else { "Index" };
@@ -828,7 +830,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         ("Cancel", Btn::Cancel, false),
     ];
     if g.buttons.height > 0 {
-        buttons(f, &mut d.hits.btns, g.buttons, &items, pad);
+        buttons(f, &mut d.hits.btns, g.buttons, &items, pad, hover);
     }
     if g.note.height > 0 && !d.note.is_empty() {
         let c = if d.busy { P.dim } else { P.error_fg };

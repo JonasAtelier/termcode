@@ -5835,6 +5835,41 @@ mod tests {
     }
 
     #[test]
+    fn the_pointer_lights_inactive_tabs_status_items_and_buttons() {
+        use crate::theme::P;
+        let (root, mut app) = changed_file("hover-bg");
+        fs::write(root.join("b.c"), "int b;\n").unwrap();
+        app.groups[0].tabs[0].preview = false;
+        app.open_file(0, "b.c", false);
+        wait(&mut app);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let tabs = app.ui.groups[0].tabs.clone();
+        let (idle, active) = if app.groups[0].active == 0 { (tabs[1].0, tabs[0].0) } else { (tabs[0].0, tabs[1].0) };
+        let bg = |t: &Terminal<TestBackend>, r: Rect| t.backend().buffer()[(r.x + 1, r.y)].bg;
+        assert_eq!(bg(&t, idle), P.tab_inactive_bg, "no pointer: plain");
+        app.hover = Some(Position::new(idle.x + 1, idle.y));
+        screen(&mut app, &mut t);
+        assert_eq!(bg(&t, idle), P.tab_hover);
+        app.hover = Some(Position::new(active.x + 1, active.y));
+        screen(&mut app, &mut t);
+        assert_eq!(bg(&t, active), P.tab_active_bg, "the active tab stays as it is");
+        let branch = app.gitui.hits.cmds.iter().find(|(_, h)| matches!(h, crate::gitcmds::Hit::Branch)).unwrap().0;
+        app.hover = Some(Position::new(branch.x, branch.y));
+        screen(&mut app, &mut t);
+        assert_eq!(bg(&t, branch), P.status_hover);
+        app.show_side(Side::Scm, false);
+        app.hover = None;
+        screen(&mut app, &mut t);
+        let commit = app.ui.commit_btn;
+        assert_eq!(bg(&t, commit), P.button_bg);
+        app.hover = Some(Position::new(commit.x + 2, commit.y));
+        screen(&mut app, &mut t);
+        assert_eq!(bg(&t, commit), P.button_hover);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn whitespace_is_drawn_where_the_setting_asks() {
         let root = repo("whitespace");
         fs::write(root.join("a.c"), "aq  bz\tcy dx\n").unwrap();

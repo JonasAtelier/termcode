@@ -1269,10 +1269,11 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
         let m = (s.sidebar_padding.saturating_sub(1) / 2).min(crect.width / 2);
         let btn = Rect::new(crect.x + m, crect.y, crect.width.saturating_sub(2 * m), 1);
         let label = format!("{}{}Add commit", icons().check, sp(crate::blocks::icon_gap(s.icon_gap) / 2));
-        fill(f, btn, P.button_bg);
+        let bg = if app.hover.is_some_and(|p| btn.contains(p)) { P.button_hover } else { P.button_bg };
+        fill(f, btn, bg);
         let bx = btn.x + btn.width.saturating_sub(label.width() as u16) / 2;
-        f.render_widget(Span::styled(fit(&label, btn.width as usize), Style::new().fg(P.button_fg).bg(P.button_bg)), Rect::new(bx, btn.y, btn.right().saturating_sub(bx), 1));
-        crate::ui::round_ends(f, btn, P.button_bg, P.sidebar_bg);
+        f.render_widget(Span::styled(fit(&label, btn.width as usize), Style::new().fg(P.button_fg).bg(bg)), Rect::new(bx, btn.y, btn.right().saturating_sub(bx), 1));
+        crate::ui::round_ends(f, btn, bg, P.sidebar_bg);
         app.ui.commit_btn = btn;
         let top = (1 + s.section_gap).min(crect.height);
         changes_list(app, f, Rect::new(crect.x, crect.y + top, crect.width, crect.height - top));
