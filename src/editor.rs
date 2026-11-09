@@ -353,6 +353,31 @@ pub fn word_at(l: &str, col: usize) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
+/// `editor.renderWhitespace`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Whitespace {
+    None,
+    Boundary,
+    Selection,
+    Trailing,
+    All,
+}
+
+/// The whitespace to draw on `line`: byte offset, and whether it is a tab.
+pub fn whitespace_marks(line: &str, mode: Whitespace, selected: Option<(usize, usize)>) -> Vec<(usize, bool)> {
+    let bytes = line.as_bytes();
+    let content_end = line.trim_end_matches([' ', '\t']).len();
+    let blank = |b: Option<&u8>| b.is_none_or(|c| *c == b' ' || *c == b'\t');
+    let shown = |i: usize, tab: bool| match mode {
+        Whitespace::None => false,
+        Whitespace::All => true,
+        Whitespace::Trailing => i >= content_end,
+        Whitespace::Selection => selected.is_some_and(|(start, end)| (start..end).contains(&i)),
+        Whitespace::Boundary => tab || blank(i.checked_sub(1).and_then(|p| bytes.get(p))) || blank(bytes.get(i + 1)),
+    };
+    bytes.iter().enumerate().filter(|&(i, &b)| (b == b' ' || b == b'\t') && shown(i, b == b'\t')).map(|(i, &b)| (i, b == b'\t')).collect()
+}
+
 /// The word the cursor is in, at the start of, or just after.
 pub fn cursor_word(line: &str, col: usize) -> Option<&str> {
     let is_word = |&(start, _): &(usize, usize)| line[start..].chars().next().is_some_and(|c| class(c) == 1);
@@ -1923,6 +1948,26 @@ mod tests {
         assert_eq!(cursor_word("(+)", 1), None, "punctuation is no word");
         assert_eq!(cursor_word("中文 x", 3), Some("中文"), "after a multibyte word");
         assert_eq!(cursor_word("", 0), None);
+    }
+
+    #[test]
+    fn whitespace_modes_choose_which_blanks_show() {
+        let marks = |line, mode, sel| whitespace_marks(line, mode, sel);
+        let line = "  a b\tc  ";
+        let spaces = |v: &[usize]| v.iter().map(|&i| (i, false)).collect::<Vec<_>>();
+        assert_eq!(marks(line, Whitespace::None, None), vec![]);
+        let mut all = spaces(&[0, 1, 3]);
+        all.push((5, true));
+        all.extend(spaces(&[7, 8]));
+        assert_eq!(marks(line, Whitespace::All, None), all);
+        let mut boundary = spaces(&[0, 1]);
+        boundary.push((5, true));
+        boundary.extend(spaces(&[7, 8]));
+        assert_eq!(marks(line, Whitespace::Boundary, None), boundary, "a single space between words stays bare");
+        assert_eq!(marks(line, Whitespace::Trailing, None), spaces(&[7, 8]));
+        assert_eq!(marks(line, Whitespace::Selection, Some((1, 4))), spaces(&[1, 3]));
+        assert_eq!(marks(line, Whitespace::Selection, None), vec![]);
+        assert_eq!(marks("   ", Whitespace::Trailing, None), spaces(&[0, 1, 2]), "a blank line is all trailing");
     }
 
     fn typed(start: &str, col: usize, keys: &str) -> (Vec<String>, usize) {

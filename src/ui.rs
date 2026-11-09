@@ -1132,6 +1132,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 minimap: app.minimap_on.then_some(app.settings.minimap),
                 hover: app.hover,
                 mini_drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
+                whitespace: app.settings.render_whitespace,
                 occurrences: app.settings.occurrences,
                 match_brackets: app.settings.match_brackets,
                 peek,
@@ -1263,6 +1264,7 @@ struct Deco<'a> {
     hover: Option<Position>,
     /// This editor's minimap slider is being dragged.
     mini_drag: bool,
+    whitespace: editor::Whitespace,
     occurrences: bool,
     match_brackets: bool,
     peek: Option<PeekDraw<'a>>,
@@ -1468,6 +1470,17 @@ fn text_editor(
             if let Some(x) = visible(editor::display_col(line, s)) {
                 mark_blank(f, x, y, ic.guide, col);
             }
+        }
+        let selected = sel.filter(|(a, e)| a.line <= i && i <= e.line).map(|(a, e)| (if a.line == i { a.col } else { 0 }, if e.line == i { e.col } else { line.len() }));
+        let mut marks = editor::whitespace_marks(line, d.whitespace, selected).into_iter().peekable();
+        let mut col = 0;
+        for (at, ch) in line.char_indices() {
+            if marks.peek().is_some_and(|m| m.0 == at) {
+                if let (Some(x), Some((_, is_tab))) = (visible(col), marks.next()) {
+                    mark_blank(f, x, y, if is_tab { ic.ws_tab } else { ic.ws_space }, P.whitespace);
+                }
+            }
+            col = editor::advance(col, ch);
         }
         draw_rulers(f, tr, v.hscroll, d.rulers, bg);
         let next = v.shift_line(i, 1);
@@ -1946,6 +1959,7 @@ pub(crate) fn diff_view(
             minimap: Some(m.cfg),
             hover: m.hover,
             mini_drag: m.drag,
+            whitespace: editor::Whitespace::None,
             occurrences: false,
             match_brackets: false,
             peek: None,

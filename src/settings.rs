@@ -128,6 +128,8 @@ pub struct Settings {
     pub sticky_max: usize,
     pub tab_size: usize,
     /// `files.trimTrailingWhitespace` and `files.insertFinalNewline`, applied on save.
+    /// `editor.renderWhitespace`.
+    pub render_whitespace: crate::editor::Whitespace,
     /// `editor.occurrencesHighlight`: other uses of the word at the cursor.
     pub occurrences: bool,
     /// `editor.matchBrackets`: highlight the bracket pair at the cursor.
@@ -182,6 +184,7 @@ impl Default for Settings {
             // One row: the top-level folder holding the top row (VS Code's default is 7).
             sticky_max: 1,
             tab_size: 4,
+            render_whitespace: crate::editor::Whitespace::Boundary,
             occurrences: true,
             match_brackets: true,
             auto_brackets: true,
@@ -300,6 +303,14 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         guides: g("editor.guides.indentation").and_then(Value::as_bool).unwrap_or(d.guides),
         sticky: g("workbench.tree.enableStickyScroll").and_then(Value::as_bool).unwrap_or(d.sticky),
         sticky_max: g("workbench.tree.stickyScrollMaxItemCount").and_then(Value::as_u64).map_or(d.sticky_max, |n| n.clamp(1, 10) as usize),
+        render_whitespace: match g("editor.renderWhitespace").and_then(Value::as_str) {
+            Some("none") => crate::editor::Whitespace::None,
+            Some("selection") => crate::editor::Whitespace::Selection,
+            Some("trailing") => crate::editor::Whitespace::Trailing,
+            Some("all") => crate::editor::Whitespace::All,
+            Some("boundary") => crate::editor::Whitespace::Boundary,
+            _ => d.render_whitespace,
+        },
         occurrences: !matches!(g("editor.occurrencesHighlight"), Some(Value::Bool(false))) && g("editor.occurrencesHighlight").and_then(Value::as_str) != Some("off"),
         match_brackets: g("editor.matchBrackets").and_then(Value::as_str) != Some("never"),
         auto_brackets: g("editor.autoClosingBrackets").and_then(Value::as_str) != Some("never"),
@@ -655,6 +666,7 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "workbench.tree.enableStickyScroll": true,      // pin the folders above the top row
     // "workbench.tree.stickyScrollMaxItemCount": 1,  // up to 10: arch, then sh, boards, …
     // "editor.tabSize": 4,
+    // "editor.renderWhitespace": "boundary",   // or "none", "selection", "trailing", "all"
     // "editor.occurrencesHighlight": "singleFile", // or "off"
     // "editor.matchBrackets": "always",        // or "never"
     // "editor.autoClosingBrackets": "always",  // or "never"
@@ -682,6 +694,16 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn render_whitespace_defaults_to_boundary() {
+        use crate::editor::Whitespace as W;
+        let mode = |text: &str| from_maps(&parse_jsonc(text).unwrap(), None, &[]).unwrap().render_whitespace;
+        assert_eq!(mode("{}"), W::Boundary);
+        for (name, want) in [("none", W::None), ("boundary", W::Boundary), ("selection", W::Selection), ("trailing", W::Trailing), ("all", W::All)] {
+            assert_eq!(mode(&format!(r#"{{"editor.renderWhitespace": "{name}"}}"#)), want);
+        }
     }
 
     #[test]

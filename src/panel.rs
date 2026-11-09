@@ -5835,6 +5835,29 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_is_drawn_where_the_setting_asks() {
+        let root = repo("whitespace");
+        fs::write(root.join("a.c"), "aq  bz\tcy dx\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "a.c", false);
+        wait(&mut app);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let cell = |t: &Terminal<TestBackend>, x: u16, y: u16| t.backend().buffer()[(x, y)].symbol().to_string();
+        let origin = |t: &Terminal<TestBackend>| {
+            (0..30).flat_map(|y| (0..119).map(move |x| (x, y))).find(|&(x, y)| cell(t, x, y) == "a" && cell(t, x + 1, y) == "q").unwrap()
+        };
+        screen(&mut app, &mut t);
+        let (x, y) = origin(&t);
+        assert_eq!((cell(&t, x + 2, y), cell(&t, x + 3, y)), ("·".to_string(), "·".to_string()), "two spaces");
+        assert_eq!(cell(&t, x + 6, y), "→", "the tab");
+        assert_eq!(cell(&t, x + 10, y), " ", "a single space between words");
+        app.settings.render_whitespace = editor::Whitespace::None;
+        screen(&mut app, &mut t);
+        assert_eq!(cell(&t, x + 2, y), " ", "off");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn other_uses_of_the_cursor_word_are_highlighted() {
         let root = repo("word-hl");
         fs::write(root.join("a.c"), "foo Foo foobar q\nw foo\n").unwrap();
@@ -7247,6 +7270,7 @@ mod tests {
         let old = "/* original\n * note\n */\nstatic int value(void) {\n    return 1;\n}\n";
         let new = "static int value(void) {\n    /* inserted\n     * note\n     */\n    return 2;\n}\n";
         let mut app = App::new(root.clone(), None);
+        app.settings.render_whitespace = editor::Whitespace::None; // dots are not syntax colours
         app.minimap_on = false;
         app.guides_on = false;
         app.focus = Focus::Editor;
