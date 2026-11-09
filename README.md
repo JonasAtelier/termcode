@@ -100,9 +100,11 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
   repo; a reused `--tab` keeps the session of the folder it was opened from.
   `herdr-code FILE:L` opens that file on top of it.
 - Visuals: the built-in theme uses layered grey surfaces, muted selections and diff line
-  backgrounds, with stronger word highlights. Active editor tabs have a short accent line
-  above them in comfortable density (a leading marker in compact); dirty tabs keep a
-  separate marker beside Close even on hover. Empty editors offer clickable Open File,
+  backgrounds, with stronger word highlights. The card border stays continuous and keeps
+  its own colour. A separate blue underline marks the active tab's top edge without an
+  extra row (a leading marker without cards). This needs coloured-underline transport;
+  herdr 0.9.1 loses that colour and displays the line in the border's colour instead.
+  Dirty tabs keep a separate marker beside Close even on hover. Empty editors offer clickable Open File,
   Search and Source Control shortcuts. Graph nodes are hollow except HEAD, which is solid.
   Tool icons stay monochrome; Seti file colours and custom theme colours are preserved.
 - `prefix+g` is herdr's default `goto`, so no keybinding is shipped. To add one, bind

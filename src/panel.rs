@@ -3795,8 +3795,7 @@ impl App {
         let can_split = self.groups.len() < MAX_GROUPS;
         self.ui.groups.iter().enumerate().find(|(_, g)| g.area.contains(p)).map(|(i, g)| {
             let rx = (p.x - g.area.x) as u32 * 10 / g.area.width.max(1) as u32;
-            // The accent row above the tabs counts as the tab bar.
-            let tabs = Rect { y: g.area.y, height: g.tabbar.bottom().saturating_sub(g.area.y), ..g.tabbar };
+            let tabs = g.tabbar;
             let zone = if bar && tabs.contains(p) {
                 // Before the first drawn tab whose middle is right of the pointer.
                 Zone::Tab(g.tabs.iter().take_while(|(r, x)| p.x >= (r.x + x.right()) / 2).count())
@@ -4270,16 +4269,43 @@ mod tests {
     }
 
     #[test]
-    fn the_accent_row_is_part_of_the_tab_bar() {
+    fn tab_accent_uses_the_border_without_an_extra_row() {
         let root = repo("accent-row");
         let mut app = App::new(root.clone(), None);
         app.open_file(0, "src/main.rs", false);
         let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
         screen(&mut app, &mut t);
         let (a, bar) = (app.ui.groups[0].area, app.ui.groups[0].tabbar);
-        assert_eq!(bar.y, a.y + 1, "comfortable: the accent row is above the tabs");
-        assert!(matches!(app.drop_target(Position::new(bar.x + 1, a.y), true), Some((0, Zone::Tab(_)))), "a tab dropped on the accent row is inserted");
+        assert_eq!(bar.y, a.y, "tabs start immediately inside the top border");
+        assert_eq!(app.ui.groups[0].text.y, bar.y + 1, "one tab row, then code");
+        assert!(matches!(app.drop_target(Position::new(bar.x + 1, a.y), true), Some((0, Zone::Tab(_)))), "a tab dropped on the tab row is inserted");
         assert_eq!(t.backend().buffer()[(a.right() - 3, a.y)].bg, crate::theme::P.tabs_bg, "no editor-coloured band");
+        app.focus = Focus::Editor;
+        screen(&mut app, &mut t);
+        for x in a.x..a.right() {
+            let cell = &t.backend().buffer()[(x, bar.y - 1)];
+            assert_eq!(cell.symbol(), crate::theme::icons().border[4], "continuous border at column {x}");
+            assert_eq!(cell.fg, crate::blocks::border(true), "white border colour is independent of the selected tab");
+        }
+        let cell = &t.backend().buffer()[(bar.x + 1, bar.y - 1)];
+        assert!(cell.modifier.contains(ratatui::style::Modifier::UNDERLINED), "a separate line sits below the white border");
+        assert_eq!(cell.underline_color, crate::theme::P.tab_active_border, "the separate line is blue");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), bar.x + 1, bar.y);
+        assert_eq!(app.focus, Focus::Editor);
+        assert!(app.prompt.is_none());
+        app.open_file(0, "README.md", false);
+        for selected in [1, 0] {
+            app.groups[0].active = selected;
+            screen(&mut app, &mut t);
+            let gh = &app.ui.groups[0];
+            for (i, (tab, _)) in gh.tabs.iter().enumerate() {
+                let cell = &t.backend().buffer()[(tab.x + 1, tab.y - 1)];
+                assert_eq!(cell.symbol(), crate::theme::icons().border[4]);
+                assert_eq!(cell.fg, crate::blocks::border(true), "switching tabs never recolours the white border");
+                assert_eq!(cell.modifier.contains(ratatui::style::Modifier::UNDERLINED), i == selected, "only the selected tab has a separate accent line");
+                if i == selected { assert_eq!(cell.underline_color, crate::theme::P.tab_active_border); }
+            }
+        }
         wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
@@ -5750,7 +5776,7 @@ mod tests {
         let (x, y) = cell_of(&t, "hello", 0);
         assert_eq!((x, gh.marks_x, gh.text.x), (gh.area.x + 4, Some(gh.area.x + 3), x), "pad, two digits, the marker, the code");
         assert_eq!((sym(&t, gh.area.x, y), sym(&t, gh.area.x + 1, y), sym(&t, gh.area.x + 2, y), sym(&t, x - 1, y)), (" ".into(), " ".into(), "1".into(), " ".into()));
-        assert_eq!(gh.text.y, gh.area.y + 2, "comfortable reuses the padding row above tabs for the accent");
+        assert_eq!(gh.text.y, gh.area.y + 1, "the accent uses the border without reserving a row");
         // long.c, 100 lines: the marker of a changed line sits right between number and code.
         app.open_file(0, "long.c", false);
         screen(&mut app, &mut t);
@@ -5779,7 +5805,7 @@ mod tests {
             assert!(row.contains(" 21+line 020 changed") && row.contains(" 21-line 020 "), "compact {compact}: {row}");
             assert_eq!(sym(&t, x - 1, y), "+");
             let gh = &app.ui.groups[0];
-            assert_eq!(gh.text.y, gh.area.y + 1 + u16::from(!compact), "compact {compact}: editor height is preserved");
+            assert_eq!(gh.text.y, gh.area.y + 1, "compact {compact}: only the tab row precedes the editor");
         }
         wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();

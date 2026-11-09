@@ -922,7 +922,7 @@ fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         let w = if g + 1 == app.groups.len() { r.right().saturating_sub(x) } else { gw };
         let focused = g == app.ag && app.focus == Focus::Editor;
         let area = crate::blocks::card(st, f, Rect::new(x, r.y, w, r.height), P.editor_bg, focused);
-        group(app, f, g, area, lay);
+        group(app, f, g, area, lay, (area.y > r.y).then_some(r.y));
         x += w;
         if g + 1 < app.groups.len() {
             match st {
@@ -948,14 +948,13 @@ fn tab_icon(app: &App, key: &str) -> (String, Color) {
     file_icon(base(path), &app.settings.file_icons)
 }
 
-fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
+fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y: Option<u16>) {
     // A restored tab's document is read when the tab is first shown.
     crate::session::materialize(app, g);
     let mut gh = GroupHit { area, ..Default::default() };
-    let accent = u16::from((lay.comfy || lay.s.editor_padding >= 2) && area.height >= 2);
-    let tabbar = Rect::new(area.x, area.y + accent, area.width, 1);
+    let tabbar = Rect::new(area.x, area.y, area.width, 1);
     gh.tabbar = tabbar;
-    fill(f, Rect::new(area.x, area.y, area.width, 1 + accent), P.tabs_bg);
+    fill(f, tabbar, P.tabs_bg);
     let focused_group = g == app.ag;
     let ic = icons();
     // Split Editor button at the right end of the tab bar.
@@ -1012,12 +1011,16 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
                 Span::styled(format!("{dot}{tail}{edge}"), Style::new().fg(fg).bg(bg)),
             ],
         );
-        if active && accent > 0 {
-            let color = if focused_group && app.focus == Focus::Editor { P.tab_active_border } else { P.tab_border };
-            row(f, Rect::new(x, area.y, w, 1), P.tabs_bg,
-                vec![Span::styled(if crate::theme::ascii() { "-" } else { "━" }.repeat(w as usize), Style::new().fg(color))]);
-        } else if active && focused_group && app.focus == Focus::Editor && !edge.is_empty() && app.settings.blocks != BlockStyle::Cards {
-            f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" }, Style::new().fg(P.tab_active_border).bg(bg)), Rect::new(x, tabbar.y, 1, 1));
+        if active {
+            if let Some(y) = border_y {
+                let color = if focused_group && app.focus == Focus::Editor { P.tab_active_border } else { P.tab_border };
+                // The border keeps its glyph and foreground colour. Its underline
+                // is a separate blue line along the selected tab's top edge.
+                f.buffer_mut().set_style(Rect::new(x, y, w, 1),
+                    Style::new().underline_color(color).add_modifier(Modifier::UNDERLINED));
+            } else if focused_group && app.focus == Focus::Editor && !edge.is_empty() {
+                f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" }, Style::new().fg(P.tab_active_border).bg(bg)), Rect::new(x, tabbar.y, 1, 1));
+            }
         }
         gh.tabs.push((Rect::new(x, tabbar.y, w - tail_w + 1, 1), xr));
         x += w;
@@ -1037,8 +1040,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
         f.render_widget(Span::styled(ic.split, Style::new().fg(P.icon_fg)), split);
         app.ui.split_btns.push((split, g));
     }
-    // A blank row under the tab bar: comfortable, or editorPadding of 2 or more.
-    let top = 1 + accent;
+    let top = 1;
     let body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
     let active = app.groups[g].active;
     let Some(key) = app.groups[g].tabs.get(active).map(|t| t.key.clone()) else {
