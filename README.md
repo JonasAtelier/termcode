@@ -406,7 +406,10 @@ one cap of two running `rg`. Every jump (definitions, peek items, Back/Forward) 
 - Files that were truncated (over 1 MB or 20k lines), are not UTF-8, or are binary open
   read-only and can never be saved. If a file changes on disk, a clean buffer reloads; a dirty
   one keeps your edits, and the first Ctrl+S refuses so a second one is needed to overwrite.
-- Find is literal (Match Case and Whole Word toggles). Search in files can also use regex.
+- Find is literal (Match Case and Whole Word toggles). In a diff, Ctrl+F searches the
+  side under the pointer (otherwise the active side); the find widget stays in place.
+  Enter / Shift+Enter jump between results. Diff search is read-only.
+  Search in files can also use regex.
   The diff editor is read-only. Both sides and the commit dialog use the code editor's
   syntax colours, with separate parser states and the existing diff backgrounds.
 - Lines over 4000 bytes are not highlighted. The default token colours are VS Code's

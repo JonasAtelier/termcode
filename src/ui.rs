@@ -1095,7 +1095,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
             });
             let view = &mut app.groups[g].tabs[active].view;
-            let (sb, mm, texts) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group, app.diff_syntax.entry(key.clone()).or_default());
+            let (sb, mm, texts) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group, app.diff_syntax.entry(key.clone()).or_default(), app.find.as_ref().filter(|_| focused_group));
             if let Some((area, mini)) = mm {
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.row_of(view.scroll) });
             }
@@ -1805,6 +1805,7 @@ pub(crate) fn diff_view(
     mini: Option<DiffMini>,
     focus: bool,
     syntax: &mut DiffSyntax,
+    find: Option<&Find>,
 ) -> DiffHits {
     if let Some(note) = &d.note {
         *syntax = None;
@@ -1889,7 +1890,12 @@ pub(crate) fn diff_view(
                     let word_bg = if s == 0 { P.diff_del_text } else { P.diff_ins_text };
                     let ranges = if s == 0 { &words.0 } else { &words.1 };
                     let mut overlays: Vec<_> = ranges.iter().map(|w| (w.start, w.end, word_bg.over(bg))).collect();
-                    // Last, so it wins over the diff's line and word colours.
+                    if let Some(fd) = find.filter(|fd| fd.diff_side == Some(s as u8)) {
+                        for (n, (a, e)) in fd.matches.iter().enumerate().filter(|(_, (a, _))| a.line == v.scroll + k) {
+                            overlays.push((a.col, e.col, if fd.cur == Some(n) { P.find_match } else { P.find_other }));
+                        }
+                    }
+                    // Last, so selection wins over diff and find backgrounds.
                     let mut eol = None;
                     let i = v.scroll + k;
                     if let Some((a, b)) = sel.filter(|(a, b)| s as u8 == v.side && (a.line..=b.line).contains(&i)) {
@@ -2018,6 +2024,7 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
         return;
     }
     let outer = Rect::new(text.right() - off - w - bw, text.y, w + bw, rows + bh).intersection(f.area());
+    app.ui.find_area = outer;
     if lay.comfy {
         f.render_widget(Clear, outer);
         let frame = popup_block(P.widget_bg, P.widget_fg, (fp, 0));
@@ -2030,12 +2037,12 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     // Row 1: [>] [query  Aa ab] "N of M" [↑][↓][×]
     let toggle = Rect::new(r.x, r.y, 1, rows);
     f.render_widget(
-        Span::styled(if fd.replace.is_some() { ic.chev_down } else { ic.chev_right }, Style::new().fg(P.icon_fg)),
+        Span::styled(if fd.diff_side.is_some() { " " } else if fd.replace.is_some() { ic.chev_down } else { ic.chev_right }, Style::new().fg(P.icon_fg)),
         Rect::new(toggle.x, r.y, 1, 1),
     );
     let q = Rect::new(r.x + 1 + ig, r.y, iw, 1);
     input(f, q, &fd.query, "Find", app.focus == Focus::Find && fd.field == 0);
-    let mut btns = vec![(toggle, FindBtn::ToggleReplace)];
+    let mut btns = if fd.diff_side.is_none() { vec![(toggle, FindBtn::ToggleReplace)] } else { Vec::new() };
     for (k, (icon, on, b)) in [(ic.case, fd.case, FindBtn::Case), (ic.word, fd.word, FindBtn::Word)].into_iter().enumerate() {
         let tr = Rect::new(q.right() - 4 + 2 * k as u16, r.y, 1, 1);
         let st = if on { Style::new().fg(P.option_fg).bg(P.option_bg) } else { Style::new().fg(P.input_fg).bg(P.input_bg) };

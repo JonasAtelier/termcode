@@ -111,7 +111,9 @@ pub struct Find {
     /// Match Case / Match Whole Word toggles.
     pub case: bool,
     pub word: bool,
-    stamp: (String, u64, String, bool, bool),
+    /// Diff side chosen when opening Find; None for a regular editor.
+    pub diff_side: Option<u8>,
+    stamp: (String, u64, String, bool, bool, Option<u8>),
 }
 
 /// Prompt actions. Tab actions name the document, not a (group, index) that
@@ -437,6 +439,7 @@ pub struct Hits {
     pub editor_area: Rect,
     pub find_btns: Vec<(Rect, FindBtn)>,
     pub find_inputs: Vec<(Rect, usize)>,
+    pub find_area: Rect,
     pub prompt_btns: Vec<(Rect, usize)>,
     /// "Split Editor Right" button per group.
     pub split_btns: Vec<(Rect, usize)>,
@@ -1939,6 +1942,7 @@ impl App {
                 }
             }
             self.docs.insert(key, doc);
+            self.find_refresh();
             changed = true;
         }
         if self.queued_search.is_some() && self.live_rg.load(Ordering::SeqCst) < MAX_LIVE_RG {
@@ -2152,7 +2156,27 @@ impl App {
             .ui
             .groups
             .get(self.ag)
-            .map_or((20, 80), |g| (g.text.height.max(1) as usize, g.text.width.max(1) as usize));
+            .map_or((20, 80), |g| {
+                let side = self.groups.get(self.ag).and_then(|grp| grp.tabs.get(grp.active))
+                    .filter(|t| matches!(self.docs.get(&t.key), Some(Doc::Diff(_)))).map(|t| t.view.side as usize);
+                let width = side.and_then(|s| g.diff_text.map(|r| r[s.min(1)].width)).unwrap_or(g.text.width);
+                (g.text.height.max(1) as usize, width.max(1) as usize)
+            });
+        if let Some((d, v)) = self.diff_tab() {
+            if v.cursor.line < v.scroll {
+                v.scroll = v.cursor.line;
+            } else if v.cursor.line >= v.scroll + h {
+                v.scroll = v.cursor.line + 1 - h;
+            }
+            let text = diff_cell(d, v.cursor.line, v.side).unwrap_or("");
+            let x = editor::display_col(text, v.cursor.col);
+            if x < v.hscroll {
+                v.hscroll = x;
+            } else if x >= v.hscroll + w {
+                v.hscroll = x + 1 - w;
+            }
+            return;
+        }
         // Rows the peek zone takes above the cursor are not text rows.
         let zone = self.ui.groups.get(self.ag).and_then(|g| g.zone).map_or(0, |(_, zh)| zh as usize);
         let before = self.peek.as_ref().filter(|p| p.group == self.ag).and_then(|p| self.qdiff.get(&p.key)?.hunks.get(p.hunk)).map(Hunk::peek_before);
@@ -2379,6 +2403,27 @@ impl App {
     // ---- find widget ----------------------------------------------------------------
 
     fn open_find(&mut self, replace: bool) {
+        if let Some(p) = self.hover.filter(|p| self.find.is_none() || !self.ui.find_area.contains(*p)) {
+            let target = self.ui.groups.iter().enumerate().find_map(|(g, gh)| {
+                let texts = gh.diff_text?;
+                let key = &self.groups.get(g)?.tabs.get(self.groups[g].active)?.key;
+                (gh.text.contains(p) && matches!(self.docs.get(key), Some(Doc::Diff(_))))
+                    .then_some((g, u8::from(p.x > texts[0].right())))
+            });
+            if let Some((g, side)) = target {
+                self.ag = g;
+                if let Some(tab) = self.active_tab() {
+                    if tab.view.side != side {
+                        tab.view.anchor = None;
+                    }
+                    tab.view.side = side;
+                }
+            }
+        }
+        let diff_side = self.groups.get(self.ag).and_then(|grp| grp.tabs.get(grp.active)).and_then(|t| {
+            matches!(self.docs.get(&t.key), Some(Doc::Diff(_))).then_some(t.view.side)
+        });
+        let replace = replace && diff_side.is_none();
         let seed = self.active_selection().filter(|s| !s.contains('\n'));
         let f = self.find.get_or_insert(Find {
             query: String::new(),
@@ -2388,8 +2433,13 @@ impl App {
             cur: None,
             case: false,
             word: false,
-            stamp: (String::new(), u64::MAX, String::new(), false, false),
+            diff_side,
+            stamp: (String::new(), u64::MAX, String::new(), false, false, None),
         });
+        f.diff_side = diff_side;
+        if diff_side.is_some() {
+            f.replace = None;
+        }
         if let Some(s) = seed {
             f.query = s;
         }
@@ -2406,19 +2456,43 @@ impl App {
         let Some(f) = self.find.as_mut() else { return };
         let Some(tab) = self.groups.get(self.ag).and_then(|grp| grp.tabs.get(grp.active)) else {
             f.matches.clear();
+            f.cur = None;
             return;
         };
-        let Some(Doc::Text(b)) = self.docs.get(&tab.key) else {
+        let Some(doc) = self.docs.get(&tab.key) else {
             f.matches.clear();
+            f.cur = None;
             return;
         };
-        let stamp = (tab.key.clone(), b.version(), f.query.clone(), f.case, f.word);
+        let version = match doc {
+            Doc::Text(b) => {
+                f.diff_side = None;
+                b.version()
+            }
+            Doc::Diff(d) => {
+                if f.stamp.0 != tab.key || f.diff_side.is_none() {
+                    f.diff_side = Some(tab.view.side);
+                }
+                f.replace = None;
+                f.field = 0;
+                d.id.0
+            }
+        };
+        let stamp = (tab.key.clone(), version, f.query.clone(), f.case, f.word, f.diff_side);
         if stamp != f.stamp {
-            f.matches = b.find_all(&f.query, f.case, f.word);
+            f.matches = match doc {
+                Doc::Text(b) => b.find_all(&f.query, f.case, f.word),
+                Doc::Diff(d) => editor::find_in(d.rows.iter().enumerate().filter_map(|(i, r)| {
+                    let cell = if f.diff_side == Some(0) { &r.left } else { &r.right };
+                    cell.as_ref().map(|(_, text)| (i, text.as_str()))
+                }), &f.query, f.case, f.word),
+            };
             f.stamp = stamp;
         }
         let c = tab.view.cursor;
-        f.cur = f.matches.iter().position(|(a, e)| tab.view.anchor == Some(*a) && c == *e);
+        f.cur = if f.diff_side.is_some_and(|side| side != tab.view.side) { None } else {
+            f.matches.iter().position(|(a, e)| tab.view.anchor == Some(*a) && c == *e)
+        };
     }
 
     pub fn find_step(&mut self, dir: isize) {
@@ -2430,7 +2504,11 @@ impl App {
         }
         let matches = f.matches.clone();
         let cur = f.cur;
-        let Some((_, tab)) = self.ed() else { return };
+        let side = f.diff_side;
+        let Some(tab) = self.active_tab() else { return };
+        if let Some(side) = side {
+            tab.view.side = side;
+        }
         let c = tab.view.cursor;
         let n = matches.len();
         let i = match (cur, dir > 0) {
@@ -2482,7 +2560,7 @@ impl App {
                 self.focus = Focus::Editor;
             }
             FindBtn::ToggleReplace => {
-                if let Some(f) = self.find.as_mut() {
+                if let Some(f) = self.find.as_mut().filter(|f| f.diff_side.is_none()) {
                     f.replace = if f.replace.is_some() { None } else { Some(String::new()) };
                     f.field = 0;
                 }
@@ -7165,6 +7243,91 @@ mod tests {
         land(&mut app, rows[1..].to_vec());
         assert!(app.groups[0].tabs[0].view.anchor.is_none(), "new rows: it would mark other text");
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn diff_find_follows_the_pointer_and_keeps_the_widget_in_place() {
+        let root = repo("diff-find");
+        let mut app = App::new(root.clone(), None);
+        let rows = open_big_diff(&mut app);
+        let mut t = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        screen(&mut app, &mut t);
+        let [left, right] = app.ui.groups[0].diff_text.unwrap();
+        mouse(&mut app, MouseEventKind::Moved, left.x + 2, left.y + 6);
+        key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        typ(&mut app, "changed");
+        screen(&mut app, &mut t);
+        assert!(app.find.as_ref().unwrap().matches.is_empty(), "the original has no 'changed'");
+        let widget = app.ui.find_inputs[0].0;
+        mouse(&mut app, MouseEventKind::Moved, right.x + 2, right.y + 6);
+        key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        screen(&mut app, &mut t);
+        assert_eq!(app.find.as_ref().unwrap().matches, vec![(Pos::new(20, 9), Pos::new(20, 16))], "the modified side has one match");
+        assert_eq!(app.ui.find_inputs[0].0, widget, "changing sides never moves the search box");
+        assert_eq!(t.backend().buffer()[(right.x + 9, right.y + 20)].bg, crate::theme::P.find_other, "the chosen side highlights its matches");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let view = &app.groups[0].tabs[0].view;
+        assert_eq!((view.side, view.anchor, view.cursor), (1, Some(Pos::new(20, 9)), Pos::new(20, 16)));
+        app.find.as_mut().unwrap().query = "LINE".into();
+        app.find_refresh();
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 297);
+        app.find_button(FindBtn::Case);
+        assert!(app.find.as_ref().unwrap().matches.is_empty());
+        app.find_button(FindBtn::Case);
+        app.find_button(FindBtn::Word);
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 297);
+        app.find.as_mut().unwrap().query = "inserted".into();
+        app.find_refresh();
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 5);
+        mouse(&mut app, MouseEventKind::Moved, left.x + 2, left.y + 6);
+        key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        assert!(app.find.as_ref().unwrap().matches.is_empty(), "left-side filler rows do not match right-side insertions");
+        screen(&mut app, &mut t);
+        let input = app.ui.find_inputs[0].0;
+        mouse(&mut app, MouseEventKind::Moved, input.x + 1, input.y);
+        key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        assert!(app.find.as_ref().unwrap().matches.is_empty(), "hovering the search box keeps the original target");
+        key(&mut app, KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert!(app.find.as_ref().unwrap().replace.is_none(), "diff search stays read-only");
+        let Doc::Diff(doc) = app.docs.get("cdiff:abc:big.c").unwrap() else { panic!() };
+        assert_eq!(doc.rows, rows, "find never edits either diff side");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.find.is_none());
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn diff_find_reveals_matches_beyond_the_visible_rows_and_columns() {
+        let root = repo("diff-find-scroll");
+        let mut app = App::new(root.clone(), None);
+        let rows = open_big_diff(&mut app);
+        let mut t = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        screen(&mut app, &mut t);
+        let left = app.ui.groups[0].diff_text.unwrap()[0];
+        mouse(&mut app, MouseEventKind::Moved, left.x, left.y + 5);
+        key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        typ(&mut app, "line 299");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let v = &app.groups[0].tabs[0].view;
+        assert_eq!((v.side, v.cursor.line), (0, rows.len() - 1));
+        assert!(v.scroll <= v.cursor.line && v.cursor.line < v.scroll + left.height as usize);
+        app.find.as_mut().unwrap().query = "x".into();
+        app.find_refresh();
+        key(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        screen(&mut app, &mut t);
+        let v = &app.groups[0].tabs[0].view;
+        assert_eq!((v.cursor.line, v.cursor.col), (100, 309));
+        let start = v.anchor.unwrap().col;
+        assert!(v.hscroll > 0 && start >= v.hscroll && v.cursor.col <= v.hscroll + left.width as usize, "the whole match is visible horizontally");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        fs::write(root.join("wide.txt"), "x".repeat(150)).unwrap();
+        app.open_file(0, "wide.txt", false);
+        app.active_tab().unwrap().view.cursor = Pos::new(0, 100);
+        app.reveal();
+        assert_eq!(app.groups[0].tabs[app.groups[0].active].view.hscroll, 0, "a regular file never inherits the diff's half-width geometry");
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

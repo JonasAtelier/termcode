@@ -357,6 +357,38 @@ fn end_pos(at: Pos, s: &str) -> Pos {
     }
 }
 
+/// Literal find over numbered lines, also used by either side of a diff.
+pub(crate) fn find_in<'a>(lines: impl IntoIterator<Item = (usize, &'a str)>, q: &str, case: bool, word: bool) -> Vec<(Pos, Pos)> {
+    let mut out = Vec::new();
+    if q.is_empty() || q.contains('\n') {
+        return out;
+    }
+    let qb = q.as_bytes();
+    let is_word = |s: &str, i: usize| s[i..].chars().next().is_some_and(|c| class(c) == 1);
+    let before_word = |s: &str, i: usize| s[..i].chars().next_back().is_some_and(|c| class(c) == 1);
+    for (li, l) in lines {
+        let lb = l.as_bytes();
+        let mut i = 0;
+        while i + qb.len() <= lb.len() {
+            let e = i + qb.len();
+            let hit = l.is_char_boundary(i)
+                && l.is_char_boundary(e)
+                && if case { &lb[i..e] == qb } else { lb[i..e].eq_ignore_ascii_case(qb) }
+                && (!word || (!before_word(l, i) && !is_word(l, e)));
+            if hit {
+                out.push((Pos::new(li, i), Pos::new(li, i + qb.len())));
+                if out.len() >= 10_000 {
+                    return out;
+                }
+                i += qb.len();
+            } else {
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 impl Buffer {
     fn empty(path: Option<PathBuf>) -> Buffer {
         Buffer {
@@ -1109,34 +1141,7 @@ impl Buffer {
     /// Literal matches of `q` (ASCII case folding unless `case`; `word` = whole
     /// word only), capped at 10k.
     pub fn find_all(&self, q: &str, case: bool, word: bool) -> Vec<(Pos, Pos)> {
-        let mut out = Vec::new();
-        if q.is_empty() || q.contains('\n') {
-            return out;
-        }
-        let qb = q.as_bytes();
-        let is_word = |s: &str, i: usize| s[i..].chars().next().is_some_and(|c| class(c) == 1);
-        let before_word = |s: &str, i: usize| s[..i].chars().next_back().is_some_and(|c| class(c) == 1);
-        for (li, l) in self.lines.iter().enumerate() {
-            let lb = l.as_bytes();
-            let mut i = 0;
-            while i + qb.len() <= lb.len() {
-                let e = i + qb.len();
-                let hit = l.is_char_boundary(i)
-                    && l.is_char_boundary(e)
-                    && if case { &lb[i..e] == qb } else { lb[i..e].eq_ignore_ascii_case(qb) }
-                    && (!word || (!before_word(l, i) && !is_word(l, e)));
-                if hit {
-                    out.push((Pos::new(li, i), Pos::new(li, i + qb.len())));
-                    if out.len() >= 10_000 {
-                        return out;
-                    }
-                    i += qb.len();
-                } else {
-                    i += 1;
-                }
-            }
-        }
-        out
+        find_in(self.lines.iter().enumerate().map(|(i, s)| (i, s.as_str())), q, case, word)
     }
 
     // ---- disk ------------------------------------------------------------------

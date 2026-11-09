@@ -800,7 +800,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         d.hits.diff = body;
         fill(f, body, P.editor_bg);
         if let Some(doc) = &d.diff {
-            diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), gap, &[], None, true, &mut d.diff_syntax);
+            diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), gap, &[], None, true, &mut d.diff_syntax, None);
         }
     }
     let mode = g.mode;
