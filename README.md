@@ -341,6 +341,9 @@ Explorer rows halve the sidebar edge padding (including the leading blank) and b
 arrow/icon gaps, rounded to whole cells with at least one blank cell. Tree depth
 indentation is unchanged. Other sidebar views keep their configured spacing.
 
+Editor tabs halve `tabPadding` and `iconGap`, rounding up to whole cells. The
+reserved unsaved-change marker counts toward the gap before the close button.
+
 Every icon is laid out as one cell and followed by at least one blank cell; scrollbars keep a
 blank column between them and the text (comfortable).
 

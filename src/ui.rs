@@ -967,8 +967,10 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     let split = Rect::new(tabbar.right().saturating_sub(3), tabbar.y, 2, 1);
     let mut x = tabbar.x;
     let hover = app.hover;
-    let edge = sp(lay.s.tab_padding);
-    let gap = sp(lay.s.icon_gap);
+    let edge = sp(lay.s.tab_padding.div_ceil(2));
+    let gap = sp(lay.s.icon_gap.div_ceil(2));
+    // The dirty marker's fixed slot already contributes one cell before close.
+    let close_gap = sp(lay.s.icon_gap.saturating_sub(1) / 2);
     // A dragged tab's slot in this bar: the cell before tab n, or after the last one.
     let slot = match app.drop {
         Some((dg, Zone::Tab(n))) if dg == g => Some(n),
@@ -984,7 +986,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         let dirty = matches!(app.docs.get(&t.key), Some(Doc::Text(b)) if b.dirty());
         let active = i == app.groups[g].active;
         // Dirty state and close have separate fixed slots, so hover never hides an edit.
-        let label = format!("{edge}{glyph}{gap}{}{gap}", fit(&title, 30));
+        let label = format!("{edge}{glyph}{gap}{}{close_gap}", fit(&title, 30));
         let tail_w = 2 + edge.len() as u16;
         let w = label.width() as u16 + tail_w;
         if x + w > split.x {

@@ -4352,7 +4352,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(!app.groups[0].tabs[0].preview);
         let s = screen(&mut app, &mut t);
-        let gap = " ".repeat(app.settings.spacing.icon_gap as usize);
+        let gap = " ".repeat((app.settings.spacing.icon_gap.saturating_sub(1) / 2) as usize);
         assert!(s.contains(&format!("main.rs{gap}{}", crate::theme::icons().dirty)) && s.contains("Ln 2, Col 1"), "{s}");
         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert!(fs::read_to_string(root.join("src/main.rs")).unwrap().starts_with("// hi\nfn main()"));
@@ -5094,11 +5094,11 @@ mod tests {
             mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
             assert_eq!(app.groups[0].tabs[0].view.cursor, Pos::new(0, 2), "{tag}");
             screen(&mut app, &mut t);
-            // Its tab: [tabPadding][icon][iconGap][title][iconGap][close], close where drawn.
+            // Tab spacing is halved; the dirty marker retains its slot before close.
             let (tr, xr) = app.ui.groups[0].tabs[0];
             let buf = t.backend().buffer();
-            for k in 1..=sp.icon_gap {
-                assert_eq!(buf[(tr.x + sp.tab_padding + k, tr.y)].symbol(), " ", "{tag}: gap after the tab icon");
+            for k in 1..=sp.icon_gap.div_ceil(2) {
+                assert_eq!(buf[(tr.x + sp.tab_padding.div_ceil(2) + k, tr.y)].symbol(), " ", "{tag}: gap after the tab icon");
                 assert_eq!(buf[(xr.x - k, xr.y)].symbol(), " ", "{tag}: gap before the close button");
             }
             assert_eq!(buf[(xr.x, xr.y)].symbol(), crate::theme::icons().close, "{tag}");
