@@ -4973,6 +4973,7 @@ mod tests {
                 let icon = cell_of(&t, "README.md", 0).0 - crate::blocks::icon_gap(spacing.icon_gap) / 2 - 1;
                 assert_eq!(title, section - lead, "{compact}/{style:?}: view title on the chevrons' edge");
                 assert_eq!(section, icon, "{compact}/{style:?}: root label aligns with file icons");
+                assert_eq!(cell_of(&t, "TIMELINE", 0).0, section, "{compact}/{style:?}: Timeline and Explorer headers align");
                 println!("{style:?} compact={compact} padding={}: title={title}, section={section}, file_icon={icon}", spacing.sidebar_padding);
                 app.show_side(Side::Search, true);
                 screen(&mut app, &mut t);

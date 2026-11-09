@@ -341,7 +341,8 @@ the panel: the status bar shows the error and the last good settings stay.
 
 Explorer rows halve the sidebar edge padding (including the leading blank) and both
 arrow/icon gaps, rounded to whole cells with at least one blank cell. Tree depth
-indentation is unchanged. Other sidebar views keep their configured spacing.
+indentation is unchanged. Timeline headers and history rows share Explorer's
+arrow, icon and label columns. Other sidebar views keep their configured spacing.
 
 Editor tabs halve `tabPadding` and `iconGap`, rounding up to whole cells. The
 reserved unsaved-change marker counts toward the gap before the close button.

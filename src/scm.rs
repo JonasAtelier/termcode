@@ -1198,9 +1198,14 @@ fn pane_header(app: &mut App, f: &mut Frame, r: Rect, title: &str, open: bool, h
     fill(f, r, P.section_bg);
     let chev = if open { ic.chev_down } else { ic.chev_right };
     let fg = if focused && app.settings.blocks != crate::blocks::BlockStyle::Cards { P.focus_border } else { P.section_fg };
-    let ir = inset(r, s.sidebar_padding);
+    let (pad, gap) = if hit == Hit::TimelineHead {
+        (s.sidebar_padding.saturating_sub(1) / 2, crate::blocks::icon_gap(s.icon_gap) / 2)
+    } else {
+        (s.sidebar_padding, crate::blocks::icon_gap(s.icon_gap))
+    };
+    let ir = inset(r, pad);
     // As in the rows: cut once with "…"; the dim file name only while the title is whole.
-    let head = format!(" {chev}{}{title}", sp(crate::blocks::icon_gap(s.icon_gap)));
+    let head = format!(" {chev}{}{title}", sp(gap));
     let extra = if extra.is_empty() { String::new() } else { format!(" {extra}") };
     let (head, extra) = fit_pair(&head, &extra, ir.width as usize);
     row(f, ir, P.section_bg, vec![Span::styled(head, Style::new().fg(fg).bold()), Span::styled(extra, Style::new().fg(P.dim))]);
@@ -1469,7 +1474,12 @@ pub fn draw_timeline(app: &mut App, f: &mut Frame, r: Rect) {
     if !open || list.height == 0 {
         return;
     }
-    let pad = app.settings.spacing.sidebar_padding;
+    let s = app.settings.spacing;
+    let pad = s.sidebar_padding.saturating_sub(1) / 2;
+    let gap = sp(crate::blocks::icon_gap(s.icon_gap) / 2);
+    let dot = if crate::theme::ascii() { "o" } else { "\u{eafc}" };
+    // Reserve Explorer's empty fold column so icons and labels share its grid.
+    let lead = format!("  {gap}{dot}{gap}");
     let t = &app.gitui.timeline;
     let n = timeline_rows(app);
     if n == 0 {
@@ -1495,21 +1505,20 @@ pub fn draw_timeline(app: &mut App, f: &mut Frame, r: Rect) {
         let ir = inset(rr, pad);
         let Some(it) = app.gitui.timeline.items.get(k) else {
             let t = if app.gitui.timeline.loading { "Loading…" } else { "Load more" };
-            row(f, ir, bg, vec![Span::styled(format!("   {t}"), Style::new().fg(P.focus_border))]);
+            row(f, ir, bg, vec![Span::styled(format!("{}{t}", sp(lead.width() as u16)), Style::new().fg(P.focus_border))]);
             app.gitui.hits.areas.push((rr, Hit::TimelineMore));
             continue;
         };
         // The time gives way first: "1 hour ago" while the subject keeps ~20 cells, then
         // "1h" while it keeps 12, then none.
-        let (avail, sw, t) = ((ir.width as usize).saturating_sub(3), it.commit.subject.width(), it.commit.author_time);
+        let (avail, sw, t) = ((ir.width as usize).saturating_sub(lead.width()), it.commit.subject.width(), it.commit.author_time);
         let rs = [(ago(t, now), SUBJECT_MIN), (ago_short(t, now), SUBJECT_FLOOR)]
             .into_iter()
             .map(|(s, keep)| (vec![Span::styled(format!("{s} "), Style::new().fg(P.dim))], keep))
             .find(|(m, keep)| room_before(m, avail) >= sw.min(*keep))
             .map_or(Vec::new(), |(m, _)| m);
         let (subject, author) = fit_pair(&it.commit.subject, &format!(" {}", it.commit.author_name), room_before(&rs, avail));
-        let dot = if crate::theme::ascii() { "o" } else { "\u{eafc}" };
-        row(f, ir, bg, vec![Span::styled(format!(" {dot} "), Style::new().fg(P.icon_fg)), Span::styled(subject, Style::new().fg(P.sidebar_fg)), Span::styled(author, Style::new().fg(P.dim))]);
+        row(f, ir, bg, vec![Span::styled(lead.clone(), Style::new().fg(P.icon_fg)), Span::styled(subject, Style::new().fg(P.sidebar_fg)), Span::styled(author, Style::new().fg(P.dim))]);
         right(f, ir, rs);
         let hash = it.commit.hash.clone();
         app.gitui.hits.areas.push((rr, Hit::Timeline(k)));
