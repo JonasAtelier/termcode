@@ -306,6 +306,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `indentRainbow.ignoreLinePatterns` | `["/[ \t]* [*]/g", "/[ \t]+[/]{2}/g"]` | JS regex literals; a matching line never gets the error colour |
 | `editor.guides.indentation` | `true` | Indent guides (`editorIndentGuide.background` / `.activeBackground`) |
 | `editor.tabSize` | `4` | Tab stops, the indent unit, rainbow and guides |
+| `editor.occurrencesHighlight` | `"singleFile"` | Highlight the word at the cursor where it appears on screen (`editor.wordHighlightBackground`); `"off"` turns it off |
 | `editor.matchBrackets` | `"always"` | Highlight the bracket beside the cursor and its partner (`editorBracketMatch.background`); `"never"` turns it off |
 | `editor.autoClosingBrackets`, `editor.autoClosingQuotes` | `"always"` | Close the pair while typing, step over the closer, wrap a selection, remove an empty pair with Backspace; `"never"` turns each off |
 | `files.trimTrailingWhitespace` | `true` | On save, on the lines edited since the file on disk; not in Markdown or patches |

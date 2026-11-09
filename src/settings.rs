@@ -128,6 +128,8 @@ pub struct Settings {
     pub sticky_max: usize,
     pub tab_size: usize,
     /// `files.trimTrailingWhitespace` and `files.insertFinalNewline`, applied on save.
+    /// `editor.occurrencesHighlight`: other uses of the word at the cursor.
+    pub occurrences: bool,
     /// `editor.matchBrackets`: highlight the bracket pair at the cursor.
     pub match_brackets: bool,
     /// `editor.autoClosingBrackets`, `editor.autoClosingQuotes`.
@@ -180,6 +182,7 @@ impl Default for Settings {
             // One row: the top-level folder holding the top row (VS Code's default is 7).
             sticky_max: 1,
             tab_size: 4,
+            occurrences: true,
             match_brackets: true,
             auto_brackets: true,
             auto_quotes: true,
@@ -297,6 +300,7 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         guides: g("editor.guides.indentation").and_then(Value::as_bool).unwrap_or(d.guides),
         sticky: g("workbench.tree.enableStickyScroll").and_then(Value::as_bool).unwrap_or(d.sticky),
         sticky_max: g("workbench.tree.stickyScrollMaxItemCount").and_then(Value::as_u64).map_or(d.sticky_max, |n| n.clamp(1, 10) as usize),
+        occurrences: !matches!(g("editor.occurrencesHighlight"), Some(Value::Bool(false))) && g("editor.occurrencesHighlight").and_then(Value::as_str) != Some("off"),
         match_brackets: g("editor.matchBrackets").and_then(Value::as_str) != Some("never"),
         auto_brackets: g("editor.autoClosingBrackets").and_then(Value::as_str) != Some("never"),
         auto_quotes: g("editor.autoClosingQuotes").and_then(Value::as_str) != Some("never"),
@@ -651,6 +655,7 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "workbench.tree.enableStickyScroll": true,      // pin the folders above the top row
     // "workbench.tree.stickyScrollMaxItemCount": 1,  // up to 10: arch, then sh, boards, …
     // "editor.tabSize": 4,
+    // "editor.occurrencesHighlight": "singleFile", // or "off"
     // "editor.matchBrackets": "always",        // or "never"
     // "editor.autoClosingBrackets": "always",  // or "never"
     // "editor.autoClosingQuotes": "always",    // or "never"
@@ -677,6 +682,15 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn word_highlight_is_on_unless_turned_off() {
+        let on = |text: &str| from_maps(&parse_jsonc(text).unwrap(), None, &[]).unwrap().occurrences;
+        assert!(on("{}"));
+        assert!(on(r#"{"editor.occurrencesHighlight": "singleFile"}"#));
+        assert!(!on(r#"{"editor.occurrencesHighlight": "off"}"#));
+        assert!(!on(r#"{"editor.occurrencesHighlight": false}"#));
     }
 
     #[test]

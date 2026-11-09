@@ -5835,6 +5835,33 @@ mod tests {
     }
 
     #[test]
+    fn other_uses_of_the_cursor_word_are_highlighted() {
+        let root = repo("word-hl");
+        fs::write(root.join("a.c"), "foo Foo foobar q\nw foo\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "a.c", false);
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        app.groups[0].tabs[0].view.cursor = Pos::new(0, 1);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let buf = t.backend().buffer();
+        let cells: Vec<(u16, u16)> = (0..30).flat_map(|y| (0..120).map(move |x| (x, y))).collect();
+        let starts = |text: &str| -> Vec<(u16, u16)> {
+            cells.iter().copied().filter(|&(x, y)| x + text.len() as u16 <= 120 && text.chars().enumerate().all(|(k, c)| buf[(x + k as u16, y)].symbol() == c.to_string())).collect()
+        };
+        let word = crate::theme::P.word_hl;
+        let foo = starts("foo ");
+        assert_ne!(buf[starts("w foo")[0]].bg, word, "other words stay plain");
+        let hit = starts("w foo")[0];
+        assert_eq!(buf[(hit.0 + 2, hit.1)].bg, word, "the same word on another line");
+        assert_eq!(buf[foo[0]].bg, word, "the word itself");
+        assert_ne!(buf[starts("Foo")[0]].bg, word, "case matters");
+        assert_ne!(buf[starts("foobar")[0]].bg, word, "whole words only");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn the_bracket_pair_at_the_cursor_is_highlighted() {
         let root = repo("bracket");
         fs::write(root.join("a.c"), "f(x);\n").unwrap();

@@ -353,6 +353,14 @@ pub fn word_at(l: &str, col: usize) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
+/// The word the cursor is in, at the start of, or just after.
+pub fn cursor_word(line: &str, col: usize) -> Option<&str> {
+    let is_word = |&(start, _): &(usize, usize)| line[start..].chars().next().is_some_and(|c| class(c) == 1);
+    let here = word_at(line, col).filter(is_word);
+    let before = || line.get(..col)?.char_indices().next_back().and_then(|(at, _)| word_at(line, at)).filter(is_word);
+    here.or_else(before).map(|(start, end)| &line[start..end])
+}
+
 fn class(c: char) -> u8 {
     if c.is_whitespace() {
         0
@@ -1903,6 +1911,18 @@ mod tests {
     fn bracket_search_ignores_other_kinds_and_text_after_multibyte_characters() {
         let b = buf("中[(中]");
         assert_eq!(b.bracket_pair(Pos::new(0, 3)), Some((Pos::new(0, 3), Pos::new(0, 8))), "a [ does not count ( as nesting");
+    }
+
+    #[test]
+    fn the_cursor_word_is_the_one_it_is_in_or_just_after() {
+        assert_eq!(cursor_word("foo bar", 1), Some("foo"), "inside");
+        assert_eq!(cursor_word("foo bar", 0), Some("foo"), "at its start");
+        assert_eq!(cursor_word("foo bar", 3), Some("foo"), "just after it");
+        assert_eq!(cursor_word("foo bar", 4), Some("bar"), "at the next word's start");
+        assert_eq!(cursor_word("a  b", 2), None, "between spaces");
+        assert_eq!(cursor_word("(+)", 1), None, "punctuation is no word");
+        assert_eq!(cursor_word("中文 x", 3), Some("中文"), "after a multibyte word");
+        assert_eq!(cursor_word("", 0), None);
     }
 
     fn typed(start: &str, col: usize, keys: &str) -> (Vec<String>, usize) {
