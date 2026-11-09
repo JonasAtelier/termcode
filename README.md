@@ -336,6 +336,10 @@ the panel: the status bar shows the error and the last good settings stay.
 | `buttonPadding` | 2 | 1 | Spaces inside buttons (Close, Save, Discard, …) |
 | `findWidgetPadding` | 1 | 0 | Padding inside the find/replace widget's frame |
 
+Explorer rows halve the sidebar edge padding (including the leading blank) and both
+arrow/icon gaps, rounded to whole cells with at least one blank cell. Tree depth
+indentation is unchanged. Other sidebar views keep their configured spacing.
+
 Every icon is laid out as one cell and followed by at least one blank cell; scrollbars keep a
 blank column between them and the text (comfortable).
 

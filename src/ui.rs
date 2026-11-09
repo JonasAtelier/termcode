@@ -453,7 +453,11 @@ fn paint_slider(f: &mut Frame, track: Rect, (start, len): (u16, u16), c: Rgba) {
     }
 }
 
-fn sidebar(app: &mut App, f: &mut Frame, col: Rect, lay: Lay) {
+fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
+    if app.side == Side::Explorer {
+        // Halve the padding plus the row's leading blank, keeping whole cells.
+        lay.pad = lay.pad.saturating_sub(1) / 2;
+    }
     // Cards: the view's title sits on the workbench background, the sections are cards.
     let st = app.settings.blocks;
     let bg = if st == BlockStyle::Cards { crate::blocks::gutter() } else { P.sidebar_bg };
@@ -485,7 +489,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, lay: Lay) {
         Side::Explorer => {
             let hr = Rect::new(r.x, y, r.width, 1);
             fill(f, hr, P.section_bg);
-            let hdr = format!(" {}{}{}", ic.chev_down, sp(crate::blocks::icon_gap(lay.s.icon_gap)), app.repo.to_uppercase());
+            let hdr = format!(" {}{}{}", ic.chev_down, sp(crate::blocks::icon_gap(lay.s.icon_gap) / 2), app.repo.to_uppercase());
             row(f, inset(hr, lay.pad), P.section_bg, vec![Span::styled(hdr, Style::new().fg(P.section_fg).bold())]);
             y += 1;
         }
@@ -649,7 +653,7 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
 fn breadcrumb_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, p: usize) {
     const SEP: &str = " › ";
     const MORE: &str = "… › ";
-    let lead = format!(" {}{}", icons().chev_down, sp(app.settings.spacing.icon_gap));
+    let lead = format!(" {}{}", icons().chev_down, sp(crate::blocks::icon_gap(app.settings.spacing.icon_gap) / 2));
     let names: Vec<(usize, String, Color)> = app
         .tree_path(p)
         .into_iter()
@@ -738,7 +742,7 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) {
     };
     let s = app.settings.spacing;
     let indent = sp(s.tree_indent * n.depth as u16);
-    let gap = sp(crate::blocks::icon_gap(s.icon_gap));
+    let gap = sp(crate::blocks::icon_gap(s.icon_gap) / 2);
     // VS Code: a folder holding changes gets the colour and a dot; a file its letter.
     let right_spans = match mark {
         Some(c) if n.dir => vec![Span::styled(format!("{} ", ic.folder_dot), Style::new().fg(git_color(c)))],

@@ -4963,15 +4963,16 @@ mod tests {
                 // field's caps sit in the one after Refresh on the right).
                 let title = cell_of(&t, "EXPLORER", 0).0;
                 let section = cell_of(&t, "DEMO", 0).0;
-                let lead = 1 + crate::blocks::icon_gap(spacing.icon_gap); // chevron, gap
-                let icon = cell_of(&t, "README.md", 0).0 - crate::blocks::icon_gap(spacing.icon_gap) - 1;
+                let lead = 1 + crate::blocks::icon_gap(spacing.icon_gap) / 2; // chevron, gap
+                let icon = cell_of(&t, "README.md", 0).0 - crate::blocks::icon_gap(spacing.icon_gap) / 2 - 1;
                 assert_eq!(title, section - lead, "{compact}/{style:?}: view title on the chevrons' edge");
                 assert_eq!(section, icon, "{compact}/{style:?}: root label aligns with file icons");
                 println!("{style:?} compact={compact} padding={}: title={title}, section={section}, file_icon={icon}", spacing.sidebar_padding);
-                let refresh = app.ui.find_btns.iter().find(|(_, b)| *b == FindBtn::Refresh).unwrap().0;
                 app.show_side(Side::Search, true);
                 screen(&mut app, &mut t);
                 let input = app.ui.side_input;
+                let title = cell_of(&t, "SEARCH", 0).0;
+                let refresh = app.ui.find_btns.iter().find(|(_, b)| *b == FindBtn::Refresh).unwrap().0;
                 assert_eq!(input.x, app.ui.side_list.x + spacing.sidebar_padding);
                 assert_eq!(input.right(), refresh.right(), "input and right action share an edge");
                 assert_eq!(cell_of(&t, "Search", 0).0, title, "{compact}/{style:?}: the field's text on the left edge");
@@ -4985,7 +4986,7 @@ mod tests {
                 app.show_side(Side::Scm, false);
                 screen(&mut app, &mut t);
                 assert_eq!((app.ui.commit_btn.x, app.ui.commit_btn.right()), (input.x, input.right()));
-                assert_eq!(cell_of(&t, "CHANGES", 0).0, title + lead);
+                assert_eq!(cell_of(&t, "CHANGES", 0).0, title + 1 + crate::blocks::icon_gap(spacing.icon_gap));
                 let menu = app.gitui.hits.cmds.iter().find(|(_, h)| *h == crate::gitcmds::Hit::Menu).unwrap().0;
                 assert_eq!(menu.x + 3, refresh.x, "SCM menu anchored to Refresh");
                 mouse(&mut app, MouseEventKind::Down(MouseButton::Left), menu.x, menu.y);
@@ -5047,7 +5048,7 @@ mod tests {
             app.settings.compact = compact;
             app.settings.spacing = sp;
             app.settings.blocks = st;
-            let gap = crate::blocks::icon_gap(sp.icon_gap);
+            let gap = crate::blocks::icon_gap(sp.icon_gap) / 2;
             let fr = crate::blocks::frame(st);
             let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
             screen(&mut app, &mut t);
@@ -5064,7 +5065,7 @@ mod tests {
             assert_eq!(app.ui.side_list.y, hy + 1, "{tag}: tree rows start below it");
             let (x, y) = cell_of(&t, "README.md", 0);
             // [icon][gap blanks][name]: the icon is one cell, then only blanks (wide icons:
-            // at least the rest of their 2-cell slot and one more).
+            // the remaining blank accommodates their 2-cell slot).
             let buf = t.backend().buffer();
             assert_ne!(buf[(x - gap - 1, y)].symbol(), " ", "{tag}: the file icon");
             for k in 1..=gap {
@@ -6505,7 +6506,7 @@ mod tests {
         screen(&mut app, &mut t);
         assert!(side_line(&t, &app, y + (sh - app.off[0]) as u16).contains("sh"), "sh on screen");
         // Too narrow: cut from the left, the deepest names kept.
-        (app.side_w, app.off[0]) = (Some(24), b10);
+        (app.side_w, app.off[0]) = (Some(19), b10);
         screen(&mut app, &mut t);
         assert!(side_line(&t, &app, y).contains("… › sh › boards") && !side_line(&t, &app, y).contains("arch"), "{}", side_line(&t, &app, y));
         assert!(seg(&app, "arch").is_none() && seg(&app, "boards").is_some());
