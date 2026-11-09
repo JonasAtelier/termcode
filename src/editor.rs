@@ -103,9 +103,69 @@ pub struct View {
     pub want_x: Option<usize>,
     pub scroll: usize,
     pub hscroll: usize,
+    pub fold_ends: Vec<Option<usize>>,
+    pub collapsed: std::collections::BTreeSet<usize>,
+    pub(crate) visible: Vec<usize>,
+    pub(crate) fold_version: Option<(u64, usize)>,
 }
 
 impl View {
+    /// ponytail: indentation fallback; a syntax provider is needed for unindented bodies.
+    /// Blank lines belong to
+    /// their surrounding block; a dedented closing brace stays visible.
+    fn sync_folds(&mut self, lines: &[String], version: u64) {
+        if self.fold_version == Some((version, tab())) { return; }
+        self.fold_version = Some((version, tab()));
+        self.collapsed.clear();
+        self.visible.clear();
+        self.fold_ends = vec![None; lines.len()];
+        let mut stack: Vec<(usize, usize)> = Vec::new();
+        let mut previous = None;
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim().is_empty() { continue; }
+            let indent = line.chars().take_while(|c| c.is_whitespace()).fold(0, advance);
+            while stack.last().is_some_and(|&(_, level)| indent <= level) {
+                let (start, _) = stack.pop().unwrap();
+                self.fold_ends[start] = Some(i - 1);
+            }
+            if let Some((start, level)) = previous {
+                if indent > level { stack.push((start, level)); }
+            }
+            previous = Some((i, indent));
+        }
+        for (start, _) in stack { self.fold_ends[start] = Some(lines.len() - 1); }
+    }
+
+    pub fn rebuild_folds(&mut self) {
+        self.visible.clear();
+        if self.collapsed.is_empty() { return; }
+        let mut i = 0;
+        while i < self.fold_ends.len() {
+            self.visible.push(i);
+            i = if self.collapsed.contains(&i) { self.fold_ends[i].unwrap_or(i) + 1 } else { i + 1 };
+        }
+    }
+
+    pub fn row_of(&self, line: usize) -> usize {
+        if self.visible.is_empty() { line } else { self.visible.partition_point(|&l| l <= line).saturating_sub(1) }
+    }
+
+    pub fn line_of(&self, row: usize) -> usize {
+        if self.visible.is_empty() { row } else { self.visible[row.min(self.visible.len() - 1)] }
+    }
+
+    pub fn hidden(&self, line: usize) -> bool { self.line_of(self.row_of(line)) != line }
+
+    pub fn shift_line(&self, line: usize, delta: isize) -> usize {
+        self.line_of(self.row_of(line).saturating_add_signed(delta))
+    }
+
+    pub fn unfold_at(&mut self, line: usize) {
+        let before = self.collapsed.len();
+        self.collapsed.retain(|&start| !(start < line && self.fold_ends[start].is_some_and(|end| line <= end)));
+        if self.collapsed.len() != before { self.rebuild_folds(); }
+    }
+
     pub fn selection(&self) -> Option<(Pos, Pos)> {
         let a = self.anchor?;
         (a != self.cursor).then(|| if a < self.cursor { (a, self.cursor) } else { (self.cursor, a) })
@@ -449,9 +509,10 @@ impl Buffer {
     }
 
     pub fn clamp_view(&self, v: &mut View) {
+        v.sync_folds(&self.lines, self.version());
         v.cursor = self.clamp(v.cursor);
         v.anchor = v.anchor.map(|a| self.clamp(a));
-        v.scroll = v.scroll.min(self.lines.len() - 1);
+        v.scroll = v.line_of(v.row_of(v.scroll.min(self.lines.len() - 1)));
     }
 
     pub fn text_range(&self, a: Pos, b: Pos) -> String {
@@ -612,7 +673,11 @@ impl Buffer {
 
     // ---- undo groups -------------------------------------------------------
 
-    fn begin(&mut self, v: &View, kind: Kind) {
+    fn begin(&mut self, v: &mut View, kind: Kind) {
+        // An edit reveals the buffer before changing text; stale fold endpoints
+        // must never hide a different block after an insertion or deletion.
+        v.collapsed.clear();
+        v.rebuild_folds();
         let merge = kind != Kind::Other
             && self.open_kind == Some(kind)
             && self.last_edit.is_some_and(|t| t.elapsed() < UNDO_PAUSE)
@@ -906,6 +971,7 @@ impl Buffer {
     // ---- movement ----------------------------------------------------------
 
     pub fn move_to(&mut self, v: &mut View, p: Pos, extend: bool) {
+        v.unfold_at(p.line);
         if extend {
             v.anchor.get_or_insert(v.cursor);
         } else {
@@ -993,7 +1059,7 @@ impl Buffer {
     pub fn vertical(&mut self, v: &mut View, delta: isize, extend: bool) {
         let c = self.clamp(v.cursor);
         let x = v.want_x.unwrap_or_else(|| display_col(&self.lines[c.line], c.col));
-        let target = c.line as isize + delta;
+        let target = if v.visible.is_empty() { c.line as isize + delta } else { v.shift_line(c.line, delta) as isize };
         let p = if target < 0 {
             Pos::new(0, 0)
         } else if target as usize >= self.lines.len() {
@@ -1430,6 +1496,31 @@ mod tests {
         }
         b.undo(&mut v);
         assert_eq!(b.text(), "ab");
+    }
+
+    #[test]
+    fn folding_nested_blocks_blanks_tabs_and_edits() {
+        let mut b = buf("def outer():\n\tif ready:\n\t\twork()\n\n\tfinish()\nnext()");
+        let mut v = View::default();
+        b.clamp_view(&mut v);
+        assert_eq!(v.fold_ends, vec![Some(4), Some(3), None, None, None, None]);
+        v.collapsed.extend([0, 1]);
+        v.rebuild_folds();
+        assert_eq!(v.visible, vec![0, 5]);
+        v.collapsed.remove(&0);
+        v.rebuild_folds();
+        assert_eq!(v.visible, vec![0, 1, 4, 5]);
+        b.move_to(&mut v, Pos::new(2, 0), false);
+        assert!(v.collapsed.is_empty(), "jumping to a hidden result reveals it");
+        v.collapsed.insert(0);
+        v.rebuild_folds();
+        b.insert(&mut v, "changed ");
+        b.clamp_view(&mut v);
+        assert!(v.collapsed.is_empty(), "edits invalidate fold locations");
+        assert!(b.undo(&mut v));
+        assert_eq!(b.lines[2], "\t\twork()");
+        b.clamp_view(&mut v);
+        assert_eq!(v.fold_ends[0], Some(4));
     }
 
     fn buf(text: &str) -> Buffer {

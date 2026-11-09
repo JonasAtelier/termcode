@@ -1128,6 +1128,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay) {
             let out = text_editor(f, b, view, body, focused_group, editor_focus, &deco);
             gh.text = out.text;
             gh.marks_x = out.marks_x;
+            gh.folds_x = out.folds_x;
             gh.zone = out.zone.map(|z| (z.y, z.height));
             if let Some((area, mini)) = out.mini {
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.scroll });
@@ -1287,6 +1288,7 @@ struct EdOut {
     sb: Option<ScrollHit>,
     mini: Option<(Rect, Mini)>,
     marks_x: Option<u16>,
+    folds_x: Option<u16>,
     zone: Option<Rect>,
     peek_btns: Vec<(Rect, PeekBtn)>,
     peek_body: Rect,
@@ -1314,7 +1316,7 @@ fn text_editor(
 ) -> EdOut {
     b.clamp_view(v);
     let mut area = area;
-    let mut out = EdOut { text: area, sb: None, mini: None, marks_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0 };
+    let mut out = EdOut { text: area, sb: None, mini: None, marks_x: None, folds_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0 };
     if let Some(ro) = &b.readonly {
         let banner = Rect::new(area.x, area.y, area.width, 1);
         let banner_text = format!(" {}{}{ro}", icons().lock, sp(d.icon_gap));
@@ -1327,12 +1329,12 @@ fn text_editor(
     }
     let ic = icons();
     let digits = b.lines.len().to_string().len().max(2) as u16;
-    // VS Code's gutter: [pad][number][marker]text [blank][scrollbar]. The marker
-    // cell (the quick-diff ▎/▸, else blank) is the one cell between the number and
-    // the code; pad = editorPadding; blank: a column before the scrollbar (comfortable).
+    // Gutter: [pad][number][Git marker][fold button?]text [blank][scrollbar].
+    // The fold button includes clickable padding on both sides of the shared chevron.
     let (pad, blank) = (d.gap, u16::from(d.comfy));
     let nums = pad + digits;
-    let gutter = nums + 1;
+    let fold_width = if v.fold_ends.iter().any(Option::is_some) { 3 } else { 0 };
+    let gutter = nums + 1 + fold_width;
     let base_text = area.width.saturating_sub(gutter + 1 + blank);
     let mw = d.minimap.map_or(0, |m| minimap::width(base_text, area.width, m.max_column, m.min_text));
     let left = d.minimap.is_some_and(|m| m.left);
@@ -1341,7 +1343,9 @@ fn text_editor(
     out.text = text;
     out.marks_x = Some(gx + nums);
     let h = area.height as usize;
-    b.highlight_view(v.scroll, v.scroll + h);
+    let end = v.shift_line(v.scroll, h as isize).min(b.lines.len() - 1);
+    b.highlight_view(v.scroll, end + 1);
+    out.folds_x = (fold_width > 0).then_some(gx + nums + 1);
     let c = b.clamp(v.cursor);
     let sel = v.selection();
     let sel_bg = if group_focus { P.selection } else { P.sel_inactive };
@@ -1383,6 +1387,14 @@ fn text_editor(
             None => (" ", P.editor_fg),
         };
         f.render_widget(Span::styled(mark, Style::new().fg(mfg).bg(P.editor_bg)), Rect::new(gx + nums, y, 1, 1));
+        if let Some(x) = out.folds_x {
+            let button = Rect::new(x, y, fold_width, 1).intersection(area);
+            let foldable = v.fold_ends[i].is_some();
+            let hot = foldable && d.hover.is_some_and(|p| button.contains(p));
+            let glyph = if !foldable { " " } else if v.collapsed.contains(&i) { ic.chev_right } else { ic.chev_down };
+            let st = Style::new().fg(if hot { P.icon_fg } else { P.line_nr_active }).bg(if hot { P.widget_bg } else { P.editor_bg });
+            f.render_widget(Span::styled(format!(" {glyph} "), st), button);
+        }
         let line = &b.lines[i];
         let mut overlays: Vec<(usize, usize, Color)> = Vec::new();
         let mut thin: Vec<(usize, Color)> = Vec::new();
@@ -1416,6 +1428,12 @@ fn text_editor(
         fill(f, tr, bg);
         let l = render_line(line, b.segs(i), &overlays, eol, v.hscroll, text.width as usize, Style::new().fg(P.editor_fg).bg(bg));
         f.render_widget(l, tr);
+        if v.collapsed.contains(&i) {
+            let end = editor::display_col(line, line.len()).saturating_sub(v.hscroll);
+            if end + 2 < text.width as usize {
+                f.render_widget(Span::styled(" …", Style::new().fg(P.line_nr).bg(bg)), Rect::new(text.x + end as u16, y, 2, 1));
+            }
+        }
         if let Some(g) = &guides {
             for lvl in 0..g.level(i) {
                 let on = active.is_some_and(|(ak, a, e)| ak == lvl && (a..=e).contains(&i));
@@ -1430,7 +1448,8 @@ fn text_editor(
             }
         }
         draw_rulers(f, tr, v.hscroll, d.rulers, bg);
-        i += 1;
+        let next = v.shift_line(i, 1);
+        i = if next > i { next } else { b.lines.len() };
         y += 1;
     }
     // Rulers run the full height, below the last line too (the peek zone clears its rows).
@@ -1467,12 +1486,13 @@ fn text_editor(
         return out;
     }
     let n = b.lines.len();
-    let max_off = n.saturating_sub(1);
-    let s = decor::slider(track.height, n + h.saturating_sub(1), h, v.scroll, max_off);
+    let total = v.row_of(n - 1) + 1;
+    let max_off = total.saturating_sub(1);
+    let s = decor::slider(track.height, total + h.saturating_sub(1), h, v.row_of(v.scroll), max_off);
     paint_slider(f, track, s, d.slider);
     if d.ruler {
         let th = track.height as usize;
-        let row_of = |line: usize| (line * th / n.max(1)).min(th - 1);
+        let row_of = |line: usize| (v.row_of(line) * th / total.max(1)).min(th - 1);
         let mut lanes: Vec<Option<(u8, &str, Color)>> = vec![None; th];
         let mut put = |r: usize, prio: u8, g: &'static str, c: Color| {
             if lanes[r].is_none_or(|(p, _, _)| p <= prio) {

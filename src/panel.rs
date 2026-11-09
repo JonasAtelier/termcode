@@ -146,6 +146,7 @@ struct HoverKey {
     sticky: Option<usize>,
     git_row: Option<u16>,
     tab: Option<(usize, usize)>,
+    fold: Option<(usize, u16)>,
     scrollbar: Option<usize>,
     minimap: Option<usize>,
     peek: Option<usize>,
@@ -233,6 +234,10 @@ pub struct Quick {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Cmd {
+    Fold,
+    Unfold,
+    FoldAll,
+    UnfoldAll,
     OpenSettings,
     ToggleRainbow,
     ToggleRuler,
@@ -251,6 +256,10 @@ pub enum Cmd {
 
 /// The F1 command palette: label, command, key hint.
 pub const COMMANDS: &[(&str, Cmd, &str)] = &[
+    ("Fold", Cmd::Fold, "Ctrl+Shift+["),
+    ("Unfold", Cmd::Unfold, "Ctrl+Shift+]"),
+    ("Fold All", Cmd::FoldAll, "Ctrl+K Ctrl+0"),
+    ("Unfold All", Cmd::UnfoldAll, "Ctrl+K Ctrl+J"),
     ("Preferences: Open Settings (JSON)", Cmd::OpenSettings, ""),
     ("View: Toggle Indent Rainbow", Cmd::ToggleRainbow, ""),
     ("View: Toggle Minimap Ruler", Cmd::ToggleRuler, ""),
@@ -482,6 +491,7 @@ pub struct GroupHit {
     pub text: Rect,
     /// The quick-diff marker column.
     pub marks_x: Option<u16>,
+    pub folds_x: Option<u16>,
     /// The peek zone's rows (first row, height): text rows below it are shifted down.
     pub zone: Option<(u16, u16)>,
     /// A side-by-side diff: each side's text area (original, modified), for selecting.
@@ -1083,6 +1093,7 @@ impl App {
     fn run_command(&mut self, c: Cmd) {
         let on_off = |b: bool| if b { "on" } else { "off" };
         match c {
+            Cmd::Fold | Cmd::Unfold | Cmd::FoldAll | Cmd::UnfoldAll => self.fold_command(c, None),
             Cmd::OpenSettings => self.open_settings(),
             Cmd::ToggleRainbow => {
                 self.rainbow_on = !self.rainbow_on;
@@ -1125,6 +1136,35 @@ impl App {
                 }
             }
         }
+    }
+
+    fn fold_command(&mut self, cmd: Cmd, line: Option<usize>) {
+        let Some((b, tab)) = self.ed() else { return };
+        let v = &mut tab.view;
+        b.clamp_view(v);
+        let line = line.unwrap_or(v.cursor.line);
+        match cmd {
+            Cmd::FoldAll => v.collapsed.extend(v.fold_ends.iter().enumerate().filter_map(|(i, end)| end.map(|_| i))),
+            Cmd::UnfoldAll => v.collapsed.clear(),
+            _ => {
+                let start = (0..=line.min(v.fold_ends.len() - 1)).rev().find(|&i| {
+                    v.fold_ends[i].is_some_and(|end| line <= end)
+                        && (cmd != Cmd::Unfold || v.collapsed.contains(&i))
+                });
+                if let Some(start) = start {
+                    if cmd == Cmd::Unfold { v.collapsed.remove(&start); }
+                    else { v.collapsed.insert(start); }
+                }
+            }
+        }
+        v.rebuild_folds();
+        if v.hidden(v.cursor.line) {
+            v.cursor = Pos::new(v.line_of(v.row_of(v.cursor.line)), 0);
+            v.anchor = None;
+        }
+        v.scroll = v.line_of(v.row_of(v.scroll));
+        self.peek = None;
+        self.reveal();
     }
 
     // ---- quick diff ------------------------------------------------------------
@@ -1188,6 +1228,8 @@ impl App {
         self.ag = g;
         self.focus = Focus::Editor;
         if let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) {
+            t.view.collapsed.clear();
+            t.view.rebuild_folds();
             let rows = self.ui.groups.get(g).map_or(20, |gh| gh.text.height as usize);
             // As VS Code: the cursor on the hunk's last line, and the zone below it on
             // screen even for a hunk taller than the view (context above when it fits).
@@ -2112,11 +2154,12 @@ impl App {
         let Some((b, tab)) = self.ed() else { return };
         let v = &mut tab.view;
         let c = b.clamp(v.cursor);
+        v.unfold_at(c.line);
         let h = if before.is_some_and(|l| c.line >= l) { h.saturating_sub(zone).max(1) } else { h };
         if c.line < v.scroll {
             v.scroll = c.line;
-        } else if c.line >= v.scroll + h {
-            v.scroll = c.line + 1 - h;
+        } else if v.row_of(c.line) >= v.row_of(v.scroll) + h {
+            v.scroll = v.line_of(v.row_of(c.line) + 1 - h);
         }
         let x = editor::display_col(&b.lines[c.line], c.col);
         if x < v.hscroll {
@@ -2870,8 +2913,10 @@ impl App {
         if k.code == KeyCode::Esc && (self.gitui.card.take().is_some() || self.gitui.cmds.toast.take().is_some()) {
             return;
         }
-        if std::mem::take(&mut self.pending_k) && k.code == KeyCode::Enter {
-            return self.pin_active(); // Ctrl+K Enter: Keep Open
+        if std::mem::take(&mut self.pending_k) {
+            if k.code == KeyCode::Enter { return self.pin_active(); }
+            if ctrl && is('0') { return self.fold_command(Cmd::FoldAll, None); }
+            if ctrl && is('j') { return self.fold_command(Cmd::UnfoldAll, None); }
         }
         if ctrl && is('q') {
             return self.request_quit();
@@ -3081,6 +3126,9 @@ impl App {
     }
 
     fn editor_key(&mut self, k: KeyEvent, ctrl: bool, alt: bool, shift: bool) {
+        if ctrl && shift && matches!(k.code, KeyCode::Char('[' | ']' | '{' | '}')) {
+            return self.fold_command(if matches!(k.code, KeyCode::Char('[' | '{')) { Cmd::Fold } else { Cmd::Unfold }, None);
+        }
         if ctrl && k.code == KeyCode::Char('c') {
             return self.copy_cut(false);
         }
@@ -3163,17 +3211,17 @@ impl App {
                 KeyCode::Delete => b.delete(v),
                 KeyCode::Left => b.left(v, shift, ctrl),
                 KeyCode::Right => b.right(v, shift, ctrl),
-                KeyCode::Up if ctrl => v.scroll = v.scroll.saturating_sub(1),
-                KeyCode::Down if ctrl => v.scroll = (v.scroll + 1).min(b.lines.len() - 1),
+                KeyCode::Up if ctrl => v.scroll = v.shift_line(v.scroll, -1),
+                KeyCode::Down if ctrl => v.scroll = v.shift_line(v.scroll, 1).min(b.lines.len() - 1),
                 KeyCode::Up => b.vertical(v, -1, shift),
                 KeyCode::Down => b.vertical(v, 1, shift),
                 KeyCode::PageUp => {
                     b.vertical(v, -page, shift);
-                    v.scroll = v.scroll.saturating_sub(page as usize);
+                    v.scroll = v.shift_line(v.scroll, -page);
                 }
                 KeyCode::PageDown => {
                     b.vertical(v, page, shift);
-                    v.scroll = (v.scroll + page as usize).min(b.lines.len() - 1);
+                    v.scroll = v.shift_line(v.scroll, page).min(b.lines.len() - 1);
                 }
                 KeyCode::Home if ctrl => b.move_to(v, Pos::new(0, 0), shift),
                 KeyCode::End if ctrl => {
@@ -3380,6 +3428,9 @@ impl App {
             sticky: side.then(|| self.ui.sticky_at(p.y)).flatten(),
             git_row: (g.graph.contains(p) || g.timeline.contains(p)).then_some(p.y),
             tab: self.ui.groups.iter().enumerate().find_map(|(gi, gh)| gh.tabs.iter().position(|(t, x)| t.contains(p) || x.contains(p)).map(|i| (gi, i))),
+            fold: self.ui.groups.iter().enumerate().find_map(|(g, gh)| {
+                (gh.folds_x.is_some_and(|x| (x..gh.text.x).contains(&p.x)) && (gh.text.y..gh.text.bottom()).contains(&p.y)).then_some((g, p.y))
+            }),
             scrollbar: self.ui.scrollbars.iter().position(|sb| sb.track.contains(p)),
             minimap: self.ui.minimaps.iter().position(|m| m.area.contains(p)),
             peek: self.ui.peek_btns.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.peek_zone.contains(p).then_some(usize::MAX)),
@@ -3520,6 +3571,13 @@ impl App {
             if gh.area.contains(p) {
                 self.ag = g;
                 self.focus = Focus::Editor;
+                if gh.folds_x.is_some_and(|x| (x..gh.text.x).contains(&p.x)) && (gh.text.y..gh.text.bottom()).contains(&p.y) {
+                    if let Some(line) = self.line_at(g, p.y) {
+                        if !self.ed().is_some_and(|(_, t)| t.view.fold_ends.get(line).is_some_and(Option::is_some)) { return; }
+                        let cmd = if self.ed().is_some_and(|(_, t)| t.view.collapsed.contains(&line)) { Cmd::Unfold } else { Cmd::Fold };
+                        return self.fold_command(cmd, Some(line));
+                    }
+                }
                 // A quick-diff marker opens the peek on its change (VS Code).
                 if gh.marks_x == Some(p.x) {
                     if let Some(line) = self.line_at(g, p.y) {
@@ -3559,11 +3617,18 @@ impl App {
         if (top..top + len).contains(&row) {
             self.drag = Drag::Minimap(m, row - top);
         } else {
-            self.set_scroll(ScrollTarget::Editor(m.group), m.mini.click_scroll(m.scroll, row));
+            self.minimap_scroll(m.group, m.mini.click_scroll(m.scroll, row));
             // Keep dragging from here, as VS Code does after a jump.
-            let (top, _) = m.mini.slider(self.scroll_of(ScrollTarget::Editor(m.group)));
+            let (top, _) = m.mini.slider(self.groups[m.group].tabs[self.groups[m.group].active].view.scroll);
             self.drag = Drag::Minimap(m, row.saturating_sub(top));
         }
+    }
+
+    fn minimap_scroll(&mut self, g: usize, line: usize) {
+        let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) else { return };
+        t.view.unfold_at(line);
+        let off = t.view.row_of(line);
+        self.set_scroll(ScrollTarget::Editor(g), off);
     }
 
     fn scrollbar_click(&mut self, sb: ScrollHit, p: Position) {
@@ -3577,7 +3642,7 @@ impl App {
 
     fn scroll_of(&self, t: ScrollTarget) -> usize {
         match t {
-            ScrollTarget::Editor(g) => self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map_or(0, |t| t.view.scroll),
+            ScrollTarget::Editor(g) => self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map_or(0, |t| t.view.row_of(t.view.scroll)),
             ScrollTarget::Side => self.off[self.side as usize],
             ScrollTarget::Quick => self.quick.as_ref().map_or(0, |q| q.off),
             ScrollTarget::Git(w) => crate::scm::scroll_of(self, w),
@@ -3597,7 +3662,7 @@ impl App {
                     }
                 };
                 if let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) {
-                    t.view.scroll = off.min(max.saturating_sub(1));
+                    t.view.scroll = t.view.line_of(off).min(max.saturating_sub(1));
                 }
             }
             ScrollTarget::Side => {
@@ -3707,14 +3772,16 @@ impl App {
                 return None;
             }
         }
-        Some((tab.view.scroll + row as usize).min(b.lines.len() - 1))
+        Some(tab.view.line_of(tab.view.row_of(tab.view.scroll) + row as usize).min(b.lines.len() - 1))
     }
 
     /// The screen row buffer line `line` of group `g` is drawn on, if any: `line_at` backwards.
     pub(crate) fn line_y(&self, g: usize, line: usize) -> Option<u16> {
         let gh = self.ui.groups.get(g)?;
         let grp = self.groups.get(g)?;
-        let row = u16::try_from(line.checked_sub(grp.tabs.get(grp.active)?.view.scroll)?).ok()?;
+        let v = &grp.tabs.get(grp.active)?.view;
+        if v.hidden(line) || line < v.scroll { return None; }
+        let row = u16::try_from(v.row_of(line).checked_sub(v.row_of(v.scroll))?).ok()?;
         let mut y = gh.text.y.checked_add(row)?;
         if let Some((_, zh)) = gh.zone.filter(|&(zy, _)| y >= zy) {
             y = y.checked_add(zh)?;
@@ -3778,7 +3845,7 @@ impl App {
             Drag::Minimap(m, grab) => {
                 let (m, grab) = (*m, *grab);
                 let off = m.mini.drag_scroll(p.y as i32 - m.area.y as i32 - grab as i32);
-                self.set_scroll(ScrollTarget::Editor(m.group), off);
+                self.minimap_scroll(m.group, off);
             }
             Drag::Scroll(sb, grab) => {
                 let (sb, grab) = (*sb, *grab);
@@ -3943,7 +4010,7 @@ impl App {
         if let Some(sb) = self.ui.scrollbars.iter().find(|s| s.track.contains(p)).copied() {
             if let ScrollTarget::Editor(_) = sb.target {
                 let cur = self.scroll_of(sb.target);
-                self.set_scroll(sb.target, (cur as isize + d).max(0) as usize);
+                self.set_scroll(sb.target, cur.saturating_add_signed(d));
                 return self.scroll_of(sb.target) != cur;
             }
         }
@@ -3966,7 +4033,7 @@ impl App {
         };
         let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) else { return false };
         let old = t.view.scroll;
-        t.view.scroll = (t.view.scroll as isize + d).clamp(0, max.saturating_sub(1) as isize) as usize;
+        t.view.scroll = t.view.shift_line(t.view.scroll, d).min(max.saturating_sub(1));
         t.view.scroll != old
     }
 
@@ -4079,6 +4146,72 @@ mod tests {
         g(&["add", "-A"]);
         g(&["commit", "-q", "-m", "init"]);
         d.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn folding_button_padding_is_clickable_and_uses_shared_chevrons() {
+        let root = repo("fold-button");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/main.rs", false);
+        wait(&mut app);
+        let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
+        screen(&mut app, &mut t);
+        let gh = app.ui.groups[0].clone();
+        let (x, y) = (gh.folds_x.unwrap(), gh.text.y);
+        let original = app.ed().unwrap().0.text();
+        for dx in [2, 0, 1] {
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + dx, y);
+            assert!(!screen(&mut app, &mut t).contains("println!"), "button column {dx} folds");
+            assert_eq!(t.backend().buffer()[(x + 1, y)].symbol(), crate::theme::icons().chev_right);
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + dx, y);
+            assert!(screen(&mut app, &mut t).contains("println!"), "button column {dx} unfolds");
+            assert_eq!(t.backend().buffer()[(x + 1, y)].symbol(), crate::theme::icons().chev_down);
+        }
+        let normal_bg = t.backend().buffer()[(x, y)].bg;
+        assert!(app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: x + 2, row: y, modifiers: KeyModifiers::NONE }));
+        screen(&mut app, &mut t);
+        assert_ne!(t.backend().buffer()[(x, y)].bg, normal_bg, "hover lights the whole button");
+        assert_eq!(gh.marks_x.unwrap() + 1, x, "Git marker remains separate");
+        assert_eq!(app.ed().unwrap().0.text(), original);
+        assert!(!app.ed().unwrap().0.dirty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folding_hides_body_maps_clicks_and_preserves_text() {
+        let root = repo("folding");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/main.rs", false);
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
+        assert!(screen(&mut app, &mut t).contains("println!"));
+        let original = app.ed().unwrap().0.text();
+        key(&mut app, KeyCode::Char('['), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert!(!screen(&mut app, &mut t).contains("println!"), "folded body must be hidden");
+        let y = app.ui.groups[0].text.y;
+        assert_eq!(app.line_at(0, y + 1), Some(2));
+        assert_eq!(app.line_y(0, 1), None);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.ed().unwrap().1.view.cursor.line, 2);
+        assert_eq!(app.ed().unwrap().0.text(), original);
+        assert!(!app.ed().unwrap().0.dirty());
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char(']'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert!(screen(&mut app, &mut t).contains("println!"));
+        let x = app.ui.groups[0].folds_x.unwrap();
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+        assert!(!screen(&mut app, &mut t).contains("println!"));
+        let sb = app.ui.scrollbars.iter().find(|s| s.target == ScrollTarget::Editor(0)).unwrap();
+        assert_eq!(sb.max_off, 1, "scrollbar counts visible rows");
+        app.set_scroll(ScrollTarget::Editor(0), 1);
+        assert_eq!(app.ed().unwrap().1.view.scroll, 2);
+        app.set_scroll(ScrollTarget::Editor(0), 0);
+        let (b, tab) = app.ed().unwrap();
+        b.move_to(&mut tab.view, Pos::new(1, 0), false);
+        app.reveal();
+        assert!(screen(&mut app, &mut t).contains("println!"), "navigation reveals hidden results");
+        fs::remove_dir_all(root).unwrap();
     }
 
     /// The status bar from narrow to wide: the branch item stays whole (its hit rect on
@@ -4646,8 +4779,8 @@ mod tests {
             .collect();
         assert!(bad.is_empty(), "{}", bad.join("\n"));
         // The gutter: [editorPadding][number][marker] code: the last digit two cells left of it.
-        let (x, y) = cell_of(&t, "#define MAX_PORTS", 0);
-        let nx = x - 2;
+        let (_, y) = cell_of(&t, "#define MAX_PORTS", 0);
+        let nx = app.ui.groups[0].marks_x.unwrap() - 1;
         assert_eq!(t.backend().buffer()[(nx, y)].symbol(), "4");
         assert_eq!(t.backend().buffer()[(nx, y)].fg, rgb(0x2B91AF));
         assert_all_rgb(&t, "explorer + C editor");

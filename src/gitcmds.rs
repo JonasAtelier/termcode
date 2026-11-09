@@ -922,7 +922,7 @@ fn merge_colors(app: &App) -> ([Color; 6], Color) {
 pub fn editor_overlay(app: &mut App, f: &mut Frame, g: usize) {
     let Some(text) = app.ui.groups.get(g).map(|gh| gh.text) else { return };
     let Some(tab) = app.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)) else { return };
-    let (key, scroll, hscroll, cursor) = (tab.key.clone(), tab.view.scroll, tab.view.hscroll, tab.view.cursor);
+    let (key, hscroll, cursor) = (tab.key.clone(), tab.view.hscroll, tab.view.cursor);
     if !matches!(app.docs.get(&key), Some(Doc::Text(_))) || text.width < 4 {
         return;
     }
@@ -933,7 +933,7 @@ pub fn editor_overlay(app: &mut App, f: &mut Frame, g: usize) {
     let area = f.area();
     let ascii = crate::theme::ascii();
     for (ri, r) in regions.iter().enumerate() {
-        for i in r.start.max(scroll)..=r.end.min(scroll + h.saturating_sub(1)) {
+        for i in (0..h).filter_map(|row| app.line_at(g, text.y + row as u16)).filter(|i| (r.start..=r.end).contains(i)) {
             let c = if i == r.start {
                 merge[0]
             } else if r.current.contains(&i) {
@@ -947,7 +947,7 @@ pub fn editor_overlay(app: &mut App, f: &mut Frame, g: usize) {
             } else {
                 continue;
             };
-            let y = text.y + (i - scroll) as u16;
+            let Some(y) = app.line_y(g, i) else { continue };
             let buf = f.buffer_mut();
             for x in text.x..text.right().min(area.right()) {
                 let cell = &mut buf[(x, y)];
@@ -957,10 +957,7 @@ pub fn editor_overlay(app: &mut App, f: &mut Frame, g: usize) {
             }
         }
         // The actions, on the `<<<<<<<` line after its text (VS Code's CodeLens row).
-        if r.start < scroll || r.start >= scroll + h {
-            continue;
-        }
-        let y = text.y + (r.start - scroll) as u16;
+        let Some(y) = app.line_y(g, r.start) else { continue };
         let used = editor::display_col(&b.lines[r.start], b.lines[r.start].len()).saturating_sub(hscroll) as u16 + 2;
         let mut x = text.x + used.min(text.width);
         let labels: [(&str, &str, Accept); 4] = [
@@ -992,9 +989,6 @@ pub fn editor_overlay(app: &mut App, f: &mut Frame, g: usize) {
     let Some(bl) = current_blame(app) else { return };
     let Some(Doc::Text(b)) = app.docs.get(&key) else { return };
     let line = b.clamp(cursor).line;
-    if line < scroll || line >= scroll + h {
-        return;
-    }
     let ghost = match &bl.hash {
         None => "You, not committed yet".to_string(),
         Some(_) => format!("{}, {} • {}", bl.author, ago(bl.author_time, now()), bl.summary),
@@ -1002,7 +996,7 @@ pub fn editor_overlay(app: &mut App, f: &mut Frame, g: usize) {
     let x = text.x + (editor::display_col(&b.lines[line], b.lines[line].len()).saturating_sub(hscroll) as u16 + 3).min(text.width);
     let room = text.right().saturating_sub(x) as usize;
     if room > 4 {
-        let y = text.y + (line - scroll) as u16;
+        let Some(y) = app.line_y(g, line) else { return };
         f.render_widget(Span::styled(fit(&ghost, room), Style::new().fg(lens).italic()), Rect::new(x, y, room as u16, 1));
     }
 }

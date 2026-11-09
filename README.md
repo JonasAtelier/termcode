@@ -128,6 +128,8 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Ctrl+F, Ctrl+H | find / replace in the current file. Enter or F3 next, Shift+F3 previous, Esc closes |
 | Ctrl+S, Ctrl+W, Ctrl+Q | save (atomic), close tab, quit (all prompt for unsaved changes) |
 | Ctrl+Z, Ctrl+Y | undo, redo |
+| gutter fold button, Ctrl+Shift+[ / ] | fold / unfold the current block |
+| Ctrl+K Ctrl+0 / Ctrl+K Ctrl+J | fold all / unfold all (also available from F1) |
 | Ctrl+C / X / V, Ctrl+A | clipboard (whole line without a selection), select all |
 | Tab / Shift+Tab, Enter | indent / outdent, new line with auto-indent |
 | Ctrl+PgDn / PgUp, Ctrl+1/2/3 | next / previous tab, focus group (Ctrl+digit only with kitty keys) |
@@ -156,6 +158,12 @@ its hits, Source Control the section over its files; the wheel over them scrolls
 A thin line (`sideBarStickyScroll.border`, here the cards' border colour) separates them
 from the list, on its own row (or the last row's listItemGap row). Never over 40% of the
 list; the background is `sideBarStickyScroll.background`.
+
+The folding gutter uses the same chevrons as Explorer, with three clickable columns and a
+hover highlight. Code folding follows indentation (VS Code's fallback strategy), including nested functions
+and blocks. A folded header shows an ellipsis; original line numbers and file contents are
+preserved. Go to Definition and find reveal hidden results. Editing reveals folded blocks;
+fold state is local to each editor view and resets after text changes or restarting.
 
 The editor gutter shows VS Code's quick diff against the git index (`:0:path`): green `▎`
 added, blue `▎` modified, red `▸` lines deleted below. Staging a hunk clears its marker. It
