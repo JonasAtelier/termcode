@@ -406,7 +406,8 @@ one cap of two running `rg`. Every jump (definitions, peek items, Back/Forward) 
   read-only and can never be saved. If a file changes on disk, a clean buffer reloads; a dirty
   one keeps your edits, and the first Ctrl+S refuses so a second one is needed to overwrite.
 - Find is literal (Match Case and Whole Word toggles). Search in files can also use regex.
-  The diff editor is read-only and its text is not syntax-highlighted (its minimap is).
+  The diff editor is read-only. Both sides and the commit dialog use the code editor's
+  syntax colours, with separate parser states and the existing diff backgrounds.
 - Lines over 4000 bytes are not highlighted. The default token colours are VS Code's
   `cpptools_dark_vs_new.json` (MIT, Microsoft), embedded under `assets/`. `assets/seti.json`
   and `assets/vscode_dark_defaults.json` are data from VS Code (MIT, Microsoft) and Seti UI

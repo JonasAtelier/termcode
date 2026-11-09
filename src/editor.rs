@@ -393,7 +393,7 @@ impl Buffer {
     }
 
     /// A read-only buffer of exactly `lines`, highlighted as `path`'s language (a
-    /// diff side for its minimap).
+    /// diff side or hover signature).
     pub fn from_lines(path: &str, lines: Vec<String>, why: &str) -> Buffer {
         let mut b = Buffer::empty(None);
         if !lines.is_empty() {
@@ -403,7 +403,7 @@ impl Buffer {
         let (ss, p) = (syntaxes(), Path::new(path));
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-        b.set_syntax(ss.find_syntax_by_extension(ext).or_else(|| ss.find_syntax_by_extension(name)));
+        b.set_syntax(ss.find_syntax_by_extension(ext).or_else(|| ss.find_syntax_by_extension(name)).or_else(|| ss.find_syntax_by_first_line(&b.lines[0])));
         b
     }
 

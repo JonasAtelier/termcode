@@ -1095,7 +1095,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
             });
             let view = &mut app.groups[g].tabs[active].view;
-            let (sb, mm, texts) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group);
+            let (sb, mm, texts) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group, app.diff_syntax.entry(key.clone()).or_default());
             if let Some((area, mini)) = mm {
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.row_of(view.scroll) });
             }
@@ -1786,6 +1786,9 @@ pub(crate) fn diff_mini<'a>(cache: &'a mut std::collections::HashMap<String, (Di
 /// so they always move together; only the visible rows are drawn. `blank`:
 /// columns between the text and the scrollbar. Returns the scrollbar and the
 /// minimap, for hit-testing.
+/// Each side keeps its own parser state in original file-line order.
+pub(crate) type DiffSyntax = Option<(DiffId, [Buffer; 2])>;
+
 /// What a diff view laid out: its scrollbar, its minimap, each side's text area.
 pub(crate) type DiffHits = (Option<ScrollHit>, Option<(Rect, Mini)>, Option<[Rect; 2]>);
 
@@ -1801,13 +1804,31 @@ pub(crate) fn diff_view(
     rulers: &[(usize, Color)],
     mini: Option<DiffMini>,
     focus: bool,
+    syntax: &mut DiffSyntax,
 ) -> DiffHits {
     if let Some(note) = &d.note {
+        *syntax = None;
         f.render_widget(Paragraph::new(note.as_str()).style(Style::new().fg(P.dim)), area);
         return (None, None, None);
     }
     let n = d.rows.len();
     v.scroll = v.scroll.min(n.saturating_sub(1));
+    if syntax.as_ref().is_none_or(|(id, _)| *id != d.id) {
+        let sides = std::array::from_fn(|side| {
+            let lines = d.rows.iter().filter_map(|r| if side == 0 { r.left.as_ref() } else { r.right.as_ref() }).map(|(_, text)| text.clone()).collect();
+            let path = if side == 0 { d.file.orig.as_deref().unwrap_or(&d.file.path) } else { &d.file.path };
+            Buffer::from_lines(path, lines, "diff")
+        });
+        *syntax = Some((d.id, sides));
+    }
+    let buffers = &mut syntax.as_mut().unwrap().1;
+    let end = v.scroll.saturating_add(area.height as usize).min(n);
+    for (side, b) in buffers.iter_mut().enumerate() {
+        let mut lines = d.rows[v.scroll..end].iter().filter_map(|r| if side == 0 { r.left.as_ref() } else { r.right.as_ref() }).map(|(n, _)| *n);
+        if let Some(first) = lines.next() {
+            b.highlight_view(first, lines.last().unwrap_or(first) + 1);
+        }
+    }
     let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
     let area = Rect::new(area.x, area.y, area.width.saturating_sub(1 + blank), area.height);
     // As the editor's gutter: [pad][number][sign]code, pad = `gap` (editorPadding).
@@ -1877,7 +1898,7 @@ pub(crate) fn diff_view(
                         overlays.push((start, end, sel_bg));
                         eol = (i < b.line).then_some(sel_bg);
                     }
-                    f.render_widget(render_line(text, None, &overlays, eol, v.hscroll, tr.width as usize, Style::new().fg(P.editor_fg).bg(bg)), tr);
+                    f.render_widget(render_line(text, buffers[s].segs(*n), &overlays, eol, v.hscroll, tr.width as usize, Style::new().fg(P.editor_fg).bg(bg)), tr);
                     draw_rulers(f, tr, v.hscroll, rulers, bg);
                 }
             }

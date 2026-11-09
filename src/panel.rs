@@ -68,12 +68,12 @@ pub struct DiffDoc {
     pub rows: Vec<diff::Row>,
     pub note: Option<String>,
     pub file: ScmFile,
-    /// Keys the minimap's buffer of this diff in `App::diff_minis`.
+    /// Keys this diff's syntax and minimap buffers in the panel.
     pub id: DiffId,
 }
 
 /// One DiffDoc, unique per construction (`Default` draws the next number): the
-/// minimap's buffer is not Send, so it lives in the panel, not in the doc.
+/// editor buffers are not Send, so they live in the panel, not in the doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiffId(u64);
 
@@ -616,6 +616,7 @@ pub struct App {
     /// Per diff tab: the modified side as a buffer (one line per row) and each
     /// row's mark, for its minimap; rebuilt when the doc is replaced.
     pub diff_minis: HashMap<String, (DiffId, Buffer, Vec<Option<Mark>>)>,
+    pub diff_syntax: HashMap<String, crate::ui::DiffSyntax>,
     /// Go to Definition / Peek / References state.
     pub nav: crate::navui::Nav,
     /// Source Control view, Timeline, hover card and commit dialog state.
@@ -1006,6 +1007,7 @@ impl App {
             qdiff_due: None,
             tree_parents: Default::default(),
             diff_minis: HashMap::new(),
+            diff_syntax: HashMap::new(),
             nav: Default::default(),
             gitui: crate::scm::GitUi::new(&saved),
             session: Default::default(),
@@ -2061,6 +2063,7 @@ impl App {
         self.loading.remove(&format!("base:{key}"));
         self.qdiff.remove(key);
         self.diff_minis.remove(key);
+        self.diff_syntax.remove(key);
         self.gitui.cmds.conflicts.remove(key);
         crate::session::forget(self, key);
         if self.peek.as_ref().is_some_and(|p| p.key == key) {
@@ -4039,6 +4042,14 @@ impl App {
         // a peek kept from a bigger frame included.
         (0..self.ui.groups.len()).any(|g| self.ui.groups[g].text.height > 0 && matches!(shown(g), Some(Doc::Text(b)) if b.hl_pending()))
             || (!self.ui.groups.is_empty() && crate::navui::hl_pending(self))
+            || self.ui.groups.iter().enumerate().any(|(g, gh)| {
+                let key = self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map(|t| &t.key);
+                gh.text.height > 0 && key.and_then(|k| self.diff_syntax.get(k)).and_then(Option::as_ref)
+                    .is_some_and(|(_, sides)| sides.iter().any(Buffer::hl_pending))
+            })
+            || self.gitui.dlg.as_ref().is_some_and(|d| !d.hits.diff.is_empty() && d.diff.as_ref().is_some_and(|doc| {
+                d.diff_syntax.as_ref().is_some_and(|(id, sides)| *id == doc.id && sides.iter().any(Buffer::hl_pending))
+            }))
             // A drawn diff minimap highlights its own buffer (ui::diff_mini).
             || self.ui.minimaps.iter().any(|m| {
                 let key = self.groups.get(m.group).and_then(|grp| grp.tabs.get(grp.active)).map(|t| &t.key);
@@ -6905,6 +6916,54 @@ mod tests {
     }
 
     #[test]
+    fn diff_syntax_colours_match_both_original_code_views() {
+        let root = repo("diff-syntax");
+        let old = "/* original\n * note\n */\nstatic int value(void) {\n    return 1;\n}\n";
+        let new = "static int value(void) {\n    /* inserted\n     * note\n     */\n    return 2;\n}\n";
+        let mut app = App::new(root.clone(), None);
+        app.minimap_on = false;
+        app.guides_on = false;
+        app.focus = Focus::Editor;
+        let mut t = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        let mut colours = Vec::new();
+        for (path, source) in [("original.c", old), ("modified.c", new)] {
+            fs::write(root.join(path), source).unwrap();
+            app.open_file(0, path, false);
+            wait_idle(&mut app);
+            screen(&mut app, &mut t);
+            let text = app.ui.groups[0].text;
+            colours.push(source.lines().enumerate().map(|(n, line)| {
+                (0..line.len()).map(|col| t.backend().buffer()[(text.x + col as u16, text.y + n as u16)].fg).collect::<Vec<_>>()
+            }).collect::<Vec<_>>());
+        }
+        assert_ne!(colours[0][3][0], crate::theme::P.editor_fg, "the regular editor colours C keywords");
+        let rows = diff::align(old, new);
+        let key = "cdiff:abc:syntax.c".to_string();
+        let file = ScmFile { section: Section::Changes, path: "syntax.c".into(), orig: None, letter: 'M' };
+        app.docs.insert(key.clone(), Doc::Diff(DiffDoc { title: "syntax.c".into(), rows: rows.clone(), note: None, file, id: Default::default() }));
+        app.show_tab(0, key, false);
+        crate::editor::set_frame_budget(Some(Duration::ZERO));
+        t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+        assert!(app.hl_pending(), "diff text keeps the event loop awake while colours catch up");
+        screen(&mut app, &mut t);
+        assert!(!app.hl_pending(), "the completed diff stops requesting frames");
+        crate::editor::set_frame_budget(Some(crate::editor::FRAME_BUDGET));
+        let texts = app.ui.groups[0].diff_text.unwrap();
+        for (i, row) in rows.iter().enumerate() {
+            for (side, cell) in [&row.left, &row.right].into_iter().enumerate() {
+                if let Some((n, line)) = cell {
+                    for col in 0..line.len() {
+                        assert_eq!(t.backend().buffer()[(texts[side].x + col as u16, texts[side].y + i as u16)].fg, colours[side][*n][col], "side {side}, line {n}, column {col}");
+                    }
+                }
+            }
+        }
+        assert!(app.ui.minimaps.is_empty(), "syntax colours do not depend on the minimap");
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn diff_word_emphasis_is_stable_and_keeps_unchanged_prefix_muted() {
         let root = repo("diff-word-stable");
         let mut app = App::new(root.clone(), None);
@@ -7036,7 +7095,7 @@ mod tests {
         screen(&mut app, &mut t);
         assert_eq!(app.diff_minis.len(), 1, "the diff's minimap buffer");
         app.close_tab(0, app.groups[0].active, false);
-        assert!(app.diff_minis.is_empty() && app.docs.is_empty(), "closed: its minimap buffer goes with it");
+        assert!(app.diff_minis.is_empty() && app.diff_syntax.is_empty() && app.docs.is_empty(), "closed: its syntax and minimap buffers go with it");
         // A text file and a diff, the diff in a second group too; then every tab closed.
         app.open_file(0, "README.md", false);
         screen(&mut app, &mut t);
