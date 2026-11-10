@@ -2,7 +2,7 @@ id = "jonas.herdr-code"
 name = "herdr-code"
 version = "0.1.0"
 min_herdr_version = "0.9.1"
-description = "VS Code-like editor and git panel for a folder, file or repo, as a tab in the current workspace"
+description = "Terminal editor and Git panel for a folder, file or repo, as a Ghostty + herdr workspace tab"
 platforms = ["linux"]
 
 [[actions]]

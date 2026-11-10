@@ -1,6 +1,7 @@
 # herdr-code
 
-herdr plugin, written in Rust. Run `herdr-code [PATH]` like VS Code's `code PATH`: a VS
+herdr plugin, written in Rust, targeting **Ghostty + herdr + herdr-code** on Linux.
+Run `herdr-code [PATH]` like VS Code's `code PATH`: a VS
 Code-like editor for that folder, file or repo **in the same terminal**, like vim; quitting
 returns to the shell. `herdr-code --tab` opens it as a `Code: <name>` tab of the herdr workspace
 instead. It has an activity
@@ -8,14 +9,34 @@ bar, a resizable Explorer (with Timeline) / Search /
 Source Control (Changes over Graph) sidebar, editor groups with preview tabs, a side-by-side diff, and
 the "Visual Studio Dark - C++" colours (or any VS Code theme, see [Settings](#settings)).
 
+## Target environment
+
+The primary development and UI review environment is:
+
+```text
+Ghostty → herdr terminal workspace → herdr-code plugin tab
+```
+
+- Use a Nerd Font in Ghostty for the default icons. The default comfortable
+  density, rounded cards and theme need no additional plugin settings.
+- Review spacing, borders, scrollbars, graphics, modified keys and mouse input
+  through the complete stack. Terminal identity alone does not establish that
+  herdr forwards every graphics or keyboard sequence.
+- Unit tests and direct PTY checks supplement this review; record actual
+  Ghostty/herdr checks separately before calling the integration verified.
+- Standalone mode and other terminals remain supported with their existing
+  text/half-block fallbacks.
+
 ## Install
 
 ```sh
-cargo install --path . --root ~/.local -j3     # -> ~/.local/bin/herdr-code
+cargo install --path . --root ~/.local -j2     # -> ~/.local/bin/herdr-code
 herdr plugin link "$PWD"
 ```
 
 The manifest runs `herdr-code` through PATH, so the herdr server's PATH must include `~/.local/bin`.
+Start `herdr` in Ghostty, then run `herdr-code --tab .` from a herdr pane and
+select the resulting `Code: <name>` tab.
 
 ## Use
 
@@ -296,7 +317,9 @@ text and JSON inputs. Scroll the settings list to reach the remaining options.
   window has room. Committing a theme/color input updates the draft card without
   changing the running editor; Apply and Save keep their existing behavior.
 - Settings graphics use Kitty Unicode placements for `xterm-kitty` / `xterm-ghostty`
-  or `TERM_PROGRAM=kitty` / `ghostty` (including current herdr-app/core terminals).
+  or `TERM_PROGRAM=kitty` / `ghostty`. Ghostty is the primary terminal target;
+  graphics must also survive herdr's pane transport. These environment values
+  select a rendering mode, rather than confirming end-to-end graphics support.
   Other terminals and nested multiplexers use clear text checkboxes and colored
   half-block palette cards; small rounded switches lose detail at cell resolution. Override with
   `HERDR_CODE_GRAPHICS=kitty`, `blocks`, or `text` for the original text controls.

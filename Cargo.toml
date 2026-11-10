@@ -2,7 +2,7 @@
 name = "herdr-code"
 version = "0.1.0"
 edition = "2021"
-description = "herdr plugin: a VS Code-like editor and git panel for the current repo, as a herdr tab"
+description = "herdr plugin: a terminal editor and Git panel for Ghostty + herdr workspaces"
 publish = false
 
 [dependencies]
