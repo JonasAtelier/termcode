@@ -123,10 +123,10 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
   `herdr-code FILE:L` opens that file on top of it.
 - Hover: an inactive tab (`tab.hoverBackground`), the clickable status bar items (`statusBarItem.hoverBackground`) and buttons (`button.hoverBackground`, `button.secondaryHoverBackground`) light up under the pointer.
 - Visuals: the built-in theme uses layered grey surfaces, muted selections and diff line
-  backgrounds, with stronger word highlights. The card border stays continuous and keeps
-  its own colour. A separate blue underline marks the active tab's top edge without an
-  extra row (a leading marker without cards). This needs coloured-underline transport;
-  herdr 0.9.1 loses that colour and displays the line in the border's colour instead.
+  backgrounds, with stronger word highlights. A bold blue marker (`▎`) marks the active
+  tab's left edge in every block style. It uses `tab.activeBorderTop` or `focusBorder`,
+  carried as ordinary foreground colour; ASCII mode uses a bold `|`.
+  Other editor groups use a muted accent.
   Dirty tabs keep a separate marker beside Close even on hover. Empty editors offer clickable Open File,
   Search and Source Control shortcuts. Graph nodes are hollow except HEAD, which is solid.
   Tool icons stay monochrome; Seti file colours and custom theme colours are preserved.
@@ -391,7 +391,7 @@ the panel: the status bar shows the error and the last good settings stay.
 | `sidebarPadding` | 2 | 0 | Left/right padding of sidebar rows and inputs |
 | `sectionGap` | 1 | 0 | Blank rows under the sidebar title (not above a card) and between SCM sections |
 | `editorPadding` | 0 | 0 | Extra cells before the right-aligned line numbers in editors, diffs and peeks; the number field reserves at least two digits. The Git marker follows the number, then the fold arrow and its clickable trailing blank where folding is available |
-| `tabPadding` | 2 | 1 | Spaces each side of a tab label |
+| `tabPadding` | 2 | 1 | Tab label padding budget; see rendered spacing below |
 | `statusBarGap` | 3 | 3 | Spaces between status bar items |
 | `statusBarPadding` | 2 | 1 | Spaces at the status bar's left and right edges |
 | `activityBarWidth` | 5 | 3 | Activity bar content columns (a card adds its 2-cell frame), each item 3 rows (compact 2) with the icon centred |
@@ -410,8 +410,12 @@ to whole cells with at least one blank cell. Tree depth indentation and graph br
 lanes keep their original spacing. Settings uses the same rounded popup frames
 (ASCII borders in ASCII mode), with a separate full-width footer for its actions.
 
-Editor tabs halve `tabPadding` and `iconGap`, rounding up to whole cells. The
-reserved unsaved-change marker counts toward the gap before the close button.
+Editor tabs halve `tabPadding`, rounding up, and share that total across both edges
+(the left gets any odd cell). This halves their previous combined edge padding.
+At least one leading cell is reserved for the active marker. The extra cell after
+Close takes the place of the old separator cell, keeping the tighter tab spacing.
+`iconGap` is halved, rounding up; the reserved unsaved-change marker counts toward
+the gap before the close button.
 
 Every icon is laid out as one cell and followed by at least one blank cell; scrollbars keep a
 blank column between them and the text (comfortable).

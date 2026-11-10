@@ -4503,7 +4503,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_accent_uses_the_border_without_an_extra_row() {
+    fn tab_accent_uses_the_left_edge_without_an_extra_row() {
         let root = repo("accent-row");
         let mut app = App::new(root.clone(), None);
         app.open_file(0, "src/main.rs", false);
@@ -4516,14 +4516,16 @@ mod tests {
         assert_eq!(t.backend().buffer()[(a.right() - 3, a.y)].bg, crate::theme::P.tabs_bg, "no editor-coloured band");
         app.focus = Focus::Editor;
         screen(&mut app, &mut t);
+        let accent = if crate::theme::ascii() { "|" } else { "▎" };
         for x in a.x..a.right() {
             let cell = &t.backend().buffer()[(x, bar.y - 1)];
             assert_eq!(cell.symbol(), crate::theme::icons().border[4], "continuous border at column {x}");
-            assert_eq!(cell.fg, crate::blocks::border(true), "white border colour is independent of the selected tab");
+            assert_eq!(cell.fg, crate::blocks::border(true));
         }
-        let cell = &t.backend().buffer()[(bar.x + 1, bar.y - 1)];
-        assert!(cell.modifier.contains(ratatui::style::Modifier::UNDERLINED), "a separate line sits below the white border");
-        assert_eq!(cell.underline_color, crate::theme::P.tab_active_border, "the separate line is blue");
+        let cell = &t.backend().buffer()[(bar.x, bar.y)];
+        assert_eq!(cell.symbol(), accent, "the accent sits at the active tab's left edge");
+        assert!(cell.modifier.contains(ratatui::style::Modifier::BOLD), "the active tab's left edge is heavier");
+        assert_eq!(cell.fg, crate::theme::P.tab_active_border, "the accent uses foreground colour");
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), bar.x + 1, bar.y);
         assert_eq!(app.focus, Focus::Editor);
         assert!(app.prompt.is_none());
@@ -4533,11 +4535,10 @@ mod tests {
             screen(&mut app, &mut t);
             let gh = &app.ui.groups[0];
             for (i, (tab, _)) in gh.tabs.iter().enumerate() {
-                let cell = &t.backend().buffer()[(tab.x + 1, tab.y - 1)];
-                assert_eq!(cell.symbol(), crate::theme::icons().border[4]);
-                assert_eq!(cell.fg, crate::blocks::border(true), "switching tabs never recolours the white border");
-                assert_eq!(cell.modifier.contains(ratatui::style::Modifier::UNDERLINED), i == selected, "only the selected tab has a separate accent line");
-                if i == selected { assert_eq!(cell.underline_color, crate::theme::P.tab_active_border); }
+                let cell = &t.backend().buffer()[(tab.x, tab.y)];
+                assert_eq!(cell.symbol(), if i == selected { accent } else { " " });
+                if i == selected { assert_eq!(cell.fg, crate::theme::P.tab_active_border); }
+                assert_eq!(cell.modifier.contains(ratatui::style::Modifier::BOLD), i == selected, "only the selected tab has a heavy accent line");
             }
         }
         wait_idle(&mut app);
@@ -5341,11 +5342,11 @@ mod tests {
             mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
             assert_eq!(app.groups[0].tabs[0].view.cursor, Pos::new(0, 2), "{tag}");
             screen(&mut app, &mut t);
-            // Tab spacing is halved; the dirty marker retains its slot before close.
+            // Halved tab padding is shared across both edges; the dirty marker keeps its slot.
             let (tr, xr) = app.ui.groups[0].tabs[0];
             let buf = t.backend().buffer();
             for k in 1..=sp.icon_gap.div_ceil(2) {
-                assert_eq!(buf[(tr.x + sp.tab_padding.div_ceil(2) + k, tr.y)].symbol(), " ", "{tag}: gap after the tab icon");
+                assert_eq!(buf[(tr.x + sp.tab_padding.div_ceil(4) + k, tr.y)].symbol(), " ", "{tag}: gap after the tab icon");
                 assert_eq!(buf[(xr.x - k, xr.y)].symbol(), " ", "{tag}: gap before the close button");
             }
             assert_eq!(buf[(xr.x, xr.y)].symbol(), crate::theme::icons().close, "{tag}");

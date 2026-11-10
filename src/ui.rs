@@ -1001,7 +1001,9 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     let split = Rect::new(tabbar.right().saturating_sub(3), tabbar.y, 2, 1);
     let mut x = tabbar.x;
     let hover = app.hover;
-    let edge = sp(lay.s.tab_padding.div_ceil(2));
+    let pad = lay.s.tab_padding.div_ceil(2);
+    let edge = sp(pad.div_ceil(2).max(1));
+    let tail_edge = sp(pad / 2 + 1);
     let gap = sp(lay.s.icon_gap.div_ceil(2));
     // The dirty marker's fixed slot already contributes one cell before close.
     let close_gap = sp(lay.s.icon_gap.saturating_sub(1) / 2);
@@ -1021,7 +1023,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         let active = i == app.groups[g].active;
         // Dirty state and close have separate fixed slots, so hover never hides an edit.
         let label = format!("{edge}{glyph}{gap}{}{close_gap}", fit(&title, 30));
-        let tail_w = 2 + edge.len() as u16;
+        let tail_w = 2 + tail_edge.len() as u16;
         let w = label.width() as u16 + tail_w;
         if x + w > split.x {
             break;
@@ -1050,26 +1052,16 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 Span::styled(lead, st),
                 Span::styled(glyph, Style::new().fg(gfg).bg(bg)),
                 Span::styled(name, st),
-                Span::styled(format!("{dot}{tail}{edge}"), Style::new().fg(fg).bg(bg)),
+                Span::styled(format!("{dot}{tail}{tail_edge}"), Style::new().fg(fg).bg(bg)),
             ],
         );
         if active {
-            if let Some(y) = border_y {
-                let color = if focused_group && app.focus == Focus::Editor { P.tab_active_border } else { P.tab_border };
-                // The border keeps its glyph and foreground colour. Its underline
-                // is a separate blue line along the selected tab's top edge.
-                f.buffer_mut().set_style(Rect::new(x, y, w, 1),
-                    Style::new().underline_color(color).add_modifier(Modifier::UNDERLINED));
-            } else if focused_group && app.focus == Focus::Editor && !edge.is_empty() {
-                f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" }, Style::new().fg(P.tab_active_border).bg(bg)), Rect::new(x, tabbar.y, 1, 1));
-            }
+            let color = if focused_group { P.tab_active_border } else { P.tab_border };
+            f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" },
+                Style::new().fg(color).bg(bg).bold()), Rect::new(x, tabbar.y, 1, 1));
         }
         gh.tabs.push((Rect::new(x, tabbar.y, w - tail_w + 1, 1), xr));
         x += w;
-        if x < split.x {
-            fill(f, Rect::new(x, tabbar.y, 1, 1), P.tab_border);
-        }
-        x += 1;
     }
     if let Some(n) = slot.filter(|&n| n >= gh.tabs.len()) {
         marker = Some(if n == 0 { tabbar.x } else { x - 1 });

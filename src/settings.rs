@@ -23,7 +23,7 @@ pub struct Spacing {
     pub section_gap: u16,
     /// Extra columns before the right-aligned line numbers in editors, diffs and peeks.
     pub editor_padding: u16,
-    /// Spaces each side of a tab label.
+    /// Tab padding budget; the UI halves it and shares it across both edges.
     pub tab_padding: u16,
     /// Spaces between status bar items.
     pub status_gap: u16,
