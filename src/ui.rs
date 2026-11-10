@@ -554,7 +554,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             // One sectionGap between the field and the results, which the summary heads.
             y += 1 + lay.s.section_gap;
             if !app.hits.is_empty() {
-                let files = app.search_rows().len() - app.hits.len();
+                let files = app.search_rows().iter().filter(|r| matches!(r, HRow::File(..))).count();
                 let summary = format!(" {} results in {files} files", app.hits.len());
                 row(f, inset(Rect::new(r.x, y, r.width, 1), lay.pad), P.sidebar_bg, vec![Span::styled(summary, Style::new().fg(P.dim))]);
                 y += 1;
@@ -598,7 +598,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         let ir = inset(rr, lay.pad);
         match app.side {
             Side::Explorer => explorer_row(app, f, ir, bg, i),
-            Side::Search => search_row(app, f, ir, bg, &search_rows[i]),
+            Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => {}
         }
     }
@@ -659,7 +659,7 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
         match app.side {
             Side::Explorer if cap == 1 => breadcrumb_row(app, f, ir, bg, i),
             Side::Explorer => explorer_row(app, f, ir, bg, i),
-            Side::Search => search_row(app, f, ir, bg, &search_rows[i]),
+            Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
         }
     }
@@ -801,11 +801,13 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) {
     }
 }
 
-fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
+fn search_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow, i: usize) {
     let ic = icons();
     let g = crate::blocks::icon_gap(app.settings.spacing.icon_gap);
     match hr {
         HRow::File(p, n) => {
+            let chev = if app.search_closed.contains(p) { ic.chev_right } else { ic.chev_down };
+            app.ui.search_folds.push((Rect::new(r.x, r.y, (2 + g).min(r.width), 1), i));
             let dir = p.rsplit_once('/').map_or(String::new(), |(d, _)| format!(" {d}"));
             let (glyph, gfg) = file_icon(base(p), &app.settings.file_icons);
             let count = badge(*n, bg);
@@ -816,7 +818,7 @@ fn search_row(app: &App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow) {
                 r,
                 bg,
                 vec![
-                    Span::styled(format!(" {}{}", ic.chev_down, sp(g)), Style::new().fg(P.icon_fg)),
+                    Span::styled(format!(" {chev}{}", sp(g)), Style::new().fg(P.icon_fg)),
                     Span::styled(glyph, Style::new().fg(gfg)),
                     Span::raw(sp(g)),
                     Span::styled(name, Style::new().fg(P.sidebar_fg)),

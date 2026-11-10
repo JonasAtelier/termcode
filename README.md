@@ -178,6 +178,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Alt+2 / F2, Ctrl+G | Source Control |
 | `h` on an Explorer file | open it; the TIMELINE pane under the tree shows its history |
 | Alt+4 / F4 (Ctrl+Shift+F where it reaches) | Search in files |
+| Search result file arrow; Left / Right / Space on its header | collapse / expand that file's matches; clicking its name still opens the file. New searches start expanded |
 | click the active activity icon | hide or show the sidebar; drag the divider to resize |
 | Ctrl+P, Alt+P | Quick Open |
 | click / double-click | open as preview (italic tab) / keep open. Ctrl+K Enter also pins |

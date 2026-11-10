@@ -19,7 +19,7 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::{cursor, execute, terminal};
 use ratatui::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -450,6 +450,7 @@ pub struct Hits {
     pub side_input: Rect,
     pub commit_btn: Rect,
     pub scm_btns: Vec<(Rect, ScmAct)>,
+    pub search_folds: Vec<(Rect, usize)>,
     pub groups: Vec<GroupHit>,
     pub editor_area: Rect,
     pub find_btns: Vec<(Rect, FindBtn)>,
@@ -554,6 +555,7 @@ pub struct App {
     /// Search toggles (Match Case, Whole Word, Regex); all off like VS Code.
     pub s_opts: (bool, bool, bool),
     pub hits: Vec<Hit>,
+    pub search_closed: HashSet<String>,
     pub search: Option<Child>,
     /// Tells the running search's reader thread to stop.
     search_stop: Arc<AtomicBool>,
@@ -1014,6 +1016,7 @@ impl App {
             query: String::new(),
             s_opts: (false, false, false),
             hits: Vec::new(),
+            search_closed: HashSet::new(),
             search: None,
             search_stop: Arc::new(AtomicBool::new(false)),
             live_rg: Arc::new(AtomicUsize::new(0)),
@@ -1865,6 +1868,7 @@ impl App {
     fn run_search(&mut self, (query, (case, word, regex)): (String, (bool, bool, bool))) {
         self.stop_search();
         self.hits.clear();
+        self.search_closed.clear();
         self.sel[1] = 0;
         self.off[1] = 0;
         self.queued_search = None;
@@ -2790,9 +2794,21 @@ impl App {
                 let n = self.hits[i..].iter().take_while(|x| x.path == h.path).count();
                 rows.push(HRow::File(h.path.clone(), n));
             }
-            rows.push(HRow::Hit(i));
+            if !self.search_closed.contains(&h.path) {
+                rows.push(HRow::Hit(i));
+            }
         }
         rows
+    }
+
+    fn toggle_search_group(&mut self, i: usize) {
+        let Some(HRow::File(path, _)) = self.search_rows().into_iter().nth(i) else { return };
+        if !self.search_closed.remove(&path) {
+            self.search_closed.insert(path);
+        }
+        self.sel[1] = i;
+        self.off[1] = self.off[1].min(i).min(self.side_count().saturating_sub(self.ui.side_rows.max(1)));
+        self.focus = Focus::Side;
     }
 
     pub fn side_count(&self) -> usize {
@@ -3280,7 +3296,16 @@ impl App {
             KeyCode::Home => self.move_side(-1_000_000),
             KeyCode::End => self.move_side(1_000_000),
             KeyCode::Enter => self.activate_side(self.sel[s], true),
+            KeyCode::Char(' ') if self.side == Side::Search && matches!(self.search_rows().get(self.sel[s]), Some(HRow::File(..))) => {
+                self.toggle_search_group(self.sel[s]);
+            }
             KeyCode::Char(' ') => self.activate_side(self.sel[s], false),
+            KeyCode::Left | KeyCode::Right if self.side == Side::Search => {
+                let i = self.sel[s];
+                if matches!(self.search_rows().get(i), Some(HRow::File(p, _)) if self.search_closed.contains(p) == (k.code == KeyCode::Right)) {
+                    self.toggle_search_group(i);
+                }
+            }
             KeyCode::Left | KeyCode::Right if self.side == Side::Explorer => {
                 let i = self.sel[s];
                 if self.tree.get(i).is_some_and(|n| n.dir && n.open == (k.code == KeyCode::Left)) {
@@ -3746,6 +3771,9 @@ impl App {
         }
         if let Some(&(_, g)) = self.ui.split_btns.iter().find(|(r, _)| r.contains(p)) {
             return self.split_right(g);
+        }
+        if let Some(&(_, i)) = self.ui.search_folds.iter().rev().find(|(r, _)| r.contains(p)) {
+            return self.toggle_search_group(i);
         }
         if let Some(&(_, i)) = self.ui.sticky_segs.iter().find(|(r, _)| r.contains(p)) {
             return self.reveal_pinned(i);
@@ -7222,6 +7250,71 @@ mod tests {
     }
 
     #[test]
+    fn search_file_groups_fold_without_opening_files_or_losing_results() {
+        let root = repo("search-folds");
+        fs::write(root.join("aaa.txt"), "fold_token\n".repeat(30)).unwrap();
+        fs::write(root.join("zzz.txt"), "fold_token\n".repeat(2)).unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.show_side(Side::Search, false);
+        app.query = "fold_token".into();
+        app.start_search();
+        wait(&mut app);
+        let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        let header = |app: &mut App, t: &mut Terminal<TestBackend>, path: &str| {
+            let i = app.search_rows().iter().position(|r| matches!(r, HRow::File(p, _) if p == path)).unwrap();
+            app.sel[1] = i;
+            app.off[1] = i;
+            app.focus = Focus::Side;
+            screen(app, t);
+            (app.ui.side_list.x + 1, app.ui.side_list.y)
+        };
+        let (x, y) = header(&mut app, &mut t, "aaa.txt");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+        assert_eq!(app.search_rows().len(), 4, "the arrow hides only that file's matches");
+        assert!(app.groups[0].tabs.is_empty(), "folding must not open the file");
+        assert_eq!(app.hits.len(), 32, "folding keeps all search results");
+        assert!(screen(&mut app, &mut t).contains("32 results in 2 files"));
+        header(&mut app, &mut t, "aaa.txt");
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(app.search_rows().len(), 34);
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(app.search_rows().len(), 4);
+        key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(app.search_rows().len(), 34);
+        let g = app.search_rows().iter().position(|r| matches!(r, HRow::File(p, _) if p == "aaa.txt")).unwrap();
+        app.off[1] = g + 5;
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.sticky, [g]);
+        let (x, y) = (app.ui.side_list.x + 1, app.ui.side_list.y);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+        assert_eq!(app.search_rows().len(), 4, "a pinned header's arrow also folds");
+        assert_eq!(app.sel[1], g);
+        assert!(app.off[1] <= g, "the folded header stays visible");
+        assert!(app.groups[0].tabs.is_empty());
+        header(&mut app, &mut t, "zzz.txt");
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(app.search_rows().len(), 2, "both headers remain when all matches are folded");
+        assert!(screen(&mut app, &mut t).contains("32 results in 2 files"));
+        app.start_search();
+        wait(&mut app);
+        assert_eq!(app.search_rows().len(), 34, "a new search starts expanded");
+        screen(&mut app, &mut t);
+        let (x, y) = cell_of(&t, "aaa.txt", 0);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+        assert_eq!(app.groups[0].tabs[0].key, "file:aaa.txt", "the file name still opens a preview");
+        assert_eq!(app.search_rows().len(), 34);
+        header(&mut app, &mut t, "zzz.txt");
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        app.sel[1] = app.search_rows().iter().position(|r| matches!(r, HRow::Hit(h) if app.hits[*h].path == "aaa.txt" && app.hits[*h].line == 12)).unwrap();
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.groups[0].tabs[0].view.cursor.line, 11, "result indices still target the correct line after folding another file");
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn search_groups_and_scm_sections_stick_too() {
         let root = repo("stickyscm");
         for i in 0..40 {
@@ -7244,9 +7337,10 @@ mod tests {
         app.off[1] = g + 5;
         screen(&mut app, &mut t);
         assert_eq!(app.ui.sticky, [g]);
-        let (x, y) = (app.ui.side_list.x, app.ui.side_list.y);
+        let y = app.ui.side_list.y;
         assert!(side_line(&t, &app, y).contains("many.txt"));
-        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 3, y);
+        let (name_x, _) = cell_of(&t, "many.txt", 0);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), name_x, y);
         assert_eq!((app.off[1], app.sel[1]), (g, g), "the group's header back on top");
         wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
