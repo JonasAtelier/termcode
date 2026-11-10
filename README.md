@@ -222,7 +222,9 @@ The minimap (VS Code's `editor.minimap`) sits between the code and the scrollbar
 the code's silhouette, like VS Code's default `renderCharacters`: braille cells of 2 × 4 dots,
 one dot row per slot of the file's height and one dot per run of columns (so `maxColumn` fits), lit where that run
 has code, so indentation and line lengths show. Each cell takes the most frequent token
-colour of its dots, muted towards the background (`minimap.foregroundOpacity` scales it). The
+colour of its dots, muted towards the background (`minimap.foregroundOpacity` scales it).
+Syntax colours fill in automatically on first access without scrolling; large files
+are processed across frames to keep input responsive. The
 git changes are on its left edge, find matches and the selection behind the dots, and the
 viewport slider is a translucent overlay, always visible by default (herdr forwards plain mouse
 motion to the pane, so explicit `showSlider: "mouseover"` also works). In a narrow editor it

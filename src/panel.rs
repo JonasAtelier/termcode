@@ -5428,6 +5428,41 @@ mod tests {
     }
 
     #[test]
+    fn minimap_colours_finish_without_scrolling_or_input() {
+        let root = repo("minimap-first-colours");
+        fs::write(root.join("colours.c"), (0..320).map(|i| format!("// coloured minimap line {i}\n")).collect::<String>()).unwrap();
+        for size in [crate::minimap::Size::Proportional, crate::minimap::Size::Fill] {
+            for characters in [true, false] {
+                let mut app = App::new(root.clone(), None);
+                app.open_file(0, "colours.c", false);
+                app.settings.minimap.size = size;
+                app.settings.minimap.render_characters = characters;
+                let mut t = Terminal::new(TestBackend::new(160, 30)).unwrap();
+                crate::editor::set_frame_budget(Some(Duration::ZERO));
+                let mut dirty = true;
+                for step in 0..1000 {
+                    app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+                    if !app.hl_pending() { break; }
+                    assert!(step < 999, "minimap never settles");
+                }
+                assert_eq!(app.groups[0].tabs[0].view.scroll, 0, "no scroll is needed");
+                let area = app.ui.minimaps[0].area;
+                let first_access = t.backend().buffer().clone();
+                crate::editor::set_frame_budget(None);
+                let (b, _) = app.ed().unwrap();
+                b.highlight_upto(b.lines.len());
+                t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+                for p in area.positions() {
+                    assert_eq!(first_access[p], t.backend().buffer()[p], "{size:?}/{characters}: cold minimap differs from fully coloured one at {p:?}");
+                }
+                wait_idle(&mut app);
+            }
+        }
+        crate::editor::set_frame_budget(Some(crate::editor::FRAME_BUDGET));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn a_diff_minimap_still_highlighting_keeps_the_loop_drawing() {
         let d = repo("dmini");
         let mut app = App::new(d.clone(), None);

@@ -1629,9 +1629,9 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
     let slots = if braille { 4 } else { 2 };
     let mini = Mini::new(r.height, n, view, slots, cfg.size);
     let end = v.line_of(mini.slot_rows(scroll, r.height.saturating_sub(1), slots - 1).end.saturating_sub(1)) + 1;
-    // Only lines near the viewport are tokenised for the minimap; farther ones (fill and
-    // fit on a long file) are sampled in the editor colour, not tokenised on every edit.
-    b.highlight_upto(end.min(v.scroll + 2 * view));
+    // Request every line the minimap shows. The shared frame budget keeps this
+    // incremental, and hl_pending schedules redraws until its colours are ready.
+    b.highlight_upto(end);
     let cols = r.width.saturating_sub(1) as usize;
     let dcols = if braille { cols * 2 } else { cols };
     let dcpc = minimap::chars_per_col(dcols, cfg.max_column);
