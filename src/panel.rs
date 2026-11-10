@@ -154,6 +154,7 @@ const STATUS_KEY: &str = "status:";
 /// See `App::hover_key`.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 struct HoverKey {
+    close: bool,
     row: Option<usize>,
     sticky: Option<usize>,
     git_row: Option<u16>,
@@ -381,6 +382,9 @@ pub enum Zone {
 
 pub enum Drag {
     None,
+    Close,
+    /// Released inside Close; paint its hover state before starting the quit procedure.
+    ClosePending,
     Divider,
     File { rel: String, from: Position, active: bool },
     /// Tab `i` of group `g` (VS Code's tab drag and drop); active once moved 2 cells.
@@ -1612,6 +1616,14 @@ impl App {
         if std::mem::take(dirty) {
             t.draw(|f| crate::ui::draw(self, f))?;
             self.last_draw = Some(Instant::now());
+            if matches!(self.drag, Drag::ClosePending) {
+                self.drag = Drag::None;
+                if self.prompt.is_none() && self.hover.is_some_and(|p| self.ui.close.contains(p)) {
+                    self.request_quit();
+                    *dirty = true;
+                    return Ok(Duration::ZERO);
+                }
+            }
         }
         // Wake often only while rg/git output streams in or a backup is pending,
         // so a HUP is noticed within 100 ms whenever there is something to save.
@@ -1701,8 +1713,16 @@ impl App {
                 self.refresh_due.get_or_insert(Instant::now() + FOCUS_DEBOUNCE);
                 false
             }
-            Event::FocusLost => crate::hover::dismiss(self),
-            Event::Resize(..) => { crate::hover::dismiss(self); true },
+            Event::FocusLost => {
+                let pressed = matches!(self.drag, Drag::Close | Drag::ClosePending);
+                if pressed { self.drag = Drag::None; }
+                crate::hover::dismiss(self) || pressed
+            }
+            Event::Resize(..) => {
+                if matches!(self.drag, Drag::Close | Drag::ClosePending) { self.drag = Drag::None; }
+                crate::hover::dismiss(self);
+                true
+            }
             _ => false,
         };
         // Any edit (keys, paste, a Replace All click) re-diffs the gutter shortly after.
@@ -3093,8 +3113,8 @@ impl App {
         if self.settings_dlg.is_some() {
             return crate::settingsui::key(self, k);
         }
-        // Esc drops a file or tab drag where it is, before anything else sees the key.
-        if k.code == KeyCode::Esc && matches!(self.drag, Drag::File { active: true, .. } | Drag::Tab { active: true, .. }) {
+        // Esc cancels a close press or an active file/tab drag before other key handling.
+        if k.code == KeyCode::Esc && matches!(self.drag, Drag::Close | Drag::ClosePending | Drag::File { active: true, .. } | Drag::Tab { active: true, .. }) {
             self.drag = Drag::None;
             self.drop = None;
             return;
@@ -3627,6 +3647,10 @@ impl App {
                 self.drag = Drag::None;
                 self.drop = None;
             }
+            MouseEventKind::Up(MouseButton::Left) if matches!(self.drag, Drag::Close) => {
+                self.hover = Some(p);
+                self.drag = if self.ui.close.contains(p) { Drag::ClosePending } else { Drag::None };
+            }
             MouseEventKind::Drag(MouseButton::Left) => self.drag_to(p),
             MouseEventKind::Up(MouseButton::Left) => self.release(),
             // Horizontal input stays horizontal even at either end of the range.
@@ -3638,6 +3662,8 @@ impl App {
             MouseEventKind::ScrollDown => return self.wheel(p, 3),
             // Redraw only when what the frame shows for the pointer changes.
             MouseEventKind::Moved => {
+                let released = matches!(self.drag, Drag::Close);
+                if released { self.drag = Drag::None; }
                 let old = self.hover.replace(p);
                 let redraw = if hover_keyed() {
                     old.map(|q| self.hover_key(q)) != Some(self.hover_key(p))
@@ -3645,7 +3671,7 @@ impl App {
                     let watched = |q: Position| self.hover_key(q) != HoverKey::default();
                     old != Some(p) && (watched(p) || old.is_some_and(watched))
                 };
-                return crate::scm::moved(self, p) || redraw;
+                return crate::scm::moved(self, p) || redraw || released;
             }
             _ => return false,
         }
@@ -3660,6 +3686,7 @@ impl App {
         let side = self.ui.side_list.contains(p);
         let g = &self.gitui.hits;
         HoverKey {
+            close: self.ui.close.contains(p),
             row: side.then(|| self.ui.side_item(p.y, self.off[s])).flatten(),
             sticky: side.then(|| self.ui.sticky_at(p.y)).flatten(),
             git_row: (g.graph.contains(p) || g.timeline.contains(p)).then_some(p.y),
@@ -3708,7 +3735,9 @@ impl App {
             return;
         }
         if self.ui.close.contains(p) {
-            return self.request_quit();
+            self.hover = Some(p);
+            self.drag = Drag::Close;
+            return;
         }
         if self.ui.settings_btn.contains(p) {
             return crate::settingsui::open(self);
@@ -4063,6 +4092,7 @@ impl App {
         }
         match &mut self.drag {
             Drag::None => {}
+            Drag::Close | Drag::ClosePending => self.hover = Some(p),
             Drag::Divider => {
                 let start = self.ui.sidebar.x;
                 let max = self.ui.editor_area.right().saturating_sub(start + 20).max(12);
@@ -4503,6 +4533,71 @@ mod tests {
         }
         assert!(line.contains(msg) && line.contains("Ln 1, Col 1"), "room for all: {line:?}");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn title_close_brightens_on_hover_and_only_activates_after_release() {
+        let root = repo("title-close-release");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "README.md", false);
+        wait(&mut app);
+        app.focus = Focus::Editor;
+        typ(&mut app, "unsaved");
+        assert!(app.ed().unwrap().0.dirty());
+        let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let r = app.ui.close;
+        let p = (r.x + 2, r.y);
+        let colours = |t: &Terminal<TestBackend>| (t.backend().buffer()[p].bg, t.backend().buffer()[(r.x, r.y)].bg);
+        let brightness = |c: Color| match c { Color::Rgb(r, g, b) => r as u16 + g as u16 + b as u16, _ => 0 };
+        let normal = colours(&t);
+        assert_eq!(normal.0, normal.1, "the edge follows the button fill");
+        assert!(app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: p.0, row: p.1, modifiers: KeyModifiers::NONE }));
+        screen(&mut app, &mut t);
+        let hover = colours(&t);
+        assert_eq!(hover.0, hover.1, "the hovered edge follows the bright fill");
+        assert!(brightness(hover.0) > brightness(normal.0), "hover brightens the fill");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), p.0, p.1);
+        assert!(app.prompt.is_none() && !app.quit, "pressing must not start closing");
+        screen(&mut app, &mut t);
+        assert_eq!(colours(&t), normal, "pressed fill and edges return to their original colours");
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), r.x - 1, r.y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x - 1, r.y);
+        assert!(app.prompt.is_none() && !app.quit, "releasing outside cancels");
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), p.0, p.1);
+        assert!(app.prompt.is_none() && !app.quit, "release alone cannot activate the button");
+        for event in [Event::FocusLost, Event::Resize(110, 30), Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))] {
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), p.0, p.1);
+            app.handle_event(event);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), p.0, p.1);
+            assert!(app.prompt.is_none() && !app.quit, "cancelled presses cannot activate Close");
+        }
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), p.0, p.1);
+        mouse(&mut app, MouseEventKind::Moved, p.0, p.1);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), p.0, p.1);
+        assert!(app.prompt.is_none() && !app.quit, "plain motion recovers a lost mouse release");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), p.0, p.1);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), p.0, p.1);
+        assert!(app.prompt.is_none() && !app.quit, "paint the released state before closing");
+        let mut dirty = true;
+        let delay = app.step(&mut t, &mut dirty, |_| panic!("closing should not wait for another input event")).unwrap();
+        assert_eq!(delay, Duration::ZERO);
+        assert_eq!(colours(&t), hover, "release restores the bright fill and edges");
+        assert!(app.prompt.is_some() && !app.quit, "unsaved changes still prompt");
+        assert!(dirty, "draw the close procedure on the next frame");
+        assert_eq!(fs::read_to_string(root.join("README.md")).unwrap(), "hello\n");
+        let mut clean = App::new(root.clone(), None);
+        wait(&mut clean);
+        screen(&mut clean, &mut t);
+        let r = clean.ui.close;
+        mouse(&mut clean, MouseEventKind::Down(MouseButton::Left), r.x + 2, r.y);
+        mouse(&mut clean, MouseEventKind::Up(MouseButton::Left), r.x + 2, r.y);
+        assert!(!clean.quit);
+        clean.step(&mut t, &mut true, |_| panic!("clean close should not wait")).unwrap();
+        assert!(clean.quit, "a clean editor closes after painting the released button");
+        wait_idle(&mut app);
+        wait_idle(&mut clean);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -5378,8 +5473,8 @@ mod tests {
                 assert_eq!(buf[(xr.x - k, xr.y)].symbol(), " ", "{tag}: gap before the close button");
             }
             assert_eq!(buf[(xr.x, xr.y)].symbol(), crate::theme::icons().close, "{tag}");
-            // The title bar's Close button sits titleBarPadding from the edge.
-            assert_eq!(app.ui.close.right() + sp.title_padding, 120, "{tag}");
+            // The title Close button uses half the configured edge padding, rounded up.
+            assert_eq!(app.ui.close.right() + sp.title_padding.div_ceil(2), 120, "{tag}");
             mouse(&mut app, MouseEventKind::Down(MouseButton::Left), xr.x, xr.y);
             assert!(app.groups[0].tabs.is_empty(), "{tag}");
             // treeIndent: src/main.rs (depth 1) is drawn treeIndent cells right of README.md.

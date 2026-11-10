@@ -154,6 +154,9 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
   repo; a reused `--tab` keeps the session of the folder it was opened from.
   `herdr-code FILE:L` opens that file on top of it.
 - Hover: an inactive tab (`tab.hoverBackground`), the clickable status bar items (`statusBarItem.hoverBackground`) and buttons (`button.hoverBackground`, `button.secondaryHoverBackground`) light up under the pointer.
+  The title-bar Close button brightens on hover and returns to its normal colour
+  while pressed. On release it brightens again before the close procedure starts;
+  releasing outside cancels. Its edges always match the fill.
 - Visuals: the built-in theme uses layered grey surfaces, muted selections and diff line
   backgrounds, with stronger word highlights. A bold blue marker (`▎`) marks the active
   tab's left edge in every block style. It uses `tab.activeBorderTop` or `focusBorder`,
@@ -451,6 +454,10 @@ At least one leading cell is reserved for the active marker. The extra cell afte
 Close takes the place of the old separator cell, keeping the tighter tab spacing.
 `iconGap` is halved, rounding up; the reserved unsaved-change marker counts toward
 the gap before the close button.
+
+The title-bar Close button halves `buttonPadding`, `iconGap` and its distance from
+the window edge (`titleBarPadding`), rounding up to whole cells. Its edges use the
+same colour as the fill on the existing one-row title bar.
 
 Every icon is laid out as one cell and followed by at least one blank cell; scrollbars keep a
 blank column between them and the text (comfortable).
