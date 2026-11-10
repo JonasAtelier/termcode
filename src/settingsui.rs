@@ -935,7 +935,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     d.hits.title = Rect::new(r.x + 1, r.y, w - 2, 1);
     text(
         f,
-        Rect::new(r.x + 2, r.y, w - 7, 1),
+        Rect::new(r.x + 1, r.y, w - 6, 1),
         if d.dirty() { " Settings *  (drag to move) " } else { " Settings  (drag to move) " },
         st.add_modifier(Modifier::BOLD),
     );
@@ -1081,12 +1081,9 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     );
     for (index, label, focus) in [(0, "Apply", Focus::Apply), (1, "Save", Focus::Save)] {
         let button = Rect::new(r.right() - 21 + index as u16 * 10, r.bottom() - 2, 9, 1);
-        text(
-            f,
-            button,
-            &format!(" {label} "),
-            if d.focus == focus { active.add_modifier(Modifier::BOLD) } else { active },
-        );
+        let style = if d.focus == focus { active.add_modifier(Modifier::BOLD) } else { active };
+        f.render_widget(Paragraph::new(label).alignment(Alignment::Center).style(style), button);
+        crate::ui::round_ends(f, button, P.button_bg, P.widget_bg);
         d.hits.buttons.push((button, index));
     }
     text(
@@ -1110,7 +1107,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                 let off = option.saturating_sub(visible.saturating_sub(1));
                 for (i, label) in options.iter().enumerate().skip(off).take(visible) {
                     let row = Rect::new(popup.x + 1, popup.y + 1 + (i - off) as u16, popup.width.saturating_sub(2), 1);
-                    text(f, row, label, if i == option { active } else { st });
+                    text(f, row, &format!(" {label}"), if i == option { active } else { st });
                     d.hits.options.push((row, i));
                 }
             }
@@ -1127,15 +1124,15 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         );
         text(f, Rect::new(pop.x + 2, pop.y + 2, cw - 4, 1), "Save changes? Discard also rolls back the preview.", st);
         d.hits.buttons.clear();
+        let bw = ((cw - 6) / 3).min(9);
+        let bx = pop.right() - 2 - (3 * bw + 2);
         for (index, label) in ["Cancel", "Discard", "Save"].iter().enumerate() {
-            let bw = ((cw - 4) / 3).min(12);
-            let button = Rect::new(pop.x + 2 + index as u16 * bw, pop.y + 4, bw, 1);
-            text(
-                f,
-                button,
-                &format!(" {label} "),
-                if index == d.confirm_selected { active.add_modifier(Modifier::BOLD) } else { active },
-            );
+            let button = Rect::new(bx + index as u16 * (bw + 1), pop.y + 4, bw, 1);
+            let style = if index == d.confirm_selected { active.add_modifier(Modifier::BOLD) } else { active };
+            f.render_widget(Paragraph::new(crate::ui::fit(label, bw as usize)).alignment(Alignment::Center).style(style), button);
+            if bw as usize >= label.len() + 2 {
+                crate::ui::round_ends(f, button, P.button_bg, P.widget_bg);
+            }
             d.hits.buttons.push((button, index));
         }
     }
