@@ -373,6 +373,7 @@ fn open_item(app: &mut App, i: usize) {
 
 /// Every key goes through here: the nav keys, then the open peek, then the panel.
 pub fn on_key(app: &mut App, k: KeyEvent) {
+    if app.settings_dlg.is_some() { return app.on_key(k); }
     if crate::hover::dismiss(app) && k.code == KeyCode::Esc { return; }
     // Modal UI (prompt, quick pick, the commit dialog, a git picker) takes every key.
     let modal = app.prompt.is_some() || app.quick.is_some() || app.gitui.dlg.is_some() || app.gitui.cmds.picker.is_some();
@@ -447,6 +448,7 @@ fn peek_key(app: &mut App, k: KeyEvent, modded: bool) -> bool {
 
 /// Every mouse event goes through here: Ctrl+hover, the peek, Ctrl+click, then the panel.
 pub fn on_mouse(app: &mut App, m: MouseEvent) -> bool {
+    if app.settings_dlg.is_some() { return app.on_mouse(m); }
     let visible = app.nav.hover.card.is_some();
     if let Some(redraw) = crate::hover::on_mouse(app, m) { return redraw; }
     let hover_redraw = visible && app.nav.hover.card.is_none();

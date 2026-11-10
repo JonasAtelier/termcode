@@ -47,7 +47,7 @@ pub fn dismiss(app: &mut App) -> bool {
 }
 
 fn blocked(app: &App) -> bool {
-    app.prompt.is_some() || app.quick.is_some() || app.find.is_some()
+    app.settings_dlg.is_some() || app.prompt.is_some() || app.quick.is_some() || app.find.is_some()
         || app.gitui.dlg.is_some() || app.gitui.cmds.picker.is_some() || app.gitui.card.is_some()
         || app.peek.is_some() || app.nav.peek.is_some() || app.nav.req_running() || !matches!(app.drag, Drag::None)
 }

@@ -282,6 +282,22 @@ split (kept in layout.json).
 
 ## Settings
 
+Click the Settings gear at the bottom of the activity bar, press Ctrl+comma, or use
+F1 "Preferences: Open Settings". The centered window groups every supported setting
+under Appearance, Layout, Editor, Minimap, Indent Rainbow, Files & Session, and Source
+Control. Use checkboxes, draggable sliders and dropdowns; themes and colors also have
+text and JSON inputs. Scroll the settings list to reach the remaining options.
+
+- **Apply** previews the draft in the running panel without writing settings.json.
+- **Save** (Ctrl+S) writes the draft and applies it permanently.
+- Drag the window's title bar to inspect the preview underneath. The top-right cross
+  or Esc closes it. Unsaved changes prompt for Cancel, Discard, or Save; Discard also
+  rolls back an applied preview. Ctrl+Q uses the same warning before quitting.
+- Tab / Shift+Tab moves focus. Arrows choose categories or adjust controls; Enter
+  opens a dropdown or edits a text/JSON value. Ctrl+A selects an input's contents.
+- Settings reload pauses while the window is open. Save preserves JSONC comments and
+  unrelated keys, and refuses to overwrite external changes: reopen the window first.
+
 `$HERDR_PLUGIN_CONFIG_DIR/settings.json` (normally
 `~/.config/herdr/plugins/config/jonas.herdr-code/settings.json`), VS Code's format: comments
 and trailing commas are fine. F1 "Preferences: Open Settings (JSON)" opens it, creating it from

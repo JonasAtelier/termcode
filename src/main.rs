@@ -23,6 +23,7 @@ mod parse;
 mod semantic;
 mod session;
 mod settings;
+mod settingsui;
 mod theme;
 mod ui;
 // Source Control UI: the CHANGES / GRAPH view, Timeline, hover card, commit dialog.

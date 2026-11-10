@@ -251,6 +251,7 @@ pub enum Cmd {
     FoldAll,
     UnfoldAll,
     OpenSettings,
+    SettingsPanel,
     ToggleRainbow,
     ToggleRuler,
     ToggleGuides,
@@ -273,6 +274,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("Fold All", Cmd::FoldAll, "Ctrl+K Ctrl+0"),
     ("Unfold All", Cmd::UnfoldAll, "Ctrl+K Ctrl+J"),
     ("Preferences: Open Settings (JSON)", Cmd::OpenSettings, ""),
+    ("Preferences: Open Settings", Cmd::SettingsPanel, ""),
     ("View: Toggle Indent Rainbow", Cmd::ToggleRainbow, ""),
     ("View: Toggle Minimap Ruler", Cmd::ToggleRuler, ""),
     ("View: Toggle Indent Guides", Cmd::ToggleGuides, ""),
@@ -440,6 +442,7 @@ pub enum HRow {
 #[derive(Default)]
 pub struct Hits {
     pub close: Rect,
+    pub settings_btn: Rect,
     pub activity: Vec<(Rect, Side)>,
     pub divider: Rect,
     pub side_list: Rect,
@@ -607,6 +610,7 @@ pub struct App {
     pub quit: bool,
     pub ui: Hits,
     pub settings: Settings,
+    pub settings_dlg: Option<crate::settingsui::Dialog>,
     /// settings.json; None in tests unless set.
     pub settings_file: Option<PathBuf>,
     /// mtimes of settings.json (and VS Code's, when followed) at the last load.
@@ -904,7 +908,7 @@ pub(crate) fn clipboard_set(text: &str) -> &'static str {
 }
 
 /// System clipboard text via wl-paste or xclip, each given 500 ms.
-fn clipboard_get() -> Option<String> {
+pub(crate) fn clipboard_get() -> Option<String> {
     for argv in [&["wl-paste", "-n"][..], &["xclip", "-o", "-selection", "clipboard"][..]] {
         let Ok(mut c) = Command::new(argv[0])
             .args(&argv[1..])
@@ -1058,6 +1062,7 @@ impl App {
             quit: false,
             ui: Hits::default(),
             settings: Settings::default(),
+            settings_dlg: None,
             settings_file: None,
             settings_stamp: None,
             settings_err: None,
@@ -1099,6 +1104,7 @@ impl App {
 
     /// Reload settings.json when it (or VS Code's, when followed) changed on disk.
     pub fn check_settings(&mut self) {
+        if self.settings_dlg.is_some() { return; }
         let Some(path) = self.settings_file.clone() else { return };
         let mtime = |p: &Path| fs::metadata(p).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
         let stamp = (mtime(&path), self.settings.follow_vscode.then(|| mtime(&settings::vscode_path())).flatten());
@@ -1162,6 +1168,7 @@ impl App {
         match c {
             Cmd::Fold | Cmd::Unfold | Cmd::FoldAll | Cmd::UnfoldAll => self.fold_command(c, None),
             Cmd::OpenSettings => self.open_settings(),
+            Cmd::SettingsPanel => crate::settingsui::open(self),
             Cmd::ToggleRainbow => {
                 self.rainbow_on = !self.rainbow_on;
                 self.msg = format!("indent rainbow {}", on_off(self.rainbow_on));
@@ -2343,6 +2350,9 @@ impl App {
     }
 
     pub fn request_quit(&mut self) {
+        if self.settings_dlg.is_some() {
+            return crate::settingsui::key(self, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        }
         // Queued or running git writes (a commit, a stage...) would be lost: ask, Wait first.
         let w = self.gitui.writes();
         if w > 0 && !self.gitui.quit_anyway {
@@ -3063,6 +3073,9 @@ impl App {
     // ---- keyboard --------------------------------------------------------------------------
 
     pub fn on_key(&mut self, k: KeyEvent) {
+        if self.settings_dlg.is_some() {
+            return crate::settingsui::key(self, k);
+        }
         // Esc drops a file or tab drag where it is, before anything else sees the key.
         if k.code == KeyCode::Esc && matches!(self.drag, Drag::File { active: true, .. } | Drag::Tab { active: true, .. }) {
             self.drag = Drag::None;
@@ -3095,6 +3108,9 @@ impl App {
         }
         if ctrl && is('q') {
             return self.request_quit();
+        }
+        if ctrl && is(',') {
+            return crate::settingsui::open(self);
         }
         if ctrl && shift && is('p') {
             return self.open_palette();
@@ -3529,6 +3545,9 @@ impl App {
 
     /// Bracketed paste or Ctrl+V: into the focused input or the editor.
     pub fn paste_text(&mut self, text: &str) {
+        if self.settings_dlg.is_some() {
+            return crate::settingsui::paste(self, text);
+        }
         if self.prompt.is_some() || self.quick.is_some() {
             return;
         }
@@ -3565,6 +3584,9 @@ impl App {
     // ---- mouse ---------------------------------------------------------------------------
 
     pub fn on_mouse(&mut self, m: MouseEvent) -> bool {
+        if self.settings_dlg.is_some() {
+            return crate::settingsui::mouse(self, m);
+        }
         let p = Position::new(m.column, m.row);
         let shift = m.modifiers.contains(KeyModifiers::SHIFT);
         match m.kind {
@@ -3626,7 +3648,7 @@ impl App {
             sash: self.gitui.dlg.as_ref().and_then(|d| d.hits.sashes.iter().position(|r| r.contains(p))).or_else(|| {
                 g.areas.iter().any(|(r, h)| matches!(h, crate::scm::Hit::GraphSash | crate::scm::Hit::TimelineSash) && r.contains(p)).then_some(usize::MAX)
             }),
-            activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)),
+            activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.settings_btn.contains(p).then_some(SIDES.len())),
         }
     }
 
@@ -3660,6 +3682,9 @@ impl App {
         }
         if self.ui.close.contains(p) {
             return self.request_quit();
+        }
+        if self.ui.settings_btn.contains(p) {
+            return crate::settingsui::open(self);
         }
         if let Some(&(_, g, side)) = self.ui.welcome.iter().find(|(r, _, _)| r.contains(p)) {
             self.ag = g;
@@ -8593,4 +8618,18 @@ mod tests {
         wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }
+
+    #[test]
+    fn bottom_activity_opens_categorized_settings_without_editing_a_file() {
+        let root = std::env::temp_dir();
+        let mut app = App::new(root, None);
+        let mut t = Terminal::new(TestBackend::new(110, 36)).unwrap();
+        screen(&mut app, &mut t);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 2, 32);
+        let shown = screen(&mut app, &mut t);
+        assert!(shown.contains("Settings"), "the bottom activity button must open Settings");
+        assert!(shown.contains("Appearance") && shown.contains("Apply") && shown.contains("Save"));
+        assert!(app.groups.iter().all(|g| g.tabs.is_empty()), "settings is a modal, not a file tab");
+    }
+
 }

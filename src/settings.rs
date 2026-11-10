@@ -254,6 +254,11 @@ pub fn parse_jsonc(text: &str) -> Result<Map<String, Value>, String> {
 }
 
 fn read_jsonc(path: &Path) -> Result<Option<Map<String, Value>>, String> {
+    read_text(path)?.map(|text| parse_jsonc(&text).map_err(|e| format!("{}: {e}", path.display()))).transpose()
+}
+
+/// Read a settings source without allowing an external edit to allocate unbounded memory.
+pub fn read_text(path: &Path) -> Result<Option<String>, String> {
     use std::io::Read;
     let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let f = match fs::File::open(path) {
@@ -266,18 +271,23 @@ fn read_jsonc(path: &Path) -> Result<Option<Map<String, Value>>, String> {
     if text.len() as u64 > crate::editor::MAX_BYTES {
         return Err(err(&"larger than 1 MB"));
     }
-    parse_jsonc(&text).map(Some).map_err(|e| err(&e))
+    Ok(Some(text))
 }
 
 /// Read and resolve the settings file (and VS Code's, when followed).
 pub fn load(path: &Path) -> Result<Settings, String> {
     let user = read_jsonc(path)?.unwrap_or_default();
+    resolve(&user)
+}
+
+/// Resolve an in-memory draft through the same path as settings.json.
+pub fn resolve(user: &Map<String, Value>) -> Result<Settings, String> {
     let vscode = if user.get("herdr-code.followVSCode").and_then(Value::as_bool) == Some(true) {
         Some(read_jsonc(&vscode_path())?.unwrap_or_default())
     } else {
         None
     };
-    from_maps(&user, vscode.as_ref(), &theme_dirs())
+    from_maps(user, vscode.as_ref(), &theme_dirs())
 }
 
 pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>, dirs: &[PathBuf]) -> Result<Settings, String> {
@@ -452,6 +462,130 @@ pub fn write_bool(path: &Path, key: &str, on: bool) -> Result<(), String> {
         return Err(format!("could not edit settings.json safely; {}", manual()));
     }
     b.save()
+}
+
+/// Update only changed top-level values, preserving JSONC comments and unrelated keys.
+/// Refuse stale drafts rather than silently overwriting an external edit.
+pub fn write_changes(path: &Path, expected: Option<&str>, changes: &Map<String, Value>) -> Result<String, String> {
+    let current = read_text(path)?;
+    if current.as_deref() != expected {
+        return Err("settings.json changed on disk; close and reopen Settings before saving".into());
+    }
+    let old = current.as_deref().unwrap_or("");
+    let mut want = parse_jsonc(old)?;
+    let mut text = old.to_string();
+    for (key, value) in changes {
+        text = set_value(&text, key, value)?;
+        want.insert(key.clone(), value.clone());
+    }
+    if text.len() as u64 > crate::editor::MAX_BYTES { return Err("settings.json would exceed 1 MB".into()); }
+    if parse_jsonc(&text)? != want {
+        return Err("could not edit settings.json safely".into());
+    }
+    if current.is_none() {
+        if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    }
+    let mut b = if current.is_some() {
+        let b = crate::editor::Buffer::open(path);
+        if b.readonly.is_some() || b.text() != old {
+            return Err("settings.json changed or cannot be edited safely".into());
+        }
+        b
+    } else {
+        let mut b = crate::editor::Buffer::from_text("", "JSON", "");
+        b.readonly = None;
+        b.path = Some(path.to_path_buf());
+        b
+    };
+    let mut view = crate::editor::View::default();
+    b.select_all(&mut view);
+    let body = if b.final_newline { text.strip_suffix("\r\n").or_else(|| text.strip_suffix('\n')).unwrap_or(&text) } else { &text };
+    b.insert(&mut view, body);
+    if b.text() != text { return Err("could not edit settings.json safely".into()); }
+    b.save()?;
+    Ok(text)
+}
+
+fn set_value(text: &str, key: &str, value: &Value) -> Result<String, String> {
+    fn trivia(b: &[u8], mut i: usize) -> usize {
+        loop {
+            while b.get(i).is_some_and(u8::is_ascii_whitespace) { i += 1; }
+            if b.get(i..i + 2) == Some(b"//") {
+                while i < b.len() && b[i] != b'\n' { i += 1; }
+            } else if b.get(i..i + 2) == Some(b"/*") {
+                i += 2;
+                while i + 1 < b.len() && &b[i..i + 2] != b"*/" { i += 1; }
+                i = (i + 2).min(b.len());
+            } else { return i; }
+        }
+    }
+    fn string_end(b: &[u8], mut i: usize) -> usize {
+        i += 1;
+        while i < b.len() {
+            match b[i] {
+                b'\\' => i += 2,
+                b'"' => return i + 1,
+                _ => i += 1,
+            }
+        }
+        b.len()
+    }
+    // The caller validates JSONC first. Scan original bytes so comments and Unicode
+    // outside the replaced value keep their exact positions and spelling.
+    let parsed = parse_jsonc(text)?;
+    let encoded = serde_json::to_string(value).map_err(|e| e.to_string())?;
+    let b = text.as_bytes();
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let open = trivia(b, 0);
+    if b.get(open) != Some(&b'{') {
+        return Ok(format!("{text}{nl}{{{nl}    {}: {encoded}{nl}}}{nl}", serde_json::to_string(key).unwrap()));
+    }
+    let mut i = open + 1;
+    let mut found = None;
+    loop {
+        i = trivia(b, i);
+        if b.get(i) == Some(&b'}') { break; }
+        if i >= b.len() { return Err("incomplete settings object".into()); }
+        let end_key = string_end(b, i);
+        let name: String = serde_json::from_str(&text[i..end_key]).map_err(|e| e.to_string())?;
+        i = trivia(b, end_key);
+        if b.get(i) != Some(&b':') { return Err("missing settings colon".into()); }
+        let start = trivia(b, i + 1);
+        i = start;
+        let (mut depth, mut end) = (0usize, start);
+        loop {
+            i = trivia(b, i);
+            match b.get(i) {
+                None => return Err("incomplete setting value".into()),
+                Some(b',' | b'}') if depth == 0 => break,
+                Some(b'"') => i = string_end(b, i),
+                Some(b'{' | b'[') => { depth += 1; i += 1; }
+                Some(b'}' | b']') => { depth -= 1; i += 1; }
+                _ => i += 1,
+            }
+            end = i;
+        }
+        if name == key { found = Some(start..end); }
+        if b.get(i) == Some(&b',') { i += 1; } else { break; }
+    }
+    if let Some(range) = found {
+        let encoded = match (parsed.get(key).and_then(Value::as_object), value.as_object()) {
+            (Some(old), Some(new)) if old.keys().all(|k| new.contains_key(k)) => {
+                let mut object = text[range.clone()].to_string();
+                for (k, v) in new.iter().filter(|(k, v)| old.get(*k) != Some(*v)) {
+                    object = set_value(&object, k, v)?;
+                }
+                object
+            }
+            _ => encoded,
+        };
+        let mut out = text.to_string();
+        out.replace_range(range, &encoded);
+        Ok(out)
+    } else {
+        let comma = if parsed.is_empty() { "" } else { "," };
+        Ok(format!("{}{nl}    {}: {encoded}{comma}{}", &text[..=open], serde_json::to_string(key).unwrap(), &text[open + 1..]))
+    }
 }
 
 /// `indentRainbow.*`; a pattern that does not compile is skipped with a warning.
@@ -865,4 +999,44 @@ mod tests {
         assert_eq!(s.rainbow.ignore_lines.len(), 1, "the bad pattern is skipped, the good one kept");
         assert!(s.warnings[0].contains("skipped"), "{:?}", s.warnings);
     }
+
+    #[test]
+    fn settings_dialog_saves_structured_values_and_keeps_jsonc_outside_them() {
+        let dir = tmp("dialog-jsonc");
+        let path = dir.join("settings.json");
+        let text = "// leading 中\n{\n  \"editor.tabSize\": 2,\n  \"editor.tabSize\": /* before */ 4 /* after */,\n  \"workbench.colorCustomizations\": {\"old\": [1, {\"text\": \"} // ,\"}]},\n  \"custom.key\": \"keep 中文\",\n  \"herdr-code.spacing\": { /* spacing */ \"sidebarWidth\": 36, /* width */ \"iconGap\": 3 /* gap */ },\n}\n";
+        fs::write(&path, text).unwrap();
+        let changes = serde_json::json!({
+            "editor.tabSize": 6,
+            "herdr-code.spacing": {"sidebarWidth": 42, "iconGap": 3},
+            "workbench.colorCustomizations": {"editor.background": "#123456"},
+            "editor.rulers": [80, {"column": 100, "color": "#555555"}],
+        }).as_object().unwrap().clone();
+        let saved = write_changes(&path, Some(text), &changes).unwrap();
+        assert!(saved.contains("// leading 中") && saved.contains("/* before */ 6 /* after */"));
+        assert!(saved.contains("\"custom.key\": \"keep 中文\""));
+        assert!(saved.contains("/* spacing */") && saved.contains("/* width */") && saved.contains("/* gap */"));
+        let s = load(&path).unwrap();
+        assert_eq!(s.tab_size, 6);
+        assert_eq!(s.rulers.len(), 2);
+        assert_eq!(s.theme.json["colors"]["editor.background"], "#123456");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_dialog_creates_missing_config_and_preserves_crlf_on_insert() {
+        let dir = tmp("dialog-new-crlf");
+        let path = dir.join("nested/settings.json");
+        let changes = serde_json::json!({"editor.tabSize": 7}).as_object().unwrap().clone();
+        write_changes(&path, None, &changes).unwrap();
+        assert_eq!(load(&path).unwrap().tab_size, 7);
+        let text = "{\r\n  // keep\r\n  \"custom.key\": true,\r\n}\r\n";
+        fs::write(&path, text).unwrap();
+        let saved = write_changes(&path, Some(text), &changes).unwrap();
+        assert!(saved.contains("  // keep\r\n  \"custom.key\": true,\r\n"));
+        assert_eq!(load(&path).unwrap().tab_size, 7);
+        assert!(!saved.replace("\r\n", "").contains('\n'), "inserted lines must match CRLF");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
 }

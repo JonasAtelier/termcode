@@ -200,6 +200,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let area = f.area();
     f.render_widget(Block::new().style(Style::new().bg(P.editor_bg).fg(P.editor_fg)), area);
     if area.height < 5 || area.width < 30 {
+        crate::settingsui::draw(app, f);
         return;
     }
     // This frame's share of first-time highlighting (a far jump catches up over frames).
@@ -267,6 +268,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     if app.prompt.is_some() {
         prompt(app, f, area, lay);
     }
+    crate::settingsui::draw(app, f);
 }
 
 fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
@@ -364,9 +366,14 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     let theme = app.settings.theme.json.get("colors").and_then(serde_json::Value::as_object).unwrap_or(&empty);
     let active_bg = crate::blocks::active_bg(theme);
     let ih: u16 = if app.settings.compact { 2 } else { 3 };
+    let bottom = Rect::new(r.x, r.bottom().saturating_sub(ih).max(r.y), r.width, ih.min(r.height));
+    app.ui.settings_btn = bottom;
+    let fg = if app.settings_dlg.is_some() || app.hover.is_some_and(|p| bottom.contains(p)) { P.activity_fg } else { P.activity_inactive };
+    let symbol = ic.settings;
+    f.render_widget(Span::styled(symbol, Style::new().fg(fg)), Rect::new(bottom.x + bottom.width.saturating_sub(1) / 2, bottom.y + bottom.height.saturating_sub(1) / 2, u16::from(bottom.width > 0), u16::from(bottom.height > 0)));
     for (i, s) in SIDES.iter().enumerate() {
         let y = r.y + i as u16 * ih;
-        if y + ih > r.bottom() || r.width == 0 {
+        if y + ih > bottom.y || r.width == 0 {
             break;
         }
         let item = Rect::new(r.x, y, r.width, ih);
