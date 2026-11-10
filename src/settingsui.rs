@@ -249,6 +249,8 @@ pub struct Dialog {
     quit_after: bool,
     note: String,
     hits: Hits,
+    graphics: crate::settingsgraphics::Graphics,
+    palette: Option<(Map<String, Value>, Result<crate::theme::Pal, String>)>,
 }
 
 fn toggles(app: &App) -> [bool; 5] {
@@ -292,6 +294,8 @@ pub fn open(app: &mut App) {
                 quit_after: false,
                 note: "Apply previews; Save keeps changes. Drag the title to see the editor.".into(),
                 hits: Hits::default(),
+                graphics: crate::settingsgraphics::Graphics::new(),
+                palette: None,
             });
         }
     }
@@ -903,6 +907,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         return;
     };
     d.hits = Hits::default();
+    d.graphics.refresh_size();
     let a = f.area();
     let w = a.width.saturating_sub(if a.width >= 50 { 6 } else { 0 }).clamp(1, 108).min(a.width);
     let h = a.height.saturating_sub(if a.height >= 16 { 4 } else { 0 }).clamp(1, 32).min(a.height);
@@ -939,7 +944,14 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     d.hits.close = Rect::new(r.right() - 4, r.y, 3, 1);
     text(f, d.hits.close, &format!(" {} ", icons().close), st);
     let nav_w = if w >= 64 { 20 } else { 15 };
-    let content = Rect::new(r.x + nav_w + 2, r.y + 2, w.saturating_sub(nav_w + 4), h - 7);
+    let mut content = Rect::new(r.x + nav_w + 2, r.y + 2, w.saturating_sub(nav_w + 4), h - 7);
+    let graphics = d.graphics.enabled() && !d.confirm && d.dropdown.is_none();
+    let preview = (d.category == 0 && graphics && content.width >= 65 && content.height >= 17)
+        .then(|| {
+            let area = Rect::new(content.right() - 26, content.y, 26, content.height);
+            content.width -= 29;
+            area
+        });
     d.hits.content = content;
     let rows = d.rows();
     d.selected = d.selected.min(rows.len() - 1);
@@ -971,12 +983,23 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         let selected = d.focus == Focus::Fields && rows[d.selected] == row;
         let label_style = if selected { st.add_modifier(Modifier::BOLD).fg(P.focus_border) } else { st };
         text(f, Rect::new(content.x, y, content.width, 1), field.label, label_style);
-        let control = Rect::new(content.x, y + 1, content.width, 1);
+        let control = Rect::new(content.x, y + 1, content.width,
+            if matches!(field.kind, Check(_)) && graphics && d.graphics.pixel_controls() && content.width >= 15 { 2 } else { 1 });
         let value = d.value(row);
         let style = if selected { Style::new().fg(P.input_fg).bg(P.input_bg) } else { st };
         match field.kind {
             Check(default) => {
-                text(f, control, if value.as_bool().unwrap_or(default) { "[x] Enabled" } else { "[ ] Disabled" }, style)
+                let on = value.as_bool().unwrap_or(default);
+                if control.height == 2 {
+                    let switch = Rect::new(control.x, control.y, 6, 2);
+                    let bg = if selected { P.input_bg } else { P.widget_bg };
+                    d.graphics.switch(f, switch, on, selected,
+                        [bg, if on { P.button_bg } else { P.widget_border }, P.button_fg]);
+                    text(f, Rect::new(control.x + 7, control.y, control.width - 7, 1),
+                        if on { "Enabled" } else { "Disabled" }, style);
+                } else {
+                    text(f, control, if on { "[x] Enabled" } else { "[ ] Disabled" }, style);
+                }
             }
             Number(lo, hi, default) => {
                 let n = value.as_u64().unwrap_or(default as u64).clamp(lo as u64, hi as u64);
@@ -1018,7 +1041,28 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                 }
             }
         }
-        d.hits.rows.push((Rect::new(content.x, y, content.width, 2), control, row));
+        d.hits.rows.push((Rect::new(content.x, y, content.width, control.height + 1), control, row));
+    }
+    if let Some(area) = preview {
+        if !d.palette.as_ref().is_some_and(|(draft, _)| draft == &d.draft) {
+            let palette = settings::resolve(&d.draft).map(|s| {
+                crate::theme::build_pal(s.theme.json["colors"].as_object().unwrap_or(&Map::new()))
+            });
+            d.palette = Some((d.draft.clone(), palette));
+        }
+        let saved = crate::theme::build_pal(d.baseline.theme.json["colors"].as_object().unwrap_or(&Map::new()));
+        for (i, label) in ["Draft palette", "Saved palette"].iter().enumerate() {
+            let y = area.y + i as u16 * 9;
+            text(f, Rect::new(area.x, y, area.width, 1), label, st.fg(P.dim));
+            let card = Rect::new(area.x, y + 1, area.width, 7);
+            let palette = if i == 1 { Ok(&saved) } else { d.palette.as_ref().unwrap().1.as_ref() };
+            match palette {
+                Ok(p) => d.graphics.palette(f, card, i == 1, p),
+                Err(e) => {
+                    f.render_widget(Paragraph::new(format!("Preview unavailable: {e}")).wrap(ratatui::widgets::Wrap { trim: true }).style(st), card);
+                }
+            }
+        }
     }
     let selected_row = rows[d.selected];
     let key = FIELDS[selected_row].key.replace('/', ".");
@@ -1151,6 +1195,54 @@ mod tests {
         app.check_settings();
         open(&mut app);
         (app, Terminal::new(TestBackend::new(110, 36)).unwrap(), path)
+    }
+
+    #[test]
+    fn switch_fallback_stays_legible_and_keeps_mouse_keyboard_and_apply_behavior() {
+        let (mut app, mut t, path) = setup("graphical-switch");
+        click(&mut app, &mut t, "Minimap");
+        screen(&mut app, &mut t);
+        let (_, control, _) = app.settings_dlg.as_ref().unwrap().hits.rows[0];
+        let symbols: String = (control.x..control.x + 4)
+            .map(|x| t.backend().buffer()[(x, control.y)].symbol()).collect();
+        assert_eq!(symbols, "[x] ", "small switches must not become low-resolution image blocks");
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: control.x + 2, row: control.y, modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.settings_dlg.as_ref().unwrap().draft["editor.minimap.enabled"], false);
+        assert!(app.settings.minimap.enabled, "a switch edits only the draft");
+        assert!(screen(&mut app, &mut t).contains("[ ] Disabled"));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.settings_dlg.as_ref().unwrap().value(app.settings_dlg.as_ref().unwrap().rows()[0]), true);
+        press(&mut app, KeyCode::Char(' '));
+        click(&mut app, &mut t, "Apply");
+        assert!(!app.settings.minimap.enabled);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn palette_cards_preview_draft_colors_without_applying_or_saving() {
+        let (mut app, mut t, path) = setup("palette-cards");
+        let before = fs::read(&path).unwrap();
+        let original = app.settings.theme.clone();
+        click(&mut app, &mut t, "Workbench colors");
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        app.paste_text(r##"{"editor.background":"#123456"}"##);
+        press(&mut app, KeyCode::Enter);
+        let shown = screen(&mut app, &mut t);
+        assert!(shown.contains("Draft palette") && shown.contains("Saved palette"), "{shown}");
+        let b = t.backend().buffer();
+        let (x, y) = shown.lines().enumerate().find_map(|(y, line)| {
+            line.find("Draft palette").map(|x| (line[..x].chars().count() as u16, y as u16))
+        }).unwrap();
+        assert!((y + 1..y + 7).any(|yy| (x..x + 24).any(|xx| {
+            let cell = &b[(xx, yy)];
+            cell.bg == Color::Rgb(0x12, 0x34, 0x56) || cell.fg == Color::Rgb(0x12, 0x34, 0x56)
+        })), "draft palette must use the edited background");
+        assert_eq!(app.settings.theme, original);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

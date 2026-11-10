@@ -285,8 +285,17 @@ split (kept in layout.json).
 Click the Settings gear at the bottom of the activity bar, press Ctrl+comma, or use
 F1 "Preferences: Open Settings". The centered window groups every supported setting
 under Appearance, Layout, Editor, Minimap, Indent Rainbow, Files & Session, and Source
-Control. Use checkboxes, draggable sliders and dropdowns; themes and colors also have
+Control. Use switches (Kitty) or checkboxes, draggable sliders and dropdowns; themes and colors also have
 text and JSON inputs. Scroll the settings list to reach the remaining options.
+
+- Appearance shows miniature **Draft palette** and **Saved palette** cards when the
+  window has room. Committing a theme/color input updates the draft card without
+  changing the running editor; Apply and Save keep their existing behavior.
+- Settings graphics use Kitty Unicode placements for `xterm-kitty` / `xterm-ghostty`
+  or `TERM_PROGRAM=kitty` / `ghostty` (including current herdr-app/core terminals).
+  Other terminals and nested multiplexers use clear text checkboxes and colored
+  half-block palette cards; small rounded switches lose detail at cell resolution. Override with
+  `HERDR_CODE_GRAPHICS=kitty`, `blocks`, or `text` for the original text controls.
 
 - **Apply** previews the draft in the running panel without writing settings.json.
 - **Save** (Ctrl+S) writes the draft and applies it permanently.
