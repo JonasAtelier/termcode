@@ -27,6 +27,40 @@ Ghostty → herdr terminal workspace → herdr-code plugin tab
 - Standalone mode and other terminals remain supported with their existing
   text/half-block fallbacks.
 
+### macOS Terminal.app clients
+
+For a Mac connecting to the Linux host over SSH, install
+[JetBrainsMono Nerd Font Mono](https://www.nerdfonts.com/font-downloads) on the
+Mac, then select it in **Terminal > Settings > Profiles > Text > Font**.
+The Mono variant keeps icon glyphs within a single terminal cell; see the
+[Nerd Fonts FAQ](https://github.com/ryanoasis/nerd-fonts/wiki/FAQ-and-Troubleshooting)
+and [Apple's profile settings](https://support.apple.com/guide/terminal/trmltxt/mac).
+The local terminal renders the font, even when herdr-code runs remotely.
+
+Use **Settings > Appearance > Icons > nerd**, then **Save**. If installing a
+patched font is not an option, select **ascii** instead. You can also merge this
+key into the plugin's existing `settings.json` on the Linux host:
+
+```json
+{ "herdr-code.icons": "ascii" }
+```
+
+For plugin tabs, save this setting so the panel receives it. For an in-place
+session, `HERDR_CODE_ICONS=0 herdr-code .` forces the fallback even if settings
+select Nerd Font icons. ASCII mode also ignores custom Nerd Font file glyphs.
+
+After choosing a font, run this in Terminal.app to check the actual UI glyphs:
+
+```sh
+printf '%s\n' 'Files   Search   Git   Close   Settings   Folder '
+```
+
+Then check Explorer file icons, tab close buttons, the blue active-tab marker,
+and Settings in the complete Terminal.app → SSH → herdr → plugin path. Look for
+missing-glyph boxes, clipped icons and shifted labels. Repeat with `ascii` to
+check the fallback. Keep the plugin's Linux platform declaration until a native
+macOS build and runtime have been verified separately.
+
 ## Install
 
 ```sh
@@ -107,8 +141,6 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
   non-Mono Nerd Font glyph. Activity bar items are 3 rows tall (2 in compact), the icon
   centred: the active one has `activityBar.activeBorder` down its left edge over a subtle
   `activityBar.activeBackground`, a hovered one turns from `inactiveForeground` to `foreground`.
-  the focused block's a little lighter. Icon sizes (`herdr-code.icons.size`):
-  `herdr-code --icon-demo` shows the three side by side in your terminal and font; any key quits.
 - Sessions, per launch folder: reopening `herdr-code` from the same folder (or on the same
   PATH) brings back the last session there, as VS Code does: the editor groups and tabs (pinned or preview, the active ones), each file's
   cursor, selection and scroll, the sidebar view, width and visibility, the Explorer's open
