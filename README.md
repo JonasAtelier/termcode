@@ -143,6 +143,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | F7 / Shift+F7 in a diff | next / previous change |
 | `r` in a list | refresh. Git status also refreshes on view switch and on pane focus |
 | scrollbars | click the track to page, drag the slider; the wheel scrolls the list or editor under it |
+| horizontal scrolling | drag the bottom scrollbar, use a horizontal wheel, or Shift+wheel over the editor; Git diff sides scroll together, including the commit dialog preview |
 | minimap | click: centre that line; drag the slider; the wheel scrolls the editor |
 | a gutter marker (click), Alt+F5 / Shift+Alt+F5, F7 / Shift+F7 | quick-diff peek on that / the next / the previous change |
 | in the peek | Revert (the hunk back to the index version, one undo step), ↑ ↓ (wraps), × or Esc closes |
@@ -153,6 +154,9 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Alt+← / Alt+→ | Go Back / Go Forward (also VS Code Linux's Ctrl+Alt+- / Ctrl+Shift+- where they reach, and F1) |
 | Ctrl+hover | underlines the identifier under the mouse (`editorLink.activeForeground`) |
 | rest the pointer on a function name for 0.5 s | preview its documentation; move away or press Esc to close; wheel inside the popup scrolls long comments |
+
+Editor cards place the horizontal scrollbar on the bottom border, leaving the last
+interior row available for code. Unframed editors keep it on their last content row.
 
 Sticky scroll: while the Explorer is scrolled, one row under the root header shows the full
 path of the folder the first visible row is in, breadcrumb style (deep in `arch/sh/boards`:
@@ -230,7 +234,7 @@ split (kept in layout.json).
   (`diffEditorOverview.removedForeground` / `.insertedForeground`; unset, VS Code's text
   backgrounds at twice the alpha) and the change F7 last reached; the editor's minimap on the
   modified side, its git lane showing the changes. Wheel: vertical; Shift+wheel or the
-  horizontal wheel: sideways, no further than the longest visible line. Keys: Up/Down,
+  horizontal wheel: sideways, no further than the longest line in the file. Keys: Up/Down,
   PgUp/PgDn, Ctrl+Home/End (top, bottom), Home/End (line starts, line ends); F7 / Shift+F7
   reveal the next / previous change centred.
 - Commit card: rest the pointer on a commit row (graph or Timeline) for 0.5 s, press `i`, or

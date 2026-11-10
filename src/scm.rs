@@ -985,6 +985,7 @@ pub fn drop_drags(app: &mut App) {
     app.gitui.timeline_drag = None;
     if let Some(d) = app.gitui.dlg.as_mut() {
         d.drag = None;
+        d.hdrag = None;
     }
 }
 

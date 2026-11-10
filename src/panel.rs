@@ -310,6 +310,7 @@ pub fn filter_commands(q: &str) -> Vec<String> {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ScrollTarget {
     Editor(usize),
+    EditorHorizontal(usize),
     Side,
     Quick,
     /// Source Control lists: 0 = GRAPH, 1 = Explorer TIMELINE.
@@ -3603,10 +3604,9 @@ impl App {
             }
             MouseEventKind::Drag(MouseButton::Left) => self.drag_to(p),
             MouseEventKind::Up(MouseButton::Left) => self.release(),
-            // Shift+wheel and the horizontal wheel scroll a diff sideways.
+            // Horizontal input stays horizontal even at either end of the range.
             MouseEventKind::ScrollUp if shift && self.hwheel(p, -6) => {}
             MouseEventKind::ScrollDown if shift && self.hwheel(p, 6) => {}
-            // No diff there: nothing moved, no redraw.
             MouseEventKind::ScrollLeft => return self.hwheel(p, -6),
             MouseEventKind::ScrollRight => return self.hwheel(p, 6),
             MouseEventKind::ScrollUp => return self.wheel(p, -3),
@@ -3642,7 +3642,9 @@ impl App {
             fold: self.ui.groups.iter().enumerate().find_map(|(g, gh)| {
                 (gh.folds_x.is_some_and(|x| (x..gh.text.x).contains(&p.x)) && (gh.text.y..gh.text.bottom()).contains(&p.y)).then_some((g, p.y))
             }),
-            scrollbar: self.ui.scrollbars.iter().position(|sb| sb.track.contains(p)),
+            scrollbar: self.ui.scrollbars.iter().position(|sb| sb.track.contains(p)).or_else(|| {
+                self.gitui.dlg.as_ref()?.hits.hscroll.filter(|sb| sb.track.contains(p)).map(|_| usize::MAX)
+            }),
             minimap: self.ui.minimaps.iter().position(|m| m.area.contains(p)),
             peek: self.ui.peek_btns.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.peek_zone.contains(p).then_some(usize::MAX)),
             sash: self.gitui.dlg.as_ref().and_then(|d| d.hits.sashes.iter().position(|r| r.contains(p))).or_else(|| {
@@ -3841,7 +3843,8 @@ impl App {
 
     fn scrollbar_click(&mut self, sb: ScrollHit, p: Position) {
         let cur = self.scroll_of(sb.target);
-        match decor::track_hit(p.y - sb.track.y, sb.slider) {
+        let at = if matches!(sb.target, ScrollTarget::EditorHorizontal(_)) { p.x - sb.track.x } else { p.y - sb.track.y };
+        match decor::track_hit(at, sb.slider) {
             TrackHit::PageUp => self.set_scroll(sb.target, cur.saturating_sub(sb.page)),
             TrackHit::PageDown => self.set_scroll(sb.target, (cur + sb.page).min(sb.max_off)),
             TrackHit::Slider(grab) => self.drag = Drag::Scroll(sb, grab),
@@ -3851,6 +3854,7 @@ impl App {
     fn scroll_of(&self, t: ScrollTarget) -> usize {
         match t {
             ScrollTarget::Editor(g) => self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map_or(0, |t| t.view.row_of(t.view.scroll)),
+            ScrollTarget::EditorHorizontal(g) => self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map_or(0, |t| t.view.hscroll),
             ScrollTarget::Side => self.off[self.side as usize],
             ScrollTarget::Quick => self.quick.as_ref().map_or(0, |q| q.off),
             ScrollTarget::Git(w) => crate::scm::scroll_of(self, w),
@@ -3860,6 +3864,11 @@ impl App {
     /// Scroll a list or editor to `off` (clamped where it is drawn).
     fn set_scroll(&mut self, t: ScrollTarget, off: usize) {
         match t {
+            ScrollTarget::EditorHorizontal(g) => {
+                if let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) {
+                    t.view.hscroll = off;
+                }
+            }
             ScrollTarget::Editor(g) => {
                 let max = {
                     let grp = self.groups.get(g);
@@ -4056,7 +4065,10 @@ impl App {
             }
             Drag::Scroll(sb, grab) => {
                 let (sb, grab) = (*sb, *grab);
-                let off = decor::drag_offset(p.y as i32 - sb.track.y as i32, grab, sb.track.height, sb.slider.1, sb.max_off);
+                let (at, len) = if matches!(sb.target, ScrollTarget::EditorHorizontal(_)) {
+                    (p.x as i32 - sb.track.x as i32, sb.track.width)
+                } else { (p.y as i32 - sb.track.y as i32, sb.track.height) };
+                let off = decor::drag_offset(at, grab, len, sb.slider.1, sb.max_off);
                 self.set_scroll(sb.target, off);
             }
             Drag::Select(g) => {
@@ -4184,15 +4196,19 @@ impl App {
         self.find_refresh();
     }
 
-    /// Sideways scroll of the diff tab under `p` (both sides; clamped where drawn).
-    /// False when no diff is there, so the wheel scrolls as usual.
+    /// Sideways scroll of the editor under `p`; a diff shares the offset on both sides.
+    /// True when handled, including at an edge, so Shift+wheel never turns vertical.
     fn hwheel(&mut self, p: Position, d: isize) -> bool {
-        let Some(g) = self.ui.groups.iter().position(|g| g.area.contains(p)) else { return false };
+        if self.prompt.is_some() || self.quick.is_some() || self.gitui.cmds.picker.is_some() { return false; }
+        if self.gitui.dlg.is_some() { return crate::commitdlg::hwheel(self, p, d); }
+        let bar_group = self.ui.scrollbars.iter().find_map(|s| match s.target {
+            ScrollTarget::EditorHorizontal(g) if s.track.contains(p) => Some(g),
+            _ => None,
+        });
+        let Some(g) = bar_group.or_else(|| self.ui.groups.iter().position(|g| g.area.contains(p))) else { return false };
         let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) else { return false };
-        if !matches!(self.docs.get(&t.key), Some(Doc::Diff(_))) {
-            return false;
-        }
-        t.view.hscroll = (t.view.hscroll as isize + d).max(0) as usize;
+        if !self.docs.contains_key(&t.key) { return false; }
+        t.view.hscroll = t.view.hscroll.saturating_add_signed(d);
         true
     }
 
@@ -4215,7 +4231,7 @@ impl App {
         }
         // Over an editor's scrollbar the wheel scrolls that editor.
         if let Some(sb) = self.ui.scrollbars.iter().find(|s| s.track.contains(p)).copied() {
-            if let ScrollTarget::Editor(_) = sb.target {
+            if matches!(sb.target, ScrollTarget::Editor(_) | ScrollTarget::EditorHorizontal(_)) {
                 let cur = self.scroll_of(sb.target);
                 self.set_scroll(sb.target, cur.saturating_add_signed(d));
                 return self.scroll_of(sb.target) != cur;
@@ -6449,8 +6465,8 @@ mod tests {
     fn rulers_sit_after_n_columns_behind_the_text() {
         let root = repo("rulers");
         // Ruler at 10: tabs expand to 4, CJK is 2 wide.
-        let text = "\t\tab\n中文中文中\n中文中文中文\n0123456789X\n0123456789\nnext\n";
-        fs::write(root.join("r.txt"), text).unwrap();
+        let text = format!("\t\tab\n中文中文中\n中文中文中文\n0123456789X\n0123456789\nnext\n{}\n", "x".repeat(120));
+        fs::write(root.join("r.txt"), &text).unwrap();
         let mut app = App::new(root.clone(), None);
         app.settings.rulers = vec![(10, None), (4, Some(crate::theme::Rgba(255, 0, 0, 255)))];
         app.settings.minimap.enabled = false;
@@ -7445,6 +7461,106 @@ mod tests {
     }
 
     #[test]
+    fn code_horizontal_wheel_and_drag_reveal_long_lines_without_moving_the_cursor() {
+        let root = repo("horizontal-code");
+        fs::write(root.join("wide.txt"), format!("start {} END\nshort\n", "x".repeat(240))).unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "wide.txt", false);
+        wait(&mut app);
+        let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
+        screen(&mut app, &mut t);
+        let text = app.ui.groups[0].text;
+        let cursor = app.groups[0].tabs[0].view.cursor;
+        mouse(&mut app, MouseEventKind::ScrollRight, text.x + 2, text.y);
+        screen(&mut app, &mut t);
+        assert_eq!(app.groups[0].tabs[0].view.hscroll, 6);
+        assert_eq!(app.groups[0].tabs[0].view.cursor, cursor);
+        let sb = *app.ui.scrollbars.iter().find(|s| s.track.width > 1).expect("horizontal scrollbar");
+        assert_eq!(sb.track.y, text.bottom(), "bar stays below the text");
+        assert_eq!(sb.track.y, app.ui.groups[0].area.bottom(), "horizontal slider shares the bottom frame row");
+        assert_eq!(t.backend().buffer()[(app.ui.groups[0].area.x - 1, sb.track.y)].symbol(), crate::theme::icons().border[2]);
+        assert_eq!(t.backend().buffer()[(app.ui.groups[0].area.right(), sb.track.y)].symbol(), crate::theme::icons().border[3]);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sb.track.x + sb.slider.0, sb.track.y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), sb.track.right() + 10, sb.track.y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sb.track.right() + 10, sb.track.y);
+        screen(&mut app, &mut t);
+        assert_eq!(app.groups[0].tabs[0].view.hscroll, sb.max_off);
+        assert!(line_of(&t, text.y).contains("END"));
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sb.track.x, sb.track.y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sb.track.x, sb.track.y);
+        screen(&mut app, &mut t);
+        assert_eq!(app.groups[0].tabs[0].view.hscroll, sb.max_off.saturating_sub(sb.page));
+        let before = app.groups[0].tabs[0].view.hscroll;
+        mouse(&mut app, MouseEventKind::ScrollLeft, sb.track.x, sb.track.y);
+        screen(&mut app, &mut t);
+        assert_eq!(app.groups[0].tabs[0].view.hscroll, before.saturating_sub(6), "the border row also receives horizontal wheels");
+        t.backend_mut().resize(400, 26);
+        t.resize(Rect::new(0, 0, 400, 26)).unwrap();
+        screen(&mut app, &mut t);
+        assert_eq!(app.groups[0].tabs[0].view.hscroll, 0, "widening the editor clamps the offset");
+        assert!(!app.ui.scrollbars.iter().any(|s| s.track.width > 1));
+        t.backend_mut().resize(110, 26);
+        t.resize(Rect::new(0, 0, 110, 26)).unwrap();
+        screen(&mut app, &mut t);
+        app.on_mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: text.x, row: text.y, modifiers: KeyModifiers::SHIFT });
+        screen(&mut app, &mut t);
+        assert_eq!(app.groups[0].tabs[0].view.scroll, 0, "horizontal limit must not turn into vertical scroll");
+        for _ in 0..100 { mouse(&mut app, MouseEventKind::ScrollLeft, text.x, text.y); }
+        screen(&mut app, &mut t);
+        assert_eq!(app.groups[0].tabs[0].view.hscroll, 0);
+        assert!(line_of(&t, text.y).contains("start"));
+        let (b, tab) = app.ed().unwrap();
+        b.replace_lines(&mut tab.view, 0, 1, &["tiny".into()]);
+        screen(&mut app, &mut t);
+        assert!(!app.ui.scrollbars.iter().any(|s| s.track.width > 1), "shortened lines remove the horizontal bar");
+        let (b, tab) = app.ed().unwrap();
+        b.undo(&mut tab.view);
+        screen(&mut app, &mut t);
+        assert!(app.ui.scrollbars.iter().any(|s| s.track.width > 1), "undo restores the horizontal range");
+        let width = app.ui.groups[0].text.width as usize;
+        let (b, tab) = app.ed().unwrap();
+        b.replace_lines(&mut tab.view, 0, 1, &["x".repeat(width)]);
+        b.end_of_line(&mut tab.view, false);
+        app.reveal();
+        screen(&mut app, &mut t);
+        assert_eq!(app.groups[0].tabs[0].view.hscroll, 1, "the caret after an exactly full line still needs a visible cell");
+        let (b, tab) = app.ed().unwrap();
+        b.replace_lines(&mut tab.view, 0, 1, &["x".repeat(240)]);
+        for style in [crate::blocks::BlockStyle::Lines, crate::blocks::BlockStyle::None] {
+            app.settings.blocks = style;
+            screen(&mut app, &mut t);
+            let sb = app.ui.scrollbars.iter().find(|s| s.track.width > 1).unwrap();
+            assert_eq!(sb.track.bottom(), app.ui.groups[0].area.bottom(), "unframed bars stay inside the pane");
+        }
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn diff_horizontal_scrollbar_drags_both_sides_to_the_longest_line_end() {
+        let root = repo("horizontal-diff");
+        let mut app = App::new(root.clone(), None);
+        open_big_diff(&mut app);
+        app.groups[0].tabs[0].view.scroll = 98;
+        let mut t = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let texts = app.ui.groups[0].diff_text.unwrap();
+        let sb = *app.ui.scrollbars.iter().find(|s| s.track.width > 1).expect("diff horizontal scrollbar");
+        assert_eq!(sb.track.y, app.ui.groups[0].area.bottom(), "diff slider shares the bottom frame row");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sb.track.x + sb.slider.0, sb.track.y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), sb.track.right() + 20, sb.track.y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sb.track.right() + 20, sb.track.y);
+        screen(&mut app, &mut t);
+        assert_eq!(app.groups[0].tabs[0].view.hscroll, sb.max_off);
+        for r in texts {
+            assert!(line_of(&t, r.y + 2).chars().skip(r.x as usize).take(r.width as usize).collect::<String>().contains("xxxxxxxx"));
+        }
+        assert_eq!(app.groups[0].tabs[0].view.scroll, 98);
+        wait_idle(&mut app);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn diff_tabs_scroll_like_the_editor() {
         let d = std::env::temp_dir().join(format!("herdr-code-dscroll-{}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
@@ -7486,7 +7602,8 @@ mod tests {
         // Shift+wheel and the horizontal wheel scroll both sides sideways, no further than needed.
         app.on_mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: cx, row: cy, modifiers: KeyModifiers::SHIFT });
         screen(&mut app, &mut t);
-        assert_eq!(view(&app).hscroll, 0, "short lines: nothing to scroll");
+        assert_eq!(view(&app).hscroll, 6, "the range includes long lines outside the viewport");
+        app.groups[0].tabs[0].view.hscroll = 0;
         app.groups[0].tabs[0].view.scroll = 98;
         app.on_mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: cx, row: cy, modifiers: KeyModifiers::SHIFT });
         mouse(&mut app, MouseEventKind::ScrollRight, cx, cy);

@@ -152,6 +152,7 @@ pub fn ratio_at(inner: Rect, ratios: Ratios, s: Sash, p: Position) -> f64 {
 
 #[derive(Default)]
 pub struct DlgHits {
+    pub hscroll: Option<crate::panel::ScrollHit>,
     pub btns: Vec<(Rect, Btn)>,
     /// Unstaged and Staged list rows.
     pub lists: [Rect; 2],
@@ -198,6 +199,7 @@ pub struct CommitDlg {
     pub hits: DlgHits,
     /// The splitter being dragged.
     pub drag: Option<Sash>,
+    pub hdrag: Option<(crate::panel::ScrollHit, u16)>,
 }
 
 fn editable(text: &str) -> (Buffer, View) {
@@ -254,6 +256,7 @@ pub fn open(app: &mut App) {
         busy: false,
         hits: DlgHits::default(),
         drag: None,
+        hdrag: None,
     });
     relist(app);
     if let Some(d) = app.gitui.dlg.as_mut() {
@@ -632,6 +635,14 @@ pub fn click(app: &mut App, p: Position, double: bool) {
     if d.busy {
         return;
     }
+    if let Some(sb) = d.hits.hscroll.filter(|s| s.track.contains(p)) {
+        match crate::decor::track_hit(p.x - sb.track.x, sb.slider) {
+            crate::decor::TrackHit::PageUp => d.diff_view.hscroll = d.diff_view.hscroll.saturating_sub(sb.page),
+            crate::decor::TrackHit::PageDown => d.diff_view.hscroll = (d.diff_view.hscroll + sb.page).min(sb.max_off),
+            crate::decor::TrackHit::Slider(grab) => d.hdrag = Some((sb, grab)),
+        }
+        return;
+    }
     if let Some(i) = d.hits.sashes.iter().position(|r| r.contains(p)) {
         if double {
             app.gitui.dlg_split[i] = None; // back to the default
@@ -672,7 +683,11 @@ pub fn click(app: &mut App, p: Position, double: bool) {
 
 /// Dragging a splitter: true while one is held.
 pub fn drag(app: &mut App, p: Position) -> bool {
-    let Some(d) = app.gitui.dlg.as_ref() else { return false };
+    let Some(d) = app.gitui.dlg.as_mut() else { return false };
+    if let Some((sb, grab)) = d.hdrag {
+        d.diff_view.hscroll = crate::decor::drag_offset(p.x as i32 - sb.track.x as i32, grab, sb.track.width, sb.slider.1, sb.max_off);
+        return true;
+    }
     let Some(s) = d.drag else { return false };
     let r = ratio_at(d.hits.inner, app.gitui.dlg_split, s, p);
     app.gitui.dlg_split[s as usize] = Some(r);
@@ -681,6 +696,7 @@ pub fn drag(app: &mut App, p: Position) -> bool {
 
 /// Releasing a splitter keeps its position in layout.json.
 pub fn release(app: &mut App) -> bool {
+    if app.gitui.dlg.as_mut().and_then(|d| d.hdrag.take()).is_some() { return true; }
     if app.gitui.dlg.as_mut().and_then(|d| d.drag.take()).is_none() {
         return false;
     }
@@ -691,7 +707,9 @@ pub fn release(app: &mut App) -> bool {
 pub fn wheel(app: &mut App, p: Position, delta: isize) {
     let Some(d) = app.gitui.dlg.as_mut() else { return };
     let step = |v: usize, n: usize| (v as isize + delta).clamp(0, n.saturating_sub(1) as isize) as usize;
-    if d.hits.diff.contains(p) {
+    if let Some(sb) = d.hits.hscroll.filter(|s| s.track.contains(p)) {
+        d.diff_view.hscroll = d.diff_view.hscroll.saturating_add_signed(delta).min(sb.max_off);
+    } else if d.hits.diff.contains(p) {
         let n = d.diff.as_ref().map_or(0, |x| x.rows.len());
         d.diff_view.scroll = step(d.diff_view.scroll, n);
     } else if d.hits.msg.contains(p) {
@@ -704,6 +722,15 @@ pub fn wheel(app: &mut App, p: Position, delta: isize) {
             }
         }
     }
+}
+
+pub fn hwheel(app: &mut App, p: Position, delta: isize) -> bool {
+    let Some(d) = app.gitui.dlg.as_mut() else { return false };
+    if !d.busy && d.hits.diff.contains(p) {
+        d.diff_view.hscroll = d.diff_view.hscroll.saturating_add_signed(delta);
+        return true;
+    }
+    false
 }
 
 // ---------------------------------------------------------------- drawing
@@ -802,7 +829,12 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         d.hits.diff = body;
         fill(f, body, P.editor_bg);
         if let Some(doc) = &d.diff {
-            diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), gap, &[], None, true, &mut d.diff_syntax, None);
+            let (_, _, _, hsb) = diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), gap, &[], None, true, &mut d.diff_syntax, None, false);
+            d.hits.hscroll = hsb;
+            if let Some(sb) = hsb {
+                let color = if d.hdrag.is_some() { P.slider_active } else if hover.is_some_and(|p| sb.track.contains(p)) { P.slider_hover } else { P.slider };
+                crate::ui::paint_slider(f, sb.track, sb.slider, color);
+            }
         }
     }
     let mode = g.mode;
@@ -896,6 +928,33 @@ mod tests {
     use crate::theme::P;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    #[test]
+    fn horizontal_scrollbar_and_wheel_scroll_both_diff_sides_without_changing_the_message() {
+        let (t, r) = repo("horizontal", "echo before > a.txt; git add .; git commit -qm base");
+        fs::write(r.join("a.txt"), format!("{} END\n", "x".repeat(240))).unwrap();
+        let mut app = app(&t, &r);
+        let mut tm = Terminal::new(TestBackend::new(150, 40)).unwrap();
+        app.commit();
+        settle(&mut app);
+        screen(&mut app, &mut tm);
+        let d = app.gitui.dlg.as_ref().unwrap();
+        let (sb, diff, message) = (d.hits.hscroll.unwrap(), d.hits.diff, d.msg.text());
+        app.on_mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: diff.x + 2, row: diff.y,
+            modifiers: KeyModifiers::SHIFT });
+        screen(&mut app, &mut tm);
+        assert_eq!(app.gitui.dlg.as_ref().unwrap().diff_view.hscroll, 6);
+        let sb = app.gitui.dlg.as_ref().unwrap().hits.hscroll.unwrap_or(sb);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), (sb.track.x + sb.slider.0, sb.track.y));
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), (sb.track.right() + 10, sb.track.y));
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), (sb.track.right() + 10, sb.track.y));
+        let shown = screen(&mut app, &mut tm);
+        let d = app.gitui.dlg.as_ref().unwrap();
+        assert_eq!(d.diff_view.hscroll, sb.max_off);
+        assert!(shown.contains("END"), "{shown}");
+        assert_eq!((d.diff_view.scroll, d.msg.text()), (0, message));
+        assert!(d.hdrag.is_none());
+    }
 
     #[test]
     fn splitter_geometry_defaults_minimums_and_tiny_dialogs() {

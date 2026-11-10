@@ -458,14 +458,33 @@ fn slider_color(app: &App, track: Rect, target: ScrollTarget) -> Rgba {
     }
 }
 
-fn paint_slider(f: &mut Frame, track: Rect, (start, len): (u16, u16), c: Rgba) {
+pub(crate) fn paint_slider(f: &mut Frame, track: Rect, (start, len): (u16, u16), c: Rgba) {
     let track = track.intersection(f.area());
     let buf = f.buffer_mut();
-    for y in track.y + start..(track.y + start + len).min(track.bottom()) {
-        let cell = &mut buf[(track.x, y)];
+    let horizontal = track.width > 1;
+    let span = if horizontal { track.width } else { track.height };
+    let end = start.saturating_add(len).min(span);
+    for at in start..end {
+        let cell = &mut buf[if horizontal { (track.x + at, track.y) } else { (track.x, track.y + at) }];
         let under = cell.bg;
-        cell.set_bg(c.over(under));
+        if horizontal {
+            // Keep the row clickable, but draw a narrow stroke with softened ends.
+            let glyph = if crate::theme::ascii() { "-" }
+                else if end - start == 1 { "•" }
+                else if at == start { "╶" }
+                else if at + 1 == end { "╴" }
+                else { "━" };
+            cell.set_symbol(glyph).set_fg(c.over(under));
+        } else {
+            cell.set_bg(c.over(under));
+        }
     }
+}
+
+fn horizontal_scrollbar(track: Rect, total: usize, page: usize, off: usize) -> ScrollHit {
+    let max_off = total.saturating_sub(page);
+    let slider = decor::slider(track.width, total, page, off, max_off);
+    ScrollHit { track, target: ScrollTarget::EditorHorizontal(0), slider, max_off, page }
 }
 
 fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
@@ -1096,6 +1115,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         Vec::new()
     };
     let slider_c = slider_color(app, track, target);
+    let hrow = body.bottom().saturating_sub(u16::from(border_y.is_none()));
+    let hcolor = slider_color(app, Rect::new(body.x, hrow, body.width, 1), ScrollTarget::EditorHorizontal(g));
     let sb = match app.docs.get_mut(&key) {
         None => {
             f.render_widget(Paragraph::new("Loading…").style(Style::new().fg(P.dim)), body);
@@ -1112,12 +1133,18 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
             });
             let view = &mut app.groups[g].tabs[active].view;
-            let (sb, mm, texts) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group, app.diff_syntax.entry(key.clone()).or_default(), app.find.as_ref().filter(|_| focused_group));
+            let (sb, mm, texts, hsb) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group, app.diff_syntax.entry(key.clone()).or_default(), app.find.as_ref().filter(|_| focused_group), border_y.is_some());
             if let Some((area, mini)) = mm {
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.row_of(view.scroll) });
             }
             gh.text = body;
+            gh.text.height = texts.map_or(body.height, |r| r[0].height);
             gh.diff_text = texts;
+            if let Some(mut hsb) = hsb {
+                hsb.target = ScrollTarget::EditorHorizontal(g);
+                paint_slider(f, hsb.track, hsb.slider, hcolor);
+                app.ui.scrollbars.push(hsb);
+            }
             sb
         }
         Some(Doc::Text(b)) => {
@@ -1137,6 +1164,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 })
             });
             let deco = Deco {
+                bottom_border: border_y.is_some(),
                 comfy: lay.comfy,
                 gap: lay.s.editor_padding,
                 icon_gap: lay.s.icon_gap,
@@ -1160,6 +1188,11 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             gh.marks_x = out.marks_x;
             gh.folds_x = out.folds_x;
             gh.zone = out.zone.map(|z| (z.y, z.height));
+            if let Some(mut hsb) = out.hsb {
+                hsb.target = ScrollTarget::EditorHorizontal(g);
+                paint_slider(f, hsb.track, hsb.slider, hcolor);
+                app.ui.scrollbars.push(hsb);
+            }
             if let Some((area, mini)) = out.mini {
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.row_of(view.scroll) });
             }
@@ -1266,6 +1299,8 @@ pub(crate) fn render_line(
 
 /// What an editor draws besides the text.
 struct Deco<'a> {
+    /// A card's bottom frame can carry the scrollbar without taking a text row.
+    bottom_border: bool,
     comfy: bool,
     /// Cells before the line numbers (editorPadding); the marker cell follows the number.
     gap: u16,
@@ -1319,6 +1354,7 @@ struct PeekDraw<'a> {
 struct EdOut {
     text: Rect,
     sb: Option<ScrollHit>,
+    hsb: Option<ScrollHit>,
     mini: Option<(Rect, Mini)>,
     marks_x: Option<u16>,
     folds_x: Option<u16>,
@@ -1349,7 +1385,7 @@ fn text_editor(
 ) -> EdOut {
     b.clamp_view(v);
     let mut area = area;
-    let mut out = EdOut { text: area, sb: None, mini: None, marks_x: None, folds_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0 };
+    let mut out = EdOut { text: area, sb: None, hsb: None, mini: None, marks_x: None, folds_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0 };
     if let Some(ro) = &b.readonly {
         let banner = Rect::new(area.x, area.y, area.width, 1);
         let banner_text = format!(" {}{}{ro}", icons().lock, sp(d.icon_gap));
@@ -1372,7 +1408,17 @@ fn text_editor(
     let mw = d.minimap.map_or(0, |m| minimap::width(base_text, area.width, m.max_column, m.min_text));
     let left = d.minimap.is_some_and(|m| m.left);
     let gx = area.x + if left { mw } else { 0 };
-    let text = Rect::new(gx + gutter, area.y, area.width.saturating_sub(gutter + 1 + blank + mw), area.height);
+    let mut text = Rect::new(gx + gutter, area.y, area.width.saturating_sub(gutter + 1 + blank + mw), area.height);
+    // The caret occupies a cell after the final character.
+    let longest = b.max_display_width().saturating_add(1);
+    v.hscroll = v.hscroll.min(longest.saturating_sub(text.width as usize));
+    if longest > text.width as usize && text.width > 1 && area.height > 1 {
+        if !d.bottom_border {
+            area.height -= 1;
+            text.height -= 1;
+        }
+        out.hsb = Some(horizontal_scrollbar(Rect::new(text.x, text.bottom(), text.width, 1), longest, text.width as usize, v.hscroll));
+    }
     out.text = text;
     out.marks_x = Some(gx + nums);
     let h = area.height as usize;
@@ -1837,7 +1883,7 @@ pub(crate) fn diff_mini<'a>(cache: &'a mut std::collections::HashMap<String, (Di
 pub(crate) type DiffSyntax = Option<(DiffId, [Buffer; 2])>;
 
 /// What a diff view laid out: its scrollbar, its minimap, each side's text area.
-pub(crate) type DiffHits = (Option<ScrollHit>, Option<(Rect, Mini)>, Option<[Rect; 2]>);
+pub(crate) type DiffHits = (Option<ScrollHit>, Option<(Rect, Mini)>, Option<[Rect; 2]>, Option<ScrollHit>);
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn diff_view(
@@ -1853,11 +1899,12 @@ pub(crate) fn diff_view(
     focus: bool,
     syntax: &mut DiffSyntax,
     find: Option<&Find>,
+    bottom_border: bool,
 ) -> DiffHits {
     if let Some(note) = &d.note {
         *syntax = None;
         f.render_widget(Paragraph::new(note.as_str()).style(Style::new().fg(P.dim)), area);
-        return (None, None, None);
+        return (None, None, None, None);
     }
     let n = d.rows.len();
     v.scroll = v.scroll.min(n.saturating_sub(1));
@@ -1877,8 +1924,8 @@ pub(crate) fn diff_view(
             b.highlight_view(first, lines.last().unwrap_or(first) + 1);
         }
     }
-    let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
-    let area = Rect::new(area.x, area.y, area.width.saturating_sub(1 + blank), area.height);
+    let mut track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
+    let mut area = Rect::new(area.x, area.y, area.width.saturating_sub(1 + blank), area.height);
     // As the editor's gutter: [pad][number][sign]code, pad = `gap` (editorPadding).
     let digits = n.to_string().len().max(2) as u16;
     let gw = gap + digits + 1;
@@ -1887,12 +1934,19 @@ pub(crate) fn diff_view(
     let mw = mini.as_ref().map_or(0, |m| minimap::width(right_w.saturating_sub(gw), area.width, m.cfg.max_column, m.cfg.min_text));
     let text_area = Rect::new(area.x, area.y, area.width - mw, area.height);
     let half = text_area.width.saturating_sub(1) / 2;
-    let sides = [Rect::new(area.x, area.y, half, area.height), Rect::new(area.x + half + 1, area.y, text_area.width.saturating_sub(half + 1), area.height)];
-    // Sideways no further than the longest visible line needs, on the narrower side.
+    let mut sides = [Rect::new(area.x, area.y, half, area.height), Rect::new(area.x + half + 1, area.y, text_area.width.saturating_sub(half + 1), area.height)];
+    // One range across the whole diff keeps both sides aligned while scrolling vertically.
     let tw = sides[0].width.min(sides[1].width).saturating_sub(gw) as usize;
-    let visible = d.rows.iter().skip(v.scroll).take(area.height as usize);
-    let longest = visible.flat_map(|r| [&r.left, &r.right]).flatten().map(|(_, t)| editor::display_col(t, t.len())).max().unwrap_or(0);
+    let longest = buffers.iter_mut().map(Buffer::max_display_width).max().unwrap_or(0).saturating_add(1);
     v.hscroll = v.hscroll.min(longest.saturating_sub(tw));
+    let hsb = if longest > tw && tw > 1 && area.height > 1 {
+        if !bottom_border {
+            area.height -= 1;
+            track.height -= 1;
+            for side in &mut sides { side.height -= 1; }
+        }
+        Some(horizontal_scrollbar(Rect::new(area.x + gw, area.bottom(), text_area.width.saturating_sub(gw), 1), longest, tw, v.hscroll))
+    } else { None };
     let sep: Vec<Line> = (0..area.height).map(|_| Line::raw("│")).collect();
     f.render_widget(Paragraph::new(sep).style(Style::new().fg(P.group_border)), Rect::new(area.x + half, area.y, 1, area.height));
     // Each side's text, right of its gutter: where clicks and drags select (`panel::diff_pos`).
@@ -1969,6 +2023,7 @@ pub(crate) fn diff_view(
             P.mini_slider
         });
         let deco = Deco {
+            bottom_border: false,
             comfy: false,
             gap: 0,
             icon_gap: 1,
@@ -1992,12 +2047,12 @@ pub(crate) fn diff_view(
     }
     let h = track.height as usize;
     if h == 0 {
-        return (None, out_mini, Some(texts));
+        return (None, out_mini, Some(texts), hsb);
     }
     let s = decor::slider(track.height, n + h - 1, h, v.scroll, n.saturating_sub(1));
     paint_slider(f, track, s, slider);
     diff_overview(f, &d.rows, v, track);
-    (Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h }), out_mini, Some(texts))
+    (Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h }), out_mini, Some(texts), hsb)
 }
 
 /// A stable word span without diff work on the render path. Multiple edits on

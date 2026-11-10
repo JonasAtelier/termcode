@@ -278,6 +278,7 @@ pub struct Buffer {
     last_edit: Option<Instant>,
     /// Boxed: a far jump's state makes it big, and every `Doc::Text` carries one.
     hl: Option<Box<Hl>>,
+    width_cache: Option<(u64, usize, usize)>,
 }
 
 pub fn syntaxes() -> &'static SyntaxSet {
@@ -529,6 +530,7 @@ impl Buffer {
             batch: false,
             last_edit: None,
             hl: None,
+            width_cache: None,
         }
     }
 
@@ -648,6 +650,17 @@ impl Buffer {
     /// Changes with every edit; undo/redo restore earlier values.
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Widest display line; scrolling does not rescan the file on every frame.
+    pub fn max_display_width(&mut self) -> usize {
+        let stamp = (self.version, tab());
+        if let Some((_, _, width)) = self.width_cache.filter(|&(v, t, _)| (v, t) == stamp) {
+            return width;
+        }
+        let width = self.lines.iter().map(|s| display_col(s, s.len())).max().unwrap_or(0);
+        self.width_cache = Some((stamp.0, stamp.1, width));
+        width
     }
 
     pub fn clamp(&self, p: Pos) -> Pos {
@@ -2435,6 +2448,19 @@ mod tests {
         let mut b = Buffer::empty(None);
         b.set_text(text);
         b
+    }
+
+    #[test]
+    fn horizontal_range_counts_display_cells_and_updates_after_edit_undo_redo() {
+        let mut b = buf("中e\u{301}\nlonger");
+        let mut v = View::default();
+        assert_eq!(b.max_display_width(), 6);
+        b.insert(&mut v, "12345678");
+        assert_eq!(b.max_display_width(), 11);
+        b.undo(&mut v);
+        assert_eq!(b.max_display_width(), 6);
+        b.redo(&mut v);
+        assert_eq!(b.max_display_width(), 11);
     }
 
     fn tmpdir(tag: &str) -> PathBuf {
