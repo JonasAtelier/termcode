@@ -461,6 +461,25 @@ fn scolor(s: &str) -> Option<SColor> {
     Some(SColor { r: c.0, g: c.1, b: c.2, a: 0xff })
 }
 
+/// VS Code scope names themes are written against, and what syntect's
+/// Sublime-derived Markdown grammar calls the same tokens.
+const MD_SCOPE_ALIASES: &[(&str, &str)] = &[
+    ("markup.inline.raw", "markup.raw.inline"),
+    ("punctuation.definition.quote.begin.markdown", "punctuation.definition.blockquote.markdown"),
+    ("punctuation.definition.list.begin.markdown", "punctuation.definition.list_item.markdown"),
+    ("punctuation.definition.list.begin.markdown", "markup.list.numbered.bullet.markdown"),
+];
+
+fn with_md_aliases(scope: String) -> String {
+    let aliases: Vec<String> = scope
+        .split(',')
+        .flat_map(|sel| {
+            MD_SCOPE_ALIASES.iter().filter(move |(vs, _)| sel.contains(vs)).map(move |(vs, st)| sel.replace(vs, st))
+        })
+        .collect();
+    if aliases.is_empty() { scope } else { format!("{scope}, {}", aliases.join(", ")) }
+}
+
 /// A syntect theme from a VS Code theme (`colors`, `tokenColors`,
 /// `semanticTokenColors`) and extra rules appended after the theme's own
 /// (token colour customizations). Later rules win, as in VS Code.
@@ -480,7 +499,7 @@ pub fn build_syntax(theme: &Value, extra: &[Value]) -> Syntax {
             Value::Array(a) => a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
             _ => continue,
         };
-        let Ok(sel) = ScopeSelectors::from_str(&scope) else { continue };
+        let Ok(sel) = ScopeSelectors::from_str(&with_md_aliases(scope)) else { continue };
         let s = &rule["settings"];
         t.scopes.push(ThemeItem {
             scope: sel,
@@ -770,6 +789,20 @@ mod tests {
         assert_eq!(v["a"], "x//y");
         assert_eq!(v["b"], serde_json::json!([1, 2]));
         assert_eq!(j.matches('\n').count(), 3, "block comment newlines kept for error lines");
+    }
+
+    #[test]
+    fn markdown_scopes_get_the_colours_themes_give_vscode_names() {
+        let syn = build_syntax(embedded_theme(), &[]);
+        let h = Highlighter::new(&syn.theme);
+        let fg = |scope: &str| {
+            let c = h.style_for_stack(&[Scope::new(scope).unwrap()]).foreground;
+            (c.r, c.g, c.b)
+        };
+        assert_eq!(fg("markup.raw.inline.markdown"), (0xCE, 0x91, 0x78));
+        assert_eq!(fg("punctuation.definition.blockquote.markdown"), (0x6A, 0x99, 0x55));
+        assert_eq!(fg("punctuation.definition.list_item.markdown"), (0x67, 0x96, 0xE6));
+        assert_eq!(fg("markup.list.numbered.bullet.markdown"), (0x67, 0x96, 0xE6));
     }
 
     #[test]
