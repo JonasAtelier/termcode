@@ -5219,7 +5219,9 @@ mod tests {
                 let input = app.ui.side_input;
                 let title = cell_of(&t, "SEARCH", 0).0;
                 let refresh = app.ui.find_btns.iter().find(|(_, b)| *b == FindBtn::Refresh).unwrap().0;
-                assert_eq!(input.x, app.ui.side_list.x + spacing.sidebar_padding);
+                assert_eq!(input.x, app.ui.side_list.x + spacing.sidebar_padding.saturating_sub(1) / 2);
+                assert_eq!(title, explorer_title, "Search title matches Explorer");
+                assert_eq!(refresh, explorer_refresh, "Search refresh matches Explorer");
                 assert_eq!(input.right(), refresh.right(), "input and right action share an edge");
                 assert_eq!(cell_of(&t, "Search", 0).0, title, "{compact}/{style:?}: the field's text on the left edge");
                 for (r, b) in app.ui.find_btns.clone() {

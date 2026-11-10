@@ -3,9 +3,10 @@
 use crate::panel::{App, Doc, Drag};
 use crate::settings::{self, Settings};
 use crate::theme::{icons, P};
+use crate::ui::popup_block;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use serde_json::{Map, Value};
 
 const CATEGORIES: &[&str] =
@@ -923,10 +924,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     }
     d.hits.area = r;
     f.render_widget(Clear, r);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::new().fg(P.widget_fg).bg(P.widget_bg))
-        .border_style(Style::new().fg(P.widget_border));
+    let block = popup_block(P.widget_bg, P.widget_fg, (0, 0));
     f.render_widget(block, r);
     if w < 28 || h < 10 {
         text(f, r, "Settings: enlarge terminal", Style::new().fg(P.widget_fg).bg(P.widget_bg));
@@ -938,13 +936,15 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     text(
         f,
         Rect::new(r.x + 2, r.y, w - 7, 1),
-        if d.dirty() { "Settings *  (drag to move)" } else { "Settings  (drag to move)" },
+        if d.dirty() { " Settings *  (drag to move) " } else { " Settings  (drag to move) " },
         st.add_modifier(Modifier::BOLD),
     );
     d.hits.close = Rect::new(r.right() - 4, r.y, 3, 1);
     text(f, d.hits.close, &format!(" {} ", icons().close), st);
     let nav_w = if w >= 64 { 20 } else { 15 };
-    let mut content = Rect::new(r.x + nav_w + 2, r.y + 2, w.saturating_sub(nav_w + 4), h - 7);
+    let footer_y = r.bottom() - 5;
+    let divider_x = r.x + nav_w;
+    let mut content = Rect::new(divider_x + 2, r.y + 2, w.saturating_sub(nav_w + 4), h - 8);
     let graphics = d.graphics.enabled() && !d.confirm && d.dropdown.is_none();
     let preview = (d.category == 0 && graphics && content.width >= 65 && content.height >= 17)
         .then(|| {
@@ -962,20 +962,25 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     if d.selected >= d.scroll + capacity {
         d.scroll = d.selected + 1 - capacity;
     }
-    let nav_count = ((h - 6) / 2).max(1) as usize;
+    let nav_count = ((h - 7) / 2).max(1) as usize;
     let nav_off = d.category.saturating_sub(nav_count - 1);
     for (slot, (i, label)) in CATEGORIES.iter().enumerate().skip(nav_off).take(nav_count).enumerate() {
         let y = r.y + 2 + slot as u16 * 2;
-        if y >= r.bottom() - 4 {
+        if y >= footer_y {
             break;
         }
-        let row = Rect::new(r.x + 1, y, nav_w, 1);
+        let row = Rect::new(r.x + 1, y, nav_w - 1, 1);
         let style = if i == d.category { active } else { st };
         text(f, row, &format!(" {label}"), style);
         d.hits.categories.push((row, i));
     }
-    for y in r.y + 1..r.bottom() - 1 {
-        text(f, Rect::new(content.x - 2, y, 1, 1), "│", Style::new().fg(P.widget_border).bg(P.widget_bg));
+    let border = Style::new().fg(P.widget_border).bg(P.widget_bg);
+    for y in r.y + 1..footer_y {
+        text(f, Rect::new(divider_x, y, 1, 1), icons().border[5], border);
+    }
+    text(f, Rect::new(r.x + 1, footer_y, w - 2, 1), &icons().border[4].repeat((w - 2) as usize), border);
+    for (x, glyph) in [(divider_x, "┴"), (r.x, "├"), (r.right() - 1, "┤")] {
+        text(f, Rect::new(x, footer_y, 1, 1), if crate::theme::ascii() { "+" } else { glyph }, border);
     }
     for (slot, &row) in rows.iter().skip(d.scroll).take(capacity).enumerate() {
         let y = content.y + slot as u16 * 3;
@@ -1066,7 +1071,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     }
     let selected_row = rows[d.selected];
     let key = FIELDS[selected_row].key.replace('/', ".");
-    text(f, Rect::new(content.x, r.bottom() - 5, content.width, 1), &key, st.fg(P.dim));
+    text(f, Rect::new(content.x, footer_y - 1, content.width, 1), &key, st.fg(P.dim));
     text(f, Rect::new(r.x + 2, r.bottom() - 4, w - 4, 1), &d.note, st);
     text(
         f,
@@ -1086,7 +1091,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     }
     text(
         f,
-        Rect::new(content.x, r.bottom() - 2, content.width.saturating_sub(23), 1),
+        Rect::new(r.x + 2, r.bottom() - 2, w.saturating_sub(25), 1),
         &format!("{}-{} / {}", d.scroll + 1, (d.scroll + capacity).min(rows.len()), rows.len()),
         st.fg(P.dim),
     );
@@ -1098,7 +1103,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                     Rect::new(control.x, (control.y + 1).min(r.bottom() - height - 1), control.width.min(30), height);
                 f.render_widget(Clear, popup);
                 f.render_widget(
-                    Block::default().borders(Borders::ALL).style(st).border_style(Style::new().fg(P.widget_border)),
+                    popup_block(P.widget_bg, P.widget_fg, (0, 0)),
                     popup,
                 );
                 let visible = height.saturating_sub(2) as usize;
@@ -1117,11 +1122,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         let pop = Rect::new(r.x + (w - cw) / 2, r.y + (h - ch) / 2, cw, ch);
         f.render_widget(Clear, pop);
         f.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Unsaved settings ")
-                .style(st)
-                .border_style(Style::new().fg(P.widget_border)),
+            popup_block(P.widget_bg, P.widget_fg, (0, 0)).title(" Unsaved settings "),
             pop,
         );
         text(f, Rect::new(pop.x + 2, pop.y + 2, cw - 4, 1), "Save changes? Discard also rolls back the preview.", st);

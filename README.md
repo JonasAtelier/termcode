@@ -380,11 +380,12 @@ the panel: the status bar shows the error and the last good settings stay.
 | `buttonPadding` | 2 | 1 | Spaces inside buttons (Close, Save, Discard, …) |
 | `findWidgetPadding` | 1 | 0 | Padding inside the find/replace widget's frame |
 
-Explorer rows halve the sidebar edge padding (including the leading blank) and both
-arrow/icon gaps, rounded to whole cells with at least one blank cell. Tree depth
-indentation is unchanged. Timeline and Source Control use the same tight sidebar
-padding and arrow/icon gaps. Graph branch lanes keep their original spacing.
-Search keeps its configured spacing.
+All sidebar views halve the sidebar edge padding (including the leading blank),
+so Explorer, Search and Source Control titles, fields and actions share the same
+edges. Explorer, Timeline and Source Control also halve arrow/icon gaps, rounded
+to whole cells with at least one blank cell. Tree depth indentation and graph branch
+lanes keep their original spacing. Settings uses the same rounded popup frames
+(ASCII borders in ASCII mode), with a separate full-width footer for its actions.
 
 Editor tabs halve `tabPadding` and `iconGap`, rounding up to whole cells. The
 reserved unsaved-change marker counts toward the gap before the close button.

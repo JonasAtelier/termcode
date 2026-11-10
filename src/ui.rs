@@ -435,7 +435,7 @@ fn side_title(app: &mut App, f: &mut Frame, r: Rect, title: &str, lay: Lay, bg: 
     let x = (ir.x + 1).min(rr.x);
     let reserve = if app.side == Side::Scm { 4 } else { 1 };
     let text = fit(title, rr.x.saturating_sub(x + reserve) as usize);
-    row(f, Rect::new(x, r.y, rr.x.saturating_sub(x), 1), bg, vec![Span::styled(text, Style::new().fg(P.sidebar_title))]);
+    row(f, Rect::new(x, r.y, rr.x.saturating_sub(x), 1), bg, vec![Span::styled(text, Style::new().fg(P.sidebar_title).bold())]);
     f.render_widget(Span::styled(icons().refresh, Style::new().fg(P.icon_fg).bg(bg)), rr);
     app.ui.find_btns.push((rr, FindBtn::Refresh));
 }
@@ -488,10 +488,8 @@ fn horizontal_scrollbar(track: Rect, total: usize, page: usize, off: usize) -> S
 }
 
 fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
-    if matches!(app.side, Side::Explorer | Side::Scm) {
-        // Halve the padding plus the row's leading blank, keeping whole cells.
-        lay.pad = lay.pad.saturating_sub(1) / 2;
-    }
+    // All sidebar views share the same edge, including Search inputs and actions.
+    lay.pad = lay.pad.saturating_sub(1) / 2;
     // Cards: the view's title sits on the workbench background, the sections are cards.
     let st = app.settings.blocks;
     let bg = if st == BlockStyle::Cards { crate::blocks::gutter() } else { P.sidebar_bg };
