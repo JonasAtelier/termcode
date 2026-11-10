@@ -317,7 +317,7 @@ split (kept in layout.json).
   VS Code's "This action will pull and push commits from and to '<upstream>'", OK by
   default, then pull and push) or **Publish Branch** (`push -u` to `origin`, else the only remote), and the cursor line's blame
   (rest on it or click it for the commit card).
-- Git commands: F1 "Git: …" or the "…" on the Source Control title: Pull, Push, Fetch, Fetch
+- Git commands: F1 "Git: …": Pull, Push, Fetch, Fetch
   (Prune), Sync, Publish Branch, Checkout to…, Create Branch (From)…, Delete Branch…, Merge
   Branch…, Rebase Branch…, Stash, Stash (Include Untracked), Stash Staged, Apply / Pop Latest
   Stash, Apply / Pop / Drop Stash…, Undo Last Commit, Commit (Amend), Abort Merge, Abort
@@ -443,7 +443,8 @@ the panel: the status bar shows the error and the last good settings stay.
 
 All sidebar views halve the sidebar edge padding (including the leading blank),
 so Explorer, Search and Source Control titles, fields and actions share the same
-edges. Explorer, Timeline and Source Control also halve arrow/icon gaps, rounded
+edges. With card frames, the view names sit in the top border, aligned with the
+activity bar and editor frames; Git commands remain available through F1. Explorer, Timeline and Source Control also halve arrow/icon gaps, rounded
 to whole cells with at least one blank cell. Tree depth indentation and graph branch
 lanes keep their original spacing. Settings uses the same rounded popup frames
 (ASCII borders in ASCII mode), with a separate full-width footer for its actions.

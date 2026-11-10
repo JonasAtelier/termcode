@@ -1,7 +1,7 @@
 //! Git commands for the UI. The operation runner does network and branch
 //! work off the UI thread: progress shows in the status bar, a click there
 //! cancels it, and errors go to a notification and the Git Output. Also here:
-//! the "Git:" palette commands and the SCM "…" menu, the branch and stash
+//! the "Git:" palette commands, the branch and stash
 //! pickers, confirmations (Cancel is the default for destructive ones), the
 //! status bar items (branch, sync / Publish Branch, blame), the editor's
 //! conflict actions and blame ghost text, and the quick-diff hunk API.
@@ -59,7 +59,7 @@ pub enum GitCmd {
     Cancel,
 }
 
-/// The F1 palette's Git commands, also the SCM "…" menu.
+/// The F1 palette's Git commands.
 pub const GIT_COMMANDS: &[(&str, GitCmd)] = &[
     ("Git: Pull", GitCmd::Pull),
     ("Git: Push", GitCmd::Push),
@@ -199,7 +199,6 @@ pub struct Running {
 #[derive(Clone, Debug)]
 pub enum Pick {
     Op(Op),
-    Cmd(GitCmd),
     /// Ask for a new branch's name (from this ref, else HEAD).
     NewBranch(Option<String>),
     /// Pick the ref to branch from.
@@ -293,7 +292,6 @@ pub enum Hit {
     ToastOutput,
     ToastClose,
     Pick(usize),
-    Menu,
     /// Group, region, action.
     Conflict(usize, usize, Accept),
 }
@@ -518,15 +516,6 @@ pub fn run_cmd(app: &mut App, c: GitCmd) {
     }
 }
 
-/// The SCM title's "…" menu: every Git command.
-pub fn menu(app: &mut App) {
-    let items = GIT_COMMANDS
-        .iter()
-        .map(|(l, c)| Item { label: l.trim_start_matches("Git: ").to_string(), detail: String::new(), pick: Pick::Cmd(*c) })
-        .collect();
-    open_picker(app, "Source Control: Git commands", items, None);
-}
-
 fn open_picker(app: &mut App, title: &str, items: Vec<Item>, input: Option<Input>) {
     app.gitui.card = None;
     app.gitui.cmds.picker = Some(Picker { title: title.into(), query: String::new(), items, sel: 0, off: 0, input });
@@ -700,7 +689,6 @@ fn pick(app: &mut App, i: usize) {
     let Some(&k) = p.shown().get(i) else { return };
     match p.items[k].pick.clone() {
         Pick::Op(op) => run_op(app, op),
-        Pick::Cmd(c) => run_cmd(app, c),
         Pick::NewBranch(from) => ask(app, &format!("Branch name{}", from.as_ref().map_or(String::new(), |f| format!(" (from {f})"))), Input::Branch(from)),
         Pick::BranchFrom => run_cmd(app, GitCmd::CreateBranchFrom),
         Pick::Confirm(text, button, op) => confirm(app, text, &button, op, true),
@@ -768,7 +756,6 @@ pub fn click(app: &mut App, p: Position) -> bool {
             show_output(app);
         }
         Hit::ToastClose => app.gitui.cmds.toast = None,
-        Hit::Menu => menu(app),
         Hit::Pick(_) => {}
         Hit::Conflict(g, i, a) => resolve(app, g, i, a),
     }
@@ -1087,20 +1074,6 @@ pub fn status_blame(app: &mut App, f: &mut Frame, r: Rect, gap: u16) -> u16 {
     br.x
 }
 
-/// The "…" action on the Source Control title row, left of Refresh.
-pub fn title_menu(app: &mut App, f: &mut Frame) {
-    let sb = app.ui.sidebar;
-    let Some((refresh, _)) = app.ui.find_btns.iter().find(|(_, b)| *b == crate::panel::FindBtn::Refresh) else { return };
-    let x = refresh.x.saturating_sub(3);
-    if sb.width < 16 {
-        return;
-    }
-    let r = Rect::new(x, sb.y, 1, 1);
-    let icon = if crate::theme::ascii() { "." } else { "\u{ea7c}" };
-    f.render_widget(Span::styled(icon, Style::new().fg(P.icon_fg)), r);
-    app.gitui.hits.cmds.push((r, Hit::Menu));
-}
-
 /// Popups: the picker over everything but the prompt, and the notification.
 pub fn draw_popups(app: &mut App, f: &mut Frame, area: Rect) {
     draw_toast(app, f, area);
@@ -1329,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn palette_menu_output_toast_and_cancel() {
+    fn palette_output_toast_and_cancel() {
         let (t, r) = repo("cmds", "echo a > a.txt; git add .; git commit -qm one");
         let mut app = app(&t, &r);
         let mut tm = term();
@@ -1372,20 +1345,6 @@ mod tests {
         assert!(b.text().contains(" git fetch ("), "follows new calls: {}", b.text());
         let line = b.lines.iter().find(|l| l.contains(" git fetch (")).unwrap();
         assert!(line.len() > 11 && line[..8].chars().all(|c| c.is_ascii_digit() || c == ':') && line[9..].contains(" git fetch"), "time, mark, then the command: {line}");
-        // The SCM title's "…" menu.
-        app.show_side(Side::Scm, false);
-        settle(&mut app);
-        screen(&mut app, &mut tm);
-        let m = app.gitui.hits.cmds.iter().find(|x| x.1 == Hit::Menu).unwrap().0;
-        click(&mut app, (m.x, m.y));
-        let s = screen(&mut app, &mut tm);
-        assert!(s.contains("Pull") && s.contains("Stash (Include Untracked)"), "{s}");
-        assert_eq!(app.gitui.cmds.picker.as_ref().unwrap().items.len(), GIT_COMMANDS.len());
-        typ(&mut app, "output");
-        let s = screen(&mut app, &mut tm);
-        assert!(s.contains("Show Git Output") && !s.contains("Rebase Branch"), "filtered: {s}");
-        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(app.gitui.cmds.picker.is_none());
         // A stalled fetch is cancelled from the status bar: pipes closed, no signal.
         sh(&r, "cd ..; git init -q --bare slow.git; cd r; git remote add origin ../slow.git; git config remote.origin.uploadpack 'sleep 3; git-upload-pack'");
         run_cmd(&mut app, GitCmd::Fetch);

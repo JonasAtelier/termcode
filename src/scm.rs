@@ -1216,6 +1216,7 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
     if app.git_root.is_none() {
         // VS Code's Source Control view for a folder without a repository.
         let msg = "The folder currently open doesn't have a git repository.";
+        let r = crate::blocks::card(app.settings.blocks, f, r, P.sidebar_bg, app.focus == Focus::Side);
         let area = inset(r, (s.sidebar_padding.saturating_sub(1) / 2).max(1));
         let p = ratatui::widgets::Paragraph::new(msg).wrap(ratatui::widgets::Wrap { trim: true });
         f.render_widget(p.style(Style::new().fg(P.sidebar_fg)), area);
@@ -1262,7 +1263,6 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
     let crect = Rect::new(ci.x, ci.y + 1, ci.width, ch).intersection(ci);
     let ghdr = Rect::new(gi.x, gi.y, gi.width, 1).intersection(gi);
     let grect = Rect::new(gi.x, gi.y + 1, gi.width, gh).intersection(gi);
-    crate::gitcmds::title_menu(app, f);
     pane_header(app, f, chdr, "CHANGES", co, Hit::ChangesHead, "", keys && !gf);
     app.gitui.hits.changes = crect;
     app.ui.side_list = Rect::default();

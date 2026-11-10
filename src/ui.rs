@@ -428,19 +428,18 @@ fn activity_badge(f: &mut Frame, bar: Rect, item: Rect, (ix, iy): (u16, u16), n:
     }
 }
 
-/// Sidebar title row with right-aligned action icons.
-fn side_title(app: &mut App, f: &mut Frame, r: Rect, title: &str, lay: Lay, bg: Color) {
-    fill(f, r, bg);
+/// The view name sits in the card's top border, or on its own row without cards.
+fn side_title(app: &App, f: &mut Frame, r: Rect, title: &str, lay: Lay, bg: Color) {
     let frame = crate::blocks::frame(app.settings.blocks) / 2;
-    let ir = inset(r, (lay.pad + frame).min(r.width / 2));
-    let rr = Rect::new(ir.right().saturating_sub(2).max(ir.x), r.y, ir.width.min(2), 1);
-    // The title starts on the content's left edge: the section headers' chevron column.
-    let x = (ir.x + 1).min(rr.x);
-    let reserve = if app.side == Side::Scm { 4 } else { 1 };
-    let text = fit(title, rr.x.saturating_sub(x + reserve) as usize);
-    row(f, Rect::new(x, r.y, rr.x.saturating_sub(x), 1), bg, vec![Span::styled(text, Style::new().fg(P.sidebar_title).bold())]);
-    f.render_widget(Span::styled(icons().refresh, Style::new().fg(P.icon_fg).bg(bg)), rr);
-    app.ui.find_btns.push((rr, FindBtn::Refresh));
+    if frame == 0 {
+        fill(f, r, bg);
+    }
+    let x = r.x + (lay.pad + frame + 1).min(r.width);
+    let end = r.right().saturating_sub(frame);
+    let text = fit(title, end.saturating_sub(x + frame) as usize);
+    let text = if frame > 0 { format!(" {text} ") } else { text };
+    let rr = Rect::new(x.saturating_sub(frame), r.y, (text.width() as u16).min(end.saturating_sub(x.saturating_sub(frame))), 1);
+    row(f, rr, bg, vec![Span::styled(text, Style::new().fg(P.sidebar_title).bold())]);
 }
 
 /// A slim scrollbar slider over `track`, composited over what is drawn there.
@@ -493,7 +492,7 @@ fn horizontal_scrollbar(track: Rect, total: usize, page: usize, off: usize) -> S
 fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
     // All sidebar views share the same edge, including Search inputs and actions.
     lay.pad = lay.pad.saturating_sub(1) / 2;
-    // Cards: the view's title sits on the workbench background, the sections are cards.
+    // Cards start on the same row as the activity bar and editor frames.
     let st = app.settings.blocks;
     let bg = if st == BlockStyle::Cards { crate::blocks::gutter() } else { P.sidebar_bg };
     fill(f, col, bg);
@@ -502,11 +501,12 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         Side::Search => "SEARCH",
         Side::Scm => "SOURCE CONTROL",
     };
-    side_title(app, f, Rect::new(col.x, col.y, col.width, 1), title, lay, bg);
-    // A card starts right under the title: no sectionGap rows against its border.
-    let top = col.y + 1 + if st == BlockStyle::Cards { 0 } else { lay.s.section_gap };
+    let title_row = Rect::new(col.x, col.y, col.width, 1);
+    let top = col.y + if st == BlockStyle::Cards { 0 } else { 1 + lay.s.section_gap };
     if app.side == Side::Scm {
-        return crate::scm::draw_scm(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
+        crate::scm::draw_scm(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
+        side_title(app, f, title_row, title, lay, bg);
+        return;
     }
     // The Explorer's TIMELINE pane takes the bottom of the sidebar.
     let (main, timeline) = if app.side == Side::Explorer { crate::scm::split_timeline(app, col) } else { (col, Rect::default()) };
@@ -615,6 +615,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         crate::blocks::seam(st, f, main, timeline, focused);
         crate::scm::draw_timeline(app, f, inner);
     }
+    side_title(app, f, title_row, title, lay, bg);
 }
 
 /// VS Code's tree sticky scroll over the list just drawn: the folders (Search file

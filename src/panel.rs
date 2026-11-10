@@ -420,11 +420,10 @@ pub enum FindBtn {
     Case,
     Word,
     Regex,
-    /// Search view toggles and the sidebar refresh action share this hit list.
+    /// Search view toggles share this hit list.
     SearchCase,
     SearchWord,
     SearchRegex,
-    Refresh,
 }
 
 /// Source Control list rows (indices into `scm_files`).
@@ -1879,7 +1878,7 @@ impl App {
 
     // ---- search ------------------------------------------------------------------
 
-    /// Search for the query and toggles as they are now (Enter, a toggle, Refresh).
+    /// Search for the query and toggles as they are now (Enter or a toggle).
     pub fn start_search(&mut self) {
         let req = (self.query.clone(), self.s_opts);
         self.run_search(req);
@@ -2713,12 +2712,6 @@ impl App {
                 };
                 *t = !*t;
                 self.start_search();
-            }
-            FindBtn::Refresh => {
-                self.reload_all();
-                if self.side == Side::Search {
-                    self.start_search();
-                }
             }
         }
     }
@@ -4887,8 +4880,8 @@ mod tests {
     }
 
     /// Stacked cards share one border row (├──┤) in both densities: the Explorer over
-    /// TIMELINE and CHANGES over GRAPH, no gutter row, the first card right under the
-    /// view's title. The CHANGES/GRAPH line is the splitter, lit on hover.
+    /// TIMELINE and CHANGES over GRAPH, no gutter row, the view title in the top frame.
+    /// The CHANGES/GRAPH line is the splitter, lit on hover.
     #[test]
     fn stacked_cards_share_one_border_and_the_graph_line_is_the_sash() {
         use crate::blocks::BlockStyle;
@@ -4904,7 +4897,7 @@ mod tests {
             screen(&mut app, &mut t);
             let (l, r) = (app.ui.sidebar.x, app.ui.divider.x - 1);
             let b = t.backend().buffer().clone();
-            assert_eq!(b[(l, app.ui.sidebar.y + 1)].symbol(), "╭", "{compact}: no sectionGap row above the card");
+            assert_eq!(b[(l, app.ui.sidebar.y)].symbol(), "╭", "{compact}: top borders share a row");
             let seams: Vec<u16> = (0..30).filter(|&y| b[(l, y)].symbol() == "├").collect();
             assert_eq!(seams.len(), 1, "{compact}: one shared row, Explorer over TIMELINE");
             let y = seams[0];
@@ -5311,7 +5304,7 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_headers_fields_and_actions_share_alignment() {
+    fn sidebar_titles_share_the_top_frame_without_header_actions() {
         use crate::blocks::BlockStyle;
         use crate::settings::Spacing;
         let root = repo("aligned-sidebar");
@@ -5325,9 +5318,7 @@ mod tests {
                 app.settings.blocks = style;
                 let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
                 screen(&mut app, &mut t);
-                // One left edge: the view title, the section headers' chevrons, the field
-                // text (its pill cap in the padding cell before, as the badges' and the
-                // field's caps sit in the one after Refresh on the right).
+                // The title, section chevrons and field text share a left edge.
                 let title = cell_of(&t, "EXPLORER", 0).0;
                 let section = cell_of(&t, "DEMO", 0).0;
                 let lead = 1 + crate::blocks::icon_gap(spacing.icon_gap) / 2; // chevron, gap
@@ -5337,16 +5328,28 @@ mod tests {
                 assert_eq!(cell_of(&t, "TIMELINE", 0).0, section, "{compact}/{style:?}: Timeline and Explorer headers align");
                 println!("{style:?} compact={compact} padding={}: title={title}, section={section}, file_icon={icon}", spacing.sidebar_padding);
                 let explorer_title = title;
-                let explorer_refresh = app.ui.find_btns.iter().find(|(_, b)| *b == FindBtn::Refresh).unwrap().0;
+                let top = app.ui.sidebar.y;
+                assert_eq!(cell_of(&t, "EXPLORER", 0).1, top);
+                assert!(!app.ui.find_btns.iter().any(|(r, _)| r.y == top));
+                if style == BlockStyle::Cards {
+                    let b = t.backend().buffer();
+                    for x in [app.ui.activity[0].0.x - 1, app.ui.sidebar.x, app.ui.editor_area.x] {
+                        assert_eq!(b[(x, top)].symbol(), "╭", "all three top frames align");
+                    }
+                    assert_eq!(b[(app.ui.sidebar.right() - 1, top)].symbol(), "╮");
+                }
                 app.show_side(Side::Search, true);
                 screen(&mut app, &mut t);
                 let input = app.ui.side_input;
                 let title = cell_of(&t, "SEARCH", 0).0;
-                let refresh = app.ui.find_btns.iter().find(|(_, b)| *b == FindBtn::Refresh).unwrap().0;
                 assert_eq!(input.x, app.ui.side_list.x + spacing.sidebar_padding.saturating_sub(1) / 2);
                 assert_eq!(title, explorer_title, "Search title matches Explorer");
-                assert_eq!(refresh, explorer_refresh, "Search refresh matches Explorer");
-                assert_eq!(input.right(), refresh.right(), "input and right action share an edge");
+                assert_eq!(cell_of(&t, "SEARCH", 0).1, top);
+                assert!(!app.ui.find_btns.iter().any(|(r, _)| r.y == top));
+                if style == BlockStyle::Cards {
+                    assert_eq!(input.y, top + 1, "input starts directly inside the frame");
+                    assert_eq!(t.backend().buffer()[(app.ui.sidebar.x, top)].symbol(), "╭");
+                }
                 assert_eq!(cell_of(&t, "Search", 0).0, title, "{compact}/{style:?}: the field's text on the left edge");
                 for (r, b) in app.ui.find_btns.clone() {
                     if b == FindBtn::SearchCase {
@@ -5357,18 +5360,25 @@ mod tests {
                 }
                 app.show_side(Side::Scm, false);
                 screen(&mut app, &mut t);
-                let refresh = app.ui.find_btns.iter().find(|(_, b)| *b == FindBtn::Refresh).unwrap().0;
                 assert_eq!(cell_of(&t, "SOURCE CONTROL", 0).0, explorer_title, "SCM title matches Explorer");
-                assert_eq!(refresh, explorer_refresh, "SCM refresh matches Explorer");
+                assert_eq!(cell_of(&t, "SOURCE CONTROL", 0).1, top);
+                assert!(!app.ui.find_btns.iter().any(|(r, _)| r.y == top));
+                assert!(!app.gitui.hits.cmds.iter().any(|(r, _)| r.y == top));
+                if style == BlockStyle::Cards {
+                    assert_eq!(t.backend().buffer()[(app.ui.sidebar.x, top)].symbol(), "╭");
+                }
                 assert_eq!(app.ui.commit_btn.x, app.ui.side_list.x + spacing.sidebar_padding.saturating_sub(1) / 2);
-                assert_eq!(app.ui.commit_btn.right(), refresh.right());
+                assert_eq!(app.ui.commit_btn.right(), input.right());
                 assert_eq!(cell_of(&t, "CHANGES", 0).0, section, "CHANGES matches Explorer's section label");
                 assert_eq!(cell_of(&t, "GRAPH", 0).0, section, "GRAPH matches Explorer's section label");
-                let menu = app.gitui.hits.cmds.iter().find(|(_, h)| *h == crate::gitcmds::Hit::Menu).unwrap().0;
-                assert_eq!(menu.x + 3, refresh.x, "SCM menu anchored to Refresh");
-                mouse(&mut app, MouseEventKind::Down(MouseButton::Left), menu.x, menu.y);
-                assert!(app.gitui.cmds.picker.is_some(), "menu hit follows rendered icon");
                 wait_idle(&mut app);
+                app.git_root = None;
+                let s = screen(&mut app, &mut t);
+                assert!(s.contains("repository."), "{s}");
+                assert_eq!(cell_of(&t, "SOURCE CONTROL", 0).1, top);
+                if style == BlockStyle::Cards {
+                    assert_eq!(t.backend().buffer()[(app.ui.sidebar.x, top)].symbol(), "╭", "non-Git folders keep the frame");
+                }
             }
         }
         fs::remove_dir_all(&root).unwrap();
