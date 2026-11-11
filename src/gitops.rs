@@ -468,6 +468,31 @@ pub fn log_page(repo: &Path, skip: usize, limit: usize) -> Res<Page<Commit>> {
     Ok(Page { items, more })
 }
 
+/// Write git's commit-graph cache, with changed-path Bloom filters, when the repo has
+/// none: `log --topo-order` then reads generation numbers instead of walking all of
+/// history first (72k commits: 6 ms against 0.4-1.6 s), and file history skips trees.
+/// The same file `git gc` writes; refs and objects stay untouched. At nice 19, in its
+/// own session, so a long first write never competes with the user. Ok(false): one
+/// already exists (a later commit only makes it partial, never wrong).
+pub fn ensure_commit_graph(repo: &Path) -> Res<bool> {
+    use std::os::unix::process::CommandExt;
+    let paths = read(repo, &["rev-parse", "--git-path", "objects/info/commit-graph", "--git-path", "objects/info/commit-graphs/commit-graph-chain"])?;
+    if paths.text().lines().any(|p| repo.join(p).exists()) {
+        return Ok(false);
+    }
+    let args = ["commit-graph", "write", "--reachable", "--changed-paths"];
+    let mut c = git(repo, Mode::Write);
+    c.args(args);
+    // SAFETY: nice is async-signal-safe; the closure touches nothing else.
+    unsafe {
+        c.pre_exec(|| {
+            libc::nice(19);
+            Ok(())
+        });
+    }
+    exec_detached(c, &args, None, CAP).map(|_| true)
+}
+
 /// A Timeline entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileCommit {
@@ -1333,6 +1358,28 @@ mod tests {
 
     fn index_of(r: &Path, path: &str) -> Vec<u8> {
         Command::new("git").arg("-C").arg(r).args(["cat-file", "blob", &format!(":0:{path}")]).output().unwrap().stdout
+    }
+
+    #[test]
+    fn commit_graph_is_written_once_when_missing() {
+        let t = tmp("cgraph");
+        let r = repo(&t);
+        sh(&r, "git commit -q --allow-empty -m a; git commit -q --allow-empty -m b");
+        let file = r.join(".git/objects/info/commit-graph");
+        assert!(!file.exists());
+        assert_eq!(ensure_commit_graph(&r), Ok(true));
+        assert!(file.exists());
+        let before = fs::metadata(&file).unwrap().modified().unwrap();
+        sh(&r, "git commit -q --allow-empty -m c");
+        assert_eq!(ensure_commit_graph(&r), Ok(false), "an existing one is kept");
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), before);
+        assert_eq!(log_page(&r, 0, PAGE).unwrap().items.len(), 3, "a partial graph still lists all");
+        // A split graph (gc with writeCommitGraph, fetch.writeCommitGraph) counts too.
+        let t2 = tmp("cgraph-split");
+        let r2 = repo(&t2);
+        sh(&r2, "git commit -q --allow-empty -m a; git commit-graph write --reachable --split");
+        assert!(r2.join(".git/objects/info/commit-graphs/commit-graph-chain").exists());
+        assert_eq!(ensure_commit_graph(&r2), Ok(false));
     }
 
     #[test]

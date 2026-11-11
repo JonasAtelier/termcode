@@ -62,6 +62,8 @@ pub struct Graph {
     /// HEAD as of the last load: a new HEAD reloads the graph.
     head: Option<String>,
     gen: u64,
+    /// The commit-graph cache was checked for (`gitops::ensure_commit_graph`).
+    cache_checked: bool,
 }
 
 #[derive(Default)]
@@ -525,6 +527,13 @@ pub fn load_graph(app: &mut App, reset: bool) {
     g.gen += 1;
     g.loading = true;
     let (gen, skip) = (g.gen, if reset { 0 } else { g.commits.len() });
+    // Once a session, outside the jobs count: a long first write (a kernel-size
+    // history) must not hold up quitting or a reload. Tests skip it so their Git
+    // Output stays exact; gitops tests cover the write.
+    if !std::mem::replace(&mut g.cache_checked, true) && !cfg!(test) {
+        let (r, log) = (root.clone(), app.gitui.log.clone());
+        std::thread::spawn(move || gitops::with_log(&log, || gitops::ensure_commit_graph(&r)));
+    }
     app.gitui.spawn(move || Msg::Page(gen, skip, gitops::log_page(&root, skip, PAGE)));
 }
 
