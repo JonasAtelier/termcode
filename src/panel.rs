@@ -96,9 +96,25 @@ impl Rename {
         true
     }
 
+    /// The byte the caret goes to for screen column `x` of the box `(field, scrolled)`.
+    fn caret_at(&self, (field, skip): (Rect, usize), x: u16) -> usize {
+        editor::byte_at_display(&self.text, skip + x.clamp(field.x, field.right()).saturating_sub(field.x) as usize)
+    }
+
+    /// Move the caret to `to`; with `extend` the selection grows from where it was.
+    fn go(&mut self, to: usize, extend: bool) {
+        if extend {
+            self.anchor.get_or_insert(self.cur);
+        } else {
+            self.anchor = None;
+        }
+        self.cur = to;
+    }
+
     /// One key of the field; false for keys it does not use.
     fn key(&mut self, k: KeyEvent) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         let prev = |s: &str, i: usize| s[..i].chars().next_back().map_or(i, |c| i - c.len_utf8());
         let next = |s: &str, i: usize| s[i..].chars().next().map_or(i, |c| i + c.len_utf8());
         match k.code {
@@ -121,22 +137,23 @@ impl Rename {
                     self.text.replace_range(self.cur..n, "");
                 }
             }
+            // Shift extends the selection; without it an arrow first collapses one.
             KeyCode::Left => {
-                self.cur = match self.selection() {
+                let to = match self.selection().filter(|_| !shift) {
                     Some((a, _)) => a,
                     None => prev(&self.text, self.cur),
                 };
-                self.anchor = None;
+                self.go(to, shift);
             }
             KeyCode::Right => {
-                self.cur = match self.selection() {
+                let to = match self.selection().filter(|_| !shift) {
                     Some((_, b)) => b,
                     None => next(&self.text, self.cur),
                 };
-                self.anchor = None;
+                self.go(to, shift);
             }
-            KeyCode::Home => (self.cur, self.anchor) = (0, None),
-            KeyCode::End => (self.cur, self.anchor) = (self.text.len(), None),
+            KeyCode::Home => self.go(0, shift),
+            KeyCode::End => self.go(self.text.len(), shift),
             _ => return false,
         }
         true
@@ -540,6 +557,8 @@ pub enum Drag {
     /// Tab `i` of group `g` (VS Code's tab drag and drop); active once moved 2 cells.
     Tab { g: usize, i: usize, from: Position, active: bool },
     Select(usize),
+    /// Selecting in the rename box.
+    Rename,
     /// Scrollbar slider grabbed `grab` rows below its top.
     Scroll(ScrollHit, u16),
     /// Minimap slider grabbed `grab` rows below its top.
@@ -597,8 +616,9 @@ pub enum HRow {
 pub struct Hits {
     /// Explorer rows whose names were cut, with the full name (for the tooltip).
     pub tips: Vec<(Rect, String)>,
-    /// The Explorer row being renamed.
+    /// The Explorer row being renamed, its box and the display columns scrolled off it.
     pub rename: Rect,
+    pub rename_field: (Rect, usize),
     pub close: Rect,
     pub settings_btn: Rect,
     pub activity: Vec<(Rect, Side)>,
@@ -2235,7 +2255,12 @@ impl App {
             }
             KeyCode::Char(c @ ('c' | 'x')) if ctrl => {
                 let Some(r) = self.rename.as_mut() else { return };
-                let Some((a, b)) = r.selection() else { return };
+                // Nothing selected: Ctrl+C takes the whole name, Ctrl+X nothing.
+                let (a, b) = match r.selection() {
+                    Some(s) => s,
+                    None if c == 'c' => (0, r.text.len()),
+                    None => return,
+                };
                 let text = r.text[a..b].to_string();
                 if c == 'x' {
                     r.take_selection();
@@ -4332,9 +4357,23 @@ impl App {
     }
 
     fn click(&mut self, p: Position, double: bool, shift: bool) {
-        // A click in the name being edited keeps editing; anywhere else accepts it first.
-        if self.rename.is_some() {
+        // A click in the name being edited places the caret (a second selects the word,
+        // a third the whole name, a drag selects); anywhere else accepts the name first.
+        let clicks = self.clicks;
+        if let Some(r) = self.rename.as_mut() {
             if self.ui.rename.contains(p) {
+                let field = self.ui.rename_field;
+                if field.0.contains(p) {
+                    let at = r.caret_at(field, p.x);
+                    match (clicks, editor::word_at(&r.text, at)) {
+                        (n, _) if n >= 3 => (r.anchor, r.cur) = (Some(0), r.text.len()),
+                        (2, Some((a, b))) => (r.anchor, r.cur) = (Some(a), b),
+                        _ => {
+                            r.go(at, shift);
+                            self.drag = Drag::Rename;
+                        }
+                    }
+                }
                 return;
             }
             self.commit_rename();
@@ -4796,6 +4835,13 @@ impl App {
                 } else { (p.y as i32 - sb.track.y as i32, sb.track.height) };
                 let off = decor::drag_offset(at, grab, len, sb.slider.1, sb.max_off);
                 self.set_scroll(sb.target, off);
+            }
+            Drag::Rename => {
+                let field = self.ui.rename_field;
+                if let Some(r) = self.rename.as_mut() {
+                    let at = r.caret_at(field, p.x);
+                    r.go(at, true);
+                }
             }
             Drag::Select(g) => {
                 let g = *g;
@@ -9789,6 +9835,38 @@ mod tests {
         screen(&mut app, &mut t);
         assert_eq!(t.get_cursor_position().unwrap(), Position::new(x + 6, y), "the field over the name, the caret after the stem");
         let name_dx = x - app.ui.rename.x; // where the field starts in its row
+        // Shift+arrows select, Ctrl+C copies the selection (the whole name without one).
+        key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
+        key(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.clip, "md");
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.clip, "README.md");
+        // A click places the caret, a drag selects, a double-click takes the word.
+        let field = app.ui.rename_field.0;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), field.x + 2, field.y);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), field.x + 5, field.y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), field.x + 5, field.y);
+        assert_eq!(app.rename.as_ref().unwrap().selection(), Some((2, 5)));
+        assert!(app.rename.is_some(), "still editing");
+        app.last_click = None;
+        for _ in 0..2 {
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), field.x + 7, field.y);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), field.x + 7, field.y);
+        }
+        assert_eq!(app.rename.as_ref().unwrap().selection(), Some((7, 9)), "md");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), field.x + 7, field.y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), field.x + 7, field.y);
+        assert_eq!(app.rename.as_ref().unwrap().selection(), Some((0, 9)), "a third click: all of it");
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        key(&mut app, KeyCode::End, KeyModifiers::SHIFT);
+        key(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
+        key(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
+        key(&mut app, KeyCode::Left, KeyModifiers::SHIFT);
+        assert_eq!(app.rename.as_ref().unwrap().selection(), Some((0, 6)), "README again");
         app.on_paste("N\nignored second line");
         assert_eq!(app.rename.as_ref().unwrap().text, "N.md", "a paste replaces the selection, first line only");
         screen(&mut app, &mut t);

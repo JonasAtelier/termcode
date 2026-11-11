@@ -622,11 +622,12 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         let ir = inset(rr, lay.pad);
         match app.side {
             Side::Explorer => {
-                if let Some(full) = explorer_row(app, f, ir, bg, i) {
+                let (tip, field) = explorer_row(app, f, ir, bg, i);
+                if let Some(full) = tip {
                     app.ui.tips.push((ir, full));
                 }
-                if app.rename.as_ref().is_some_and(|rn| rn.path == app.tree[i].path) {
-                    app.ui.rename = ir;
+                if let Some(field) = field {
+                    (app.ui.rename, app.ui.rename_field) = (ir, field);
                 }
             }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
@@ -691,11 +692,12 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
         match app.side {
             Side::Explorer if cap == 1 => breadcrumb_row(app, f, ir, bg, i),
             Side::Explorer => {
-                if let Some(full) = explorer_row(app, f, ir, bg, i) {
+                let (tip, field) = explorer_row(app, f, ir, bg, i);
+                if let Some(full) = tip {
                     app.ui.tips.push((ir, full));
                 }
-                if app.rename.as_ref().is_some_and(|rn| rn.path == app.tree[i].path) {
-                    app.ui.rename = ir;
+                if let Some(field) = field {
+                    (app.ui.rename, app.ui.rename_field) = (ir, field);
                 }
             }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
@@ -800,8 +802,9 @@ pub(crate) fn badge(n: usize, under: Color) -> Vec<Span<'static>> {
     pill(n.to_string(), Style::new().fg(P.badge_fg).bg(P.badge_bg), under)
 }
 
-/// One Explorer row; the full name when it had to be cut (for its tooltip).
-fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> Option<String> {
+/// One Explorer row; the full name when it had to be cut (for its tooltip), and the rename
+/// box with how far it is scrolled when this row is being renamed (for the mouse).
+fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> (Option<String>, Option<(Rect, usize)>) {
     let n = &app.tree[i];
     let ic = icons();
     let fi = &app.settings.file_icons;
@@ -842,18 +845,19 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> Optio
     }
     if let Some(rn) = app.rename.as_ref().filter(|rn| rn.path == n.path) {
         // The name's place to the row's end, as VS Code's rename box.
-        rename_field(f, Rect::new(name_x, r.y, r.right().saturating_sub(name_x), 1), rn, app.rename_conflict());
-        return None;
+        let field = Rect::new(name_x, r.y, r.right().saturating_sub(name_x), 1);
+        let skip = rename_field(f, field, rn, app.rename_conflict());
+        return (None, Some((field, skip)));
     }
-    (name != n.name).then(|| n.name.clone())
+    ((name != n.name).then(|| n.name.clone()), None)
 }
 
 /// The in-place rename box: the name on the input colours with its selection, scrolled
 /// to keep the caret in view, and the terminal cursor there. A name already taken (or not
 /// a name) is in `errorForeground` while it is typed.
-fn rename_field(f: &mut Frame, r: Rect, rn: &crate::panel::Rename, conflict: bool) {
+fn rename_field(f: &mut Frame, r: Rect, rn: &crate::panel::Rename, conflict: bool) -> usize {
     if r.width < 2 {
-        return;
+        return 0;
     }
     // Over the row's name and git letter: nothing of them may show through.
     f.render_widget(Clear, r);
@@ -866,6 +870,7 @@ fn rename_field(f: &mut Frame, r: Rect, rn: &crate::panel::Rename, conflict: boo
     let line = render_line(&rn.text, None, &sel, None, skip, w, Style::new().fg(fg).bg(P.input_bg));
     f.render_widget(line, r);
     f.set_cursor_position((r.x + (caret - skip) as u16, r.y));
+    skip
 }
 
 /// A cut Explorer name in full, in a box under its row once the pointer has rested on it
