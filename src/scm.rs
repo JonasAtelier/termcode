@@ -1605,20 +1605,33 @@ fn card_lines(c: &Card, pal: &Pal, w: usize) -> (Vec<Line<'static>>, Option<usiz
     (v, Some(at))
 }
 
-fn draw_card(app: &mut App, f: &mut Frame, area: Rect) {
-    let Some(c) = &app.gitui.card else { return };
-    let pal = pal(app);
+/// Where the card goes in `area` (beside the sidebar, by its row), with its lines and
+/// button row; None when there is no card or no room for one.
+fn card_layout(app: &App, area: Rect) -> Option<(Rect, Vec<Line<'static>>, Option<usize>)> {
+    let c = app.gitui.card.as_ref()?;
     let sb = app.ui.sidebar;
     let room_right = area.right().saturating_sub(sb.right() + 1);
     let x = if room_right >= 40 { sb.right() + 1 } else { area.x + 1 };
     let w = 64.min(area.right().saturating_sub(x + 1));
     if w < 20 || area.height < 6 {
-        return;
+        return None;
     }
-    let (lines, btn_row) = card_lines(c, &pal, (w - 4) as usize);
+    let (lines, btn_row) = card_lines(c, &pal(app), (w - 4) as usize);
     let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
     let y = c.anchor.y.min(area.bottom().saturating_sub(h + 1)).max(area.y + 1);
-    let r = Rect::new(x, y, w, h).intersection(area);
+    Some((Rect::new(x, y, w, h).intersection(area), lines, btn_row))
+}
+
+/// The card's rect this frame (once the sidebar is laid out): the editor puts no caret
+/// under it.
+pub fn card_rect(app: &App, area: Rect) -> Option<Rect> {
+    card_layout(app, area).map(|l| l.0)
+}
+
+fn draw_card(app: &mut App, f: &mut Frame, area: Rect) {
+    let Some((r, lines, btn_row)) = card_layout(app, area) else { return };
+    let Some(c) = &app.gitui.card else { return };
+    let pal = pal(app);
     f.render_widget(Clear, r);
     let block = popup_block(P.widget_bg, P.widget_fg, (1, 0));
     let inner = block.inner(r);
@@ -2075,6 +2088,40 @@ pub(crate) mod ui_tests {
 
     fn key_f7(app: &mut App) {
         key(app, KeyCode::F(7), KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn the_editor_caret_hides_while_a_commit_card_is_up() {
+        let (t, r) = repo("card-caret", "seq 1 40 > a.txt; git add .; git commit -qm 'add a'");
+        let mut app = app(&t, &r);
+        let mut tm = term();
+        app.open_file(0, "a.txt", false);
+        app.show_side(Side::Scm, false);
+        settle(&mut app);
+        app.focus = Focus::Editor;
+        screen(&mut app, &mut tm);
+        mouse(&mut app, MouseEventKind::Moved, at(&tm, "add a"));
+        std::thread::sleep(HOVER + Duration::from_millis(50));
+        assert!(tick(&mut app));
+        settle(&mut app);
+        screen(&mut app, &mut tm);
+        assert!(app.gitui.card.is_some() && app.focus == Focus::Editor);
+        let (card, text) = (app.gitui.hits.card, app.ui.groups[app.ag].text);
+        // Draw with the caret on `line` (column 0); where the terminal cursor ends up.
+        let mut caret_on = |app: &mut App, line: u16| {
+            app.ed().unwrap().1.view.cursor = crate::editor::Pos::new(line as usize, 0);
+            tm.set_cursor_position((0, 0)).unwrap();
+            screen(app, &mut tm);
+            tm.get_cursor_position().unwrap()
+        };
+        let under = Position::new(text.x, card.y + 1);
+        assert!(card.contains(under), "{card:?} {text:?}");
+        assert_eq!(caret_on(&mut app, under.y - text.y), (0, 0).into(), "no caret drawn over the card");
+        let below = Position::new(text.x, card.bottom() + 1);
+        assert!(below.y < text.bottom());
+        assert_eq!(caret_on(&mut app, below.y - text.y), below, "one off the card stays");
+        app.gitui.card = None;
+        assert_eq!(caret_on(&mut app, under.y - text.y), under, "back once it closes");
     }
 
     #[test]

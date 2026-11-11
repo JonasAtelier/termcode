@@ -1231,6 +1231,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     }
     let wrap = app.wraps(&key);
     let editor_focus = focused_group && app.focus == Focus::Editor;
+    // The terminal draws its cursor over any popup: no caret where the commit card goes.
+    let card = crate::scm::card_rect(app, f.area());
     let target = ScrollTarget::Editor(g);
     let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
     // editor.rulers with their colours resolved (none while toggled off).
@@ -1311,6 +1313,9 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 rulers: &rulers,
             };
             let out = text_editor(f, b, view, body, focused_group, editor_focus, &deco);
+            if let Some(p) = out.caret.filter(|p| !card.is_some_and(|r| r.contains(*p))) {
+                f.set_cursor_position(p);
+            }
             gh.text = out.text;
             gh.marks_x = out.marks_x;
             gh.folds_x = out.folds_x;
@@ -1574,6 +1579,8 @@ struct EdOut {
     peek_max: usize,
     /// With word wrap, each text row's (line, first display column); see `GroupHit::rows`.
     rows: Vec<Option<(usize, usize)>>,
+    /// Where the terminal cursor goes, when focused and on screen.
+    caret: Option<Position>,
 }
 
 /// Put `glyph` in a cell that is still blank (indent guides never cover text).
@@ -1597,7 +1604,7 @@ fn text_editor(
 ) -> EdOut {
     b.clamp_view(v);
     let mut area = area;
-    let mut out = EdOut { text: area, sb: None, hsb: None, mini: None, marks_x: None, folds_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0, rows: Vec::new() };
+    let mut out = EdOut { text: area, sb: None, hsb: None, mini: None, marks_x: None, folds_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0, rows: Vec::new(), caret: None };
     if let Some(ro) = &b.readonly {
         let banner = Rect::new(area.x, area.y, area.width, 1);
         let banner_text = format!(" {}{}{ro}", icons().lock, sp(d.icon_gap));
@@ -1829,7 +1836,7 @@ fn text_editor(
         let x = editor::display_col(&b.lines[c.line], c.col);
         if let Some((cy, hs)) = cursor_at.filter(|&(_, hs)| x >= hs && (d.wrap || x < hs + tw)) {
             // Wrapped, a caret after a full row's last cell stays on that cell.
-            f.set_cursor_position((text.x + (x - hs).min(tw.saturating_sub(1)) as u16, cy));
+            out.caret = Some(Position::new(text.x + (x - hs).min(tw.saturating_sub(1)) as u16, cy));
         }
     }
     if let Some(cfg) = d.minimap.filter(|_| mw > 0) {
