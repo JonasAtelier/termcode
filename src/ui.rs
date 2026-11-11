@@ -358,10 +358,10 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     f.render_widget(Line::from(left), Rect::new(lx, r.y, end.saturating_sub(lx), 1));
 }
 
-/// VS Code's activity bar: each item a 3-row cell (2 in compact) with its icon centred,
-/// the icon in a 2-cell slot (room for a non-Mono Nerd Font glyph). The active item gets
-/// `activityBar.activeBorder` down its left edge over a subtle `activeBackground`; a
-/// hovered one lights up from `inactiveForeground` to `foreground`.
+/// VS Code's activity bar: the views at the top and Settings at the bottom, each item two
+/// rows with its icon in a 2-cell slot (room for a non-Mono Nerd Font glyph). The active
+/// item gets `activityBar.activeBorder` down its left edge over a subtle `activeBackground`;
+/// a hovered one lights up from `inactiveForeground` to `foreground`.
 fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     fill(f, r, P.activity_bg);
     let ic = icons();
@@ -371,37 +371,17 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     // Two rows an item: comfortable puts the icon on the second, so one blank row lies
     // between icons and the active block takes half of it on each side.
     let (ih, off): (u16, u16) = if app.settings.compact { (2, 0) } else { (2, 1) };
-    let bottom = Rect::new(r.x, r.bottom().saturating_sub(ih).max(r.y), r.width, ih.min(r.height));
-    app.ui.settings_btn = bottom;
-    let fg = if app.settings_dlg.is_some() || app.hover.is_some_and(|p| bottom.contains(p)) { P.activity_fg } else { P.activity_inactive };
-    let symbol = ic.settings;
-    f.render_widget(Span::styled(symbol, Style::new().fg(fg)), Rect::new(bottom.x + bottom.width.saturating_sub(1) / 2, bottom.y + bottom.height.saturating_sub(1) / 2, u16::from(bottom.width > 0), u16::from(bottom.height > 0)));
-    for (i, s) in SIDES.iter().enumerate() {
-        let y = r.y + i as u16 * ih;
-        if y + ih > bottom.y || r.width == 0 {
-            break;
-        }
-        let item = Rect::new(r.x, y, r.width, ih);
-        let active = *s == app.side && app.side_visible;
-        let hot = app.hover.is_some_and(|p| item.contains(p));
-        let icon = match s {
-            Side::Explorer => ic.files,
-            Side::Search => ic.search,
-            Side::Scm => ic.scm,
-        };
-        let iy = y + off;
+    let ix = r.x + 1 + r.width.saturating_sub(3) / 2;
+    // The lifted block hugs the icon on row `iy`: the blank row above (comfortable) and
+    // below count half, a half block each (½ + 1 + ½ rows); rows from `end` on are not
+    // its to draw.
+    let item = |f: &mut Frame, iy: u16, active: bool, hot: bool, icon: &str, end: u16| {
         if active {
-            // The lifted block hugs the icon: the blank row above and below it count half,
-            // a half block each (½ + 1 + ½ rows; the row below is the next item's top).
-            // The indicator runs down its whole rows.
-            let (above, below) = (off, 1);
-            for row in (iy - above..=iy + below).filter(|&row| row < bottom.y) {
-                let pad = if row < iy { above } else { below };
-                let d = row.abs_diff(iy);
-                if 2 * d <= pad {
+            for row in (iy.saturating_sub(off)..=iy + 1).filter(|&row| row < end && row >= r.y) {
+                if row == iy {
                     fill(f, Rect::new(r.x, row, r.width, 1), active_bg);
                     f.render_widget(Span::styled("▎", Style::new().fg(P.activity_border)), Rect::new(r.x, row, 1, 1));
-                } else if 2 * d == pad + 1 {
+                } else {
                     let half = if row < iy { "▄" } else { "▀" };
                     let st = Style::new().fg(active_bg).bg(P.activity_bg);
                     f.render_widget(Span::styled(half.repeat(r.width as usize), st), Rect::new(r.x, row, r.width, 1));
@@ -409,12 +389,37 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             }
         }
         let fg = if active || hot { P.activity_fg } else { P.activity_inactive };
-        let ix = r.x + 1 + r.width.saturating_sub(3) / 2;
-        f.render_widget(Span::styled(icon, Style::new().fg(fg)), Rect::new(ix, iy, 2.min(r.right().saturating_sub(ix)), 1));
-        if *s == Side::Scm && !app.scm_files.is_empty() {
-            activity_badge(f, r, item, (ix, iy), app.scm_files.len(), if active { active_bg } else { P.activity_bg });
+        f.render_widget(Span::styled(icon.to_string(), Style::new().fg(fg)), Rect::new(ix, iy, 2.min(r.right().saturating_sub(ix)), 1));
+    };
+    // Settings: like a view's item, its icon above one blank row at the bottom; lifted
+    // while its dialog is open (the view's item is not, meanwhile).
+    let settings_open = app.settings_dlg.is_some();
+    let siy = r.bottom().saturating_sub(2).max(r.y);
+    let top = siy.saturating_sub(off).max(r.y);
+    let bottom = Rect::new(r.x, top, r.width, r.bottom() - top);
+    app.ui.settings_btn = bottom;
+    if r.width > 0 && r.height > 0 {
+        item(f, siy, settings_open, app.hover.is_some_and(|p| bottom.contains(p)), ic.settings, r.bottom());
+    }
+    for (i, s) in SIDES.iter().enumerate() {
+        let y = r.y + i as u16 * ih;
+        if y + ih > bottom.y || r.width == 0 {
+            break;
         }
-        app.ui.activity.push((item, *s));
+        let item_r = Rect::new(r.x, y, r.width, ih);
+        let active = *s == app.side && app.side_visible && !settings_open;
+        let hot = app.hover.is_some_and(|p| item_r.contains(p));
+        let icon = match s {
+            Side::Explorer => ic.files,
+            Side::Search => ic.search,
+            Side::Scm => ic.scm,
+        };
+        let iy = y + off;
+        item(f, iy, active, hot, icon, bottom.y);
+        if *s == Side::Scm && !app.scm_files.is_empty() {
+            activity_badge(f, r, item_r, (ix, iy), app.scm_files.len(), if active { active_bg } else { P.activity_bg });
+        }
+        app.ui.activity.push((item_r, *s));
     }
 }
 

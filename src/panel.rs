@@ -9290,6 +9290,30 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_item_looks_like_a_view_item_and_is_lifted_while_open() {
+        let root = repo("gear");
+        let mut app = App::new(root.clone(), None);
+        let mut t = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        screen(&mut app, &mut t);
+        let (gear, (ex, _)) = (app.ui.settings_btn, app.ui.activity[0]);
+        let (sy, ey) = (gear.bottom() - 2, ex.y + 1);
+        let icon_x = |b: &ratatui::buffer::Buffer, y: u16, icon: &str| (ex.x..ex.right()).find(|&x| b[(x, y)].symbol() == icon);
+        let b = t.backend().buffer().clone();
+        let ic = crate::theme::icons();
+        assert_eq!(icon_x(&b, sy, ic.settings), icon_x(&b, ey, ic.files), "the same icon column");
+        assert_eq!((gear.y, gear.height), (sy - 1, 3), "a blank row above the icon, one below");
+        assert_eq!(b[(ex.x, ey)].symbol(), "▎", "the view's item is lifted");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), gear.x + 2, sy);
+        screen(&mut app, &mut t);
+        assert!(app.settings_dlg.is_some());
+        let b = t.backend().buffer();
+        assert_eq!((b[(gear.x, sy)].symbol(), b[(gear.x, sy)].fg), ("▎", crate::theme::P.activity_border));
+        assert_eq!((b[(gear.x + 1, sy - 1)].symbol(), b[(gear.x + 1, sy + 1)].symbol()), ("▄", "▀"), "half a row each side, as a view's");
+        assert_ne!(b[(ex.x, ey)].symbol(), "▎", "the view's item is not, meanwhile");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn breadcrumbs_show_the_path_and_symbols_and_open_go_to_symbol() {
         let root = repo("crumbs");
         fs::write(root.join("src/lib.rs"), "struct A;\nimpl A {\n    fn run(&self) {\n        let x = 1;\n    }\n}\n").unwrap();
