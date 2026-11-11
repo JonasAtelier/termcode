@@ -260,6 +260,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         }
     }
     crate::blocks::finish(f);
+    tooltip(app, f, area);
     crate::navui::draw(app, f);
     crate::scm::draw_popups(app, f, area);
     if app.quick.is_some() {
@@ -620,7 +621,11 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         fill(f, rr, bg);
         let ir = inset(rr, lay.pad);
         match app.side {
-            Side::Explorer => explorer_row(app, f, ir, bg, i),
+            Side::Explorer => {
+                if let Some(full) = explorer_row(app, f, ir, bg, i) {
+                    app.ui.tips.push((ir, full));
+                }
+            }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => {}
         }
@@ -682,7 +687,11 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
         let ir = inset(Rect::new(list.x, y, list.width, 1), pad);
         match app.side {
             Side::Explorer if cap == 1 => breadcrumb_row(app, f, ir, bg, i),
-            Side::Explorer => explorer_row(app, f, ir, bg, i),
+            Side::Explorer => {
+                if let Some(full) = explorer_row(app, f, ir, bg, i) {
+                    app.ui.tips.push((ir, full));
+                }
+            }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
         }
@@ -785,7 +794,8 @@ pub(crate) fn badge(n: usize, under: Color) -> Vec<Span<'static>> {
     pill(n.to_string(), Style::new().fg(P.badge_fg).bg(P.badge_bg), under)
 }
 
-fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) {
+/// One Explorer row; the full name when it had to be cut (for its tooltip).
+fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> Option<String> {
     let n = &app.tree[i];
     let ic = icons();
     let fi = &app.settings.file_icons;
@@ -817,12 +827,35 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) {
             Span::styled(lead, Style::new().fg(P.icon_fg)),
             Span::styled(glyph, Style::new().fg(gfg)),
             Span::raw(gap),
-            Span::styled(name, Style::new().fg(fg)),
+            Span::styled(name.clone(), Style::new().fg(fg)),
         ],
     );
     if !right_spans.is_empty() {
         right(f, r, right_spans);
     }
+    (name != n.name).then(|| n.name.clone())
+}
+
+/// A cut Explorer name in full, in a box under its row once the pointer has rested on it
+/// (above it where the screen ends first).
+fn tooltip(app: &App, f: &mut Frame, area: Rect) {
+    let Some(t) = app.tip.as_ref().filter(|t| t.shown) else { return };
+    let shown = app.hover.is_some_and(|p| t.rect.contains(p)) && app.ui.tips.iter().any(|(r, s)| *r == t.rect && *s == t.text);
+    if !shown || area.height < 4 {
+        return;
+    }
+    // Wider than the screen: wrapped onto more rows.
+    let w = (t.text.width() as u16 + 4).min(area.width);
+    let text = Paragraph::new(t.text.clone()).wrap(ratatui::widgets::Wrap { trim: false });
+    let h = (text.line_count(w.saturating_sub(4)) as u16 + 2).min(area.height);
+    let x = t.rect.x.min(area.right().saturating_sub(w));
+    let y = if t.rect.bottom() + h <= area.bottom() { t.rect.bottom() } else { t.rect.y.saturating_sub(h) };
+    let r = Rect::new(x, y, w, h);
+    let block = popup_block(P.widget_bg, P.widget_fg, (1, 0));
+    let inner = block.inner(r);
+    f.render_widget(Clear, r);
+    f.render_widget(block, r);
+    f.render_widget(text, inner);
 }
 
 fn search_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow, i: usize) {

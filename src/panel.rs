@@ -35,6 +35,16 @@ const QDIFF_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const MAX_HITS: usize = 5_000;
 pub const MAX_GROUPS: usize = 3;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// How long the pointer rests on a cut Explorer name before its tooltip shows.
+const TIP_DELAY: Duration = Duration::from_millis(500);
+
+/// The tooltip of the cut name under the pointer: its row, the full name, since when.
+pub struct Tip {
+    pub rect: Rect,
+    pub text: String,
+    since: Instant,
+    pub shown: bool,
+}
 /// /proc/<pid>/comm of a running panel: its backups are its own.
 const PANEL_COMM: &str = "herdr-code";
 
@@ -478,6 +488,8 @@ pub enum HRow {
 /// Screen areas from the last draw, for mouse hit-testing.
 #[derive(Default)]
 pub struct Hits {
+    /// Explorer rows whose names were cut, with the full name (for the tooltip).
+    pub tips: Vec<(Rect, String)>,
     pub close: Rect,
     pub settings_btn: Rect,
     pub activity: Vec<(Rect, Side)>,
@@ -622,6 +634,7 @@ pub struct App {
     pub drag: Drag,
     pub drop: Option<(usize, Zone)>,
     last_click: Option<(Instant, Position)>,
+    pub tip: Option<Tip>,
     /// Clicks in a row on one spot (2: a word, 3: a line, in a diff).
     clicks: u8,
     pub hover: Option<Position>,
@@ -1084,6 +1097,7 @@ impl App {
             drag: Drag::None,
             drop: None,
             last_click: None,
+            tip: None,
             clicks: 0,
             hover: None,
             pending_k: false,
@@ -1737,6 +1751,10 @@ impl App {
             *dirty = true;
         }
         // Source Control timers: the resting-pointer card, the blame delay, the op spinner.
+        if let Some(t) = self.tip.as_mut().filter(|t| !t.shown && t.since.elapsed() >= TIP_DELAY) {
+            t.shown = true;
+            *dirty = true;
+        }
         *dirty |= crate::scm::tick(self);
         *dirty |= crate::session::tick(self);
         *dirty |= self.drain();
@@ -1761,7 +1779,8 @@ impl App {
             || self.nav.busy()
             || self.gitui.busy();
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
-        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due].into_iter().flatten() {
+        let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
+        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
         // A far jump's first highlighting catches up one budgeted slice per frame
@@ -1813,16 +1832,19 @@ impl App {
     fn handle_event(&mut self, ev: Event) -> bool {
         let redraw = match ev {
             Event::Key(k) if k.kind != KeyEventKind::Release => {
+                self.tip = None;
                 crate::navui::on_key(self, k);
                 self.schedule_backup();
                 crate::session::touch(self);
                 true
             }
             Event::Mouse(m) => {
+                let mut tip = false;
                 if m.kind != MouseEventKind::Moved {
                     crate::session::touch(self); // clicks, drags, wheel: tabs, cursors, scroll
+                    tip = self.tip.take().is_some_and(|t| t.shown);
                 }
-                crate::navui::on_mouse(self, m)
+                crate::navui::on_mouse(self, m) || tip
             }
             Event::Paste(s) => {
                 crate::hover::dismiss(self);
@@ -3942,11 +3964,26 @@ impl App {
                     let watched = |q: Position| self.hover_key(q) != HoverKey::default();
                     old != Some(p) && (watched(p) || old.is_some_and(watched))
                 };
-                return crate::scm::moved(self, p) || redraw || released;
+                let tip = self.track_tip(p);
+                return crate::scm::moved(self, p) || redraw || released || tip;
             }
             _ => return false,
         }
         true
+    }
+
+    /// Start the tooltip timer on a cut Explorer name, keep it while the pointer stays on
+    /// that row; true when a shown tooltip goes.
+    fn track_tip(&mut self, p: Position) -> bool {
+        let hit = self.ui.tips.iter().rev().find(|(r, _)| r.contains(p)).cloned();
+        if let (Some(t), Some((r, _))) = (&self.tip, &hit) {
+            if t.rect == *r {
+                return false;
+            }
+        }
+        let was = self.tip.as_ref().is_some_and(|t| t.shown);
+        self.tip = hit.map(|(rect, text)| Tip { rect, text, since: Instant::now(), shown: false });
+        was
     }
 
     /// Everything a frame draws differently under the pointer: the sidebar row (and a
@@ -9371,6 +9408,32 @@ mod tests {
         }
         assert!(!app.groups[0].tabs[1].preview && app.msg.contains("unsaved"));
         wait_idle(&mut app);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_cut_explorer_name_shows_in_full_once_the_pointer_rests_on_it() {
+        let root = repo("tip");
+        let long = format!("{}.txt", "a_really_long_file_name_".repeat(2));
+        fs::write(root.join(&long), "x\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        assert!(!screen(&mut app, &mut t).contains(&long), "cut in the Explorer");
+        let (r, _) = app.ui.tips.iter().find(|(_, s)| *s == long).cloned().expect("its row offers the full name");
+        assert!(app.ui.tips.iter().all(|(_, s)| *s == long), "only cut names do");
+        app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
+        assert!(app.tip.as_ref().is_some_and(|t| !t.shown), "not at once");
+        app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 6, row: r.y, modifiers: KeyModifiers::NONE });
+        let tip = app.tip.as_mut().unwrap();
+        tip.since -= TIP_DELAY; // rested long enough; moving along the row kept the timer
+        let mut dirty = false;
+        app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+        assert!(app.tip.as_ref().is_some_and(|t| t.shown), "the loop woke to draw it");
+        let (x, y) = cell_of(&t, &long, 0);
+        assert_eq!(y, r.y + 2, "in a box under the row");
+        assert!(x >= r.x);
+        assert!(app.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))));
+        assert!(app.tip.is_none(), "a key closes it");
         let _ = fs::remove_dir_all(&root);
     }
 
