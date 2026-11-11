@@ -962,7 +962,8 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
     match sr {
         SRow::Gap => {}
         SRow::MergeHead(n) => {
-            row(f, r, bg, vec![Span::styled(format!(" {}{}Merge Changes", ic.chev_down, sp(g)), Style::new().fg(P.sidebar_fg).bold())]);
+            let chev = if app.scm_folded[0] { ic.chev_right } else { ic.chev_down };
+            row(f, r, bg, vec![Span::styled(format!(" {chev}{}Merge Changes", sp(g)), Style::new().fg(P.sidebar_fg).bold())]);
             let mut spans = vec![Span::styled(format!("{} ", ic.add), Style::new().fg(P.icon_fg))];
             spans.extend(badge(*n, bg));
             let x0 = right(f, r, spans);
@@ -970,7 +971,8 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
         }
         SRow::Head(sec, n) => {
             let label = if *sec == Section::Staged { "Staged Changes" } else { "Changes" };
-            row(f, r, bg, vec![Span::styled(format!(" {}{}{label}", ic.chev_down, sp(g)), Style::new().fg(P.sidebar_fg).bold())]);
+            let chev = if app.scm_folded[usize::from(*sec != Section::Staged) + 1] { ic.chev_right } else { ic.chev_down };
+            row(f, r, bg, vec![Span::styled(format!(" {chev}{}{label}", sp(g)), Style::new().fg(P.sidebar_fg).bold())]);
             let acts: Vec<(&str, ScmAct)> = if *sec == Section::Staged {
                 vec![(ic.remove, ScmAct::UnstageAll)]
             } else {

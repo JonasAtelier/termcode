@@ -752,6 +752,8 @@ pub struct App {
     pub dirty_dirs: HashMap<String, char>,
     /// Staged files first, then Changes.
     pub scm_files: Vec<ScmFile>,
+    /// Folded Source Control groups: Merge Changes, Staged Changes, Changes.
+    pub scm_folded: [bool; 3],
     pub tree: Vec<Node>,
     pub query: String,
     /// Search toggles (Match Case, Whole Word, Regex); all off like VS Code.
@@ -1264,6 +1266,7 @@ impl App {
             marks: HashMap::new(),
             dirty_dirs: HashMap::new(),
             scm_files: Vec::new(),
+            scm_folded: [false; 3],
             tree: Vec::new(),
             query: String::new(),
             s_opts: (false, false, false),
@@ -3311,16 +3314,38 @@ impl App {
         let changes = idx(&|f| f.section == Section::Changes && f.letter != '!');
         let gap = self.settings.spacing.section_gap;
         let mut rows = Vec::new();
-        for (head, files) in [(SRow::MergeHead(merge.len()), merge), (SRow::Head(Section::Staged, staged.len()), staged)] {
+        let f = self.scm_folded;
+        for (head, files, folded) in [(SRow::MergeHead(merge.len()), merge, f[0]), (SRow::Head(Section::Staged, staged.len()), staged, f[1])] {
             if !files.is_empty() {
                 rows.push(head);
-                rows.extend(files.into_iter().map(SRow::File));
+                if !folded {
+                    rows.extend(files.into_iter().map(SRow::File));
+                }
                 rows.extend((0..gap).map(|_| SRow::Gap));
             }
         }
         rows.push(SRow::Head(Section::Changes, changes.len()));
-        rows.extend(changes.into_iter().map(SRow::File));
+        if !f[2] {
+            rows.extend(changes.into_iter().map(SRow::File));
+        }
         rows
+    }
+
+    /// Which `scm_folded` slot a group header row is.
+    pub fn scm_group(row: &SRow) -> Option<usize> {
+        match row {
+            SRow::MergeHead(_) => Some(0),
+            SRow::Head(Section::Staged, _) => Some(1),
+            SRow::Head(_, _) => Some(2),
+            _ => None,
+        }
+    }
+
+    /// Fold or unfold the group whose header is row `i` (`to`: None toggles).
+    fn fold_scm(&mut self, i: usize, to: Option<bool>) {
+        let Some(g) = self.scm_rows().get(i).and_then(Self::scm_group) else { return };
+        self.scm_folded[g] = to.unwrap_or(!self.scm_folded[g]);
+        self.move_side(0); // the selection stays in the list
     }
 
     /// A group's files; Changes leaves out the conflicts (Merge Changes has them).
@@ -3476,12 +3501,15 @@ impl App {
                 }
                 None => {}
             },
-            Side::Scm => {
-                if let Some(SRow::File(f)) = self.scm_rows().get(i) {
+            Side::Scm => match self.scm_rows().get(i) {
+                Some(SRow::File(f)) => {
                     let f = *f;
                     self.open_diff(f, !pin);
                 }
-            }
+                // A group header (click, Enter, Space) folds or unfolds its files.
+                Some(r) if Self::scm_group(r).is_some() => self.fold_scm(i, None),
+                _ => {}
+            },
         }
     }
 
@@ -4051,6 +4079,10 @@ impl App {
             }
             KeyCode::Char('r') => self.reload_all(),
             // Source Control list: + stage, - unstage, Delete discard (row or section header).
+            KeyCode::Left | KeyCode::Right if self.side == Side::Scm => {
+                let i = self.sel[s];
+                self.fold_scm(i, Some(k.code == KeyCode::Left));
+            }
             KeyCode::Char('+' | '-') | KeyCode::Delete if self.side == Side::Scm => {
                 let op = match k.code {
                     KeyCode::Char(c) => c,
@@ -10195,6 +10227,34 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!changed && !app.loading.contains_key(STATUS_KEY), "an unchanged status draws nothing");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn source_control_groups_fold_from_their_header() {
+        let root = repo("scm-fold");
+        fs::write(root.join("README.md"), "changed\n").unwrap();
+        fs::write(root.join("new.txt"), "n\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        wait(&mut app);
+        app.show_side(Side::Scm, false);
+        let mut t = Terminal::new(TestBackend::new(110, 24)).unwrap();
+        screen(&mut app, &mut t);
+        let files = |app: &App| app.scm_rows().iter().filter(|r| matches!(r, SRow::File(_))).count();
+        assert_eq!(files(&app), 2);
+        let (x, y) = cell_of(&t, "Changes", 0);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 2, y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 2, y);
+        assert_eq!(files(&app), 0, "a click on the header folds it");
+        let shown = screen(&mut app, &mut t);
+        assert!(!shown.contains("new.txt"));
+        assert_eq!(t.backend().buffer()[(x - 2, y)].symbol(), crate::theme::icons().chev_right, "the chevron says so");
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(files(&app), 2, "Right unfolds the selected header");
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(files(&app), 0, "Left folds it");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(files(&app), 2, "Enter toggles");
         let _ = fs::remove_dir_all(&root);
     }
 
