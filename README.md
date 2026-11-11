@@ -189,7 +189,8 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Ctrl+/ where it reaches (F1 Toggle Line Comment) | comment or uncomment the selected lines at their least indent; HTML, Markdown and CSS get a block comment |
 | Alt+Z | toggle word wrap for every editor (until settings reload) |
 | Ctrl+K V, Ctrl+Shift+V where it reaches | Markdown preview to the side / in place, following unsaved edits; the same key on the preview goes back to the source |
-| click / double-click | open as preview (italic tab) / keep open (upright). Double-click the tab again to make it the preview once more (not with unsaved changes). Ctrl+K Enter also pins. A white dot before the bold close cross marks unsaved changes |
+| double-click a file name in the Explorer | rename it in place (the stem selected); Enter or a click elsewhere accepts, Esc gives up. Open tabs follow it, unsaved edits included |
+| click / double-click | open as preview (italic tab) / keep open (upright); in the Explorer a double-click renames, so keep a file open with Enter or a double-click on its tab. Double-click the tab again to make it the preview once more (not with unsaved changes). Ctrl+K Enter also pins. A white dot before the bold close cross marks unsaved changes |
 | drag an Explorer file to an editor edge | open it in a new group (max 3); centre or tab bar = that group |
 | Ctrl+F, Ctrl+H | find / replace in the current file. Enter or F3 next, Shift+F3 previous, Alt+R regular expression (`$1` in the replacement), Esc closes |
 | Ctrl+S, Ctrl+W, Ctrl+Q | save (atomic), close tab, quit (all prompt for unsaved changes) |

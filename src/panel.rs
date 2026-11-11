@@ -38,6 +38,89 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// How long the pointer rests on a cut Explorer name before its tooltip shows.
 const TIP_DELAY: Duration = Duration::from_millis(500);
 
+/// An Explorer name being edited in place (double-click a file): the item, the new
+/// name, the caret and the other end of the selection (bytes).
+pub struct Rename {
+    pub path: String,
+    pub text: String,
+    pub cur: usize,
+    pub anchor: Option<usize>,
+}
+
+impl Rename {
+    /// The name with its stem selected, as VS Code starts a rename.
+    fn new(path: &str, name: &str) -> Rename {
+        let stem = name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len());
+        Rename { path: path.to_string(), text: name.to_string(), cur: stem, anchor: Some(0) }
+    }
+
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        let a = self.anchor.filter(|&a| a != self.cur)?;
+        Some((a.min(self.cur), a.max(self.cur)))
+    }
+
+    /// Pasted text replaces the selection; a name is one line, so only the first counts.
+    fn paste(&mut self, text: &str) {
+        let line = text.lines().next().unwrap_or("").trim_end_matches('\r');
+        self.take_selection();
+        self.text.insert_str(self.cur, line);
+        self.cur += line.len();
+    }
+
+    fn take_selection(&mut self) -> bool {
+        let Some((a, b)) = self.selection() else { return false };
+        self.text.replace_range(a..b, "");
+        (self.cur, self.anchor) = (a, None);
+        true
+    }
+
+    /// One key of the field; false for keys it does not use.
+    fn key(&mut self, k: KeyEvent) -> bool {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let prev = |s: &str, i: usize| s[..i].chars().next_back().map_or(i, |c| i - c.len_utf8());
+        let next = |s: &str, i: usize| s[i..].chars().next().map_or(i, |c| i + c.len_utf8());
+        match k.code {
+            KeyCode::Char('a') if ctrl => (self.anchor, self.cur) = (Some(0), self.text.len()),
+            KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => {
+                self.take_selection();
+                self.text.insert(self.cur, c);
+                self.cur += c.len_utf8();
+            }
+            KeyCode::Backspace => {
+                if !self.take_selection() && self.cur > 0 {
+                    let p = prev(&self.text, self.cur);
+                    self.text.replace_range(p..self.cur, "");
+                    self.cur = p;
+                }
+            }
+            KeyCode::Delete => {
+                if !self.take_selection() && self.cur < self.text.len() {
+                    let n = next(&self.text, self.cur);
+                    self.text.replace_range(self.cur..n, "");
+                }
+            }
+            KeyCode::Left => {
+                self.cur = match self.selection() {
+                    Some((a, _)) => a,
+                    None => prev(&self.text, self.cur),
+                };
+                self.anchor = None;
+            }
+            KeyCode::Right => {
+                self.cur = match self.selection() {
+                    Some((_, b)) => b,
+                    None => next(&self.text, self.cur),
+                };
+                self.anchor = None;
+            }
+            KeyCode::Home => (self.cur, self.anchor) = (0, None),
+            KeyCode::End => (self.cur, self.anchor) = (self.text.len(), None),
+            _ => return false,
+        }
+        true
+    }
+}
+
 /// The tooltip of the cut name under the pointer: its row, the full name, since when.
 pub struct Tip {
     pub rect: Rect,
@@ -490,6 +573,8 @@ pub enum HRow {
 pub struct Hits {
     /// Explorer rows whose names were cut, with the full name (for the tooltip).
     pub tips: Vec<(Rect, String)>,
+    /// The Explorer row being renamed.
+    pub rename: Rect,
     pub close: Rect,
     pub settings_btn: Rect,
     pub activity: Vec<(Rect, Side)>,
@@ -635,6 +720,7 @@ pub struct App {
     pub drop: Option<(usize, Zone)>,
     last_click: Option<(Instant, Position)>,
     pub tip: Option<Tip>,
+    pub rename: Option<Rename>,
     /// Clicks in a row on one spot (2: a word, 3: a line, in a diff).
     clicks: u8,
     pub hover: Option<Position>,
@@ -1098,6 +1184,7 @@ impl App {
             drop: None,
             last_click: None,
             tip: None,
+            rename: None,
             clicks: 0,
             hover: None,
             pending_k: false,
@@ -2024,6 +2111,129 @@ impl App {
         if self.side == Side::Scm {
             crate::scm::load_graph(self, true);
         }
+    }
+
+    // ---- rename ------------------------------------------------------------------
+
+    /// Edit Explorer row `i`'s name in place.
+    fn start_rename(&mut self, i: usize) {
+        let Some(n) = self.tree.get(i) else { return };
+        self.rename = Some(Rename::new(&n.path, &n.name));
+        self.focus = Focus::Side;
+        self.tip = None;
+    }
+
+    fn rename_key(&mut self, k: KeyEvent) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        match k.code {
+            KeyCode::Esc => self.rename = None,
+            KeyCode::Enter => self.commit_rename(),
+            KeyCode::Char('v') if ctrl => {
+                let text = clipboard_get().unwrap_or_else(|| self.clip.clone());
+                self.paste_text(&text);
+            }
+            KeyCode::Char(c @ ('c' | 'x')) if ctrl => {
+                let Some(r) = self.rename.as_mut() else { return };
+                let Some((a, b)) = r.selection() else { return };
+                let text = r.text[a..b].to_string();
+                if c == 'x' {
+                    r.take_selection();
+                }
+                self.msg = format!("copied via {}", clipboard_set(&text));
+                self.clip = text;
+            }
+            _ => {
+                if let Some(r) = self.rename.as_mut() {
+                    r.key(k);
+                }
+            }
+        }
+    }
+
+    /// The renamed item's path for the name in the field.
+    fn rename_target(r: &Rename) -> String {
+        let name = r.text.trim();
+        match r.path.rsplit_once('/') {
+            Some((dir, _)) => format!("{dir}/{name}"),
+            None => name.to_string(),
+        }
+    }
+
+    /// The name in the rename field is taken by another item, or is not a name: drawn red.
+    pub fn rename_conflict(&self) -> bool {
+        let Some(r) = &self.rename else { return false };
+        let name = r.text.trim();
+        if name == r.path.rsplit('/').next().unwrap_or(&r.path) {
+            return false;
+        }
+        name.is_empty() || name.contains('/') || name == "." || name == ".." || fs::symlink_metadata(self.root.join(Self::rename_target(r))).is_ok()
+    }
+
+    /// Enter, or a click elsewhere: the new name on disk; a bad or taken one is refused
+    /// and stays in the field.
+    fn commit_rename(&mut self) {
+        let Some(r) = self.rename.take() else { return };
+        let name = r.text.trim();
+        let old_name = r.path.rsplit('/').next().unwrap_or(&r.path);
+        if name == old_name {
+            return;
+        }
+        let why = if name.is_empty() {
+            Some("A file or folder name must be provided.".to_string())
+        } else if name.contains('/') || name == "." || name == ".." {
+            Some(format!("The name {name} is not valid as a file or folder name."))
+        } else {
+            None
+        };
+        let new = Self::rename_target(&r);
+        let res = match why {
+            Some(why) => Err(why),
+            None => self.rename_path(&r.path, &new),
+        };
+        match res {
+            Ok(()) => self.msg = format!("renamed {old_name} to {name}"),
+            Err(e) => {
+                self.msg = e;
+                self.rename = Some(r); // still editable: Esc gives up
+            }
+        }
+    }
+
+    /// Move `old` to `new` (both relative to the root) and every open document under it
+    /// along: buffers keep their unsaved edits and undo, tabs their place.
+    fn rename_path(&mut self, old: &str, new: &str) -> Result<(), String> {
+        let to = self.root.join(new);
+        if fs::symlink_metadata(&to).is_ok() {
+            return Err(format!("A file or folder {} already exists at this location.", base(new)));
+        }
+        fs::rename(self.root.join(old), &to).map_err(|e| format!("rename failed: {e}"))?;
+        let moved = |rel: &str| (rel == old || rel.strip_prefix(old).is_some_and(|r| r.starts_with('/'))).then(|| format!("{new}{}", &rel[old.len()..]));
+        let keys: Vec<(String, String)> = self.docs.keys().filter_map(|k| Some((k.clone(), moved(k.strip_prefix("file:")?)?))).collect();
+        for (key, rel) in keys {
+            let doc = self.docs.remove(&key);
+            self.drop_doc(&key);
+            if let Some(Doc::Text(mut b)) = doc {
+                b.path = Some(self.root.join(&rel));
+                self.docs.insert(format!("file:{rel}"), Doc::Text(b));
+            }
+        }
+        for t in self.groups.iter_mut().flat_map(|g| g.tabs.iter_mut()) {
+            if let Some((kind, rel)) = t.key.split_once(':').filter(|(k, _)| matches!(*k, "file" | "preview")) {
+                if let Some(rel) = moved(rel) {
+                    t.key = format!("{kind}:{rel}");
+                }
+            }
+        }
+        self.reload_all();
+        self.load_bases();
+        if let Some(i) = self.tree.iter().position(|n| n.path == new) {
+            self.sel[Side::Explorer as usize] = i;
+            if self.side == Side::Explorer {
+                self.move_side(0); // into view
+            }
+        }
+        self.sync_backups();
+        Ok(())
     }
 
     // ---- search ------------------------------------------------------------------
@@ -3389,6 +3599,9 @@ impl App {
         if self.prompt.is_some() {
             return self.prompt_key(k);
         }
+        if self.rename.is_some() {
+            return self.rename_key(k);
+        }
         if self.quick.is_some() {
             return self.quick_key(k, ctrl || alt);
         }
@@ -3890,6 +4103,9 @@ impl App {
         if self.prompt.is_some() || self.quick.is_some() {
             return;
         }
+        if let Some(r) = self.rename.as_mut() {
+            return r.paste(text);
+        }
         if self.gitui.dlg.is_some() {
             return crate::commitdlg::paste(self, text);
         }
@@ -4015,6 +4231,13 @@ impl App {
     }
 
     fn click(&mut self, p: Position, double: bool, shift: bool) {
+        // A click in the name being edited keeps editing; anywhere else accepts it first.
+        if self.rename.is_some() {
+            if self.ui.rename.contains(p) {
+                return;
+            }
+            self.commit_rename();
+        }
         // Every press starts afresh: a release the terminal never reported (outside
         // the pane, a lost event) must not leave a sash, tab or file drag behind.
         self.drag = Drag::None;
@@ -4134,6 +4357,12 @@ impl App {
                     if let Some(n) = self.tree.get(i).filter(|n| !n.dir) {
                         self.drag = Drag::File { rel: n.path.clone(), from: p, active: false };
                     }
+                }
+                // Double-clicking a file's name edits it in place (the first click opened it).
+                if double && self.side == Side::Explorer && self.tree.get(i).is_some_and(|n| !n.dir) {
+                    self.drag = Drag::None;
+                    self.last_click = None;
+                    return self.start_rename(i);
                 }
                 self.activate_side(i, double);
             }
@@ -9434,6 +9663,65 @@ mod tests {
         assert!(x >= r.x);
         assert!(app.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))));
         assert!(app.tip.is_none(), "a key closes it");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn double_clicking_a_file_name_renames_it_and_its_open_buffer_follows() {
+        let root = repo("rename");
+        let mut app = App::new(root.clone(), None);
+        let mut t = Terminal::new(TestBackend::new(110, 24)).unwrap();
+        screen(&mut app, &mut t);
+        let (x, y) = cell_of(&t, "README.md", 0);
+        let click = |app: &mut App| {
+            mouse(app, MouseEventKind::Down(MouseButton::Left), x + 1, y);
+            mouse(app, MouseEventKind::Up(MouseButton::Left), x + 1, y);
+        };
+        click(&mut app);
+        app.focus = Focus::Editor;
+        typ(&mut app, "edit ");
+        app.last_click = None;
+        click(&mut app);
+        click(&mut app);
+        let rn = app.rename.as_ref().expect("a double-click edits the name");
+        assert_eq!((rn.text.as_str(), rn.selection()), ("README.md", Some((0, 6))), "the stem selected");
+        screen(&mut app, &mut t);
+        assert_eq!(t.get_cursor_position().unwrap(), Position::new(x + 6, y), "the field over the name, the caret after the stem");
+        let name_dx = x - app.ui.rename.x; // where the field starts in its row
+        app.on_paste("N\nignored second line");
+        assert_eq!(app.rename.as_ref().unwrap().text, "N.md", "a paste replaces the selection, first line only");
+        screen(&mut app, &mut t);
+        let field = app.ui.rename;
+        let shown: String = (x..field.right()).map(|cx| t.backend().buffer()[(cx, y)].symbol()).collect();
+        assert_eq!(shown.trim_end(), "N.md", "nothing of the old name is left behind");
+        typ(&mut app, "OTES");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.rename.is_none(), "{}", app.msg);
+        assert!(root.join("NOTES.md").exists() && !root.join("README.md").exists());
+        assert_eq!(app.groups[0].tabs[0].key, "file:NOTES.md");
+        let Some(Doc::Text(b)) = app.docs.get("file:NOTES.md") else { panic!("the buffer moved") };
+        assert!(b.dirty() && b.lines[0] == "edit hello", "unsaved edits kept");
+        assert!(!app.docs.contains_key("file:README.md"));
+        app.focus = Focus::Editor;
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(fs::read_to_string(root.join("NOTES.md")).unwrap(), "edit hello\n", "saved to the new name");
+        // A taken name is refused and stays editable; Esc gives up.
+        let i = app.tree.iter().position(|n| n.path == "NOTES.md").unwrap();
+        app.start_rename(i);
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        typ(&mut app, "sr");
+        screen(&mut app, &mut t);
+        let at = (app.ui.rename.x + name_dx + 1, app.ui.rename.y);
+        let fg = |t: &Terminal<TestBackend>| t.backend().buffer()[at].fg;
+        assert_eq!(fg(&t), crate::theme::P.input_fg, "a free name: the input colour");
+        typ(&mut app, "c");
+        screen(&mut app, &mut t);
+        assert_eq!(fg(&t), crate::theme::P.error_fg, "src is taken: red as it is typed");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.msg.contains("already exists") && app.rename.is_some(), "{}", app.msg);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.rename.is_none() && root.join("NOTES.md").exists());
+        wait_idle(&mut app);
         let _ = fs::remove_dir_all(&root);
     }
 
