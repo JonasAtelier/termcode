@@ -594,10 +594,6 @@ pub enum ScmAct {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum FindBtn {
-    Prev,
-    Next,
-    Close,
-    ToggleReplace,
     ReplaceOne,
     ReplaceAll,
     Case,
@@ -3237,18 +3233,6 @@ impl App {
 
     pub fn find_button(&mut self, b: FindBtn) {
         match b {
-            FindBtn::Prev => self.find_step(-1),
-            FindBtn::Next => self.find_step(1),
-            FindBtn::Close => {
-                self.find = None;
-                self.focus = Focus::Editor;
-            }
-            FindBtn::ToggleReplace => {
-                if let Some(f) = self.find.as_mut().filter(|f| f.diff_side.is_none()) {
-                    f.replace = if f.replace.is_some() { None } else { Some(String::new()) };
-                    f.field = 0;
-                }
-            }
             FindBtn::ReplaceOne => self.replace_one(),
             FindBtn::ReplaceAll => self.replace_all(),
             FindBtn::Case | FindBtn::Word => {
@@ -3896,8 +3880,15 @@ impl App {
     }
 
     fn find_key(&mut self, k: KeyEvent, modded: bool, shift: bool) {
-        if k.modifiers.contains(KeyModifiers::ALT) && k.code == KeyCode::Char('r') {
-            return self.find_button(FindBtn::Regex);
+        // VS Code's find widget keys, the widget has no buttons for them.
+        if k.modifiers.contains(KeyModifiers::ALT) {
+            match k.code {
+                KeyCode::Char('r') => return self.find_button(FindBtn::Regex),
+                KeyCode::Char('c') => return self.find_button(FindBtn::Case),
+                KeyCode::Char('w') => return self.find_button(FindBtn::Word),
+                KeyCode::Enter if self.find.as_ref().is_some_and(|f| f.field == 1) => return self.replace_all(),
+                _ => {}
+            }
         }
         let Some(f) = self.find.as_mut() else { return };
         let field = if f.field == 1 { f.replace.as_mut() } else { Some(&mut f.query) };
@@ -3918,16 +3909,35 @@ impl App {
                 if let Some(s) = field {
                     s.pop();
                 }
-                self.find_refresh();
+                self.find_incremental();
             }
             KeyCode::Char(c) if !modded => {
                 if let Some(s) = field {
                     s.push(c);
                 }
-                self.find_refresh();
+                self.find_incremental();
             }
             _ => {}
         }
+    }
+
+    /// Find as you type: the first match at or after where the selection starts (so a
+    /// longer query keeps the match it extends) is selected and revealed, as VS Code does;
+    /// nothing found leaves the cursor where it is.
+    fn find_incremental(&mut self) {
+        self.find_refresh();
+        let Some(f) = self.find.as_ref().filter(|f| f.field == 0 && !f.matches.is_empty()) else { return };
+        let (matches, side) = (f.matches.clone(), f.diff_side);
+        let Some(tab) = self.active_tab() else { return };
+        let v = &mut tab.view;
+        let from = v.anchor.map_or(v.cursor, |a| a.min(v.cursor));
+        let (a, e) = matches[matches.iter().position(|(a, _)| *a >= from).unwrap_or(0)];
+        if let Some(side) = side {
+            v.side = side;
+        }
+        (v.anchor, v.cursor) = (Some(a), e);
+        self.reveal();
+        self.find_refresh();
     }
 
     fn input_key(&mut self, k: KeyEvent, ctrl: bool, alt: bool) {
@@ -10074,6 +10084,45 @@ mod tests {
         app.search_due = Some(Instant::now());
         app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
         assert!(app.hits.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_find_box_is_the_query_and_its_count_and_toggles_show_while_on() {
+        let root = repo("find-box");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "README.md", false);
+        app.focus = Focus::Editor;
+        let mut t = Terminal::new(TestBackend::new(110, 20)).unwrap();
+        key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        typ(&mut app, "l");
+        screen(&mut app, &mut t);
+        let (q, _) = app.ui.find_inputs[0];
+        let row: String = (q.x..app.ui.find_area.right()).map(|x| t.backend().buffer()[(x, q.y)].symbol()).collect();
+        let ic = crate::theme::icons();
+        assert!(row.trim_end_matches([' ', '│']).ends_with("1 of 2"), "found as typed, the count against the right edge: {row:?}");
+        assert_eq!(app.groups[0].tabs[0].view.selection(), Some((Pos::new(0, 2), Pos::new(0, 3))), "the first match selected without Enter");
+        let mark = &t.backend().buffer()[(q.x, q.y)];
+        assert_eq!((mark.symbol(), mark.fg), ("▎", crate::theme::P.focus_border), "a thin focus mark, as a tab's");
+        let top: String = (app.ui.find_area.x..app.ui.find_area.right()).map(|x| t.backend().buffer()[(x, app.ui.find_area.y)].symbol()).collect();
+        assert!(top.contains(" SEARCH "), "named in its border: {top:?}");
+        typ(&mut app, "lo");
+        assert_eq!(app.groups[0].tabs[0].view.selection(), Some((Pos::new(0, 2), Pos::new(0, 5))), "llo: a longer query keeps the match it extends");
+        typ(&mut app, "x");
+        screen(&mut app, &mut t);
+        assert_eq!(t.backend().buffer()[(q.x, q.y)].fg, crate::theme::P.error_fg, "red while nothing is found");
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        assert!(![ic.case, ic.word, ic.regex, ic.up, ic.down, ic.close, ic.chev_right].iter().any(|g| row.contains(g)), "no buttons: {row:?}");
+        assert!(app.ui.find_btns.is_empty());
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::ALT);
+        assert!(app.find.as_ref().unwrap().case);
+        screen(&mut app, &mut t);
+        let row: String = (q.x..app.ui.find_area.right()).map(|x| t.backend().buffer()[(x, q.y)].symbol()).collect();
+        assert!(row.contains(ic.case), "Match Case on: shown in the box");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.find.is_none());
         let _ = fs::remove_dir_all(&root);
     }
 

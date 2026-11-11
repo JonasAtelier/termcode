@@ -1036,6 +1036,11 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
 }
 
 pub(crate) fn input(f: &mut Frame, r: Rect, text: &str, placeholder: &str, focused: bool) {
+    input_marked(f, r, text, placeholder, focused.then_some(P.focus_border));
+}
+
+/// `input` with the focus mark in `mark`: a thin bar at its left edge, as a tab's.
+pub(crate) fn input_marked(f: &mut Frame, r: Rect, text: &str, placeholder: &str, mark: Option<Color>) {
     if r.is_empty() { return; }
     fill(f, r, P.input_bg);
     let (t, st) = if text.is_empty() {
@@ -1054,8 +1059,8 @@ pub(crate) fn input(f: &mut Frame, r: Rect, text: &str, placeholder: &str, focus
         fit(&t, w)
     };
     f.render_widget(Span::styled(format!(" {shown}"), st), r);
-    if focused {
-        f.buffer_mut().set_style(Rect::new(r.x, r.y, 1, 1), Style::new().bg(P.focus_border));
+    if let Some(c) = mark {
+        f.buffer_mut()[(r.x, r.y)].set_symbol(if crate::theme::ascii() { "|" } else { "▎" }).set_fg(c);
     }
 }
 
@@ -2381,7 +2386,6 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     let fp = lay.s.find_padding;
     let (bw, bh) = if lay.comfy { (2 + 2 * fp, 2) } else { (0, 0) };
     let off = u16::from(lay.comfy);
-    let ig = if lay.comfy { lay.s.icon_gap } else { 1 };
     let w = 52.min(text.width.saturating_sub(bw + off));
     if w < 30 || text.height < rows + bh + 1 {
         return;
@@ -2390,28 +2394,15 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     app.ui.find_area = outer;
     if lay.comfy {
         f.render_widget(Clear, outer);
-        let frame = popup_block(P.widget_bg, P.widget_fg, (fp, 0));
+        // Named in its top border, as the sidebar's views are.
+        let title = Span::styled(" SEARCH ", Style::new().fg(P.sidebar_title).bold());
+        let frame = popup_block(P.widget_bg, P.widget_fg, (fp, 0)).title(Line::from(vec![Span::raw(" "), title]));
         f.render_widget(frame, outer);
     }
     let r = Rect::new(outer.x + bw / 2, outer.y + bh / 2, w, rows).intersection(outer);
     fill(f, r, P.widget_bg);
-    // [toggle][gap][input…][count][up][ ][down][ ][close][ ]
-    let iw = w - 25 - ig;
-    // Row 1: [>] [query  Aa ab] "N of M" [↑][↓][×]
-    let toggle = Rect::new(r.x, r.y, 1, rows);
-    f.render_widget(
-        Span::styled(if fd.diff_side.is_some() { " " } else if fd.replace.is_some() { ic.chev_down } else { ic.chev_right }, Style::new().fg(P.icon_fg)),
-        Rect::new(toggle.x, r.y, 1, 1),
-    );
-    let q = Rect::new(r.x + 1 + ig, r.y, iw, 1);
-    input(f, q, &fd.query, "Find", app.focus == Focus::Find && fd.field == 0);
-    let mut btns = if fd.diff_side.is_none() { vec![(toggle, FindBtn::ToggleReplace)] } else { Vec::new() };
-    for (k, (icon, on, b)) in [(ic.case, fd.case, FindBtn::Case), (ic.word, fd.word, FindBtn::Word), (ic.regex, fd.regex, FindBtn::Regex)].into_iter().enumerate() {
-        let tr = Rect::new(q.right() - 6 + 2 * k as u16, r.y, 1, 1);
-        let st = if on { Style::new().fg(P.option_fg).bg(P.option_bg) } else { Style::new().fg(P.input_fg).bg(P.input_bg) };
-        f.render_widget(Span::styled(icon, st), tr);
-        btns.push((tr, b));
-    }
+    // Row 1: [query…] then "N of M" against the right edge; no buttons: Enter / Shift+Enter
+    // step, Esc closes, Alt+C / Alt+W / Alt+R toggle (shown in the box only while on).
     let count = match (fd.matches.len(), fd.cur) {
         _ if fd.invalid => "Bad regex".to_string(),
         (0, _) if !fd.query.is_empty() => "No results".to_string(),
@@ -2419,14 +2410,24 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
         (n, Some(c)) => format!("{} of {n}", c + 1),
         (n, None) => format!("? of {n}"),
     };
-    let count_st = Style::new().fg(if count == "No results" || fd.invalid { P.error_fg } else { P.widget_fg });
-    f.render_widget(Span::styled(format!(" {count}"), count_st), Rect::new(q.right(), r.y, 13, 1));
-    let bx = r.right() - 7;
-    for (k, (icon, b)) in [(ic.up, FindBtn::Prev), (ic.down, FindBtn::Next), (ic.close, FindBtn::Close)].into_iter().enumerate() {
-        let br = Rect::new(bx + 2 * k as u16, r.y, 1, 1);
-        f.render_widget(Span::styled(icon, Style::new().fg(P.icon_fg)), br);
-        btns.push((br, b));
+    let cw = 12; // "No results", "999 of 9999"
+    let iw = w - cw;
+    let q = Rect::new(r.x, r.y, iw, 1);
+    // The focus mark turns red while the query finds nothing.
+    let missed = fd.invalid || (fd.matches.is_empty() && !fd.query.is_empty());
+    let mark = (app.focus == Focus::Find && fd.field == 0).then_some(if missed { P.error_fg } else { P.focus_border });
+    input_marked(f, q, &fd.query, "Find", mark);
+    let on: Vec<&str> = [(ic.case, fd.case), (ic.word, fd.word), (ic.regex, fd.regex)].into_iter().filter(|t| t.1).map(|t| t.0).collect();
+    for (k, icon) in on.iter().rev().enumerate() {
+        let tr = Rect::new(q.right().saturating_sub(2 + 2 * k as u16), r.y, 1, 1);
+        f.render_widget(Span::styled(*icon, Style::new().fg(P.option_fg).bg(P.option_bg)), tr);
     }
+    // A terminal has one font size: the count is dimmed to sit back instead.
+    let count_st = Style::new().fg(if count == "No results" || fd.invalid { P.error_fg } else { P.dim });
+    let shown = fit(&count, cw as usize - 1);
+    let cx = r.right().saturating_sub(shown.width() as u16);
+    f.render_widget(Span::styled(shown, count_st), Rect::new(cx, r.y, r.right() - cx, 1));
+    let mut btns = Vec::new();
     app.ui.find_inputs.push((q, 0));
     if let Some(rep) = &fd.replace {
         let rq = Rect::new(q.x, r.y + 1, iw, 1);

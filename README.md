@@ -198,7 +198,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | double-click a file or folder name in the Explorer | rename it in place (a file's stem or a folder's whole name selected; 2 clicks in the box select a word, 3 all of it); Enter or a click elsewhere accepts, Esc gives up. Open tabs follow it, unsaved edits included |
 | click / double-click | open as preview (italic tab) / keep open (upright); in the Explorer a double-click renames, so keep a file open with Enter or a double-click on its tab. Double-click the tab again to make it the preview once more (not with unsaved changes). Ctrl+K Enter also pins. A white dot before the bold close cross marks unsaved changes |
 | drag an Explorer file to an editor edge | open it in a new group (max 3); centre or tab bar = that group |
-| Ctrl+F, Ctrl+H | find / replace in the current file. Enter or F3 next, Shift+F3 previous, Alt+R regular expression (`$1` in the replacement), Esc closes |
+| Ctrl+F, Ctrl+H | find / replace in the current file: the query box with the match count at its right edge, no buttons. Enter or F3 next, Shift+F3 previous, Alt+C match case, Alt+W whole word, Alt+R regular expression (`$1` in the replacement; a toggle that is on shows in the box), Enter in Replace replaces one, Alt+Enter all, Esc closes |
 | Ctrl+S, Ctrl+W, Ctrl+Q | save (atomic), close tab, quit (all prompt for unsaved changes) |
 | Ctrl+Z, Ctrl+Y | undo, redo |
 | gutter fold button, Ctrl+Shift+[ / ] | fold / unfold the current block |
