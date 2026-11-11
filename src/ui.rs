@@ -1031,8 +1031,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     let edge = sp(pad.div_ceil(2).max(1));
     let tail_edge = sp(pad / 2 + 1);
     let gap = sp(lay.s.icon_gap.div_ceil(2));
-    // The dirty marker's fixed slot already contributes one cell before close.
-    let close_gap = sp(lay.s.icon_gap.saturating_sub(1) / 2);
+    // The name keeps the icon's gap from the dirty dot after it.
+    let close_gap = gap.clone();
     // A dragged tab's slot in this bar: the cell before tab n, or after the last one.
     let slot = match app.drop {
         Some((dg, Zone::Tab(n))) if dg == g => Some(n),
@@ -1049,7 +1049,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         let active = i == app.groups[g].active;
         // Dirty state and close have separate fixed slots, so hover never hides an edit.
         let label = format!("{edge}{glyph}{gap}{}{close_gap}", fit(&title, 30));
-        let tail_w = 2 + tail_edge.len() as u16;
+        // Then [dirty dot] [blank] [cross]: fixed slots, so editing never moves the cross.
+        let tail_w = 3 + tail_edge.len() as u16;
         let w = label.width() as u16 + tail_w;
         if x + w > split.x {
             break;
@@ -1065,9 +1066,9 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         if t.preview {
             st = st.add_modifier(Modifier::ITALIC);
         }
-        let xr = Rect::new(x + w - tail_w + 1, tabbar.y, 1, 1);
+        let xr = Rect::new(x + w - tail_w + 2, tabbar.y, 1, 1);
         let dot = if dirty { ic.dirty } else { " " };
-        let tail = if active || hovered { ic.close } else { " " };
+        let tail = if active || hovered { ic.tab_close } else { " " };
         let lead = edge.to_string();
         let name = label[lead.len() + glyph.len()..].to_string();
         row(
@@ -1078,7 +1079,11 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 Span::styled(lead, st),
                 Span::styled(glyph, Style::new().fg(gfg).bg(bg)),
                 Span::styled(name, st),
-                Span::styled(format!("{dot}{tail}{tail_edge}"), Style::new().fg(fg).bg(bg)),
+                // Unsaved changes: a white dot, whatever the tab's colours.
+                Span::styled(dot, Style::new().fg(Color::Rgb(255, 255, 255)).bg(bg)),
+                Span::styled(" ", Style::new().bg(bg)),
+                Span::styled(tail, Style::new().fg(fg).bg(bg).add_modifier(Modifier::BOLD)),
+                Span::styled(tail_edge.clone(), Style::new().bg(bg)),
             ],
         );
         if active {
@@ -1086,7 +1091,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" },
                 Style::new().fg(color).bg(bg).bold()), Rect::new(x, tabbar.y, 1, 1));
         }
-        gh.tabs.push((Rect::new(x, tabbar.y, w - tail_w + 1, 1), xr));
+        gh.tabs.push((Rect::new(x, tabbar.y, w - tail_w + 2, 1), xr));
         x += w;
     }
     if let Some(n) = slot.filter(|&n| n >= gh.tabs.len()) {

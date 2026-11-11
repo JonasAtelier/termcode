@@ -2450,6 +2450,22 @@ impl App {
         }
     }
 
+    /// Double-click on a tab: keep it open (upright), or make it the group's preview again
+    /// (italic, replaced by the next file opened as a preview). One preview a group: the one
+    /// it had is kept open instead. A tab with unsaved changes stays open.
+    fn toggle_keep_open(&mut self, g: usize, i: usize) {
+        let Some(t) = self.groups.get(g).and_then(|grp| grp.tabs.get(i)) else { return };
+        if t.preview {
+            self.groups[g].tabs[i].preview = false;
+        } else if matches!(self.docs.get(&t.key), Some(Doc::Text(b)) if b.dirty()) {
+            self.msg = "unsaved changes keep the tab open".into();
+        } else {
+            for (k, t) in self.groups[g].tabs.iter_mut().enumerate() {
+                t.preview = k == i;
+            }
+        }
+    }
+
     fn pin_active(&mut self) {
         if let Some(t) = self.active_tab() {
             t.preview = false;
@@ -4096,7 +4112,9 @@ impl App {
                 self.ag = g;
                 self.focus = Focus::Editor;
                 if double {
-                    self.groups[g].tabs[i].preview = false;
+                    self.toggle_keep_open(g, i);
+                    // A third click starts over: another double-click toggles it back.
+                    self.last_click = None;
                 }
                 self.drag = Drag::Tab { g, i, from: p, active: false };
                 return self.find_refresh();
@@ -4968,8 +4986,11 @@ mod tests {
         app.hover = Some(Position::new(close.x, close.y));
         screen(&mut app, &mut t);
         let b = t.backend().buffer();
-        assert_eq!(b[(close.x - 1, close.y)].symbol(), crate::theme::icons().dirty);
-        assert_eq!(b[(close.x, close.y)].symbol(), crate::theme::icons().close);
+        let (dot, cross) = (&b[(close.x - 2, close.y)], &b[(close.x, close.y)]);
+        assert_eq!((dot.symbol(), dot.fg), (crate::theme::icons().dirty, Color::Rgb(255, 255, 255)), "a white dot");
+        assert_eq!(b[(close.x - 1, close.y)].symbol(), " ", "a blank between the dot and the cross");
+        assert_eq!(cross.symbol(), crate::theme::icons().tab_close);
+        assert!(cross.modifier.contains(Modifier::BOLD), "the cross is bold");
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), close.x, close.y);
         assert!(app.prompt.is_some(), "closing an edited file still asks to save");
         wait_idle(&mut app);
@@ -4997,7 +5018,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(!app.groups[0].tabs[0].preview);
         let s = screen(&mut app, &mut t);
-        let gap = " ".repeat((app.settings.spacing.icon_gap.saturating_sub(1) / 2) as usize);
+        let gap = " ".repeat(app.settings.spacing.icon_gap.div_ceil(2) as usize); // the icon's gap
         assert!(s.contains(&format!("main.rs{gap}{}", crate::theme::icons().dirty)) && s.contains("Ln 2, Col 1"), "{s}");
         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert!(fs::read_to_string(root.join("src/main.rs")).unwrap().starts_with("// hi\nfn main()"));
@@ -5782,7 +5803,7 @@ mod tests {
                 assert_eq!(buf[(tr.x + sp.tab_padding.div_ceil(4) + k, tr.y)].symbol(), " ", "{tag}: gap after the tab icon");
                 assert_eq!(buf[(xr.x - k, xr.y)].symbol(), " ", "{tag}: gap before the close button");
             }
-            assert_eq!(buf[(xr.x, xr.y)].symbol(), crate::theme::icons().close, "{tag}");
+            assert_eq!(buf[(xr.x, xr.y)].symbol(), crate::theme::icons().tab_close, "{tag}");
             // The title Close button uses half the configured edge padding, rounded up.
             assert_eq!(app.ui.close.right() + sp.title_padding.div_ceil(2), 120, "{tag}");
             mouse(&mut app, MouseEventKind::Down(MouseButton::Left), xr.x, xr.y);
@@ -9310,6 +9331,46 @@ mod tests {
         assert_eq!((b[(gear.x, sy)].symbol(), b[(gear.x, sy)].fg), ("▎", crate::theme::P.activity_border));
         assert_eq!((b[(gear.x + 1, sy - 1)].symbol(), b[(gear.x + 1, sy + 1)].symbol()), ("▄", "▀"), "half a row each side, as a view's");
         assert_ne!(b[(ex.x, ey)].symbol(), "▎", "the view's item is not, meanwhile");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn double_clicking_a_tab_toggles_keep_open_and_italics() {
+        let root = repo("keep-open");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "README.md", true);
+        app.open_file(0, "src/main.rs", false);
+        app.groups[0].active = 0;
+        let mut t = Terminal::new(TestBackend::new(110, 20)).unwrap();
+        screen(&mut app, &mut t);
+        let (tr, _) = app.ui.groups[0].tabs[0];
+        let italic = |t: &Terminal<TestBackend>| t.backend().buffer()[(tr.x + 5, tr.y)].modifier.contains(Modifier::ITALIC);
+        assert!(app.groups[0].tabs[0].preview && italic(&t), "a preview tab is italic");
+        let double = |app: &mut App| {
+            for _ in 0..2 {
+                mouse(app, MouseEventKind::Down(MouseButton::Left), tr.x + 5, tr.y);
+                mouse(app, MouseEventKind::Up(MouseButton::Left), tr.x + 5, tr.y);
+            }
+        };
+        double(&mut app);
+        screen(&mut app, &mut t);
+        assert!(!app.groups[0].tabs[0].preview && !italic(&t), "kept open: upright");
+        double(&mut app);
+        screen(&mut app, &mut t);
+        assert!(app.groups[0].tabs[0].preview && italic(&t), "the second double-click: preview again");
+        assert!(!app.groups[0].tabs[1].preview, "one preview a group");
+        // A tab with unsaved changes stays open.
+        app.open_file(0, "src/main.rs", false);
+        app.focus = Focus::Editor;
+        typ(&mut app, "x");
+        screen(&mut app, &mut t);
+        let (tr, _) = app.ui.groups[0].tabs[1];
+        for _ in 0..2 {
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), tr.x + 5, tr.y);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), tr.x + 5, tr.y);
+        }
+        assert!(!app.groups[0].tabs[1].preview && app.msg.contains("unsaved"));
+        wait_idle(&mut app);
         let _ = fs::remove_dir_all(&root);
     }
 
