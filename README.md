@@ -5,7 +5,7 @@ Run `herdr-code [PATH]` like VS Code's `code PATH`: a VS
 Code-like editor for that folder, file or repo **in the same terminal**, like vim; quitting
 returns to the shell. `herdr-code --tab` opens it as a `Code: <name>` tab of the herdr workspace
 instead. It has an activity
-bar, a resizable Explorer (with Timeline) / Search /
+bar, a resizable Explorer (with Timeline) / Search (with References) /
 Source Control (Changes over Graph) sidebar, editor groups with preview tabs, a side-by-side diff, and
 the "Visual Studio Dark - C++" colours (or any VS Code theme, see [Settings](#settings)).
 
@@ -324,6 +324,10 @@ split (kept in layout.json).
   is remembered across files and restarts. Click its header to collapse or expand it.
   The active file's commits (renames followed), 100 at a time; click one
   for that commit's diff of the file.
+- Search REFERENCES: the references of the symbol at the cursor, by file, looked up
+  again once the cursor rests on another symbol (0.4 s); off a symbol the last ones
+  stay. Click a reference (or a file, for its first) to go there. Click its header to
+  collapse or expand it.
 - Status bar: the branch (`*` unstaged, `+` staged changes; click: checkout a local, remote
   or tag ref, Create new branch…, Create new branch from…), then `↓behind ↑ahead` (click:
   VS Code's "This action will pull and push commits from and to '<upstream>'", OK by

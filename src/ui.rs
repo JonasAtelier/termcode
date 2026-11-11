@@ -530,8 +530,11 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         side_title(app, f, title_row, title, lay, bg);
         return;
     }
-    // The Explorer's TIMELINE pane takes the bottom of the sidebar.
-    let (main, timeline) = if app.side == Side::Explorer { crate::scm::split_timeline(app, col) } else { (col, Rect::default()) };
+    // The Explorer's TIMELINE pane, Search's REFERENCES, takes the bottom of the sidebar.
+    let (main, timeline) = match app.side {
+        Side::Explorer => crate::scm::split_timeline(app, col),
+        _ => crate::scm::split_refs(app, col),
+    };
     let main = Rect::new(col.x, top, col.width, main.bottom().saturating_sub(top));
     // A line between sections runs from the vertical line left of the sidebar to the right one.
     let (main, timeline) = crate::blocks::stack(st, main, timeline, col.x.saturating_sub(1), col.right());
@@ -643,7 +646,11 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
     if !timeline.is_empty() {
         let inner = crate::blocks::card(st, f, timeline, P.sidebar_bg, false);
         crate::blocks::seam(st, f, main, timeline, focused);
-        crate::scm::draw_timeline(app, f, inner);
+        if app.side == Side::Explorer {
+            crate::scm::draw_timeline(app, f, inner);
+        } else {
+            crate::scm::draw_refs(app, f, inner);
+        }
     }
     side_title(app, f, title_row, title, lay, bg);
 }
@@ -934,26 +941,27 @@ fn search_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow, i: us
         }
         HRow::Hit(h) => {
             let h = &app.hits[*h];
-            let t = &h.text;
-            let s = h.col.saturating_sub(1).min(t.len());
-            let e = (s + app.query.len()).min(t.len());
-            let (a, m, z) = if t.is_char_boundary(s) && t.is_char_boundary(e) { (&t[..s], &t[s..e], &t[e..]) } else { (t.as_str(), "", "") };
-            let a = a.trim_start();
-            let keep = a.chars().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<String>();
-            let clean = |s: &str| s.replace('\t', " ").chars().map(|c| if c.is_control() { '·' } else { c }).collect::<String>();
-            row(
-                f,
-                r,
-                bg,
-                vec![
-                    Span::raw(sp(3 + 2 * g)), // under the file name
-                    Span::styled(clean(&keep), Style::new().fg(P.sidebar_fg)),
-                    Span::styled(clean(m), Style::new().fg(P.sidebar_fg).bg(P.find_other)),
-                    Span::styled(clean(z), Style::new().fg(P.sidebar_fg)),
-                ],
-            );
+            let mut spans = vec![Span::raw(sp(3 + 2 * g))]; // under the file name
+            spans.extend(match_spans(&h.text, h.col, app.query.len()));
+            row(f, r, bg, spans);
         }
     }
+}
+
+/// A result line with its match (`len` bytes at 1-based byte column `col`) marked, and
+/// at most 12 characters kept before it.
+pub(crate) fn match_spans(t: &str, col: usize, len: usize) -> Vec<Span<'static>> {
+    let s = col.saturating_sub(1).min(t.len());
+    let e = (s + len).min(t.len());
+    let (a, m, z) = if t.is_char_boundary(s) && t.is_char_boundary(e) { (&t[..s], &t[s..e], &t[e..]) } else { (t, "", "") };
+    let a = a.trim_start();
+    let keep = a.chars().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<String>();
+    let clean = |s: &str| s.replace('\t', " ").chars().map(|c| if c.is_control() { '·' } else { c }).collect::<String>();
+    vec![
+        Span::styled(clean(&keep), Style::new().fg(P.sidebar_fg)),
+        Span::styled(clean(m), Style::new().fg(P.sidebar_fg).bg(P.find_other)),
+        Span::styled(clean(z), Style::new().fg(P.sidebar_fg)),
+    ]
 }
 
 pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRow, hot: bool) {

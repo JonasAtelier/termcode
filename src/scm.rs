@@ -12,6 +12,7 @@ use crate::diff;
 use crate::git::{ScmFile, Section};
 use crate::gitops::{self, Commit, FileChange, FileCommit, Hover, Page, RefLabel, PAGE};
 use crate::graph::{GraphRow, Lanes};
+use crate::nav;
 use crate::panel::{base, App, DiffDoc, Doc, Focus, SRow, ScrollTarget, Side};
 use crate::theme::{git_color, icons, Rgba, P};
 use crate::ui::{fill, fit, fit_pair, inset, popup_block, right, room_before, row, scm_row, scrollbar, sp, width};
@@ -109,6 +110,9 @@ pub enum Hit {
     TimelineMore,
     CardCopy,
     CardOpen,
+    RefsHead,
+    /// REFERENCES row (index into `refs_rows`).
+    Ref(usize),
 }
 
 #[derive(Default)]
@@ -116,10 +120,11 @@ pub struct Hits {
     pub areas: Vec<(Rect, Hit)>,
     /// Rows a resting pointer opens a card for: (row, commit hash).
     hovers: Vec<(Rect, String)>,
-    /// CHANGES content, GRAPH list, TIMELINE list, the card.
+    /// CHANGES content, GRAPH list, TIMELINE list, REFERENCES list, the card.
     pub changes: Rect,
     pub graph: Rect,
     pub timeline: Rect,
+    pub refs: Rect,
     pub card: Rect,
     /// `gitcmds`: status bar items, picker rows, notification, conflict actions.
     pub cmds: Vec<(Rect, crate::gitcmds::Hit)>,
@@ -193,6 +198,7 @@ pub struct GitUi {
     pub graph_focus: bool,
     pub graph: Graph,
     pub timeline: Timeline,
+    pub refs: Refs,
     /// Timeline content rows, including its header, once resized.
     timeline_height: Option<u16>,
     /// Grabbed border row and original Timeline content height.
@@ -240,6 +246,7 @@ impl GitUi {
             graph_focus: false,
             graph: Graph::default(),
             timeline: Timeline { open: true, ..Default::default() },
+            refs: Refs { open: true, ..Default::default() },
             timeline_height: None,
             timeline_drag: None,
             card: None,
@@ -270,6 +277,7 @@ impl GitUi {
         self.changes_open = s["changes_open"].as_bool().unwrap_or(self.changes_open);
         self.graph_open = s["graph_open"].as_bool().unwrap_or(self.graph_open);
         self.timeline.open = s["timeline_open"].as_bool().unwrap_or(self.timeline.open);
+        self.refs.open = s["references_open"].as_bool().unwrap_or(self.refs.open);
         if let Some(h) = s["timeline_height"].as_u64() {
             self.timeline_height = Some(h.clamp(4, 500) as u16);
         }
@@ -288,6 +296,7 @@ impl GitUi {
             "changes_open": self.changes_open,
             "graph_open": self.graph_open,
             "timeline_open": self.timeline.open,
+            "references_open": self.refs.open,
         });
         if let Some(s) = self.split {
             v["split"] = s.into();
@@ -370,8 +379,116 @@ impl GitUi {
     pub fn due(&self) -> Option<Instant> {
         let hover = self.hover.as_ref().filter(|_| self.card.is_none()).map(|h| h.2 + HOVER);
         let close = self.card.as_ref().and_then(|c| c.left).map(|t| t + CARD_GRACE);
-        [hover, close, self.cmds.due()].into_iter().flatten().min()
+        [hover, close, self.refs.due, self.cmds.due()].into_iter().flatten().min()
     }
+}
+
+/// The Search sidebar's REFERENCES pane: the references of the symbol at the cursor
+/// (`nav::references`), looked up again once the cursor rests on another symbol, as
+/// VS Code's References view would follow it. Off a symbol, the last ones stay.
+#[derive(Default)]
+pub struct Refs {
+    pub open: bool,
+    /// The symbol shown and its references, grouped by file (`group_refs`).
+    pub sym: String,
+    pub items: Vec<nav::Location>,
+    /// Why the last lookup failed.
+    err: Option<String>,
+    pub list: List,
+    /// (file, symbol) at the cursor last seen: its lookup runs at `due`.
+    want: Option<(String, String)>,
+    due: Option<Instant>,
+    pending: Option<nav::Pending>,
+}
+
+impl Refs {
+    /// A lookup runs: the loop wakes to take its result.
+    pub fn busy(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
+/// How long the cursor rests on a symbol before its references are looked up.
+const REFS_SETTLE: Duration = Duration::from_millis(400);
+
+/// REFERENCES rows: a file (its first reference, count), then its references.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum RefRow {
+    File(usize, usize),
+    Ref(usize),
+}
+
+fn refs_rows(r: &Refs) -> Vec<RefRow> {
+    let mut v = Vec::new();
+    for (i, l) in r.items.iter().enumerate() {
+        if i == 0 || r.items[i - 1].path != l.path {
+            v.push(RefRow::File(i, r.items[i..].iter().take_while(|m| m.path == l.path).count()));
+        }
+        v.push(RefRow::Ref(i));
+    }
+    v
+}
+
+/// Files in the order `nav` ranks their best reference, each file's in line order.
+fn group_refs(mut v: Vec<nav::Location>) -> Vec<nav::Location> {
+    let mut files: Vec<String> = Vec::new();
+    for l in &v {
+        if !files.contains(&l.path) {
+            files.push(l.path.clone());
+        }
+    }
+    v.sort_by_key(|l| (files.iter().position(|p| *p == l.path), l.line, l.col));
+    v
+}
+
+/// The active editor's file and the symbol at its cursor.
+fn cursor_symbol(app: &App) -> Option<(String, String)> {
+    let g = app.groups.get(app.ag)?;
+    let t = g.tabs.get(g.active)?;
+    let Some(Doc::Text(b)) = app.docs.get(&t.key) else { return None };
+    let path = t.key.strip_prefix("file:")?;
+    let c = b.clamp(t.view.cursor);
+    Some((path.to_string(), nav::symbol_at(&b.lines[c.line], c.col)?.0))
+}
+
+/// Take a finished lookup; while REFERENCES shows, follow the cursor's symbol. True
+/// when the pane changed.
+fn refs_tick(app: &mut App) -> bool {
+    let mut changed = false;
+    let r = &mut app.gitui.refs;
+    let res = match r.pending.as_ref().map(|p| p.rx.try_recv()) {
+        None | Some(Err(mpsc::TryRecvError::Empty)) => None,
+        Some(Ok(res)) => Some(res),
+        Some(Err(mpsc::TryRecvError::Disconnected)) => Some(Err("lookup failed".to_string())),
+    };
+    if let Some(res) = res {
+        r.pending = None;
+        (r.items, r.err) = match res {
+            Ok(v) => (group_refs(v), None),
+            Err(e) => (Vec::new(), Some(e)),
+        };
+        r.list = List::default();
+        changed = true;
+    }
+    if !(app.side == Side::Search && app.side_visible && app.gitui.refs.open) {
+        return changed;
+    }
+    let at = cursor_symbol(app);
+    let r = &mut app.gitui.refs;
+    if at.is_some() && at != r.want {
+        r.want = at;
+        r.due = Some(Instant::now() + REFS_SETTLE);
+    }
+    if r.due.is_some_and(|d| Instant::now() >= d) {
+        r.due = None;
+        if let Some((path, sym)) = r.want.clone() {
+            r.sym = sym.clone();
+            // A running lookup is dropped, which cancels it.
+            r.pending = Some(nav::spawn(app.root.clone(), sym, nav::lang_for(&path), nav::Query::References, app.live_rg.clone()));
+            changed = true;
+        }
+    }
+    changed
 }
 
 // ---------------------------------------------------------------- colours
@@ -889,7 +1006,7 @@ pub fn open_card(app: &mut App, hash: String, anchor: Rect) {
 /// The resting-pointer timer fired: open the card; or the pointer stayed off a card for
 /// CARD_GRACE: close it. True when either did.
 pub fn tick(app: &mut App) -> bool {
-    let mut changed = crate::gitcmds::tick(app);
+    let mut changed = crate::gitcmds::tick(app) | refs_tick(app);
     if app.gitui.card.as_ref().and_then(|c| c.left).is_some_and(|t| t.elapsed() >= CARD_GRACE) {
         app.gitui.card = None;
         changed = true;
@@ -982,6 +1099,21 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
             }
         }
         Hit::TimelineMore => load_timeline(app),
+        Hit::RefsHead => {
+            app.gitui.refs.open = !app.gitui.refs.open;
+            save_layout(app);
+        }
+        Hit::Ref(k) => {
+            app.gitui.refs.list.sel = k;
+            // A file row goes to its first reference.
+            let i = match refs_rows(&app.gitui.refs).get(k) {
+                Some(RefRow::File(i, _) | RefRow::Ref(i)) => *i,
+                None => return true,
+            };
+            if let Some(l) = app.gitui.refs.items.get(i).cloned() {
+                crate::navui::jump(app, &l);
+            }
+        }
         Hit::CardCopy => {
             if let Some(c) = &app.gitui.card {
                 let hash = c.hash.clone();
@@ -1070,6 +1202,8 @@ pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
         0
     } else if app.gitui.hits.timeline.contains(p) {
         1
+    } else if app.gitui.hits.refs.contains(p) {
+        2
     } else {
         return false;
     };
@@ -1081,24 +1215,25 @@ pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
 fn list_len(app: &App, which: u8) -> (usize, usize) {
     match which {
         0 => (graph_rows(&app.gitui.graph).len(), app.gitui.hits.graph.height as usize),
-        _ => (timeline_rows(app), app.gitui.hits.timeline.height as usize),
+        1 => (timeline_rows(app), app.gitui.hits.timeline.height as usize),
+        _ => (refs_rows(&app.gitui.refs).len(), app.gitui.hits.refs.height as usize),
     }
 }
 
 fn list_mut(app: &mut App, which: u8) -> &mut List {
-    if which == 0 {
-        &mut app.gitui.graph.list
-    } else {
-        &mut app.gitui.timeline.list
+    match which {
+        0 => &mut app.gitui.graph.list,
+        1 => &mut app.gitui.timeline.list,
+        _ => &mut app.gitui.refs.list,
     }
 }
 
-/// `ScrollTarget::Git(which)`: 0 = GRAPH, 1 = TIMELINE.
+/// `ScrollTarget::Git(which)`: 0 = GRAPH, 1 = TIMELINE, 2 = REFERENCES.
 pub fn scroll_of(app: &App, which: u8) -> usize {
-    if which == 0 {
-        app.gitui.graph.list.off
-    } else {
-        app.gitui.timeline.list.off
+    match which {
+        0 => app.gitui.graph.list.off,
+        1 => app.gitui.timeline.list.off,
+        _ => app.gitui.refs.list.off,
     }
 }
 
@@ -1475,16 +1610,90 @@ fn file_row(app: &App, f: &mut Frame, r: Rect, bg: Color, indent: usize, fc: &Fi
 
 /// The Explorer split: the tree above, TIMELINE (header, and list when open) below.
 pub fn split_timeline(app: &App, r: Rect) -> (Rect, Rect) {
+    split_bottom(app, r, app.gitui.timeline.open, app.gitui.timeline_height)
+}
+
+/// The Search split: the results above, REFERENCES below.
+pub fn split_refs(app: &App, r: Rect) -> (Rect, Rect) {
+    split_bottom(app, r, app.gitui.refs.open, None)
+}
+
+/// A pane at the sidebar's bottom: its header alone when closed, else `height` rows
+/// (a third of the sidebar by default).
+fn split_bottom(app: &App, r: Rect, open: bool, height: Option<u16>) -> (Rect, Rect) {
     // A card's frame takes 2 rows: the pane keeps its rows inside it.
     let frame = if app.settings.blocks == crate::blocks::BlockStyle::Cards { 2 } else { 0 };
-    let min = if app.gitui.timeline.open { 4 } else { 1 };
+    let min = if open { 4 } else { 1 };
     if r.height < frame + min + 8 {
         return (r, Rect::default());
     }
-    let h = frame + if app.gitui.timeline.open {
-        app.gitui.timeline_height.unwrap_or((r.height / 3).clamp(4, 14)).clamp(4, r.height - frame - 8)
-    } else { 1 };
+    let h = frame + if open { height.unwrap_or((r.height / 3).clamp(4, 14)).clamp(4, r.height - frame - 8) } else { 1 };
     (Rect::new(r.x, r.y, r.width, r.height - h), Rect::new(r.x, r.bottom() - h, r.width, h))
+}
+
+pub fn draw_refs(app: &mut App, f: &mut Frame, r: Rect) {
+    fill(f, r, P.sidebar_bg);
+    let (open, sym) = (app.gitui.refs.open, app.gitui.refs.sym.clone());
+    pane_header(app, f, Rect::new(r.x, r.y, r.width, 1), "REFERENCES", open, Hit::RefsHead, &sym, false);
+    let list = Rect::new(r.x, r.y + 1, r.width, r.height.saturating_sub(1));
+    app.gitui.hits.refs = list;
+    if !open || list.height == 0 {
+        return;
+    }
+    let s = app.settings.spacing;
+    let pad = s.sidebar_padding.saturating_sub(1) / 2;
+    let rows = refs_rows(&app.gitui.refs);
+    let n = rows.len();
+    if n == 0 {
+        let rf = &app.gitui.refs;
+        let msg = match (&rf.err, rf.pending.is_some() || rf.due.is_some()) {
+            (Some(e), _) => e.clone(),
+            (None, true) => "Searching…".into(),
+            (None, false) if rf.sym.is_empty() => "Place the cursor on a symbol to see its references.".into(),
+            (None, false) => format!("No references to '{}'.", rf.sym),
+        };
+        row(f, inset(Rect::new(list.x, list.y, list.width, 1), pad), P.sidebar_bg, vec![Span::styled(fit(&format!(" {msg}"), list.width as usize), Style::new().fg(P.dim))]);
+        return;
+    }
+    let h = list.height as usize;
+    let l = &mut app.gitui.refs.list;
+    l.off = l.off.min(n.saturating_sub(h));
+    let (sel, off) = (l.sel, l.off);
+    let scroll = n > h;
+    let hover = app.hover.filter(|p| list.contains(*p)).map(|p| off + (p.y - list.y) as usize);
+    let g = crate::blocks::icon_gap(s.icon_gap);
+    for (k, rw) in rows.iter().enumerate().skip(off).take(h) {
+        let rr = Rect::new(list.x, list.y + (k - off) as u16, list.width.saturating_sub(u16::from(scroll)), 1);
+        let bg = list_bg(k == sel, false, hover == Some(k));
+        fill(f, rr, bg);
+        let ir = inset(rr, pad);
+        app.gitui.hits.areas.push((rr, Hit::Ref(k)));
+        // Laid out as the search results above, less the fold chevron.
+        match *rw {
+            RefRow::File(i, cnt) => {
+                let p = app.gitui.refs.items[i].path.clone();
+                let dir = p.rsplit_once('/').map_or(String::new(), |(d, _)| format!(" {d}"));
+                let (glyph, gfg) = crate::icons::file_icon(base(&p), &app.settings.file_icons);
+                let count = crate::ui::badge(cnt, bg);
+                let room = room_before(&count, (ir.width as usize).saturating_sub(3 + 2 * g as usize));
+                let (name, dir) = fit_pair(base(&p), &dir, room);
+                let lead = Span::raw(format!("  {}", sp(g)));
+                let spans = vec![lead, Span::styled(glyph, Style::new().fg(gfg)), Span::raw(sp(g)), Span::styled(name, Style::new().fg(P.sidebar_fg)), Span::styled(dir, Style::new().fg(P.dim))];
+                row(f, ir, bg, spans);
+                right(f, ir, count);
+            }
+            RefRow::Ref(i) => {
+                let it = &app.gitui.refs.items[i];
+                let mut spans = vec![Span::raw(sp(3 + 2 * g))];
+                spans.extend(crate::ui::match_spans(&it.preview, it.col, sym.len()));
+                row(f, ir, bg, spans);
+            }
+        }
+    }
+    if scroll {
+        let track = Rect::new(list.right() - 1, list.y, 1, list.height);
+        scrollbar(app, f, track, ScrollTarget::Git(2), n, h, off, n - h);
+    }
 }
 
 pub fn draw_timeline(app: &mut App, f: &mut Frame, r: Rect) {
@@ -2120,6 +2329,54 @@ pub(crate) mod ui_tests {
         assert_eq!(dot(&tm, "plain"), pal.ref_remote, "and keeps the line below it");
         assert_eq!(dot(&tm, "two"), P.badge_bg, "a local branch");
         assert_eq!(dot(&tm, "one"), P.badge_bg, "a tag changes nothing");
+    }
+
+    #[test]
+    fn references_follow_the_cursor_and_open_where_clicked() {
+        let (t, r) = repo(
+            "refs",
+            "printf 'int foo(void);\\nint bar(void) { return foo(); }\\n' > a.c; printf 'int foo(void) { return 1; }\\n' > b.c
+             git add .; git commit -qm one",
+        );
+        let mut app = app(&t, &r);
+        let mut tm = term();
+        app.open_file(0, "a.c", false);
+        app.show_side(Side::Search, false);
+        settle(&mut app);
+        app.focus = Focus::Editor;
+        let s = screen(&mut app, &mut tm);
+        assert!(s.contains("REFERENCES") && s.contains("Place the cursor on a symbol"), "{s}");
+        let wait = |app: &mut App, sym: &str| {
+            let end = Instant::now() + Duration::from_secs(10);
+            while app.gitui.refs.sym != sym || app.gitui.refs.busy() || app.gitui.refs.items.is_empty() {
+                assert!(Instant::now() < end, "no references to {sym}");
+                tick(app);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        app.ed().unwrap().1.view.cursor = crate::editor::Pos::new(0, 5);
+        assert!(!tick(&mut app) && app.gitui.refs.sym.is_empty(), "not before the cursor rests");
+        wait(&mut app, "foo");
+        let s = screen(&mut app, &mut tm);
+        assert!(s.contains("REFERENCES foo"), "the symbol in the header: {s}");
+        assert!(s.contains("a.c") && s.contains("b.c"), "{s}");
+        assert_eq!(app.gitui.refs.items.len(), 3, "{:?}", app.gitui.refs.items);
+        // Off a symbol, they stay; onto another, it follows.
+        app.ed().unwrap().1.view.cursor = crate::editor::Pos::new(0, 3);
+        app.ed().unwrap().1.view.cursor = crate::editor::Pos::new(0, 14);
+        tick(&mut app);
+        assert_eq!(app.gitui.refs.items.len(), 3);
+        // A file row opens its first reference.
+        click(&mut app, at(&tm, "b.c"));
+        let key = &app.groups[app.ag].tabs[app.groups[app.ag].active].key;
+        assert_eq!(key, "file:b.c");
+        assert_eq!(app.ed().unwrap().1.view.cursor, crate::editor::Pos::new(0, 4));
+        assert_eq!(app.focus, Focus::Editor);
+        // The header folds it, and the fold is kept.
+        click(&mut app, at(&tm, "REFERENCES"));
+        assert!(!app.gitui.refs.open && !app.gitui.layout()["references_open"].as_bool().unwrap());
+        let s = screen(&mut app, &mut tm);
+        assert!(s.contains("REFERENCES") && app.gitui.hits.refs.height == 0, "just its header: {s}");
     }
 
     #[test]

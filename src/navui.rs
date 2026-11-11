@@ -299,7 +299,7 @@ fn sym_path(q: &Query) -> String {
 }
 
 /// Go to `l` in the active group; the place left is recorded for Go Back.
-fn jump(app: &mut App, l: &Location) {
+pub(crate) fn jump(app: &mut App, l: &Location) {
     if let Some(m) = here(app) {
         app.nav.history.push(m);
     }

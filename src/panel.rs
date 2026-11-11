@@ -2034,7 +2034,8 @@ impl App {
             || !self.loading.is_empty()
             || self.backup_due.is_some()
             || self.nav.busy()
-            || self.gitui.busy();
+            || self.gitui.busy()
+            || self.gitui.refs.busy();
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
         let upgrade_due = self.upgrade.next.filter(|_| self.upgrade.watch);
@@ -4478,7 +4479,7 @@ impl App {
             close: self.ui.close.contains(p),
             row: side.then(|| self.ui.side_item(p.y, self.off[s])).flatten(),
             sticky: side.then(|| self.ui.sticky_at(p.y)).flatten(),
-            git_row: (g.graph.contains(p) || g.timeline.contains(p)).then_some(p.y),
+            git_row: (g.graph.contains(p) || g.timeline.contains(p) || g.refs.contains(p)).then_some(p.y),
             tab: self.ui.groups.iter().enumerate().find_map(|(gi, gh)| gh.tabs.iter().position(|(t, x)| t.contains(p) || x.contains(p)).map(|i| (gi, i))),
             fold: self.ui.groups.iter().enumerate().find_map(|(g, gh)| {
                 (gh.folds_x.is_some_and(|x| (x..gh.text.x).contains(&p.x)) && (gh.text.y..gh.text.bottom()).contains(&p.y)).then_some((g, p.y))
