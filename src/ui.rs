@@ -218,7 +218,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let fr = crate::blocks::frame(st);
     let aw = (lay.s.activity_width + fr).min(body.width / 4);
     let act = Rect::new(body.x, body.y, aw, body.height);
-    let inner = crate::blocks::card(st, f, act, P.activity_bg, false);
+    let inner = crate::blocks::card(st, f, act, P.activity_bg, app.activity_lit);
     activity_bar(app, f, inner);
     let mut x = act.right();
     if st == BlockStyle::Lines {
@@ -538,7 +538,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
     let main = Rect::new(col.x, top, col.width, main.bottom().saturating_sub(top));
     // A line between sections runs from the vertical line left of the sidebar to the right one.
     let (main, timeline) = crate::blocks::stack(st, main, timeline, col.x.saturating_sub(1), col.right());
-    let focused = matches!(app.focus, Focus::Side | Focus::SearchInput);
+    let focused = matches!(app.focus, Focus::Side | Focus::SearchInput) && !app.activity_lit;
     let r = crate::blocks::card(st, f, main, P.sidebar_bg, focused);
     let mut y = r.y;
     let ic = icons();
@@ -1082,7 +1082,8 @@ fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let st = app.settings.blocks;
     for g in 0..app.groups.len() {
         let w = if g + 1 == app.groups.len() { r.right().saturating_sub(x) } else { gw };
-        let focused = g == app.ag && app.focus == Focus::Editor;
+        // Find's box sits in the group: its card keeps the focus border.
+        let focused = g == app.ag && matches!(app.focus, Focus::Editor | Focus::Find) && !app.activity_lit;
         let area = crate::blocks::card(st, f, Rect::new(x, r.y, w, r.height), P.editor_bg, focused);
         group(app, f, g, area, lay, (area.y > r.y).then_some(r.y));
         x += w;

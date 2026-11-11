@@ -62,15 +62,14 @@ pub fn active_bg(theme: &serde_json::Map<String, Value>) -> Color {
     }
 }
 
-/// The border colour; a focused block's is a little toward the foreground (~#5A5A5A on
-/// vs-dark's #444444), never the bright focus blue.
+/// The border colour: the focused block's in `focusBorder` blue, so the pane that takes
+/// the keys (or the activity bar, just clicked) stands out.
 pub fn border(focused: bool) -> Color {
-    if !focused {
-        return P.group_border;
+    if focused {
+        P.focus_border
+    } else {
+        P.group_border
     }
-    let (Color::Rgb(r, g, b), Color::Rgb(fr, fg, fb)) = (P.group_border, P.editor_fg) else { return P.group_border };
-    let mix = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * 0.15).round() as u8;
-    Color::Rgb(mix(r, fr), mix(g, fg), mix(b, fb))
 }
 
 /// The workbench background the gutters show.

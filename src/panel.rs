@@ -802,6 +802,9 @@ pub struct App {
     status_again: bool,
     /// The running `git status` started then (a spinner after STATUS_SLOW).
     pub status_since: Option<Instant>,
+    /// The activity bar was clicked last: its card has the focus border, until the next
+    /// key or click elsewhere hands it back to `focus`'s card.
+    pub activity_lit: bool,
     /// Poll `git status` (the real panel only, never a test), when next, how long the
     /// last one took, whether the running one is a poll, and what the last one said.
     pub poll_status: bool,
@@ -1303,6 +1306,7 @@ impl App {
             refresh_due: None,
             status_again: false,
             status_since: None,
+            activity_lit: false,
             poll_status: false,
             status_poll_due: None,
             status_took: Duration::ZERO,
@@ -3801,6 +3805,7 @@ impl App {
     // ---- keyboard --------------------------------------------------------------------------
 
     pub fn on_key(&mut self, k: KeyEvent) {
+        self.activity_lit = false;
         if self.settings_dlg.is_some() {
             return crate::settingsui::key(self, k);
         }
@@ -4503,6 +4508,7 @@ impl App {
     }
 
     fn click(&mut self, p: Position, double: bool, shift: bool) {
+        self.activity_lit = self.ui.activity.iter().any(|(r, _)| r.contains(p));
         // A click in the name being edited places the caret (a second selects the word,
         // a third the whole name, a drag selects); anywhere else accepts the name first.
         let clicks = self.clicks;
@@ -5822,7 +5828,7 @@ mod tests {
     }
 
     #[test]
-    fn the_focused_card_is_a_little_lighter_never_blue() {
+    fn the_focused_card_is_focus_border_blue() {
         let root = repo("focuscard");
         let mut app = App::new(root.clone(), None);
         app.open_file(0, "src/main.rs", false);
@@ -5834,11 +5840,9 @@ mod tests {
         let (ed, side) = (&b[(g.x - 1, g.y - 1)], &b[(app.ui.sidebar.x, app.ui.side_list.y - 2)]);
         assert_eq!((ed.symbol(), ed.fg), ("╭", crate::blocks::border(true)), "the focused editor's card");
         assert_eq!((side.symbol(), side.fg), ("╭", crate::blocks::border(false)), "the Explorer card, not focused");
-        // vs-dark: #444444, focused a little toward the foreground (~#5A5A5A), not focusBorder.
+        // vs-dark: #444444, focused in focusBorder (#007FD4).
         assert_eq!(crate::blocks::border(false), Color::Rgb(0x44, 0x44, 0x44));
-        let Color::Rgb(r, g, b) = crate::blocks::border(true) else { panic!() };
-        assert!([r, g, b].iter().all(|c| c.abs_diff(0x5A) <= 3), "{r:02X}{g:02X}{b:02X}");
-        assert_ne!(crate::blocks::border(true), crate::theme::P.focus_border);
+        assert_eq!(crate::blocks::border(true), Color::Rgb(0x00, 0x7F, 0xD4));
         wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
     }

@@ -142,8 +142,9 @@ herdr-code --tab src          # the same, as a Code tab in this herdr workspace
 - Blocks: the activity bar, each sidebar section and each editor group are rounded cards with a
   no blank gutter beside the sidebar and a 1-cell gutter between editor groups, while
   stacked sections share one border row (`├─┤`)
-  (`herdr-code.blocks.style`); the borders are `editorGroup.border`, the focused block's a
-  little lighter. Each icon keeps a blank cell after it, room for a
+  (`herdr-code.blocks.style`); the borders are `editorGroup.border`, the focused block's
+  `focusBorder` blue (the activity bar's right after a click on it, until the next key or
+  click). Each icon keeps a blank cell after it, room for a
   non-Mono Nerd Font glyph. Activity bar items are 3 rows tall (2 in compact), the icon
   centred: the active one has `activityBar.activeBorder` down its left edge over a subtle
   `activityBar.activeBackground`, a hovered one turns from `inactiveForeground` to `foreground`.

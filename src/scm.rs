@@ -1377,7 +1377,7 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
     if app.git_root.is_none() {
         // VS Code's Source Control view for a folder without a repository.
         let msg = "The folder currently open doesn't have a git repository.";
-        let r = crate::blocks::card(app.settings.blocks, f, r, P.sidebar_bg, app.focus == Focus::Side);
+        let r = crate::blocks::card(app.settings.blocks, f, r, P.sidebar_bg, app.focus == Focus::Side && !app.activity_lit);
         let area = inset(r, (s.sidebar_padding.saturating_sub(1) / 2).max(1));
         let p = ratatui::widgets::Paragraph::new(msg).wrap(ratatui::widgets::Wrap { trim: true });
         f.render_widget(p.style(Style::new().fg(P.sidebar_fg)), area);
@@ -1401,7 +1401,7 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
         _ => 0,
     };
     let gh = if go { body - ch } else { 0 };
-    let keys = app.focus == Focus::Side;
+    let keys = app.focus == Focus::Side && !app.activity_lit;
     let gf = app.gitui.graph_focus;
     // CHANGES block (with its top frame), the line row (lines), then the GRAPH block; cards
     // `stack` onto the GRAPH card's top edge.
@@ -2329,6 +2329,38 @@ pub(crate) mod ui_tests {
         assert_eq!(dot(&tm, "plain"), pal.ref_remote, "and keeps the line below it");
         assert_eq!(dot(&tm, "two"), P.badge_bg, "a local branch");
         assert_eq!(dot(&tm, "one"), P.badge_bg, "a tag changes nothing");
+    }
+
+    #[test]
+    fn the_focused_card_has_the_blue_border() {
+        let (t, r) = repo("focus-border", "echo a > a.txt; git add .; git commit -qm one");
+        let mut app = app(&t, &r);
+        let mut tm = term();
+        app.settings.blocks = crate::blocks::BlockStyle::Cards;
+        app.open_file(0, "a.txt", false);
+        app.show_side(Side::Explorer, false);
+        settle(&mut app);
+        app.focus = Focus::Editor;
+        // Border colours of the activity bar, sidebar and editor cards (their top-left corner).
+        let borders = |app: &mut App, tm: &mut Terminal<TestBackend>| {
+            screen(app, tm);
+            let (side, ed) = (app.ui.sidebar, app.ui.editor_area);
+            let b = tm.backend().buffer();
+            let lit = |x: u16, y: u16| b[(x, y)].fg == P.focus_border;
+            [lit(0, side.y), lit(side.x, side.y), lit(ed.x, ed.y)]
+        };
+        assert_eq!(borders(&mut app, &mut tm), [false, false, true], "the editor");
+        app.focus = Focus::Find;
+        assert_eq!(borders(&mut app, &mut tm), [false, false, true], "Find is in the editor");
+        let list = app.ui.side_list;
+        click(&mut app, (list.x + 2, list.y));
+        assert_eq!(app.focus, Focus::Side);
+        assert_eq!(borders(&mut app, &mut tm), [false, true, false], "the Explorer");
+        let search = app.ui.activity.iter().find(|(_, s)| *s == Side::Search).unwrap().0;
+        click(&mut app, (search.x + 1, search.y + 1));
+        assert_eq!(borders(&mut app, &mut tm), [true, false, false], "the activity bar, just clicked");
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        assert_eq!(borders(&mut app, &mut tm), [false, true, false], "a key: back to where it went");
     }
 
     #[test]
