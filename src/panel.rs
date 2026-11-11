@@ -313,6 +313,8 @@ struct HoverKey {
     sash: Option<usize>,
     /// An activity bar item (its icon lights up).
     activity: Option<usize>,
+    /// A commit-dialog button, or (usize::MAX) Source Control's "Add commit": lit grey.
+    button: Option<usize>,
 }
 
 /// Events the loop batches before one frame: wheel ticks and plain pointer motion.
@@ -4416,6 +4418,10 @@ impl App {
                 g.areas.iter().any(|(r, h)| matches!(h, crate::scm::Hit::GraphSash | crate::scm::Hit::TimelineSash) && r.contains(p)).then_some(usize::MAX)
             }),
             activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.settings_btn.contains(p).then_some(SIDES.len())),
+            button: match self.gitui.dlg.as_ref() {
+                Some(d) => d.hits.btns.iter().position(|(r, _)| r.contains(p)),
+                None => self.ui.commit_btn.contains(p).then_some(usize::MAX),
+            },
         }
     }
 

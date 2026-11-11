@@ -76,8 +76,8 @@ const MIN_LEFT_W: i32 = 12;
 const MIN_PANE: i32 = MIN_LIST_ROWS + 2;
 /// Unstaged, a splitter, Staged.
 const MIN_UPPER: i32 = 2 * MIN_PANE + 1;
-/// Fixed rows: the message splitter, the mode row, buttons, note.
-const FIXED_ROWS: i32 = 4;
+/// Fixed rows: the message splitter, the mode row, buttons (the note is in the border).
+const FIXED_ROWS: i32 = 3;
 
 /// Splitter positions as fractions of their span (`SASHES` order); None: the default.
 pub type Ratios = [Option<f64>; 3];
@@ -105,7 +105,6 @@ pub struct Geo {
     pub mode: Rect,
     pub msg: Rect,
     pub buttons: Rect,
-    pub note: Rect,
     pub sashes: [Rect; 3],
 }
 
@@ -126,7 +125,6 @@ pub fn geometry(inner: Rect, ratios: Ratios) -> Geo {
         mode: row_at(top_h + 1),
         msg: r(0, top_h + 2, w, msg_h),
         buttons: r(1, top_h + 2 + msg_h, w - 1, 1),
-        note: row_at(top_h + 3 + msg_h),
         sashes: [r(lw, 0, 1, top_h), r(0, un_h, lw, avail.min(1)), row_at(top_h)],
     }
 }
@@ -802,15 +800,23 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let (ratios, hover) = (app.gitui.dlg_split, app.hover);
     let Some(d) = app.gitui.dlg.as_mut() else { return };
     d.hits = DlgHits::default();
-    let outer = centered(area, area.width.saturating_sub(4).min(160), area.height.saturating_sub(2), false);
+    // Five rows clear above and below it (the title and status bars stay in view).
+    let outer = centered(area, area.width.saturating_sub(4).min(160), area.height.saturating_sub(10), false);
     if outer.width < 24 || outer.height < 8 {
         return;
     }
     f.render_widget(Clear, outer);
-    let block = popup_block(P.widget_bg, P.widget_fg, (1, 0)).title(" Commit ");
+    // The note (an error, or the commit under way) sits in the bottom border: no row is
+    // kept empty for it under the buttons.
+    let mut block = popup_block(P.widget_bg, P.widget_fg, (1, 0)).title(" Commit ");
+    if !d.note.is_empty() {
+        let c = if d.busy { P.dim } else { P.error_fg };
+        let note = fit(&format!(" {} ", d.note), outer.width.saturating_sub(4) as usize);
+        block = block.title_bottom(Line::from(Span::styled(note, Style::new().fg(c).bg(P.widget_bg))));
+    }
     let inner = block.inner(outer);
     f.render_widget(block, outer);
-    // Lists | diff over the message splitter, the mode row, message, buttons, note.
+    // Lists | diff over the message splitter, the mode row, message, buttons.
     let g = geometry(inner, ratios);
     let diff = g.diff;
     d.hits.inner = inner;
@@ -863,10 +869,6 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     ];
     if g.buttons.height > 0 {
         buttons(f, &mut d.hits.btns, g.buttons, &items, pad, hover);
-    }
-    if g.note.height > 0 && !d.note.is_empty() {
-        let c = if d.busy { P.dim } else { P.error_fg };
-        f.render_widget(Span::styled(fit(&format!(" {}", d.note), inner.width as usize), Style::new().fg(c)), g.note);
     }
 }
 
@@ -939,6 +941,22 @@ mod tests {
         settle(&mut app);
         screen(&mut app, &mut tm);
         let d = app.gitui.dlg.as_ref().unwrap();
+        assert_eq!((d.hits.inner.y, d.hits.inner.bottom()), (6, 34), "five rows clear above and below its frame");
+        // The grey hover follows the pointer onto a button and off it again, at once.
+        let btn = d.hits.btns.iter().find(|(_, b)| *b == Btn::Rescan).unwrap().0;
+        let moved = |app: &mut App, x: u16, y: u16| app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: x, row: y, modifiers: KeyModifiers::NONE });
+        assert!(moved(&mut app, btn.x + 2, btn.y), "onto a button: redraw");
+        screen(&mut app, &mut tm);
+        assert_eq!(tm.backend().buffer()[(btn.x + 2, btn.y)].bg, P.button2_hover, "lit");
+        assert_eq!(btn.y + 1, app.gitui.dlg.as_ref().unwrap().hits.inner.bottom(), "the buttons sit on the last row, no blank one under them");
+        app.gitui.dlg.as_mut().unwrap().note = "No changes to commit.".into();
+        let shown = screen(&mut app, &mut tm);
+        assert!(shown.lines().nth(btn.y as usize + 1).unwrap().contains("No changes to commit."), "a note goes in the bottom border");
+        app.gitui.dlg.as_mut().unwrap().note.clear();
+        assert!(moved(&mut app, btn.x + 2, btn.y - 3), "off it: redraw");
+        screen(&mut app, &mut tm);
+        assert_ne!(tm.backend().buffer()[(btn.x + 2, btn.y)].bg, P.button2_hover, "not left lit");
+        let d = app.gitui.dlg.as_ref().unwrap();
         let (sb, diff, message) = (d.hits.hscroll.unwrap(), d.hits.diff, d.msg.text());
         app.on_mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: diff.x + 2, row: diff.y,
             modifiers: KeyModifiers::SHIFT });
@@ -961,15 +979,15 @@ mod tests {
         let inner = Rect::new(2, 1, 156, 40);
         let g = geometry(inner, [None; 3]);
         // git-gui's defaults: lists 2/5 wide, halved; the message up to 8 rows.
-        assert_eq!((g.unstaged, g.staged), (Rect::new(2, 1, 62, 13), Rect::new(2, 15, 62, 14)));
-        assert_eq!(g.diff, Rect::new(65, 1, 93, 28));
-        assert_eq!(g.sashes, [Rect::new(64, 1, 1, 28), Rect::new(2, 14, 62, 1), Rect::new(2, 29, 156, 1)]);
-        assert_eq!((g.mode.y, g.msg, g.buttons.y, g.note.y), (30, Rect::new(2, 31, 156, 8), 39, 40));
+        assert_eq!((g.unstaged, g.staged), (Rect::new(2, 1, 62, 14), Rect::new(2, 16, 62, 14)));
+        assert_eq!(g.diff, Rect::new(65, 1, 93, 29));
+        assert_eq!(g.sashes, [Rect::new(64, 1, 1, 29), Rect::new(2, 15, 62, 1), Rect::new(2, 30, 156, 1)]);
+        assert_eq!((g.mode.y, g.msg, g.buttons.y), (31, Rect::new(2, 32, 156, 8), 40), "the buttons on the last row");
         // Dragged to either end: 3 file rows a list, 20 diff columns, 4 message rows, 12 list columns.
         let lo = geometry(inner, [Some(0.0); 3]);
         assert_eq!((lo.unstaged.width, lo.unstaged.height, lo.msg.height), (12, 5, 4));
         let hi = geometry(inner, [Some(1.0); 3]);
-        assert_eq!((hi.diff.width, hi.staged.height, hi.unstaged.height, hi.msg.height), (20, 5, 5, 25));
+        assert_eq!((hi.diff.width, hi.staged.height, hi.unstaged.height, hi.msg.height), (20, 5, 5, 26));
         // The ratio for a pointer position lands on the clamped size.
         assert_eq!(ratio_at(inner, [None; 3], Sash::Left, Position::new(0, 0)), (12.0f64 / 155.0 * 1000.0).round() / 1000.0);
         assert_eq!(geometry(inner, [Some(ratio_at(inner, [None; 3], Sash::Left, Position::new(42, 9))), None, None]).unstaged.width, 40);
@@ -980,12 +998,12 @@ mod tests {
                 let inner = Rect::new(3, 2, w, h);
                 for r in [[None; 3], [Some(0.0); 3], [Some(1.0); 3]] {
                     let g = geometry(inner, r);
-                    for x in [g.unstaged, g.staged, g.diff, g.mode, g.msg, g.buttons, g.note].iter().chain(&g.sashes) {
+                    for x in [g.unstaged, g.staged, g.diff, g.mode, g.msg, g.buttons].iter().chain(&g.sashes) {
                         assert_eq!(x.intersection(inner), *x, "{w}x{h} {r:?}: {x:?}");
                     }
                     assert!(g.unstaged.height + g.sashes[1].height + g.staged.height <= g.sashes[0].height, "{w}x{h}: the lists fit their column");
                     if h >= 4 {
-                        assert_eq!(g.sashes[0].height + g.msg.height + 4, h, "{w}x{h}: upper, message and 4 fixed rows");
+                        assert_eq!(g.sashes[0].height + g.msg.height + 3, h, "{w}x{h}: upper, message and 3 fixed rows");
                     }
                     if h >= 6 {
                         assert!(g.msg.height >= 1, "{w}x{h}: a message row");
