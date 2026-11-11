@@ -148,6 +148,8 @@ pub struct Pal {
     pub tab_inactive_bg: Color,
     pub tab_inactive_fg: Color,
     pub tab_border: Color,
+    /// The left edge of a tab not shown in its group (the shown one's is `tab_active_border`).
+    pub tab_inactive_border: Color,
     pub group_border: Color,
     pub drop_bg: Color,
     pub status_bg: Color,
@@ -300,6 +302,7 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         tab_inactive_bg,
         tab_inactive_fg: on("tab.inactiveForeground", tab_inactive_bg),
         tab_border: on("tab.border", sidebar_bg),
+        tab_inactive_border: on("tab.inactiveBorderLeft", tab_inactive_bg),
         group_border: on("editorGroup.border", editor_bg),
         drop_bg: on("editorGroup.dropBackground", editor_bg),
         status_bg,

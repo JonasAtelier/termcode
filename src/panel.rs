@@ -5405,11 +5405,13 @@ mod tests {
             app.groups[0].active = selected;
             screen(&mut app, &mut t);
             let gh = &app.ui.groups[0];
-            for (i, (tab, _)) in gh.tabs.iter().enumerate() {
+            for (i, (tab, close)) in gh.tabs.iter().enumerate() {
                 let cell = &t.backend().buffer()[(tab.x, tab.y)];
-                assert_eq!(cell.symbol(), if i == selected { accent } else { " " });
-                if i == selected { assert_eq!(cell.fg, crate::theme::P.tab_active_border); }
+                assert_eq!(cell.symbol(), accent, "every tab has the left edge");
+                let edge = if i == selected { crate::theme::P.tab_active_border } else { crate::theme::P.tab_inactive_border };
+                assert_eq!(cell.fg, edge, "the shown tab's accent, the others' grey");
                 assert_eq!(cell.modifier.contains(ratatui::style::Modifier::BOLD), i == selected, "only the selected tab has a heavy accent line");
+                assert_eq!(t.backend().buffer()[(close.x, close.y)].symbol(), crate::theme::icons().tab_close, "every tab shows its cross");
             }
         }
         wait_idle(&mut app);

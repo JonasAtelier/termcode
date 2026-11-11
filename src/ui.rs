@@ -1138,7 +1138,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         }
         let xr = Rect::new(x + w - tail_w + 2, tabbar.y, 1, 1);
         let dot = if dirty { ic.dirty } else { " " };
-        let tail = if active || hovered { ic.tab_close } else { " " };
+        // Every tab can be closed from its cross (in the tab's own colour).
+        let tail = ic.tab_close;
         let lead = edge.to_string();
         let name = label[lead.len() + glyph.len()..].to_string();
         row(
@@ -1156,11 +1157,14 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 Span::styled(tail_edge.clone(), Style::new().bg(bg)),
             ],
         );
-        if active {
-            let color = if focused_group { P.tab_active_border } else { P.tab_border };
-            f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" },
-                Style::new().fg(color).bg(bg).bold()), Rect::new(x, tabbar.y, 1, 1));
-        }
+        // Every tab has a left edge: the shown one's in the accent, the others' grey.
+        let color = match (active, focused_group) {
+            (true, true) => P.tab_active_border,
+            (true, false) => P.tab_border,
+            (false, _) => P.tab_inactive_border,
+        };
+        let st = if active { Style::new().fg(color).bg(bg).bold() } else { Style::new().fg(color).bg(bg) };
+        f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▎" }, st), Rect::new(x, tabbar.y, 1, 1));
         gh.tabs.push((Rect::new(x, tabbar.y, w - tail_w + 2, 1), xr));
         x += w;
     }
