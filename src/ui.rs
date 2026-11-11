@@ -368,7 +368,9 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     let empty = serde_json::Map::new();
     let theme = app.settings.theme.json.get("colors").and_then(serde_json::Value::as_object).unwrap_or(&empty);
     let active_bg = crate::blocks::active_bg(theme);
-    let ih: u16 = if app.settings.compact { 2 } else { 3 };
+    // Two rows an item: comfortable puts the icon on the second, so one blank row lies
+    // between icons and the active block takes half of it on each side.
+    let (ih, off): (u16, u16) = if app.settings.compact { (2, 0) } else { (2, 1) };
     let bottom = Rect::new(r.x, r.bottom().saturating_sub(ih).max(r.y), r.width, ih.min(r.height));
     app.ui.settings_btn = bottom;
     let fg = if app.settings_dlg.is_some() || app.hover.is_some_and(|p| bottom.contains(p)) { P.activity_fg } else { P.activity_inactive };
@@ -387,14 +389,27 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             Side::Search => ic.search,
             Side::Scm => ic.scm,
         };
+        let iy = y + off;
         if active {
-            fill(f, item, active_bg);
-            for k in 0..ih {
-                f.render_widget(Span::styled("▎", Style::new().fg(P.activity_border)), Rect::new(r.x, y + k, 1, 1));
+            // The lifted block hugs the icon: the blank row above and below it count half,
+            // a half block each (½ + 1 + ½ rows; the row below is the next item's top).
+            // The indicator runs down its whole rows.
+            let (above, below) = (off, 1);
+            for row in (iy - above..=iy + below).filter(|&row| row < bottom.y) {
+                let pad = if row < iy { above } else { below };
+                let d = row.abs_diff(iy);
+                if 2 * d <= pad {
+                    fill(f, Rect::new(r.x, row, r.width, 1), active_bg);
+                    f.render_widget(Span::styled("▎", Style::new().fg(P.activity_border)), Rect::new(r.x, row, 1, 1));
+                } else if 2 * d == pad + 1 {
+                    let half = if row < iy { "▄" } else { "▀" };
+                    let st = Style::new().fg(active_bg).bg(P.activity_bg);
+                    f.render_widget(Span::styled(half.repeat(r.width as usize), st), Rect::new(r.x, row, r.width, 1));
+                }
             }
         }
         let fg = if active || hot { P.activity_fg } else { P.activity_inactive };
-        let (ix, iy) = (r.x + 1 + r.width.saturating_sub(3) / 2, y + (ih - 1) / 2);
+        let ix = r.x + 1 + r.width.saturating_sub(3) / 2;
         f.render_widget(Span::styled(icon, Style::new().fg(fg)), Rect::new(ix, iy, 2.min(r.right().saturating_sub(ix)), 1));
         if *s == Side::Scm && !app.scm_files.is_empty() {
             activity_badge(f, r, item, (ix, iy), app.scm_files.len(), if active { active_bg } else { P.activity_bg });

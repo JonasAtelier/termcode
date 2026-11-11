@@ -5268,23 +5268,32 @@ mod tests {
             app.settings.compact = compact;
             let mut t = Terminal::new(TestBackend::new(110, 22)).unwrap();
             screen(&mut app, &mut t);
-            let ih = if compact { 2 } else { 3 };
+            // Two rows an item; comfortable puts the icon on the second, one blank row between icons.
+            let (ih, off) = if compact { (2, 0) } else { (2, 1) };
             let (items, b) = (app.ui.activity.clone(), t.backend().buffer().clone());
             assert!(items.iter().all(|(r, _)| r.height == ih), "{compact}: one {ih}-row cell per item");
             assert!(items.windows(2).all(|w| w[1].0.y == w[0].0.bottom()), "stacked without gaps");
-            // The icon in its item's middle row, a blank kept after it (its 2-cell slot).
+            // The icon, a blank kept after it (its 2-cell slot).
             let (scm, _) = items[2];
-            let iy = scm.y + (ih - 1) / 2;
+            let iy = scm.y + off;
             let ix = (scm.x..scm.right()).find(|&x| b[(x, iy)].symbol() == crate::theme::icons().scm).expect("the SCM icon");
             assert_eq!(b[(ix + 1, iy)].symbol(), " ");
-            // The active item (Explorer): the indicator down its rows over the active background.
+            // The active item (Explorer): the indicator on the icon's row over the active
+            // background, which takes half of each blank row around the icon.
             let (ex, side) = items[0];
             assert_eq!(side, Side::Explorer);
-            for y in ex.y..ex.bottom() {
-                assert_eq!((b[(ex.x, y)].symbol(), b[(ex.x, y)].fg), ("▎", crate::theme::P.activity_border), "row {y}");
-                assert_eq!(b[(ex.x + 1, y)].bg, crate::blocks::active_bg(&serde_json::Map::new()));
+            let lifted = crate::blocks::active_bg(&serde_json::Map::new());
+            let ey = ex.y + off;
+            assert_eq!((b[(ex.x, ey)].symbol(), b[(ex.x, ey)].fg), ("▎", crate::theme::P.activity_border));
+            assert_eq!(b[(ex.x + 1, ey)].bg, lifted);
+            // Half of the blank row above (comfortable) and of the one below (the next item's top).
+            for y in (ey - off..=ey + 1).filter(|&y| y != ey) {
+                let half = if y < ey { "▄" } else { "▀" };
+                for x in ex.x..ex.right() {
+                    assert_eq!((b[(x, y)].symbol(), b[(x, y)].fg, b[(x, y)].bg), (half, lifted, crate::theme::P.activity_bg), "{compact}: ({x}, {y})");
+                }
             }
-            assert_ne!(b[(scm.x + 1, scm.y)].bg, b[(ex.x + 1, ex.y)].bg, "only the active item is lifted");
+            assert_ne!(b[(scm.x + 1, iy)].bg, lifted, "only the active item is lifted");
             // Hover: inactive foreground -> foreground, and the motion asks for a redraw.
             assert_eq!(b[(ix, iy)].fg, crate::theme::P.activity_inactive);
             assert!(app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: ix, row: iy, modifiers: KeyModifiers::NONE }));
@@ -5733,10 +5742,10 @@ mod tests {
             assert_eq!(app.ui.divider.x - app.ui.sidebar.x, sp.sidebar_width + fr, "{tag}: default width (and frame) until dragged");
             // Cards touch at their borders; lines reserve one separator column.
             assert_eq!(app.ui.sidebar.x, sp.activity_width + fr + u16::from(st == BlockStyle::Lines), "{tag}");
-            // The activity icon is drawn centred inside its hit rect: the middle row, its
-            // 2-cell slot centred right of the indicator column.
+            // The activity icon is drawn inside its hit rect: the second row (the first when
+            // compact), its 2-cell slot centred right of the indicator column.
             let (ar, _) = app.ui.activity[2];
-            let (ix, iy) = (ar.x + 1 + ar.width.saturating_sub(3) / 2, ar.y + (ar.height - 1) / 2);
+            let (ix, iy) = (ar.x + 1 + ar.width.saturating_sub(3) / 2, ar.y + u16::from(!compact));
             assert_eq!(t.backend().buffer()[(ix, iy)].symbol(), crate::theme::icons().scm, "{tag}");
             // Explorer header: the root's name; the tree starts on the next row.
             let (_, hy) = cell_of(&t, &app.repo.to_uppercase(), 0);
@@ -9183,9 +9192,8 @@ mod tests {
             screen(&mut app, &mut t);
             let b = t.backend().buffer();
             let (item, _) = app.ui.activity[2];
-            let ih = if compact { 2 } else { 3 };
-            assert_eq!(item.height, ih, "{n}: the hit rect is the item's");
-            let iy = item.y + (ih - 1) / 2;
+            assert_eq!(item.height, 2, "{n}: the hit rect is the item's");
+            let iy = item.y + u16::from(!compact);
             let ix = (item.x..item.right()).find(|&x| b[(x, iy)].symbol() == crate::theme::icons().scm).expect("the icon");
             let row = |y: u16, x0: u16| (x0..item.right()).map(|x| b[(x, y)].symbol()).collect::<String>();
             if compact {
@@ -9200,7 +9208,7 @@ mod tests {
                     assert_eq!(b[(ix + 1, iy - 1)].symbol(), "7", "a digit right of the icon column");
                 }
             }
-            assert_eq!(row(item.bottom() - 1, item.x + 1).trim(), "", "{n}: nothing under the icon");
+            assert_eq!(row(iy + 1, item.x + 1).trim(), "", "{n}: nothing under the icon");
         }
         fs::remove_dir_all(&root).unwrap();
     }
