@@ -1403,12 +1403,14 @@ fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: 
     spans.push(Span::raw(sp(crate::blocks::icon_gap(app.settings.spacing.icon_gap) / 2)));
     // The subject keeps at least ~20 cells and 2 blank ones after it; the badges get the
     // rest before they collapse into +N, then go.
-    let info = if hot { 2 } else { 0 };
+    let info = if hot { 3 } else { 0 };
     let keep = c.subject.width().min(SUBJECT_MIN);
     let avail = (r.width as usize).saturating_sub(width(&spans) as usize);
     let mut rs = badges(&c.refs, pal, avail.saturating_sub(keep + 2 + info));
     if hot {
-        rs.push(Span::styled(format!(" {}", info_icon()), Style::new().fg(P.icon_fg)));
+        // A blank cell after it: a Nerd Font glyph often draws wider than its one cell
+        // and would spill onto the scrollbar.
+        rs.push(Span::styled(format!(" {} ", info_icon()), Style::new().fg(P.icon_fg)));
     }
     let mut st = Style::new().fg(P.sidebar_fg);
     if head {
@@ -1424,7 +1426,7 @@ fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: 
     }
     app.gitui.hits.hovers.push((r, hash));
     if hot {
-        app.gitui.hits.areas.push((Rect::new(r.right().saturating_sub(1), r.y, 1, 1), Hit::Info(ci)));
+        app.gitui.hits.areas.push((Rect::new(r.right().saturating_sub(2), r.y, 1, 1), Hit::Info(ci)));
     }
 }
 
@@ -2102,6 +2104,9 @@ pub(crate) mod ui_tests {
         app.focus = Focus::Side;
         screen(&mut app, &mut tm);
         let info = app.gitui.hits.areas.iter().find(|(_, h)| matches!(h, Hit::Info(_))).map(|x| x.0).unwrap();
+        let b = tm.backend().buffer();
+        assert_eq!(b[(info.x, info.y)].symbol(), info_icon(), "the hit is on the icon");
+        assert_eq!(b[(info.x + 1, info.y)].symbol(), " ", "a blank cell keeps it off the scrollbar");
         click(&mut app, (info.x, info.y));
         assert!(app.gitui.card.is_some());
     }
