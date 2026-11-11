@@ -8,6 +8,22 @@ A VS Code-style code editor and Git panel that runs **inside your terminal**.
 What you get: a file Explorer, Search, Source Control with a commit graph, tabs and split
 editors, side-by-side diffs, a minimap, Go to Definition, and VS Code themes.
 
+### How light is it?
+
+Both opening this repo and one file, fresh profiles, median of 5 runs (Linux, 12 cores):
+
+| | herdr-code | VS Code 1.146 |
+|---|---|---|
+| Startup | **0.1 s** | 1.0 s |
+| Memory (PSS) | **20 MB** | 800–1070 MB |
+| Processes | 1 | 11 |
+| CPU used in the first 20 s | 0.6 s | 12.4 s |
+| CPU when idle | 0.9% | 9% |
+| Install size | 8 MB | 1.9 GB |
+
+herdr-code's numbers leave out the terminal it runs in. VS Code had no extensions and its
+startup is its own timer, which leaves out the `code` launcher, so real use is heavier.
+
 ---
 
 ## 1. What you need
