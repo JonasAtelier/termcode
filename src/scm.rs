@@ -1599,13 +1599,6 @@ fn card_lines(c: &Card, pal: &Pal, w: usize) -> (Vec<Line<'static>>, Option<usiz
         Span::styled(", ", st(P.widget_fg)),
         Span::styled(format!("{} {}(-)", h.deletions, plural(h.deletions, "deletion")), st(pal.deleted)),
     ]));
-    if !cm.refs.is_empty() {
-        let mut b = badges(&cm.refs, pal, w);
-        if !b.is_empty() {
-            b.remove(0);
-        }
-        v.push(Line::from(b));
-    }
     v.push(Line::raw(""));
     let at = v.len();
     v.push(Line::raw(""));
@@ -1648,9 +1641,19 @@ fn draw_card(app: &mut App, f: &mut Frame, area: Rect) {
         if br.is_empty() {
             break;
         }
-        f.render_widget(Span::styled(t.clone(), Style::new().fg(P.button2_fg).bg(P.button2_bg)), br);
+        let hot = app.hover.is_some_and(|p| br.contains(p));
+        f.render_widget(Span::styled(t.clone(), crate::ui::button_style(false, hot)), br);
         app.gitui.hits.areas.push((br, hit));
         x += t.width() as u16 + 1;
+    }
+    // The refs follow the buttons, collapsing into +N in what room is left.
+    if let Some(Ok(h)) = &c.hover {
+        let room = inner.right().saturating_sub(x);
+        let mut b = badges(&h.commit.refs, &pal, room as usize);
+        if !b.is_empty() {
+            b.remove(0);
+        }
+        f.render_widget(Line::from(b), Rect::new(x.min(inner.right()), by, room, 1));
     }
 }
 
@@ -2094,6 +2097,18 @@ pub(crate) mod ui_tests {
             assert!(s.contains(want), "{want}: {s}");
         }
         assert!(s.contains("ago") || s.contains("now"), "{s}");
+        // Its buttons light grey under the pointer, like the commit dialog's.
+        let copy = at(&tm, "Copy hash");
+        let moved = |app: &mut App, p: (u16, u16)| app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: p.0, row: p.1, modifiers: KeyModifiers::NONE });
+        assert!(moved(&mut app, copy), "onto a button: redraw");
+        screen(&mut app, &mut tm);
+        assert_eq!(tm.backend().buffer()[copy].bg, P.button2_hover, "lit");
+        let open = at(&tm, "Open changes");
+        assert_ne!(tm.backend().buffer()[open].bg, P.button2_hover, "only the one under it");
+        assert!(moved(&mut app, open), "onto the other: redraw");
+        screen(&mut app, &mut tm);
+        assert_eq!(tm.backend().buffer()[open].bg, P.button2_hover);
+        assert_ne!(tm.backend().buffer()[copy].bg, P.button2_hover, "not left lit");
         click(&mut app, at(&tm, "Copy hash"));
         assert!(app.msg.starts_with("copied"), "{}", app.msg);
         // Off the row and the card, it lasts CARD_GRACE: back in time keeps it open.
@@ -2115,6 +2130,8 @@ pub(crate) mod ui_tests {
         settle(&mut app);
         let s = screen(&mut app, &mut tm);
         assert!(s.contains("second") && s.contains("Open changes"), "{s}");
+        let row = s.lines().find(|l| l.contains("Open changes")).unwrap();
+        assert!(row.find(&app.branch) > row.find("Open changes"), "the branch right after Open changes: {row}");
         click(&mut app, at(&tm, "Open changes"));
         settle(&mut app);
         let key = &app.groups[app.ag].tabs[app.groups[app.ag].active].key;

@@ -317,7 +317,8 @@ struct HoverKey {
     sash: Option<usize>,
     /// An activity bar item (its icon lights up).
     activity: Option<usize>,
-    /// A commit-dialog button, or (usize::MAX) Source Control's "Add commit": lit grey.
+    /// A commit-dialog button, a commit card's button, or (usize::MAX) Source Control's
+    /// "Add commit": lit grey.
     button: Option<usize>,
 }
 
@@ -4493,7 +4494,9 @@ impl App {
             activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.settings_btn.contains(p).then_some(SIDES.len())),
             button: match self.gitui.dlg.as_ref() {
                 Some(d) => d.hits.btns.iter().position(|(r, _)| r.contains(p)),
-                None => self.ui.commit_btn.contains(p).then_some(usize::MAX),
+                None => self.ui.commit_btn.contains(p).then_some(usize::MAX).or_else(|| {
+                    g.areas.iter().position(|(r, h)| matches!(h, crate::scm::Hit::CardCopy | crate::scm::Hit::CardOpen) && r.contains(p))
+                }),
             },
         }
     }
