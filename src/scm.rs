@@ -85,7 +85,13 @@ pub struct Card {
     pub hover: Option<Result<Hover, String>>,
     /// The row it belongs to; the card sits beside it.
     pub anchor: Rect,
+    /// When the pointer left both: the card closes CARD_GRACE later unless it is back.
+    left: Option<Instant>,
 }
+
+/// How long a card outlives the pointer leaving it: time to cross the scrollbar, the
+/// border and other rows on the way from the row to the card's buttons.
+pub const CARD_GRACE: Duration = Duration::from_secs(1);
 
 /// Clickable things drawn by this module.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -364,7 +370,8 @@ impl GitUi {
     /// When a resting pointer opens the card, or the cursor's blame is due.
     pub fn due(&self) -> Option<Instant> {
         let hover = self.hover.as_ref().filter(|_| self.card.is_none()).map(|h| h.2 + HOVER);
-        [hover, self.cmds.due()].into_iter().flatten().min()
+        let close = self.card.as_ref().and_then(|c| c.left).map(|t| t + CARD_GRACE);
+        [hover, close, self.cmds.due()].into_iter().flatten().min()
     }
 }
 
@@ -866,35 +873,39 @@ pub fn open_card(app: &mut App, hash: String, anchor: Rect) {
     // Cleared first: a timer left in the past would keep the event loop from sleeping.
     app.gitui.hover = None;
     let Some(root) = app.git_root.clone() else { return };
-    app.gitui.card = Some(Card { hash: hash.clone(), hover: None, anchor });
+    app.gitui.card = Some(Card { hash: hash.clone(), hover: None, anchor, left: None });
     app.gitui.spawn(move || {
         let card = gitops::commit_hover(&root, &hash);
         Msg::Card(hash, card)
     });
 }
 
-/// The resting-pointer timer fired: open the card. True when it did.
+/// The resting-pointer timer fired: open the card; or the pointer stayed off a card for
+/// CARD_GRACE: close it. True when either did.
 pub fn tick(app: &mut App) -> bool {
-    let cmds = crate::gitcmds::tick(app);
-    let Some((hash, rect, t)) = app.gitui.hover.clone() else { return cmds };
+    let mut changed = crate::gitcmds::tick(app);
+    if app.gitui.card.as_ref().and_then(|c| c.left).is_some_and(|t| t.elapsed() >= CARD_GRACE) {
+        app.gitui.card = None;
+        changed = true;
+    }
+    let Some((hash, rect, t)) = app.gitui.hover.clone() else { return changed };
     if app.gitui.card.is_some() || t.elapsed() < HOVER {
-        return cmds;
+        return changed;
     }
     open_card(app, hash, rect);
     true
 }
 
-/// Pointer motion (no button): start or stop the hover timer, close a card
-/// the pointer left. True when a redraw is needed.
+/// Pointer motion (no button): start or stop the hover timer; leaving a card and its
+/// row starts its CARD_GRACE, coming back stops it. True when a redraw is needed.
 pub fn moved(app: &mut App, p: Position) -> bool {
     let gu = &mut app.gitui;
-    let mut changed = false;
-    if let Some(c) = &gu.card {
+    if let Some(c) = &mut gu.card {
         if gu.hits.card.contains(p) || c.anchor.contains(p) {
+            c.left = None;
             return false;
         }
-        gu.card = None;
-        changed = true;
+        c.left.get_or_insert_with(Instant::now);
     }
     match gu.hits.hovers.iter().find(|(r, _)| r.contains(p)) {
         Some((r, h)) => {
@@ -904,7 +915,7 @@ pub fn moved(app: &mut App, p: Position) -> bool {
         }
         None => gu.hover = None,
     }
-    changed
+    false
 }
 
 fn save_layout(app: &App) {
@@ -2085,8 +2096,17 @@ pub(crate) mod ui_tests {
         assert!(s.contains("ago") || s.contains("now"), "{s}");
         click(&mut app, at(&tm, "Copy hash"));
         assert!(app.msg.starts_with("copied"), "{}", app.msg);
-        // Moving off the row and the card closes it.
+        // Off the row and the card, it lasts CARD_GRACE: back in time keeps it open.
+        let card = app.gitui.hits.card;
         mouse(&mut app, MouseEventKind::Moved, (100, 2));
+        assert!(!tick(&mut app) && app.gitui.card.is_some(), "not closed at once");
+        mouse(&mut app, MouseEventKind::Moved, (card.x + 1, card.y + 1));
+        std::thread::sleep(CARD_GRACE + Duration::from_millis(50));
+        assert!(!tick(&mut app) && app.gitui.card.is_some(), "back on the card");
+        mouse(&mut app, MouseEventKind::Moved, (100, 2));
+        assert!(app.gitui.due().is_some_and(|d| d > Instant::now()), "the close is scheduled");
+        std::thread::sleep(CARD_GRACE + Duration::from_millis(50));
+        assert!(tick(&mut app));
         assert!(app.gitui.card.is_none());
         // `i` on the selected commit, with no pointer at all.
         app.gitui.graph_focus = true;
