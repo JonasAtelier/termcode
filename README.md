@@ -1,568 +1,333 @@
 # herdr-code
 
-herdr plugin, written in Rust, targeting **Ghostty + herdr + herdr-code** on Linux.
-Run `herdr-code [PATH]` like VS Code's `code PATH`: a VS
-Code-like editor for that folder, file or repo **in the same terminal**, like vim; quitting
-returns to the shell. `herdr-code --tab` opens it as a `Code: <name>` tab of the herdr workspace
-instead. It has an activity
-bar, a resizable Explorer (with Timeline) / Search (with References) /
-Source Control (Changes over Graph) sidebar, editor groups with preview tabs, a side-by-side diff, and
-the "Visual Studio Dark - C++" colours (or any VS Code theme, see [Settings](#settings)).
+A VS Code-style code editor and Git panel that runs **inside your terminal**.
 
-## Target environment
+- Run `herdr-code` in a folder and it opens right there, like `vim`. Quit and you are back at your shell.
+- Inside [herdr](https://herdr.dev), `herdr-code --tab` opens it as a **Code** tab instead.
 
-The primary development and UI review environment is:
+What you get: a file Explorer, Search, Source Control with a commit graph, tabs and split
+editors, side-by-side diffs, a minimap, Go to Definition, and VS Code themes.
 
-```text
-Ghostty → herdr terminal workspace → herdr-code plugin tab
-```
+---
 
-- Use a Nerd Font in Ghostty for the default icons. The default comfortable
-  density, rounded cards and theme need no additional plugin settings.
-- Review spacing, borders, scrollbars, graphics, modified keys and mouse input
-  through the complete stack. Terminal identity alone does not establish that
-  herdr forwards every graphics or keyboard sequence.
-- Unit tests and direct PTY checks supplement this review; record actual
-  Ghostty/herdr checks separately before calling the integration verified.
-- Standalone mode and other terminals remain supported with their existing
-  text/half-block fallbacks.
+## 1. What you need
 
-### macOS Terminal.app clients
+| Tool | Why | Check it |
+|---|---|---|
+| Linux | the only supported OS | |
+| Rust 1.88 or newer | to build herdr-code | `cargo --version` |
+| A C linker (`cc`) | Rust needs it to link | `cc --version` |
+| git | Source Control | `git --version` |
+| ripgrep (`rg`) | Search and Go to Definition | `rg --version` |
+| herdr 0.9.1 or newer | only for the Code tab (`--tab`) | `herdr --version` |
+| A Nerd Font | the icons | see step 2 |
 
-For a Mac connecting to the Linux host over SSH, install
-[JetBrainsMono Nerd Font Mono](https://www.nerdfonts.com/font-downloads) on the
-Mac, then select it in **Terminal > Settings > Profiles > Text > Font**.
-The Mono variant keeps icon glyphs within a single terminal cell; see the
-[Nerd Fonts FAQ](https://github.com/ryanoasis/nerd-fonts/wiki/FAQ-and-Troubleshooting)
-and [Apple's profile settings](https://support.apple.com/guide/terminal/trmltxt/mac).
-The local terminal renders the font, even when herdr-code runs remotely.
+Optional: [Ghostty](https://ghostty.org) (the terminal herdr-code is tested in), and
+`wl-copy` or `xclip` for the clipboard.
 
-Use **Settings > Appearance > Icons > nerd**, then **Save**. If installing a
-patched font is not an option, select **ascii** instead. You can also merge this
-key into the plugin's existing `settings.json` on the Linux host:
-
-```json
-{ "herdr-code.icons": "ascii" }
-```
-
-For plugin tabs, save this setting so the panel receives it. For an in-place
-session, `HERDR_CODE_ICONS=0 herdr-code .` forces the fallback even if settings
-select Nerd Font icons. ASCII mode also ignores custom Nerd Font file glyphs.
-
-After choosing a font, run this in Terminal.app to check the actual UI glyphs:
+### Install them
 
 ```sh
-printf '%s\n' 'Files   Search   Git   Close   Settings   Folder '
+# git, ripgrep and a C linker: pick your distro
+sudo apt install git ripgrep build-essential     # Debian / Ubuntu
+sudo dnf install git ripgrep gcc                 # Fedora
+sudo pacman -S git ripgrep base-devel            # Arch
+
+# Rust (press Enter for the default install, then open a new terminal)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# herdr (optional, for the Code tab)
+curl -fsSL https://herdr.dev/install.sh | sh
 ```
 
-Then check Explorer file icons, tab close buttons, the blue active-tab marker,
-and Settings in the complete Terminal.app → SSH → herdr → plugin path. Look for
-missing-glyph boxes, clipped icons and shifted labels. Repeat with `ascii` to
-check the fallback. Keep the plugin's Linux platform declaration until a native
-macOS build and runtime have been verified separately.
+Already have Rust? Run `rustup update` to get 1.88 or newer.
 
-## Install
+## 2. Set up a Nerd Font
+
+herdr-code draws its icons with a [Nerd Font](https://www.nerdfonts.com/font-downloads).
+
+1. Download **JetBrainsMono Nerd Font** and install it (on Linux: unzip into
+   `~/.local/share/fonts/`, then run `fc-cache -f`).
+2. Pick the **Mono** variant in your terminal. For Ghostty, add this line to
+   `~/.config/ghostty/config`:
+
+   ```text
+   font-family = "JetBrainsMono Nerd Font Mono"
+   ```
+
+Can't install a font? Use plain ASCII icons instead (see [Settings](#settings)):
+`"herdr-code.icons": "ascii"`.
+
+On a Mac connecting over SSH, install the font **on the Mac**: the terminal on your
+screen draws the icons.
+
+## 3. Build and install
 
 ```sh
-cargo install --path . --root ~/.local -j2     # -> ~/.local/bin/herdr-code
+git clone https://github.com/JonasAtelier/herdr-code.git
+cd herdr-code
+cargo install --path . --root ~/.local
+```
+
+This builds herdr-code (a few minutes the first time) and puts it at
+`~/.local/bin/herdr-code`.
+
+Make sure `~/.local/bin` is on your `PATH`:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # zsh: ~/.zshrc
+```
+
+Open a new terminal and check:
+
+```sh
+herdr-code -h
+```
+
+**Low on memory?** Add `-j2` to the `cargo install` line to build with 2 jobs.
+
+## 4. Add it to herdr (optional)
+
+From the `herdr-code` folder:
+
+```sh
 herdr plugin link "$PWD"
+herdr plugin list            # shows jonas.herdr-code
 ```
 
-The manifest runs `herdr-code` through PATH, so the herdr server's PATH must include `~/.local/bin`.
-Start `herdr` in Ghostty, then run `herdr-code --tab .` from a herdr pane and
-select the resulting `Code: <name>` tab.
+herdr finds `herdr-code` through `PATH`. If herdr was already running before you changed
+`PATH`, quit herdr and start it again.
 
-A running panel picks up a new install by itself: within a few seconds of the binary
-being replaced it reloads in place (same pane, its tabs, cursors and scroll back from the
-session; undo history starts over). With unsaved files, a dialog open or a git write
-under way it waits, saying so once in the status bar. F1 `Developer: Reload Window` does
-the same by hand.
-
-## Use
+## 5. Try it
 
 ```sh
-herdr-code                    # this folder's git repo (or, outside one, the folder)
-herdr-code drivers/net/dsa    # that folder as the workspace root; git from the repo above it
-herdr-code ~/proj             # any folder, git repo or not
-herdr-code src/main.rs:120    # the file at line 120 (also :LINE:COL), its repo as the root
-herdr-code --tab src          # the same, as a Code tab in this herdr workspace
+cd ~/some/project
+herdr-code                 # opens this folder; Ctrl+Q quits
 ```
 
-- `herdr-code [--tab] [PATH[:LINE[:COL]]]`; `herdr-code -h` prints the usage.
-- **In place** (the default) the panel takes over the terminal it was started in, like vim.
-  Close (title bar) or Ctrl+Q asks Save All / Don't Save / Cancel for unsaved files, then puts
-  the terminal back (main screen, mouse, keyboard flags, bracketed paste, cursor) and exits 0,
-  so the shell prompt returns. Nothing in herdr moves: no tab, no focus, no other client. It
-  also works outside herdr, as a plain terminal app.
-- A relative PATH resolves against the current folder. A missing PATH exits with status 1. As
-  with `code -g`, `:LINE` and `:LINE:COL` are split off, except that a path which exists as
-  typed (a name containing `:`) wins. A name starting with `-` needs `./`.
-- A folder becomes the workspace root: the Explorer, Search and Quick Open cover it, and its
-  name heads the Explorer. Inside a git repo, Source Control, the Explorer's decorations and the
-  quick diff use that repo, as VS Code does for a subfolder; Source Control lists the whole
-  repo's changes. A folder outside any repo works too: Source Control then says "The folder
-  currently open doesn't have a git repository." and nothing runs git.
-- A file opens, pinned, at LINE:COL, with its git worktree as the root, or its folder outside a
-  repo.
-- Settings, the layout and hot-exit backups are the same in every mode: in a plugin pane herdr
-  gives `$HERDR_PLUGIN_CONFIG_DIR` / `$HERDR_PLUGIN_STATE_DIR`; elsewhere herdr-code uses the
-  paths herdr would give (`~/.config/herdr/plugins/config/jonas.herdr-code`,
-  `~/.local/state/herdr/plugins/jonas.herdr-code`, under `$XDG_CONFIG_HOME` / `$XDG_STATE_HOME`
-  when set). Backups are kept per herdr session (`HERDR_SOCKET_PATH`), or as `local` outside
-  herdr.
+Inside a herdr pane:
 
-### As a tab: `--tab` and the plugin action
+```sh
+herdr-code --tab           # opens a "Code: project" tab
+```
 
-- `herdr-code --tab [PATH]` from a herdr pane, or the plugin action `jonas.herdr-code.open`
-  (no path: the invoking pane's `foreground_cwd`). Without a terminal on stdin and stdout,
-  `herdr-code` notes it and opens a tab instead.
-- If the workspace already has a Code tab for that root (our "Code" pane with the root as its
-  cwd), it is reused; otherwise a new tab opens (`herdr plugin pane open --placement tab
-  --no-focus`) and is renamed `Code: <name>`. A short lock around find-or-create makes a double
-  launch open one tab. A new tab gets a file in `HERDR_CODE_OPEN`. A running one gets it as
-  one bracketed paste, `herdr pane send-text`, carrying a random token that the tab panel writes
-  at start to `$HERDR_PLUGIN_STATE_DIR/req-<key>.token` (0600; key = session socket and pane
-  id). The paste wakes the panel at once. One that does not start with `herdr-code:<token>:`
-  is an ordinary paste. The panel opens only a regular file under its root. A Code tab
-  started by an older herdr-code takes no requests: close it and run again.
-- It never focuses anything: herdr 0.9.1 can only focus a tab for every client attached to the
-  session (`herdr tab focus` moves them all, e.g. a mosh client elsewhere), so the active tab
-  stays as it was. It prints `Code tab ready: click 'Code: <name>' in the tab bar`, and
-  `opened <file>:<line>` for a file.
-- Quitting ends the panel process; herdr then closes the tab. It never signals or closes
-  anything else. herdr closing the tab (HUP, then TERM) still flushes unsaved edits to the
-  hot-exit backups.
+The new tab doesn't take focus: click **Code: project** in the tab bar.
 
-### More
+## Updating
 
-- Icons: UI icons are VS Code codicons (`nf-cod-*`); file icons are VS Code's default Seti
-  theme mapped to `nf-seti-*`, coloured like VS Code (`cargo run --example gen_seti`). Both need a
-  Nerd Font. `"herdr-code.icons": "ascii"` or `HERDR_CODE_ICONS=0` (always wins) gives plain
-  ASCII. The sidebar width and visibility are kept in `$HERDR_PLUGIN_STATE_DIR/layout.json`.
-- Blocks: the activity bar, each sidebar section and each editor group are rounded cards with a
-  no blank gutter beside the sidebar and a 1-cell gutter between editor groups, while
-  stacked sections share one border row (`├─┤`)
-  (`herdr-code.blocks.style`); the borders are `editorGroup.border`, the focused block's
-  `focusBorder` blue (the activity bar's right after a click on it, until the next key or
-  click). Each icon keeps a blank cell after it, room for a
-  non-Mono Nerd Font glyph. Activity bar items are 3 rows tall (2 in compact), the icon
-  centred: the active one has `activityBar.activeBorder` down its left edge over a subtle
-  `activityBar.activeBackground`, a hovered one turns from `inactiveForeground` to `foreground`.
-- Sessions, per launch folder: reopening `herdr-code` from the same folder (or on the same
-  PATH) brings back the last session there, as VS Code does: the editor groups and tabs (pinned or preview, the active ones), each file's
-  cursor, selection and scroll, the sidebar view, width and visibility, the Explorer's open
-  folders and scroll, the Search query and toggles (not its results), the Source Control
-  layout, and diff tabs (still-pending working-tree/index changes, commits still there). Missing
-  files are skipped and positions clamped; tabs reopen lazily, their files read when first
-  shown. Unsaved text comes back from the hot-exit backups (the Restore prompt). It is saved
-  about a second after a change, on quit, when herdr closes the pane, and after a crash, to
-  `$HERDR_PLUGIN_STATE_DIR/sessions/<hash of the launch folder>.json` (in place and as a tab
-  alike). A no-argument launch from `arch/sh` keeps its own session though its root is the
-  repo; a reused `--tab` keeps the session of the folder it was opened from.
-  `herdr-code FILE:L` opens that file on top of it.
-- Hover: an inactive tab (`tab.hoverBackground`), the clickable status bar items (`statusBarItem.hoverBackground`) and buttons (`button.hoverBackground`, `button.secondaryHoverBackground`) light up under the pointer.
-  The title-bar Close button brightens on hover and returns to its normal colour
-  while pressed. On release it brightens again before the close procedure starts;
-  releasing outside cancels. Its edges always match the fill.
-- Visuals: the built-in theme uses layered grey surfaces, muted selections and diff line
-  backgrounds, with stronger word highlights. A bold blue marker (`▎`) marks the active
-  tab's left edge in every block style. It uses `tab.activeBorderTop` or `focusBorder`,
-  carried as ordinary foreground colour; ASCII mode uses a bold `|`.
-  Other editor groups use a muted accent.
-  Dirty tabs keep a separate marker beside Close even on hover. Empty editors offer clickable Open File,
-  Search and Source Control shortcuts. Graph nodes are hollow except HEAD, which is solid.
-  Tool icons stay monochrome; Seti file colours and custom theme colours are preserved.
-- `prefix+g` is herdr's default `goto`, so no keybinding is shipped. To add one, bind
-  `plugin_action` `jonas.herdr-code.open` to a free key.
+```sh
+cd herdr-code
+git pull
+cargo install --path . --root ~/.local
+```
 
-## Panel keys
+That's all. A herdr-code that is already open reloads itself a few seconds later, keeping
+its tabs and cursors. It waits while you have unsaved files. To reload by hand: F1, then
+**Developer: Reload Window**.
 
-In VTE terminals (ptyxis, gnome-terminal), Ctrl+Shift chords, Ctrl+Enter, Shift+Enter, Ctrl+Tab
-and Ctrl+1/2/3 arrive as their plain forms. VTE has no kitty keyboard support and herdr does not
-enable modifyOtherKeys for it. The fallbacks below always work.
+## Uninstalling
 
-| Key | Action |
+```sh
+herdr plugin unlink jonas.herdr-code
+rm ~/.local/bin/herdr-code
+```
+
+---
+
+## Using it
+
+### Opening things
+
+```sh
+herdr-code                    # this folder (its git repo if inside one)
+herdr-code ~/proj             # any folder
+herdr-code src/main.rs:120    # a file at line 120 (also :LINE:COL)
+herdr-code --tab src          # the same, as a herdr tab
+```
+
+- **Quitting:** Ctrl+Q, or Close in the title bar. You are asked about unsaved files first.
+- **Sessions:** open the same folder again and your tabs, cursors and layout come back.
+  Unsaved text survives a crash too.
+- **Subfolders:** `herdr-code drivers/net` shows only that folder, but Source Control still
+  uses the whole repo.
+- **Keyboard shortcut for the Code tab:** none is set. In herdr, bind `plugin_action`
+  `jonas.herdr-code.open` to a free key.
+
+### The sidebar
+
+| View | Open with | What it does |
+|---|---|---|
+| Explorer | Alt+1, Ctrl+E | Files. **Timeline** below shows the open file's commits |
+| Search | Alt+4, F4 | Search all files. **References** below shows where the symbol at the cursor is used |
+| Source Control | Alt+2, F2, Ctrl+G | Changes, commits and the commit graph |
+
+Click the active sidebar icon to hide the sidebar. Drag any divider to resize.
+
+### Common keys
+
+| Key | Does |
 |---|---|
-| F1 (Ctrl+Shift+P where it reaches) | Command palette: Open Settings (JSON), Toggle Indent Rainbow, Toggle Minimap Ruler, …; the recently used commands come first |
-| Alt+1, Ctrl+E | Explorer |
-| Alt+2 / F2, Ctrl+G | Source Control |
-| `h` on an Explorer file | open it; the TIMELINE pane under the tree shows its history |
-| Alt+4 / F4 (Ctrl+Shift+F where it reaches) | Search in files: it runs 0.3 s after you stop typing (Enter runs it at once and moves to the results; Esc cancels) |
-| Search result file arrow; Left / Right / Space on its header | collapse / expand that file's matches; clicking its name still opens the file. New searches start expanded |
-| click the active activity icon | hide or show the sidebar; drag the divider to resize |
-| Ctrl+P, Alt+P | Quick Open |
-| Ctrl+P then `:` (F1 Go to Line/Column…) | go to a line: `:42`, or `:42:7` for a column; the line is centred |
-| Ctrl+P then `@`, Ctrl+Shift+O where it reaches, a click on the breadcrumbs | Go to Symbol in Editor: the file's functions, types and Markdown headings, filtered as you type |
-| Ctrl+/ where it reaches (F1 Toggle Line Comment) | comment or uncomment the selected lines at their least indent; HTML, Markdown and CSS get a block comment |
-| Alt+Z | toggle word wrap for every editor (until settings reload) |
-| Ctrl+K V, Ctrl+Shift+V where it reaches | Markdown preview to the side / in place, following unsaved edits; the same key on the preview goes back to the source |
-| double-click a file or folder name in the Explorer | rename it in place (a file's stem or a folder's whole name selected; 2 clicks in the box select a word, 3 all of it); Enter or a click elsewhere accepts, Esc gives up. Open tabs follow it, unsaved edits included |
-| click / double-click | open as preview (italic tab) / keep open (upright); in the Explorer a double-click renames, so keep a file open with Enter or a double-click on its tab. Double-click the tab again to make it the preview once more (not with unsaved changes). Ctrl+K Enter also pins. A white dot before the bold close cross marks unsaved changes |
-| drag an Explorer file to an editor edge | open it in a new group (max 3); centre or tab bar = that group |
-| Ctrl+F, Ctrl+H | find / replace in the current file: the query box with the match count at its right edge, no buttons. Enter or F3 next, Shift+F3 previous, Alt+C match case, Alt+W whole word, Alt+R regular expression (`$1` in the replacement; a toggle that is on shows in the box), Enter in Replace replaces one, Alt+Enter all, Esc closes |
-| Ctrl+S, Ctrl+W, Ctrl+Q | save (atomic), close tab, quit (all prompt for unsaved changes) |
-| Ctrl+Z, Ctrl+Y | undo, redo |
-| gutter fold button, Ctrl+Shift+[ / ] | fold / unfold the current block |
-| Ctrl+K Ctrl+0 / Ctrl+K Ctrl+J | fold all / unfold all (also available from F1) |
-| Ctrl+C / X / V, Ctrl+A | clipboard (whole line without a selection), select all |
-| Tab / Shift+Tab, Enter | indent / outdent, new line with auto-indent |
-| Ctrl+Shift+Up / Down | add a cursor on the line above / below: typing, Enter, Backspace, Delete, paste and the arrows act at every cursor; Esc or any other key leaves one |
-| Alt+Up / Alt+Down, Shift+Alt+Down | move the current or selected lines, duplicate them below |
-| Ctrl+PgDn / PgUp, Ctrl+1/2/3 | next / previous tab, focus group (Ctrl+digit only with kitty keys) |
-| Add commit (Source Control) | the commit dialog, see [Source Control](#source-control) |
-| F7 / Shift+F7 in a diff | next / previous change |
-| `r` in a list | refresh. Git status also refreshes on view switch and on pane focus |
-| scrollbars | click the track to page, drag the slider; the wheel scrolls the list or editor under it |
-| horizontal scrolling | drag the bottom scrollbar, use a horizontal wheel, or Shift+wheel over the editor; Git diff sides scroll together, including the commit dialog preview |
-| minimap | click: centre that line; drag the slider; the wheel scrolls the editor |
-| a gutter marker (click), Alt+F5 / Shift+Alt+F5, F7 / Shift+F7 | quick-diff peek on that / the next / the previous change |
-| in the peek | Revert (the hunk back to the index version, one undo step), ↑ ↓ (wraps), × or Esc closes |
-| F12, Ctrl+click | Go to Definition: one result opens at its line (flashed); several follow `editor.gotoLocation.multipleDefinitions` |
-| Alt+F12 | Peek Definition, even for one result |
-| Shift+F12 | Find All References, in the peek ("N references") |
-| in the peek | Up/Down, PgUp/PgDn, Enter or click opens, wheel scrolls the list or the preview, Esc or a click outside closes |
-| Alt+← / Alt+→ | Go Back / Go Forward (also VS Code Linux's Ctrl+Alt+- / Ctrl+Shift+- where they reach, and F1) |
-| Ctrl+hover | underlines the identifier under the mouse (`editorLink.activeForeground`) |
-| rest the pointer on a function name for 0.5 s | preview its documentation; move away or press Esc to close; wheel inside the popup scrolls long comments |
+| F1 | Command palette (every command is here) |
+| Ctrl+P | Open a file by name. Type `:42` to go to a line, `@` for a function |
+| Ctrl+S / Ctrl+W / Ctrl+Q | Save / close tab / quit |
+| Ctrl+Z / Ctrl+Y | Undo / redo |
+| Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste |
+| Ctrl+F / Ctrl+H | Find / replace in this file |
+| Ctrl+/ | Comment or uncomment lines |
+| Ctrl+Shift+Up / Down | Add a cursor above / below |
+| Alt+Up / Alt+Down | Move lines up / down |
+| Ctrl+Shift+[ / ] | Fold / unfold |
+| Alt+Z | Toggle word wrap |
+| Ctrl+K V | Markdown preview |
+| F12 or Ctrl+click | Go to Definition |
+| Shift+F12 | Find all references |
+| Alt+← / Alt+→ | Go back / forward |
+| F7 / Shift+F7 | Next / previous change in a diff |
+| Ctrl+PgDn / Ctrl+PgUp | Next / previous tab |
+| Ctrl+, | Settings |
 
-Editor cards place the horizontal scrollbar on the bottom border, leaving the last
-interior row available for code. Unframed editors keep it on their last content row.
+**Mouse:** click a file to preview it (italic tab), double-click its tab to keep it open.
+Double-click a name in the Explorer to rename it. Drag a file to an editor edge to split.
+Rest the pointer on a function to see its docs.
 
-Sticky scroll: while the Explorer is scrolled, one row under the root header shows the full
-path of the folder the first visible row is in, breadcrumb style (deep in `arch/sh/boards`:
-`▾ arch › sh › boards`), each name coloured as in the tree and clickable (it scrolls that
-folder back into view); too narrow, it is cut from the left (`… › sh › boards`). It follows
-every folder end, and shows nothing while the path's top-level folder is still on screen.
-With `workbench.tree.stickyScrollMaxItemCount` above 1 the folders are nested rows instead,
-outermost first (`arch`, `sh`, `boards`), as VS Code draws them. Search pins the file over
-its hits, Source Control the section over its files; the wheel over them scrolls the list.
-A thin line (`sideBarStickyScroll.border`, here the cards' border colour) separates them
-from the list along the last pinned row's bottom edge, without a separator-only row
-(or in its configured listItemGap). Its underline colour has the same transport limitation
-noted above. Never over 40% of the list; the background is `sideBarStickyScroll.background`.
+Some terminals (GNOME Terminal, Ptyxis) can't send Ctrl+Shift keys, Ctrl+Tab or
+Ctrl+1/2/3. Use F1 or the other key in the table instead.
 
-Function documentation hover uses the existing bounded F12 lookup, including the repo
-outside a subfolder workspace. It shows adjacent C/kernel-doc/JSDoc blocks, Rust/Go
-line comments and Python docstrings, using open buffers' unsaved comments. Like VS Code's
-hover, it shows a syntax-coloured function signature above the documentation, with a
-separator, formatted parameters/returns and basic Markdown (emphasis, inline code,
-fenced examples and link labels). It uses `editorHoverWidget.background`, `.foreground`
-and `.border`; it prefers the space above the function and falls below when needed. If no
-comment is found, the popup shows only the signature, without an empty documentation section.
-No language server is started. It recognises call-shaped names (`name(`); lookup is
-heuristic, so overloads, generated definitions and complex generic calls may not resolve.
-Comments are limited to 80 lines; a popup can be scrolled without scrolling the editor.
+### Source Control
 
-The folding gutter uses the same chevrons as Explorer, with two clickable columns and a
-hover highlight. Code folding follows indentation (VS Code's fallback strategy), including nested functions
-and blocks. A folded header shows an ellipsis; original line numbers and file contents are
-preserved. Go to Definition and find reveal hidden results. Edits preserve unaffected
-folds and move them with their original headers when lines are inserted or removed,
-including undo/redo and split views. Editing inside hidden text reveals that block.
-Fold state is local to each editor view and resets on restart.
-Undo retains the latest 1,000 steps, with normal typing still grouped into one step.
+- **Changes:** `+` stages a file, `−` unstages it, `↶` discards (always asks).
+- **Commit:** click **Add commit**. Stage files, write a message, then **Commit** or
+  **Commit & Push**. Your draft is kept if you cancel.
+- **Graph:** click a commit to see its files, click a file to see its diff. Rest the pointer
+  on a commit (or press `i`) for a card with **Copy hash** and **Open changes**.
+- **Status bar:** click the branch to switch or create one; click `↓1 ↑2` to pull and push.
+- **More Git:** F1, then type `Git:` for pull, push, fetch, stash, merge, rebase and more.
+  Risky ones ask first.
+- **Merge conflicts:** click **Accept Current**, **Accept Incoming** or **Accept Both** above
+  each conflict, save, then `+` to mark it resolved.
 
-The editor gutter shows VS Code's quick diff against the git index (`:0:path`): green `▎`
-added, blue `▎` modified, red `▸` lines deleted below. Staging a hunk clears its marker. It
-recomputes about 200 ms after an edit. The editor scrollbar's overview ruler marks git
-changes (left half), find matches (right half) and the cursor line.
+Git runs in the background and never asks for a password inside the panel. If a command
+hangs, click the spinner in the status bar to cancel it. F1 **Git: Show Git Output** shows
+what ran.
 
-The minimap (VS Code's `editor.minimap`) sits between the code and the scrollbar and shows
-the code's silhouette, like VS Code's default `renderCharacters`: braille cells of 2 × 4 dots,
-one dot row per slot of the file's height and one dot per run of columns (so `maxColumn` fits), lit where that run
-has code, so indentation and line lengths show. Each cell takes the most frequent token
-colour of its dots, muted towards the background (`minimap.foregroundOpacity` scales it).
-Syntax colours fill in automatically on first access without scrolling; large files
-are processed across frames to keep input responsive. The
-git changes are on its left edge, find matches and the selection behind the dots, and the
-viewport slider is a translucent overlay, always visible by default (herdr forwards plain mouse
-motion to the pane, so explicit `showSlider: "mouseover"` also works). In a narrow editor it
-shrinks, then hides. `renderCharacters: false` draws half blocks instead, one line per half.
-
-Clicking a quick-diff marker opens VS Code's dirty-diff peek below the change: the index
-lines on red, the buffer lines on green with word highlights. Stage stages that one hunk (an
-unsaved buffer asks to save first: Save & Stage / Cancel); Revert edits the buffer only.
-
-## Source Control
-
-One view, VS Code's: the WORKING TREE pane (VS Code's CHANGES) over the GRAPH pane. Click a header to collapse it;
-drag the GRAPH header, or the line above it (lit in `sash.hoverBorder` on hover), to move the
-split (kept in layout.json).
-
-- WORKING TREE: an **Add commit** button, then Merge Changes (conflicts), Staged Changes and
-  Changes (untracked files as `U`). Row actions open, stage `+`, unstage `−`, discard `↶`
-  (always asks). Merge Changes' `+` stages every conflict (marks it resolved); Changes' "Stage
-  All" leaves conflicts alone.
-- GRAPH: the history of HEAD in `--topo-order`, lanes in the `scmGraph.foreground1-5`
-  colours, ref badges (branch, remote, tag, detached HEAD). It loads 100 commits; the last row
-  "View more" loads the next 100 (scrolling never loads). Click a commit to list its files
-  inline (status letters in `gitDecoration.*` colours), click a file for a read-only
-  side-by-side diff: first parent left, commit right, rows aligned, F7 / Shift+F7 between
-  changes. Keys with the graph focused (Tab from WORKING TREE): arrows, Enter, Left/Right
-  collapse/expand, `i` the commit card, `r` reload.
-- Side-by-side diffs (commit and working-tree) scroll as the editor does, both sides together:
-  one scrollbar at the right edge (drag the slider, click the track to page) whose overview
-  ruler marks removed rows in its left half and inserted ones in its right
-  (`diffEditorOverview.removedForeground` / `.insertedForeground`; unset, VS Code's text
-  backgrounds at twice the alpha) and the change F7 last reached; the editor's minimap on the
-  modified side, its git lane showing the changes. Wheel: vertical; Shift+wheel or the
-  horizontal wheel: sideways, no further than the longest line in the file. Keys: Up/Down,
-  PgUp/PgDn, Ctrl+Home/End (top, bottom), Home/End (line starts, line ends); F7 / Shift+F7
-  reveal the next / previous change centred.
-- Commit card: rest the pointer on a commit row (graph or Timeline) for 0.5 s, press `i`, or
-  click the ⓘ at the selected row's end. Author, relative and local date, the full message,
-  files changed with insertions and deletions, refs, the short hash, [Copy hash]
-  [Open changes] (opens its first file's diff).
-- Commit dialog (git-gui style): Unstaged Changes over Staged Changes (Will Commit) with
-  [Stage →] [Stage Changed] [← Unstage] (double-click or Enter on a row too), the selected
-  file's diff on the right, New Commit / Amend Last Commit (amend fills in the last message),
-  the message with a subject count (50) and a ruler at column 72, and [Rescan] (F5)
-  [Sign Off] (Ctrl+S) [Commit] (Alt+Enter, Ctrl+Enter where it reaches) [Commit & Push]
-  [Cancel]. An empty message is refused; with nothing staged it offers to stage everything
-  and commit. Esc or Cancel keeps the draft, also across restarts
-  (`$HERDR_PLUGIN_STATE_DIR/drafts/`). The commit runs in the background.
-- Explorer TIMELINE: drag the border above it to resize the tree and history; the height
-  is remembered across files and restarts. Click its header to collapse or expand it.
-  The active file's commits (renames followed), 100 at a time; click one
-  for that commit's diff of the file.
-- Search REFERENCES: the references of the symbol at the cursor, by file, looked up
-  again once the cursor rests on another symbol (0.4 s); off a symbol the last ones
-  stay. Click a reference (or a file, for its first) to go there. Click its header to
-  collapse or expand it.
-- Status bar: the branch (`*` unstaged, `+` staged changes; click: checkout a local, remote
-  or tag ref, Create new branch…, Create new branch from…), then `↓behind ↑ahead` (click:
-  VS Code's "This action will pull and push commits from and to '<upstream>'", OK by
-  default, then pull and push) or **Publish Branch** (`push -u` to `origin`, else the only remote), and the cursor line's blame
-  (rest on it or click it for the commit card).
-- Git commands: F1 "Git: …": Pull, Push, Fetch, Fetch
-  (Prune), Sync, Publish Branch, Checkout to…, Create Branch (From)…, Delete Branch…, Merge
-  Branch…, Rebase Branch…, Stash, Stash (Include Untracked), Stash Staged, Apply / Pop Latest
-  Stash, Apply / Pop / Drop Stash…, Undo Last Commit, Commit (Amend), Abort Merge, Abort
-  Rebase, Continue Rebase, Show Git Output, Cancel Running Operation. Rebase, the aborts,
-  Drop Stash, deleting an unmerged branch and undoing a merge commit ask first, with Cancel
-  as the default.
-- Git work runs in the background with a spinner in the status bar; clicking the spinner
-  cancels it (its pipes close, git ends at its next write; nothing is signalled). ssh runs
-  with `BatchMode` and short timeouts, HTTP gives up below 1 KB/s for 30 s, and git runs in
-  its own session without a controlling terminal, so ssh, hooks and credential helpers can
-  never prompt over the panel. Your own `GIT_SSH_COMMAND` / `core.sshCommand` is used as it
-  is, without those timeouts: add `-o BatchMode=yes -o ConnectTimeout=15
-  -o ServerAliveInterval=15 -o ServerAliveCountMax=2` to it, or a dead connection stalls
-  until ssh gives up (cancel it from the status bar). Push sends an explicit
-  `refs/heads/<branch>:<upstream>`, so a `+` in `remote.*.push` never forces. A failure shows
-  a notification with [Show Git Output].
-- Staging a hunk compares the index with the working file as git would stage it
-  (`core.autocrlf`, `eol`/`text`, `ident` and clean filters such as LFS applied).
-- Git Output (Show Git Output): every git command the panel ran, with its duration, exit
-  code and stderr; it follows new commands while open.
-- Merge conflicts: Merge Changes lists them. In the editor each block is coloured with
-  `merge.*` and its `<<<<<<<` line carries Accept Current Change | Accept Incoming Change |
-  Accept Both Changes | Compare Changes (short labels when narrow). Accepting edits the buffer
-  as one undoable change; save, then stage the file (`+`) to mark it resolved.
+---
 
 ## Settings
 
-Click the Settings gear at the bottom of the activity bar, press Ctrl+comma, or use
-F1 "Preferences: Open Settings". The centered window groups every supported setting
-under Appearance, Layout, Editor, Minimap, Indent Rainbow, Files & Session, and Source
-Control. Use switches (Kitty) or checkboxes, draggable sliders and dropdowns; themes and colors also have
-text and JSON inputs. Scroll the settings list to reach the remaining options.
+Press **Ctrl+,** (or click the gear at the bottom left). Change things, then:
 
-- Appearance shows miniature **Draft palette** and **Saved palette** cards when the
-  window has room. Committing a theme/color input updates the draft card without
-  changing the running editor; Apply and Save keep their existing behavior.
-- Settings graphics use Kitty Unicode placements for `xterm-kitty` / `xterm-ghostty`
-  or `TERM_PROGRAM=kitty` / `ghostty`. Ghostty is the primary terminal target;
-  graphics must also survive herdr's pane transport. These environment values
-  select a rendering mode, rather than confirming end-to-end graphics support.
-  Other terminals and nested multiplexers use clear text checkboxes and colored
-  half-block palette cards; small rounded switches lose detail at cell resolution. Override with
-  `HERDR_CODE_GRAPHICS=kitty`, `blocks`, or `text` for the original text controls.
+- **Apply** to try them out,
+- **Save** to keep them.
 
-- **Apply** previews the draft in the running panel without writing settings.json.
-- **Save** (Ctrl+S) writes the draft and applies it permanently.
-- Drag the window's title bar to inspect the preview underneath. The top-right cross
-  or Esc closes it. Unsaved changes prompt for Cancel, Discard, or Save; Discard also
-  rolls back an applied preview. Ctrl+Q uses the same warning before quitting.
-- Tab / Shift+Tab moves focus. Arrows choose categories or adjust controls; Enter
-  opens a dropdown or edits a text/JSON value. Ctrl+A selects an input's contents.
-- Settings reload pauses while the window is open. Save preserves JSONC comments and
-  unrelated keys, and refuses to overwrite external changes: reopen the window first.
+Prefer a file? F1 **Preferences: Open Settings (JSON)** opens
+`~/.config/herdr/plugins/config/jonas.herdr-code/settings.json`. It uses VS Code's format,
+so comments are fine. A broken file never crashes the panel: the last good settings stay.
 
-`$HERDR_PLUGIN_CONFIG_DIR/settings.json` (normally
-`~/.config/herdr/plugins/config/jonas.herdr-code/settings.json`), VS Code's format: comments
-and trailing commas are fine. F1 "Preferences: Open Settings (JSON)" opens it, creating it from
-a commented template. A save in the panel applies it at once; an edit from elsewhere applies on
-the next focus or view switch. A missing file means the defaults. A broken file never crashes
-the panel: the status bar shows the error and the last good settings stay.
-
-| Key | Default | Meaning |
-|---|---|---|
-| `workbench.colorTheme` | embedded "Visual Studio Dark - C++" | A theme id or label from VS Code's built-in extensions or `~/.vscode/extensions` (`contributes.themes`, `include` chains resolved), or an absolute path to a theme JSON |
-| `workbench.colorCustomizations` | `{}` | Colour keys over the theme, also per theme as `"[Theme Name]": {…}` |
-| `editor.tokenColorCustomizations` | `{}` | `comments`, `strings`, `keywords`, `numbers`, `types`, `functions`, `variables`, `textMateRules`, also per theme |
-| `herdr-code.followVSCode` | `false` | Take the three keys above from `~/.config/Code/User/settings.json` instead |
-| `workbench.density` | `"comfortable"` | `"compact"` is the original tight layout (no padding, no popup frames) |
-| `herdr-code.spacing` | see below | Each key overrides the density's value |
-| `herdr-code.icons` | `"nerd"` | `"ascii"`: no Nerd Font glyphs |
-| `herdr-code.blocks.style` | `"cards"` (compact: `"lines"`) | `"cards"`: rounded blocks, no blank gutter beside the sidebar, a gutter between editor groups, one shared border between stacked ones; `"lines"`: one shared line between blocks, joined (`├┤┬┴`); `"none"`: flat |
-| `herdr-code.fileIcons` | `{}` | `extensions`, `fileNames`, `folderNames`: maps to `{ "glyph": "…", "color": "#rrggbb" }` (either half); `folder`, `folderOpen` |
-| `indentRainbow.enabled` | `true` | oderwat.indent-rainbow, same defaults |
-| `indentRainbow.colors` | the extension's four `rgba(…,0.07)` | Blended over the editor background |
-| `indentRainbow.errorColor`, `indentRainbow.tabmixColor` | `rgba(128,32,32,0.6)`, `rgba(128,32,96,0.6)` | Indent not a multiple of the tab size; tabs and spaces mixed (`""` turns tab-mix off) |
-| `indentRainbow.indicatorStyle` | `"classic"` | `"light"`: a thin line per level instead of a background |
-| `indentRainbow.excludedLanguages`, `.includedLanguages`, `.ignoreErrorLanguages` | `["plaintext"]`, `[]`, `["markdown"]` | VS Code language ids |
-| `indentRainbow.ignoreLinePatterns` | `["/[ \t]* [*]/g", "/[ \t]+[/]{2}/g"]` | JS regex literals; a matching line never gets the error colour |
-| `editor.guides.indentation` | `true` | Indent guides (`editorIndentGuide.background` / `.activeBackground`) |
-| `editor.tabSize` | `4` | Tab stops, the indent unit, rainbow and guides |
-| `editor.renderWhitespace` | `"boundary"` | Dots for spaces and arrows for tabs (`editorWhitespace.foreground`): `"boundary"` skips single spaces between words; or `"none"`, `"selection"`, `"trailing"`, `"all"` |
-| `editor.occurrencesHighlight` | `"singleFile"` | Highlight the word at the cursor where it appears on screen (`editor.wordHighlightBackground`); `"off"` turns it off |
-| `editor.matchBrackets` | `"always"` | Highlight the bracket beside the cursor and its partner (`editorBracketMatch.background`); `"never"` turns it off |
-| `editor.bracketPairColorization.enabled` | `true` | Colour `()[]{}` by nesting depth (`editorBracketHighlight.foreground1`–`3`), a closer without an opener in `editorBracketHighlight.unexpectedBracket.foreground`. Text only, like matching: brackets in strings and comments count; the diff editor does not colour them |
-| `editor.wordWrap` | unset | `"on"` wraps long lines at the editor's width (after a blank when one fits), `"off"` scrolls them; unset wraps Markdown only, as VS Code's `[markdown]` default. Alt+Z toggles it |
-| `breadcrumbs.enabled` | `true` | A row under the tabs with the file's path and the symbols around the cursor (`breadcrumb.foreground`, `.background`, `.focusForeground`) |
-| `editor.autoClosingBrackets`, `editor.autoClosingQuotes` | `"always"` | Close the pair while typing, step over the closer, wrap a selection, remove an empty pair with Backspace; `"never"` turns each off |
-| `files.trimTrailingWhitespace` | `true` | On save, on the lines edited since the file on disk; not in Markdown or patches |
-| `files.insertFinalNewline` | `true` | On save, a file with content ends with a newline |
-| `workbench.tree.enableStickyScroll` | `true` | Sticky scroll in the Explorer, Search and Source Control lists |
-| `herdr-code.restoreSession` | `true` | Reopen the last session's groups, tabs and sidebar for this launch folder |
-| `workbench.editor.restoreViewState` | `true` | Restore each file's cursor, selection and scroll: in the restored tabs, and when a closed file is opened again |
-| `workbench.tree.stickyScrollMaxItemCount` | `1` | 1: one breadcrumb row of the folder you are in; more (up to 10): nested rows, outermost first, as VS Code (its default is 7) |
-| `editor.rulers` | `[90]` | Vertical rulers after N display columns (tabs and wide characters counted), in `editorRuler.foreground`; `[]` for none; `[{ "column": 80, "color": "#rrggbb" }, 100]` gives one its own colour. Drawn behind the text, in the editor and both sides of the diff. F1 "View: Toggle Rulers" for the session |
-| `editor.minimap.enabled` | `true` | The minimap (F1 "View: Toggle Minimap" for the session) |
-| `editor.minimap.maxColumn` | `120` | Characters the minimap covers (about 8 per cell, 8 to 16 cells, at most 15% of the editor, shrunk to leave minEditorWidth) |
-| `editor.minimap.renderCharacters` | `true` | Braille dots (4 lines × 2 dot columns per cell); `false`: half blocks, a line per half |
-| `editor.minimap.showSlider` | `"always"` | or `"mouseover"` |
-| `editor.minimap.side` | `"right"` | or `"left"` |
-| `herdr-code.minimap.minEditorWidth` | `40` | The minimap shrinks (to 4 cells) so the code keeps this many columns, then hides |
-| `editor.minimap.size` | `"fill"` | The whole file over the height (at most a line per row); `"proportional"`: a line per dot row, a long file scrolls; `"fit"`: proportional while it fits, else fill |
-| `editor.gotoLocation.multipleDefinitions` | `"peek"` | Several definitions: `"peek"` shows them, `"gotoAndPeek"` opens the first and peeks, `"goto"` opens the first |
-| `git.blame.statusBarItem.enabled` | `true` | The cursor line's author and age in the status bar |
-| `git.blame.editorDecoration.enabled` | `false` | The same, with the commit subject, as ghost text after the cursor line |
-| `git.confirmSync` | `true` | Sync asks first (OK is the default, as in VS Code); "OK, Don't Show Again" sets it to `false` |
-
-`herdr-code.spacing` (comfortable / compact defaults):
-
-| Key | Comfortable | Compact | Meaning |
-|---|---|---|---|
-| `sidebarWidth` | 36 | 30 | Sidebar content columns (a card adds its 2-cell frame) until you drag the divider (a dragged width is kept in layout.json) |
-| `sidebarPadding` | 2 | 0 | Left/right padding of sidebar rows and inputs |
-| `sectionGap` | 1 | 0 | Blank rows under the sidebar title (not above a card) and between SCM sections |
-| `editorPadding` | 0 | 0 | Extra cells before the right-aligned line numbers in editors, diffs and peeks; the number field reserves at least two digits. The Git marker follows the number, then the fold arrow and its clickable trailing blank where folding is available |
-| `tabPadding` | 2 | 1 | Tab label padding budget; see rendered spacing below |
-| `statusBarGap` | 3 | 3 | Spaces between status bar items |
-| `statusBarPadding` | 2 | 1 | Spaces at the status bar's left and right edges |
-| `activityBarWidth` | 5 | 3 | Activity bar content columns (a card adds its 2-cell frame), each item 3 rows (compact 2) with the icon centred |
-| `listItemGap` | 0 | 0 | 0 or 1 blank row between sidebar list items |
-| `popupPadding` | `[3, 1]` | `[0, 0]` | Horizontal and vertical padding in Quick Open, the command palette and dialogs |
-| `iconGap` | 2 | 1 | Blank cells after an icon (tree, tabs, SCM rows, title bar, buttons, find widget, status bar); at least 1, since a non-Mono Nerd Font icon can overflow its cell |
-| `treeIndent` | 2 | 2 | Cells per tree depth level |
-| `titleBarPadding` | 2 | 1 | Left/right padding in the title bar |
-| `buttonPadding` | 2 | 1 | Spaces inside buttons (Close, Save, Discard, …) |
-| `findWidgetPadding` | 1 | 0 | Padding inside the find/replace widget's frame |
-
-All sidebar views halve the sidebar edge padding (including the leading blank),
-so Explorer, Search and Source Control titles, fields and actions share the same
-edges. With card frames, the view names sit in the top border, aligned with the
-activity bar and editor frames; Git commands remain available through F1. Explorer, Timeline and Source Control also halve arrow/icon gaps, rounded
-to whole cells with at least one blank cell. Tree depth indentation and graph branch
-lanes keep their original spacing. Settings uses the same rounded popup frames
-(ASCII borders in ASCII mode), with a separate full-width footer for its actions.
-
-Editor tabs halve `tabPadding`, rounding up, and share that total across both edges
-(the left gets any odd cell). This halves their previous combined edge padding.
-At least one leading cell is reserved for the active marker. The extra cell after
-Close takes the place of the old separator cell, keeping the tighter tab spacing.
-`iconGap` is halved, rounding up; the reserved unsaved-change marker counts toward
-the gap before the close button.
-
-The title-bar Close button halves `buttonPadding`, `iconGap` and its distance from
-the window edge (`titleBarPadding`), rounding up to whole cells. Its edges use the
-same colour as the fill on the existing one-row title bar.
-
-Every icon is laid out as one cell and followed by at least one blank cell; scrollbars keep a
-blank column between them and the text (comfortable).
-
-Unset colour keys fall back to VS Code's dark colour-registry defaults
-(`assets/vscode_dark_defaults.json`), as in VS Code. Example:
+Example:
 
 ```jsonc
 {
-    "workbench.colorTheme": "Default Dark Modern",
-    "workbench.colorCustomizations": {
-        "statusBar.background": "#3B3B3B",
-        "[Default Dark Modern]": { "editorIndentGuide.background": "#333333" },
-    },
-    "editor.tokenColorCustomizations": {
-        "comments": "#6A9955",
-        "textMateRules": [{ "scope": "keyword.control", "settings": { "fontStyle": "bold" } }],
-    },
-    "workbench.density": "comfortable",
-    "herdr-code.fileIcons": {
-        "fileNames": { "Kconfig": { "glyph": "\ue615", "color": "#6D8086" } },
-        "folderNames": { "drivers": { "color": "#E2C08D" } },
-    },
-    "indentRainbow.indicatorStyle": "light",
+    "workbench.colorTheme": "Default Dark Modern",   // any VS Code theme you have installed
+    "workbench.colorCustomizations": { "statusBar.background": "#3B3B3B" },
+    "workbench.density": "compact",                  // tighter layout
+    "herdr-code.icons": "ascii",                     // no Nerd Font needed
     "editor.tabSize": 8,
 }
 ```
 
-The command palette's View toggles (indent rainbow, guides, minimap ruler) last for the
-session; the next settings load resets them to the file.
+<details>
+<summary>All settings</summary>
 
-## Go to Definition
+| Key | Default | Meaning |
+|---|---|---|
+| `workbench.colorTheme` | "Visual Studio Dark - C++" | A VS Code theme name, or a path to a theme JSON |
+| `workbench.colorCustomizations` | `{}` | Override UI colours, also per theme (`"[Theme Name]": {…}`) |
+| `editor.tokenColorCustomizations` | `{}` | Override code colours (`comments`, `strings`, `textMateRules`, …) |
+| `herdr-code.followVSCode` | `false` | Take the three keys above from your VS Code settings |
+| `workbench.density` | `"comfortable"` | or `"compact"` |
+| `herdr-code.spacing` | per density | Fine-tune sizes, see below |
+| `herdr-code.icons` | `"nerd"` | `"ascii"`: no Nerd Font needed |
+| `herdr-code.blocks.style` | `"cards"` | `"cards"` rounded boxes, `"lines"` shared lines, `"none"` flat |
+| `herdr-code.fileIcons` | `{}` | Custom file icons: `extensions`, `fileNames`, `folderNames` → `{ "glyph", "color" }` |
+| `indentRainbow.enabled` | `true` | Colour each indent level |
+| `indentRainbow.indicatorStyle` | `"classic"` | `"light"`: a thin line instead of a background |
+| `indentRainbow.colors`, `.errorColor`, `.tabmixColor` | the extension's | Rainbow colours |
+| `indentRainbow.excludedLanguages`, `.includedLanguages`, `.ignoreErrorLanguages`, `.ignoreLinePatterns` | as the extension | Where the rainbow applies |
+| `editor.tabSize` | `4` | Tab width |
+| `editor.guides.indentation` | `true` | Indent guide lines |
+| `editor.renderWhitespace` | `"boundary"` | `"none"`, `"selection"`, `"trailing"`, `"all"` |
+| `editor.occurrencesHighlight` | `"singleFile"` | Highlight the word under the cursor; `"off"` |
+| `editor.matchBrackets` | `"always"` | Highlight matching brackets; `"never"` |
+| `editor.bracketPairColorization.enabled` | `true` | Colour brackets by depth |
+| `editor.wordWrap` | Markdown only | `"on"` or `"off"` for every file |
+| `editor.autoClosingBrackets`, `editor.autoClosingQuotes` | `"always"` | Auto-close pairs; `"never"` |
+| `editor.rulers` | `[90]` | Vertical lines at these columns; `[]` for none |
+| `editor.minimap.enabled` | `true` | The code overview on the right |
+| `editor.minimap.side` | `"right"` | or `"left"` |
+| `editor.minimap.showSlider` | `"always"` | or `"mouseover"` |
+| `editor.minimap.size` | `"fill"` | `"proportional"` or `"fit"` |
+| `editor.minimap.renderCharacters` | `true` | `false`: blocks instead of dots |
+| `editor.minimap.maxColumn` | `120` | Columns the minimap covers |
+| `herdr-code.minimap.minEditorWidth` | `40` | Hide the minimap when the editor gets narrower |
+| `editor.gotoLocation.multipleDefinitions` | `"peek"` | `"gotoAndPeek"` or `"goto"` |
+| `breadcrumbs.enabled` | `true` | The path row under the tabs |
+| `files.trimTrailingWhitespace` | `true` | On save, on edited lines |
+| `files.insertFinalNewline` | `true` | On save |
+| `workbench.tree.enableStickyScroll` | `true` | Keep the current folder pinned while scrolling |
+| `workbench.tree.stickyScrollMaxItemCount` | `1` | More than 1: nested rows, like VS Code |
+| `herdr-code.restoreSession` | `true` | Reopen last session's tabs |
+| `workbench.editor.restoreViewState` | `true` | Restore cursor and scroll per file |
+| `git.blame.statusBarItem.enabled` | `true` | Line author in the status bar |
+| `git.blame.editorDecoration.enabled` | `false` | Line author after the cursor line |
+| `git.confirmSync` | `true` | Ask before pull + push |
 
-There is no index: each lookup scans the open buffer (unsaved edits, locals, parameters, C
-labels), then runs one `rg` over the language's files with definition patterns (C/C++ with
-kernel style, Rust, Python, Go, shell, JS/TS; other files: a whole-word match). Results rank
-locals first, then definitions before declarations (a declaration is dropped when a
-definition exists), then the same file, directory, `foo.c`/`foo.h` pair, shallower paths. Under
-a subfolder root (`herdr-code drivers/net`), a symbol not defined there is looked up in the whole
-repo, so `include/` headers resolve; files outside the root open by their full path. The
-status bar shows "Searching definitions…" until it ends; Esc or a new request cancels it. A
-cancelled `rg` is never signalled: its pipe closes and it is reaped; Search and lookups share
-one cap of two running `rg`. Every jump (definitions, peek items, Back/Forward) goes through a
-50-entry history; a new jump clears Forward. The peek's colours are VS Code's `peekView*` keys.
+`herdr-code.spacing` keys (comfortable / compact): `sidebarWidth` 36/30,
+`sidebarPadding` 2/0, `sectionGap` 1/0, `editorPadding` 0/0, `tabPadding` 2/1,
+`statusBarGap` 3/3, `statusBarPadding` 2/1, `activityBarWidth` 5/3, `listItemGap` 0/0,
+`popupPadding` [3,1]/[0,0], `iconGap` 2/1, `treeIndent` 2/2, `titleBarPadding` 2/1,
+`buttonPadding` 2/1, `findWidgetPadding` 1/0.
+
+Environment variables: `HERDR_CODE_ICONS=0` forces ASCII icons;
+`HERDR_CODE_GRAPHICS=kitty|blocks|text` picks how Settings draws its controls.
+
+</details>
+
+## Where files are kept
+
+| What | Where |
+|---|---|
+| Settings | `~/.config/herdr/plugins/config/jonas.herdr-code/settings.json` |
+| Sessions, layout, unsaved-file backups, commit drafts | `~/.local/state/herdr/plugins/jonas.herdr-code/` |
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| Icons show as boxes or `?` | Use a Nerd Font **Mono** in your terminal (step 2), or set `"herdr-code.icons": "ascii"` |
+| `herdr-code: command not found` | Add `~/.local/bin` to `PATH` (step 3) |
+| The Code tab doesn't open | Restart herdr after fixing `PATH`; check `herdr plugin list` |
+| Ctrl+Shift keys do nothing | Your terminal doesn't send them; use F1 or the other key |
+| Build runs out of memory | `cargo install --path . --root ~/.local -j2` |
+| A file opens read-only | It is over 1 MB / 20,000 lines, binary, or not UTF-8 |
 
 ## Known limits
 
-- Go to Definition is pattern-based: C++ methods defined inside a class body, Go `const (…)`
-  groups and macros that build names are not found; a C function head split over lines is read
-  from the file (first 1 MB) to tell a definition from a prototype. Up to 200 definitions and
-  1000 references are kept.
-- Ctrl+click needs the terminal to report Ctrl with the mouse (herdr 0.9.1 forwards it, after
-  checking the cell is not a link). Mouse buttons 8/9 (back/forward) never reach the panel:
-  herdr drops them. In legacy terminals Ctrl+Alt+- and Ctrl+Shift+- arrive as Ctrl(+Alt)+7.
-- Copy tries `wl-copy`, then `xclip`, then OSC 52. Paste uses bracketed paste (the terminal's
-  own paste), or `wl-paste`/`xclip` for Ctrl+V, else the panel's last copy.
-- Files that were truncated (over 1 MB or 20k lines), are not UTF-8, or are binary open
-  read-only and can never be saved. If a file changes on disk, a clean buffer reloads; a dirty
-  one keeps your edits, and the first Ctrl+S refuses so a second one is needed to overwrite.
-- Find (Match Case, Whole Word and regular expression toggles) works line by line: a match never spans lines. In a diff, Ctrl+F searches the
-  side under the pointer (otherwise the active side); the find widget stays in place.
-  Enter / Shift+Enter jump between results. Diff search is read-only.
-  Search in files can also use regex.
-  The diff editor is read-only. Both sides and the commit dialog use the code editor's
-  syntax colours, with separate parser states and the existing diff backgrounds.
-- Lines over 4000 bytes are not highlighted. The default token colours are VS Code's
-  `cpptools_dark_vs_new.json` (MIT, Microsoft), embedded under `assets/`. `assets/seti.json`
-  and `assets/vscode_dark_defaults.json` are data from VS Code (MIT, Microsoft) and Seti UI
-  (MIT, Jesse Weed); see `assets/vscode_LICENSE.txt`. syntect's Sublime
-  grammars name some scopes differently from VS Code's TextMate grammars; a small alias table
-  renames the ones themes care about (`#include` and `#define` as `keyword.control.directive`,
-  calls as `entity.name.function`, struct names as `entity.name.type`, …).
-- C/C++ (and, loosely, Rust) get a per-line stand-in for cpptools' semantic colouring: a name
-  before `(` is a function (a macro if ALL_CAPS), ALL_CAPS names are macros, a name after
-  `struct`/`union`/`enum`/`class` or ending in `_t` is a type, a name after `.`/`->` is a
-  property, the current function's parameter names are parameters, other names are local
-  variables. It does not know globals, typedefs without `_t`, or enum constants outside their
-  `enum`. A theme's `tokenColors` given as a `.tmTheme` path is ignored.
-- Colour keys a theme leaves unset fall back to VS Code's *dark* registry defaults, so a
-  light theme that does not set every workbench colour gets dark sidebars or tabs there.
-- Hot-exit backups (`$HERDR_PLUGIN_STATE_DIR/backup`) are one file per herdr session, panel
-  (pane id or `local`, plus pid) and file, so two panels editing one file keep two. Opening a
-  file offers the newest backup of it that no running panel owns, from any session or panel,
-  noting when there are more ("2 backups found"); Restore or Discard acts on that one only.
-  Older formats are found by content and never renamed. A panel counts as running while its
-  pid is alive as `herdr-code`; records from before this carry no pid, so a still-running older
-  panel's backup can be offered too.
+- No language server: Go to Definition and References search the code with `rg`, so some
+  definitions (C++ methods in a class body, macro-built names) are missed.
+- Find matches inside one line only. Lines over 4000 bytes aren't syntax-coloured.
+- Light themes that don't set every colour get some dark panels.
+- Mouse back/forward buttons don't reach the panel (herdr drops them).
+
+## Development
+
+```sh
+cargo run -- .     # run from source
+cargo test         # run the tests
+```
+
+See [AGENTS.md](AGENTS.md) for the code layout and conventions.
+
+## Credits
+
+The default colours and `assets/vscode_dark_defaults.json` come from VS Code (MIT, Microsoft);
+`assets/seti.json` from Seti UI (MIT, Jesse Weed). See `assets/vscode_LICENSE.txt`.
