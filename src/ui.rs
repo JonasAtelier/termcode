@@ -277,10 +277,10 @@ fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         .get(app.ag)
         .and_then(|g| g.tabs.get(g.active))
         .map(|t| app.tab_title(&t.key));
-    let text = match active {
-        Some(t) => format!("{t} — {} — herdr-code", app.repo),
-        None => format!("{} — herdr-code", app.repo),
-    };
+    // file — folder — app, a part equal to the one before it once (herdr-code's own repo).
+    let mut parts: Vec<String> = active.into_iter().chain([app.repo.clone(), "herdr-code".into()]).collect();
+    parts.dedup();
+    let text = parts.join(" — ");
     let st = Style::new().fg(P.title_fg).bg(P.title_bg);
     fill(f, r, P.title_bg);
     let (tp, bp) = (lay.s.title_padding.div_ceil(2), lay.s.button_padding.div_ceil(2));
@@ -987,7 +987,7 @@ fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
 /// The file icon a tab shows for its document key.
 fn tab_icon(app: &App, key: &str) -> (String, Color) {
     let path = match key.split_once(':') {
-        Some(("file", p)) => p,
+        Some(("file" | "preview", p)) => p,
         Some(("diff" | "cdiff", rest)) => rest.split_once(':').map_or(rest, |(_, p)| p),
         _ => return (icons().history.to_string(), P.icon_fg),
     };
@@ -1081,7 +1081,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         app.ui.split_btns.push((split, g));
     }
     let top = 1;
-    let body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
+    let mut body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
     let active = app.groups[g].active;
     let Some(key) = app.groups[g].tabs.get(active).map(|t| t.key.clone()) else {
         let start = body.y + body.height.saturating_sub(9) / 2;
@@ -1101,6 +1101,18 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         app.ui.groups.push(gh);
         return;
     };
+    if app.breadcrumbs_on && key.starts_with("file:") && body.height > 2 {
+        let r = Rect::new(body.x, body.y, body.width, 1);
+        breadcrumbs(app, f, r, g, &key);
+        gh.crumbs = r;
+        body = Rect::new(body.x, body.y + 1, body.width, body.height - 1);
+    }
+    if let Some(rel) = key.strip_prefix("preview:") {
+        markdown_preview(app, f, g, rel, body, &mut gh);
+        app.ui.groups.push(gh);
+        return;
+    }
+    let wrap = app.wraps(&key);
     let editor_focus = focused_group && app.focus == Focus::Editor;
     let target = ScrollTarget::Editor(g);
     let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
@@ -1176,6 +1188,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 whitespace: app.settings.render_whitespace,
                 occurrences: app.settings.occurrences,
                 match_brackets: app.settings.match_brackets,
+                bracket_colors: app.settings.bracket_colors,
+                wrap,
                 peek,
                 rulers: &rulers,
             };
@@ -1184,6 +1198,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             gh.marks_x = out.marks_x;
             gh.folds_x = out.folds_x;
             gh.zone = out.zone.map(|z| (z.y, z.height));
+            gh.rows = out.rows;
             if let Some(mut hsb) = out.hsb {
                 hsb.target = ScrollTarget::EditorHorizontal(g);
                 paint_slider(f, hsb.track, hsb.slider, hcolor);
@@ -1211,6 +1226,85 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     if focused_group && app.find.is_some() {
         let text = app.ui.groups[g].text;
         find_widget(app, f, text, lay);
+    }
+}
+
+/// VS Code's breadcrumbs: the file's folders and name, then the symbols around the
+/// cursor, outermost first; cut from the left when narrow.
+fn breadcrumbs(app: &mut App, f: &mut Frame, r: Rect, g: usize, key: &str) {
+    fill(f, r, P.breadcrumb_bg);
+    let st = Style::new().fg(P.breadcrumb_fg).bg(P.breadcrumb_bg);
+    let rel = key.strip_prefix("file:").unwrap_or(key);
+    let names: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
+    let mut parts: Vec<Vec<Span<'static>>> = names
+        .iter()
+        .enumerate()
+        .map(|(n, p)| {
+            let mut v = Vec::new();
+            if n + 1 == names.len() {
+                let (glyph, gfg) = file_icon(p, &app.settings.file_icons);
+                v.push(Span::styled(format!("{glyph} "), Style::new().fg(gfg).bg(P.breadcrumb_bg)));
+            }
+            v.push(Span::styled(p.to_string(), st));
+            v
+        })
+        .collect();
+    let grp = &app.groups[g];
+    let view = &grp.tabs[grp.active].view;
+    if let Some(Doc::Text(b)) = app.docs.get_mut(key) {
+        let syms = b.symbols().to_vec();
+        let line = b.clamp(view.cursor).line;
+        for s in crate::symbols::path_at(&syms, &b.lines, &view.fold_ends, line) {
+            parts.push(vec![Span::styled(s.name.clone(), st)]);
+        }
+    }
+    if let Some(last) = parts.last_mut().and_then(|p| p.last_mut()) {
+        last.style = last.style.fg(P.breadcrumb_focus);
+    }
+    let sep = if crate::theme::ascii() { " > " } else { " › " };
+    let total = |parts: &[Vec<Span>]| parts.iter().map(|p| width(p) as usize).sum::<usize>() + parts.len().saturating_sub(1) * sep.width() + 1;
+    let mut cut = false;
+    while parts.len() > 1 && total(&parts) + if cut { 2 } else { 0 } > r.width as usize {
+        parts.remove(0);
+        cut = true;
+    }
+    let mut spans = vec![Span::styled(if cut { " …" } else { " " }, st)];
+    for (n, p) in parts.into_iter().enumerate() {
+        if n > 0 || cut {
+            spans.push(Span::styled(sep, st));
+        }
+        spans.extend(p);
+    }
+    f.render_widget(Line::from(spans), r);
+}
+
+/// A `preview:` tab: the Markdown file rendered, scrolled by its view.
+fn markdown_preview(app: &mut App, f: &mut Frame, g: usize, rel: &str, body: Rect, gh: &mut GroupHit) {
+    let src: Vec<String> = match app.docs.get(&format!("file:{rel}")) {
+        Some(Doc::Text(b)) => b.lines.clone(),
+        _ => match std::fs::read_to_string(app.root.join(rel)) {
+            Ok(t) => t.lines().map(str::to_string).collect(),
+            Err(e) => vec![format!("Cannot read {rel}: {e}")],
+        },
+    };
+    let empty = serde_json::Map::new();
+    let colors = app.settings.theme.json["colors"].as_object().unwrap_or(&empty);
+    let link = crate::theme::lookup(colors, "textLink.foreground").map_or(P.focus_border, |c| c.over(P.editor_bg));
+    let text = Rect::new(body.x + 2, body.y, body.width.saturating_sub(5), body.height);
+    let lines = crate::mdpreview::render(&src, text.width as usize, link);
+    let h = text.height as usize;
+    let max = lines.len().saturating_sub(h);
+    let grp = &mut app.groups[g];
+    let view = &mut grp.tabs[grp.active].view;
+    view.scroll = view.scroll.min(max);
+    let off = view.scroll;
+    let shown: Vec<Line> = lines.iter().skip(off).take(h).cloned().collect();
+    f.render_widget(Paragraph::new(shown).style(Style::new().fg(P.editor_fg).bg(P.editor_bg)), text);
+    gh.text = text;
+    gh.preview_rows = lines.len();
+    if lines.len() > h {
+        let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
+        scrollbar(app, f, track, ScrollTarget::Editor(g), lines.len(), h, off, max);
     }
 }
 
@@ -1315,6 +1409,9 @@ struct Deco<'a> {
     whitespace: editor::Whitespace,
     occurrences: bool,
     match_brackets: bool,
+    bracket_colors: bool,
+    /// editor.wordWrap: lines wrap at the text width, no horizontal scrolling.
+    wrap: bool,
     peek: Option<PeekDraw<'a>>,
     rulers: &'a [(usize, Color)],
 }
@@ -1358,6 +1455,8 @@ struct EdOut {
     peek_btns: Vec<(Rect, PeekBtn)>,
     peek_body: Rect,
     peek_max: usize,
+    /// With word wrap, each text row's (line, first display column); see `GroupHit::rows`.
+    rows: Vec<Option<(usize, usize)>>,
 }
 
 /// Put `glyph` in a cell that is still blank (indent guides never cover text).
@@ -1381,7 +1480,7 @@ fn text_editor(
 ) -> EdOut {
     b.clamp_view(v);
     let mut area = area;
-    let mut out = EdOut { text: area, sb: None, hsb: None, mini: None, marks_x: None, folds_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0 };
+    let mut out = EdOut { text: area, sb: None, hsb: None, mini: None, marks_x: None, folds_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0, rows: Vec::new() };
     if let Some(ro) = &b.readonly {
         let banner = Rect::new(area.x, area.y, area.width, 1);
         let banner_text = format!(" {}{}{ro}", icons().lock, sp(d.icon_gap));
@@ -1407,8 +1506,8 @@ fn text_editor(
     let mut text = Rect::new(gx + gutter, area.y, area.width.saturating_sub(gutter + 1 + blank + mw), area.height);
     // The caret occupies a cell after the final character.
     let longest = b.max_display_width().saturating_add(1);
-    v.hscroll = v.hscroll.min(longest.saturating_sub(text.width as usize));
-    if longest > text.width as usize && text.width > 1 && area.height > 1 {
+    v.hscroll = if d.wrap { 0 } else { v.hscroll.min(longest.saturating_sub(text.width as usize)) };
+    if !d.wrap && longest > text.width as usize && text.width > 1 && area.height > 1 {
         if !d.bottom_border {
             area.height -= 1;
             text.height -= 1;
@@ -1427,31 +1526,34 @@ fn text_editor(
     let tab = editor::tab();
     let brackets = (d.match_brackets && group_focus).then(|| b.bracket_pair(c)).flatten();
     let word = (d.occurrences && group_focus && sel.is_none()).then(|| editor::cursor_word(&b.lines[c.line], c.col).map(str::to_string)).flatten();
+    // editor.bracketPairColorization: depth at each line start (plain text has no brackets).
+    let depths = (d.bracket_colors && b.syntax_name() != "Plain Text").then(|| b.bracket_depths().to_vec());
     let guides = d.guides.then(|| Guides::new(&b.lines, tab));
     let active = guides.as_ref().and_then(|g| g.active(c.line));
-    let visible = |col: usize| (col >= v.hscroll && col < v.hscroll + text.width as usize).then(|| text.x + (col - v.hscroll) as u16);
     // The peek zone sits before line `before` when that place is on screen.
     let zone = d.peek.as_ref().filter(|p| p.hunk.peek_before() >= v.scroll && p.hunk.peek_before() <= v.scroll + h).map(|p| {
         let body = p.hunk.base.len() + p.hunk.cur.len();
         (p.hunk.peek_before(), (2 + body as u16).min((area.height / 3).max(4)).min(area.height))
     });
     let (mut y, mut i) = (area.y, v.scroll);
-    let mut cursor_y = None;
+    // The cursor's screen row and the display column that row starts at.
+    let mut cursor_at = None;
+    let tw = text.width as usize;
     while y < area.bottom() {
         if let Some((before, zh)) = zone {
             if out.zone.is_none() && i == before {
                 // The gutter and the text only: a left minimap stays beside it.
                 let zr = Rect::new(gx, y, text.right().saturating_sub(gx), zh.min(area.bottom() - y)).intersection(area);
                 out.zone = Some(zr);
+                if d.wrap {
+                    out.rows.extend(std::iter::repeat_n(None, zr.height as usize));
+                }
                 y += zr.height;
                 continue;
             }
         }
         if i >= b.lines.len() {
             break;
-        }
-        if i == c.line {
-            cursor_y = Some(y);
         }
         let cur_line = i == c.line && sel.is_none();
         let bg = if cur_line { P.cur_line } else { P.editor_bg };
@@ -1507,61 +1609,110 @@ fn text_editor(
                 }
             }
         }
-        let tr = Rect::new(text.x, y, text.width, 1);
-        fill(f, tr, bg);
-        let l = render_line(line, b.segs(i), &overlays, eol, v.hscroll, text.width as usize, Style::new().fg(P.editor_fg).bg(bg));
-        f.render_widget(l, tr);
-        if v.collapsed.contains(&i) {
-            let end = editor::display_col(line, line.len()).saturating_sub(v.hscroll);
-            if end + 2 < text.width as usize {
-                f.render_widget(Span::styled(" …", Style::new().fg(P.line_nr).bg(bg)), Rect::new(text.x + end as u16, y, 2, 1));
-            }
-        }
-        if let Some(g) = &guides {
-            for lvl in 0..g.level(i) {
-                let on = active.is_some_and(|(ak, a, e)| ak == lvl && (a..=e).contains(&i));
-                if let Some(x) = visible(lvl * tab) {
-                    mark_blank(f, x, y, ic.guide, if on { P.guide_active } else { P.guide });
-                }
-            }
-        }
-        for (s, col) in thin {
-            if let Some(x) = visible(editor::display_col(line, s)) {
-                mark_blank(f, x, y, ic.guide, col);
-            }
-        }
+        // Display columns of what is drawn over the text: blanks shown, coloured brackets.
         let selected = sel.filter(|(a, e)| a.line <= i && i <= e.line).map(|(a, e)| (if a.line == i { a.col } else { 0 }, if e.line == i { e.col } else { line.len() }));
-        let mut marks = editor::whitespace_marks(line, d.whitespace, selected).into_iter().peekable();
+        let mut blanks = editor::whitespace_marks(line, d.whitespace, selected).into_iter().peekable();
+        let (mut ws, mut paint) = (Vec::new(), Vec::new());
+        let mut depth = depths.as_ref().map_or(0, |dp| dp[i]);
         let mut col = 0;
         for (at, ch) in line.char_indices() {
-            if marks.peek().is_some_and(|m| m.0 == at) {
-                if let (Some(x), Some((_, is_tab))) = (visible(col), marks.next()) {
-                    mark_blank(f, x, y, if is_tab { ic.ws_tab } else { ic.ws_space }, P.whitespace);
+            if blanks.peek().is_some_and(|m| m.0 == at) {
+                ws.push((col, blanks.next().is_some_and(|m| m.1)));
+            }
+            if depths.is_some() {
+                match ch {
+                    '(' | '[' | '{' => {
+                        paint.push((col, P.bracket_fg[depth as usize % 3]));
+                        depth += 1;
+                    }
+                    ')' | ']' | '}' if depth == 0 => paint.push((col, P.bracket_bad)),
+                    ')' | ']' | '}' => {
+                        depth -= 1;
+                        paint.push((col, P.bracket_fg[depth as usize % 3]));
+                    }
+                    _ => {}
                 }
             }
             col = editor::advance(col, ch);
         }
-        for p in v.extra.iter().filter(|p| group_focus && p.line == i) {
-            if let Some(x) = visible(editor::display_col(line, p.col)) {
-                f.buffer_mut()[(x, y)].set_style(Style::new().add_modifier(Modifier::REVERSED));
+        let line_end = col;
+        // One screen row, or with word wrap one per wrapped piece.
+        let starts = if d.wrap { editor::wrap_starts(line, tw) } else { vec![v.hscroll] };
+        let cursor_row = (i == c.line).then(|| editor::wrap_row(&starts, editor::display_col(line, c.col)));
+        for (k, &hs) in starts.iter().enumerate() {
+            if k > 0 {
+                y += 1;
+                if y >= area.bottom() {
+                    break;
+                }
+                // A wrapped row keeps the line's git marker, not its number.
+                f.render_widget(Span::styled(mark, Style::new().fg(mfg).bg(P.editor_bg)), Rect::new(gx + nums, y, 1, 1));
+            }
+            let rw = if d.wrap { starts.get(k + 1).map_or(tw, |&n| n - hs).min(tw) } else { tw };
+            let last = k + 1 == starts.len();
+            let tr = Rect::new(text.x, y, text.width, 1);
+            fill(f, tr, bg);
+            let l = render_line(line, b.segs(i), &overlays, if last { eol } else { None }, hs, rw, Style::new().fg(P.editor_fg).bg(bg));
+            f.render_widget(l, tr);
+            let visible = |col: usize| (col >= hs && col - hs < rw).then(|| text.x + (col - hs) as u16);
+            if last && v.collapsed.contains(&i) {
+                let end = line_end.saturating_sub(hs);
+                if end + 2 < tw {
+                    f.render_widget(Span::styled(" …", Style::new().fg(P.line_nr).bg(bg)), Rect::new(text.x + end as u16, y, 2, 1));
+                }
+            }
+            if let (Some(g), 0) = (&guides, k) {
+                for lvl in 0..g.level(i) {
+                    let on = active.is_some_and(|(ak, a, e)| ak == lvl && (a..=e).contains(&i));
+                    if let Some(x) = visible(lvl * tab) {
+                        mark_blank(f, x, y, ic.guide, if on { P.guide_active } else { P.guide });
+                    }
+                }
+            }
+            for &(s, col) in &thin {
+                if let Some(x) = visible(editor::display_col(line, s)) {
+                    mark_blank(f, x, y, ic.guide, col);
+                }
+            }
+            for &(at, is_tab) in &ws {
+                if let Some(x) = visible(at) {
+                    mark_blank(f, x, y, if is_tab { ic.ws_tab } else { ic.ws_space }, P.whitespace);
+                }
+            }
+            for &(at, fg) in &paint {
+                if let Some(x) = visible(at) {
+                    f.buffer_mut()[(x, y)].set_fg(fg);
+                }
+            }
+            for p in v.extra.iter().filter(|p| group_focus && p.line == i) {
+                if let Some(x) = visible(editor::display_col(line, p.col)) {
+                    f.buffer_mut()[(x, y)].set_style(Style::new().add_modifier(Modifier::REVERSED));
+                }
+            }
+            draw_rulers(f, tr, if d.wrap { 0 } else { v.hscroll }, d.rulers, bg);
+            if d.wrap {
+                out.rows.push(Some((i, hs)));
+            }
+            if cursor_row == Some(k) {
+                cursor_at = Some((y, hs));
             }
         }
-        draw_rulers(f, tr, v.hscroll, d.rulers, bg);
         let next = v.shift_line(i, 1);
         i = if next > i { next } else { b.lines.len() };
         y += 1;
     }
     // Rulers run the full height, below the last line too (the peek zone clears its rows).
     for ry in y..area.bottom() {
-        draw_rulers(f, Rect::new(text.x, ry, text.width, 1), v.hscroll, d.rulers, P.editor_bg);
+        draw_rulers(f, Rect::new(text.x, ry, text.width, 1), if d.wrap { 0 } else { v.hscroll }, d.rulers, P.editor_bg);
     }
     if let (Some(zr), Some(pk)) = (out.zone, d.peek.as_ref()) {
         draw_peek(f, zr, gx, gutter, text.x, pk, &b.lines, d, &mut out);
     }
     if editor_focus {
         let x = editor::display_col(&b.lines[c.line], c.col);
-        if let Some(cy) = cursor_y.filter(|_| x >= v.hscroll && x < v.hscroll + text.width as usize) {
-            f.set_cursor_position((text.x + (x - v.hscroll) as u16, cy));
+        if let Some((cy, hs)) = cursor_at.filter(|&(_, hs)| x >= hs && (d.wrap || x < hs + tw)) {
+            // Wrapped, a caret after a full row's last cell stays on that cell.
+            f.set_cursor_position((text.x + (x - hs).min(tw.saturating_sub(1)) as u16, cy));
         }
     }
     if let Some(cfg) = d.minimap.filter(|_| mw > 0) {
@@ -2035,6 +2186,8 @@ pub(crate) fn diff_view(
             whitespace: editor::Whitespace::None,
             occurrences: false,
             match_brackets: false,
+            bracket_colors: false,
+            wrap: false,
             peek: None,
             rulers: &[],
         };
@@ -2214,7 +2367,8 @@ fn quick(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
         let inp = Rect::new(pop.x + 1, pop.y, pop.width.saturating_sub(2), 1).intersection(pop);
         (inp, Rect::new(pop.x, pop.y + 1, pop.width, pop.height.saturating_sub(1)).intersection(pop))
     };
-    let ph = if q.commands { "Type the name of a command to run" } else { "Search files by name" };
+    let ph = if q.commands { "Type the name of a command to run" } else { "Search files by name (append : to go to a line or @ to go to a symbol)" };
+    let goto = !q.commands && matches!(q.query.chars().next(), Some(':' | '@'));
     input(f, inp, &q.query, ph, true);
     f.set_cursor_position((inp.x + 1 + (q.query.width() as u16).min(inp.width.saturating_sub(2)), inp.y));
     let lh = list.height.max(1) as usize;
@@ -2227,6 +2381,13 @@ fn quick(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
         let rr = Rect::new(list.x, list.y + k as u16, list.width, 1);
         let on = q.off + k == q.sel;
         let (bg, fg) = if on { (P.quick_sel_bg, P.quick_sel_fg) } else { (P.quick_bg, P.quick_fg) };
+        if goto {
+            row(f, rr, bg, vec![Span::styled(format!(" {item}"), Style::new().fg(fg))]);
+            if let Some((_, kind)) = q.goto.get(q.off + k).filter(|(_, kind)| !kind.is_empty()) {
+                right(f, rr, vec![Span::styled(format!("{kind} "), Style::new().fg(P.dim))]);
+            }
+            continue;
+        }
         if q.commands {
             row(f, rr, bg, vec![Span::styled(format!(" {item}"), Style::new().fg(fg))]);
             if let Some(c) = COMMANDS.iter().find(|c| c.0 == item).filter(|c| !c.2.is_empty()) {

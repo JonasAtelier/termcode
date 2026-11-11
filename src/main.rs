@@ -25,6 +25,8 @@ mod session;
 mod settings;
 mod settingsui;
 mod settingsgraphics;
+mod symbols;
+mod mdpreview;
 mod theme;
 mod ui;
 // Source Control UI: the CHANGES / GRAPH view, Timeline, hover card, commit dialog.

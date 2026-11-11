@@ -279,6 +279,16 @@ pub struct Buffer {
     /// Boxed: a far jump's state makes it big, and every `Doc::Text` carries one.
     hl: Option<Box<Hl>>,
     width_cache: Option<(u64, usize, usize)>,
+    /// Boxed: every `Doc::Text` carries one.
+    derived: Box<Derived>,
+}
+
+/// What is worked out from the text, kept for the version it was worked out for.
+#[derive(Default)]
+struct Derived {
+    /// Bracket nesting depth at each line's start.
+    brackets: Option<(u64, Vec<u32>)>,
+    symbols: Option<(u64, Vec<crate::symbols::Symbol>)>,
 }
 
 pub fn syntaxes() -> &'static SyntaxSet {
@@ -314,6 +324,61 @@ pub fn split_lines(text: &str) -> (Vec<String>, bool, bool) {
 }
 
 /// Advance a display column over `c` (tabs to the next stop, wide chars = 2).
+/// Display columns where each row of `line` wrapped at `w` cells starts (`[0]` for one
+/// row): after the last blank that fits, else mid-word; a wide character never splits.
+pub fn wrap_starts(line: &str, w: usize) -> Vec<usize> {
+    let w = w.max(1);
+    let (mut starts, mut x, mut blank) = (vec![0], 0, None);
+    for c in line.chars() {
+        let nx = advance(x, c);
+        while let Some(&row) = starts.last().filter(|&&row| nx - row > w && x > row) {
+            starts.push(blank.filter(|&b| b > row).unwrap_or(x));
+            blank = None;
+        }
+        if c == ' ' || c == '\t' {
+            blank = Some(nx);
+        }
+        x = nx;
+    }
+    starts
+}
+
+/// The wrapped row display column `x` is on.
+pub fn wrap_row(starts: &[usize], x: usize) -> usize {
+    starts.partition_point(|&s| s <= x).saturating_sub(1)
+}
+
+/// The line comment of a language (`(open, "")`), or its block pair where it has none,
+/// by syntax name, then by file name for plain text (Kconfig, *.conf, device trees).
+pub fn comment_marks(syntax: &str, path: &str) -> Option<(&'static str, &'static str)> {
+    let s = syntax.to_ascii_lowercase();
+    let line = |m| Some((m, ""));
+    match s.as_str() {
+        "c" | "c++" | "c#" | "rust" | "go" | "java" | "javascript" | "typescript" | "typescriptreact" | "javascript (babel)"
+        | "objective-c" | "objective-c++" | "scala" | "groovy" | "d" | "php" | "actionscript" | "swift" | "kotlin" | "dart" | "json" => line("//"),
+        "python" | "ruby" | "perl" | "bourne again shell (bash)" | "shell-unix-generic" | "makefile" | "yaml" | "toml" | "r" | "tcl"
+        | "cmake" | "dockerfile" | "nginx" | "git ignore" | "git config" | "git attributes" | "ssh config" | "diff" => line("#"),
+        "lua" | "sql" | "haskell" | "ada" => line("--"),
+        "lisp" | "clojure" | "ini" => line(";"),
+        "latex" | "tex" | "erlang" | "matlab" => line("%"),
+        "batch file" => line("@REM"),
+        "html" | "xml" | "markdown" | "multimarkdown" => Some(("<!--", "-->")),
+        "css" | "scss" | "less" => Some(("/*", "*/")),
+        "ocaml" | "pascal" => Some(("(*", "*)")),
+        _ => {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let ext = name.rsplit_once('.').map_or("", |(_, e)| e);
+            if name.starts_with("Kconfig") || matches!(ext, "conf" | "cfg" | "cnf" | "mk" | "service" | "env" | "properties") || name.starts_with(".env") {
+                line("#")
+            } else if matches!(ext, "dts" | "dtsi" | "jsonc" | "proto") {
+                line("//")
+            } else {
+                None
+            }
+        }
+    }
+}
+
 pub fn advance(x: usize, c: char) -> usize {
     match c {
         '\t' => (x / tab() + 1) * tab(),
@@ -531,6 +596,7 @@ impl Buffer {
             last_edit: None,
             hl: None,
             width_cache: None,
+            derived: Box::default(),
         }
     }
 
@@ -661,6 +727,36 @@ impl Buffer {
         let width = self.lines.iter().map(|s| display_col(s, s.len())).max().unwrap_or(0);
         self.width_cache = Some((stamp.0, stamp.1, width));
         width
+    }
+
+    /// Bracket nesting depth at the start of each line, every kind together as VS Code's
+    /// bracket pair colouring counts them. Text only, like `bracket_pair`.
+    pub fn bracket_depths(&mut self) -> &[u32] {
+        if self.derived.brackets.as_ref().is_none_or(|(v, _)| *v != self.version) {
+            let mut d = 0u32;
+            let depths = self.lines.iter().map(|l| {
+                let start = d;
+                for b in l.bytes() {
+                    match b {
+                        b'(' | b'[' | b'{' => d += 1,
+                        b')' | b']' | b'}' => d = d.saturating_sub(1),
+                        _ => {}
+                    }
+                }
+                start
+            });
+            self.derived.brackets = Some((self.version, depths.collect()));
+        }
+        &self.derived.brackets.as_ref().unwrap().1
+    }
+
+    /// Go to Symbol's and the breadcrumbs' symbols, for this version.
+    pub fn symbols(&mut self) -> &[crate::symbols::Symbol] {
+        if self.derived.symbols.as_ref().is_none_or(|(v, _)| *v != self.version) {
+            let path = self.path.as_deref().and_then(Path::to_str).unwrap_or("");
+            self.derived.symbols = Some((self.version, crate::symbols::symbols(path, &self.lines)));
+        }
+        &self.derived.symbols.as_ref().unwrap().1
     }
 
     pub fn clamp(&self, p: Pos) -> Pos {
@@ -1302,6 +1398,69 @@ impl Buffer {
         self.end(v);
     }
 
+    /// Ctrl+/: comment the selected lines (the cursor's without a selection) at their least
+    /// indent, or uncomment them when every non-blank one already is. One undo step; the
+    /// cursor and selection stay on their text.
+    pub fn toggle_comment(&mut self, v: &mut View, (open, close): (&str, &str)) {
+        if self.readonly.is_some() {
+            return;
+        }
+        let c = self.clamp(v.cursor);
+        let (first, last) = self.sel_lines(v).unwrap_or((c.line, c.line));
+        let blank = |l: &str| l.trim().is_empty();
+        let lead = |l: &str| l.len() - l.trim_start_matches([' ', '\t']).len();
+        let lines = &self.lines[first..=last];
+        let commented = |l: &str| {
+            let t = l.trim_start_matches([' ', '\t']).trim_end();
+            t.starts_with(open) && t.ends_with(close) && t.len() >= open.len() + close.len()
+        };
+        if lines.iter().all(|l| blank(l)) {
+            return;
+        }
+        let remove = lines.iter().filter(|l| !blank(l)).all(|l| commented(l));
+        let indent = lines.iter().filter(|l| !blank(l)).map(|l| lead(l)).min().unwrap_or(0);
+        v.extra.clear();
+        self.begin(v, Kind::Other);
+        for l in first..=last {
+            let text = self.lines[l].clone();
+            if blank(&text) {
+                continue;
+            }
+            // (byte where the edit is, bytes removed there) for each end of the line.
+            let mut edits: Vec<(usize, isize)> = Vec::new();
+            if remove {
+                let at = lead(&text);
+                let after = &text[at + open.len()..];
+                let n = open.len() + usize::from(after.starts_with(' '));
+                if !close.is_empty() {
+                    let end = text.trim_end().len();
+                    let body = &text[..end - close.len()];
+                    let m = close.len() + usize::from(body.ends_with(' ') && body.len() > at + n);
+                    self.do_del(Pos::new(l, end - m), Pos::new(l, end));
+                    edits.push((end - m, -(m as isize)));
+                }
+                self.do_del(Pos::new(l, at), Pos::new(l, at + n));
+                edits.push((at, -(n as isize)));
+            } else {
+                if !close.is_empty() {
+                    let end = text.trim_end().len();
+                    self.do_ins(Pos::new(l, end), &format!(" {close}"));
+                    edits.push((end, close.len() as isize + 1));
+                }
+                self.do_ins(Pos::new(l, indent), &format!("{open} "));
+                edits.push((indent, open.len() as isize + 1));
+            }
+            for p in std::iter::once(&mut v.cursor).chain(v.anchor.as_mut()).filter(|p| p.line == l) {
+                for &(at, d) in &edits {
+                    if p.col > at || (d > 0 && p.col == at && at > 0) {
+                        p.col = p.col.saturating_add_signed(d).max(at);
+                    }
+                }
+            }
+        }
+        self.end(v);
+    }
+
     /// Lines touched by the selection (a selection ending at column 0 excludes that line).
     fn sel_lines(&self, v: &View) -> Option<(usize, usize)> {
         let (a, b) = v.selection()?;
@@ -1552,6 +1711,39 @@ impl Buffer {
         };
         self.move_to(v, p, extend);
         v.want_x = Some(x);
+    }
+
+    /// Up/Down by `delta` screen rows of lines wrapped at `w` cells, keeping the column
+    /// within the row (`want_x` is that, not the line's column, while wrapped).
+    pub fn vertical_wrapped(&mut self, v: &mut View, delta: isize, extend: bool, w: usize) {
+        let c = self.clamp(v.cursor);
+        let (mut l, mut starts) = (c.line, wrap_starts(&self.lines[c.line], w));
+        let dc = display_col(&self.lines[l], c.col);
+        let mut row = wrap_row(&starts, dc);
+        let mut x = v.want_x.unwrap_or(dc - starts[row]);
+        let mut left = delta;
+        while left != 0 {
+            let next = if left > 0 { v.shift_line(l, 1) } else { v.shift_line(l, -1) };
+            if left > 0 && row + 1 < starts.len() {
+                row += 1;
+            } else if left < 0 && row > 0 {
+                row -= 1;
+            } else if next != l && next < self.lines.len() {
+                l = next;
+                starts = wrap_starts(&self.lines[l], w);
+                row = if left > 0 { 0 } else { starts.len() - 1 };
+            } else {
+                // Past the first or last row: the start or end of the line, as VS Code.
+                x = if left > 0 { usize::MAX / 2 } else { 0 };
+                row = if left > 0 { starts.len() - 1 } else { 0 };
+                break;
+            }
+            left -= left.signum();
+        }
+        let end = starts.get(row + 1).map_or(usize::MAX, |&n| n.saturating_sub(1));
+        let p = Pos::new(l, byte_at_display(&self.lines[l], (starts[row] + x.min(usize::MAX / 2)).min(end)));
+        self.move_to(v, p, extend);
+        v.want_x = Some(x.min(w));
     }
 
     /// Home: first non-blank, or column 0 when already there.
@@ -1979,6 +2171,49 @@ mod tests {
         b.clamp_view(&mut v);
         b.move_to(&mut v, Pos::new(line, col), false);
         (b, v)
+    }
+
+    #[test]
+    fn line_comments_toggle_at_the_least_indent_and_keep_the_cursor_on_its_text() {
+        let (mut b, mut v) = at("    x();\n\n        y();\n", 0, 6);
+        v.anchor = Some(Pos::new(2, 12));
+        b.toggle_comment(&mut v, ("//", ""));
+        assert_eq!(b.lines[..3], ["    // x();", "", "    //     y();"]);
+        assert_eq!((v.cursor, v.anchor), (Pos::new(0, 9), Some(Pos::new(2, 15))));
+        b.toggle_comment(&mut v, ("//", ""));
+        assert_eq!(b.lines[..3], ["    x();", "", "        y();"]);
+        assert_eq!((v.cursor, v.anchor), (Pos::new(0, 6), Some(Pos::new(2, 12))));
+        b.undo(&mut v);
+        assert_eq!(b.lines[0], "    // x();", "each toggle is one undo step");
+        let (mut b, mut v) = at("a\n", 0, 0);
+        b.toggle_comment(&mut v, ("<!--", "-->"));
+        assert_eq!(b.lines[0], "<!-- a -->");
+        b.toggle_comment(&mut v, ("<!--", "-->"));
+        assert_eq!(b.lines[0], "a");
+        assert_eq!(comment_marks("Rust", "x.rs"), Some(("//", "")));
+        assert_eq!(comment_marks("Plain Text", "drivers/Kconfig"), Some(("#", "")));
+        assert_eq!(comment_marks("Plain Text", "notes.txt"), None);
+    }
+
+    #[test]
+    fn wrapping_breaks_after_blanks_and_never_splits_a_wide_character() {
+        assert_eq!(wrap_starts("aaa bbb ccc", 5), [0, 4, 8]);
+        assert_eq!(wrap_starts("abcdefghij", 4), [0, 4, 8]);
+        assert_eq!(wrap_starts("ab中文", 3), [0, 2, 4]);
+        assert_eq!(wrap_starts("", 3), [0]);
+        assert_eq!([wrap_row(&[0, 4, 8], 3), wrap_row(&[0, 4, 8], 4), wrap_row(&[0, 4, 8], 11)], [0, 1, 2]);
+        // Up/Down by screen rows, the column kept within the row.
+        let (mut b, mut v) = at("aaaa bbbb cccc\nxy\n", 0, 1);
+        b.vertical_wrapped(&mut v, 1, false, 5);
+        assert_eq!(v.cursor, Pos::new(0, 6));
+        b.vertical_wrapped(&mut v, 1, false, 5);
+        assert_eq!(v.cursor, Pos::new(0, 11));
+        b.vertical_wrapped(&mut v, 1, false, 5);
+        assert_eq!(v.cursor, Pos::new(1, 1));
+        b.vertical_wrapped(&mut v, -2, false, 5);
+        assert_eq!(v.cursor, Pos::new(0, 6));
+        b.vertical_wrapped(&mut v, -5, false, 5);
+        assert_eq!(v.cursor, Pos::new(0, 0), "past the top: the line's start");
     }
 
     #[test]

@@ -1232,7 +1232,9 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
     let ch = match (co, go) {
         (true, true) => {
             let lo = body.min(3);
-            app.gitui.split.unwrap_or(body / 2).clamp(lo, body.saturating_sub(3).max(lo))
+            // Nothing to commit: CHANGES keeps its button and header, GRAPH the rest.
+            let fit = app.scm_files.is_empty().then_some(2 + s.section_gap);
+            app.gitui.split.or(fit).unwrap_or(body / 2).clamp(lo, body.saturating_sub(3).max(lo))
         }
         (true, false) => body,
         _ => 0,

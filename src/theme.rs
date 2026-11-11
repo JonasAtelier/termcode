@@ -220,6 +220,12 @@ pub struct Pal {
     pub peek_title_bg: Color,
     pub peek_title_fg: Color,
     pub peek_desc_fg: Color,
+    /// `editorBracketHighlight.foreground1..3`, by nesting depth, and an unmatched closer.
+    pub bracket_fg: [Color; 3],
+    pub bracket_bad: Color,
+    pub breadcrumb_bg: Color,
+    pub breadcrumb_fg: Color,
+    pub breadcrumb_focus: Color,
 }
 
 /// Build the palette; also returns the keys that resolved nowhere (a test keeps it empty).
@@ -359,6 +365,11 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         peek_title_bg: on("peekViewTitle.background", editor_bg),
         peek_title_fg: on("peekViewTitleLabel.foreground", on("peekViewTitle.background", editor_bg)),
         peek_desc_fg: on("peekViewTitleDescription.foreground", on("peekViewTitle.background", editor_bg)),
+        bracket_fg: ["editorBracketHighlight.foreground1", "editorBracketHighlight.foreground2", "editorBracketHighlight.foreground3"].map(|k| on(k, editor_bg)),
+        bracket_bad: on("editorBracketHighlight.unexpectedBracket.foreground", editor_bg),
+        breadcrumb_bg: on("breadcrumb.background", editor_bg),
+        breadcrumb_fg: on("breadcrumb.foreground", on("breadcrumb.background", editor_bg)),
+        breadcrumb_focus: on("breadcrumb.focusForeground", on("breadcrumb.background", editor_bg)),
     };
     (pal, missing.into_inner())
 }

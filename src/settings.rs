@@ -134,6 +134,12 @@ pub struct Settings {
     pub occurrences: bool,
     /// `editor.matchBrackets`: highlight the bracket pair at the cursor.
     pub match_brackets: bool,
+    /// `editor.bracketPairColorization.enabled`: brackets coloured by nesting depth.
+    pub bracket_colors: bool,
+    /// `editor.wordWrap`; unset wraps Markdown only, as VS Code's `[markdown]` default does.
+    pub word_wrap: Option<bool>,
+    /// `breadcrumbs.enabled`: the path and symbol row above the text.
+    pub breadcrumbs: bool,
     /// `editor.autoClosingBrackets`, `editor.autoClosingQuotes`.
     pub auto_brackets: bool,
     pub auto_quotes: bool,
@@ -187,6 +193,9 @@ impl Default for Settings {
             render_whitespace: crate::editor::Whitespace::Boundary,
             occurrences: true,
             match_brackets: true,
+            bracket_colors: true,
+            word_wrap: None,
+            breadcrumbs: true,
             auto_brackets: true,
             auto_quotes: true,
             trim_trailing: true,
@@ -323,6 +332,9 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         },
         occurrences: !matches!(g("editor.occurrencesHighlight"), Some(Value::Bool(false))) && g("editor.occurrencesHighlight").and_then(Value::as_str) != Some("off"),
         match_brackets: g("editor.matchBrackets").and_then(Value::as_str) != Some("never"),
+        bracket_colors: g("editor.bracketPairColorization.enabled").and_then(Value::as_bool).unwrap_or(d.bracket_colors),
+        word_wrap: g("editor.wordWrap").and_then(Value::as_str).map(|w| w != "off"),
+        breadcrumbs: g("breadcrumbs.enabled").and_then(Value::as_bool).unwrap_or(d.breadcrumbs),
         auto_brackets: g("editor.autoClosingBrackets").and_then(Value::as_str) != Some("never"),
         auto_quotes: g("editor.autoClosingQuotes").and_then(Value::as_str) != Some("never"),
         trim_trailing: g("files.trimTrailingWhitespace").and_then(Value::as_bool).unwrap_or(d.trim_trailing),
@@ -803,6 +815,9 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "editor.renderWhitespace": "boundary",   // or "none", "selection", "trailing", "all"
     // "editor.occurrencesHighlight": "singleFile", // or "off"
     // "editor.matchBrackets": "always",        // or "never"
+    // "editor.bracketPairColorization.enabled": true,
+    // "editor.wordWrap": "on",                 // or "off"; unset wraps Markdown only (Alt+Z)
+    // "breadcrumbs.enabled": true,
     // "editor.autoClosingBrackets": "always",  // or "never"
     // "editor.autoClosingQuotes": "always",    // or "never"
     // "files.trimTrailingWhitespace": true,   // on save, edited lines only; not Markdown or patches

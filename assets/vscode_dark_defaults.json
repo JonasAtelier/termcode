@@ -121,5 +121,12 @@
   "peekView.border": "editorInfo.foreground",
   "peekViewTitle.background": "#252526",
   "peekViewTitleLabel.foreground": "#FFFFFF",
-  "peekViewTitleDescription.foreground": "#CCCCCCB3"
+  "peekViewTitleDescription.foreground": "#CCCCCCB3",
+  "editorBracketHighlight.foreground1": "#FFD700",
+  "editorBracketHighlight.foreground2": "#DA70D6",
+  "editorBracketHighlight.foreground3": "#179FFF",
+  "editorBracketHighlight.unexpectedBracket.foreground": "#FF1212CC",
+  "breadcrumb.foreground": ["foreground", 0.8],
+  "breadcrumb.background": "editor.background",
+  "breadcrumb.focusForeground": "#E0E0E0"
 }

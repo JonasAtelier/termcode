@@ -176,7 +176,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 
 | Key | Action |
 |---|---|
-| F1 (Ctrl+Shift+P where it reaches) | Command palette: Open Settings (JSON), Toggle Indent Rainbow, Toggle Minimap Ruler, … |
+| F1 (Ctrl+Shift+P where it reaches) | Command palette: Open Settings (JSON), Toggle Indent Rainbow, Toggle Minimap Ruler, …; the recently used commands come first |
 | Alt+1, Ctrl+E | Explorer |
 | Alt+2 / F2, Ctrl+G | Source Control |
 | `h` on an Explorer file | open it; the TIMELINE pane under the tree shows its history |
@@ -184,6 +184,11 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Search result file arrow; Left / Right / Space on its header | collapse / expand that file's matches; clicking its name still opens the file. New searches start expanded |
 | click the active activity icon | hide or show the sidebar; drag the divider to resize |
 | Ctrl+P, Alt+P | Quick Open |
+| Ctrl+P then `:` (F1 Go to Line/Column…) | go to a line: `:42`, or `:42:7` for a column; the line is centred |
+| Ctrl+P then `@`, Ctrl+Shift+O where it reaches, a click on the breadcrumbs | Go to Symbol in Editor: the file's functions, types and Markdown headings, filtered as you type |
+| Ctrl+/ where it reaches (F1 Toggle Line Comment) | comment or uncomment the selected lines at their least indent; HTML, Markdown and CSS get a block comment |
+| Alt+Z | toggle word wrap for every editor (until settings reload) |
+| Ctrl+K V, Ctrl+Shift+V where it reaches | Markdown preview to the side / in place, following unsaved edits; the same key on the preview goes back to the source |
 | click / double-click | open as preview (italic tab) / keep open. Ctrl+K Enter also pins |
 | drag an Explorer file to an editor edge | open it in a new group (max 3); centre or tab bar = that group |
 | Ctrl+F, Ctrl+H | find / replace in the current file. Enter or F3 next, Shift+F3 previous, Alt+R regular expression (`$1` in the replacement), Esc closes |
@@ -401,6 +406,9 @@ the panel: the status bar shows the error and the last good settings stay.
 | `editor.renderWhitespace` | `"boundary"` | Dots for spaces and arrows for tabs (`editorWhitespace.foreground`): `"boundary"` skips single spaces between words; or `"none"`, `"selection"`, `"trailing"`, `"all"` |
 | `editor.occurrencesHighlight` | `"singleFile"` | Highlight the word at the cursor where it appears on screen (`editor.wordHighlightBackground`); `"off"` turns it off |
 | `editor.matchBrackets` | `"always"` | Highlight the bracket beside the cursor and its partner (`editorBracketMatch.background`); `"never"` turns it off |
+| `editor.bracketPairColorization.enabled` | `true` | Colour `()[]{}` by nesting depth (`editorBracketHighlight.foreground1`–`3`), a closer without an opener in `editorBracketHighlight.unexpectedBracket.foreground`. Text only, like matching: brackets in strings and comments count; the diff editor does not colour them |
+| `editor.wordWrap` | unset | `"on"` wraps long lines at the editor's width (after a blank when one fits), `"off"` scrolls them; unset wraps Markdown only, as VS Code's `[markdown]` default. Alt+Z toggles it |
+| `breadcrumbs.enabled` | `true` | A row under the tabs with the file's path and the symbols around the cursor (`breadcrumb.foreground`, `.background`, `.focusForeground`) |
 | `editor.autoClosingBrackets`, `editor.autoClosingQuotes` | `"always"` | Close the pair while typing, step over the closer, wrap a selection, remove an empty pair with Backspace; `"never"` turns each off |
 | `files.trimTrailingWhitespace` | `true` | On save, on the lines edited since the file on disk; not in Markdown or patches |
 | `files.insertFinalNewline` | `true` | On save, a file with content ends with a newline |

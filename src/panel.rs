@@ -243,6 +243,8 @@ pub struct Quick {
     pub off: usize,
     /// F1 command palette rather than Quick Open.
     pub commands: bool,
+    /// `:` (Go to Line) and `@` (Go to Symbol): where each row goes, and its detail.
+    pub goto: Vec<(Pos, String)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -266,6 +268,13 @@ pub enum Cmd {
     ReloadSettings,
     Nav(crate::navui::Act),
     Git(crate::gitcmds::GitCmd),
+    GotoLine,
+    GotoSymbol,
+    ToggleComment,
+    ToggleWrap,
+    ToggleBreadcrumbs,
+    /// Markdown: Open Preview; `true` to the side.
+    MdPreview(bool),
 }
 
 /// The F1 command palette: label, command, key hint.
@@ -274,6 +283,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("Unfold", Cmd::Unfold, "Ctrl+Shift+]"),
     ("Fold All", Cmd::FoldAll, "Ctrl+K Ctrl+0"),
     ("Unfold All", Cmd::UnfoldAll, "Ctrl+K Ctrl+J"),
+    ("Toggle Line Comment", Cmd::ToggleComment, "Ctrl+/"),
     ("Preferences: Open Settings (JSON)", Cmd::OpenSettings, ""),
     ("Preferences: Open Settings", Cmd::SettingsPanel, ""),
     ("View: Toggle Indent Rainbow", Cmd::ToggleRainbow, ""),
@@ -282,9 +292,13 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Toggle Primary Side Bar Visibility", Cmd::ToggleSidebar, ""),
     ("View: Toggle Minimap", Cmd::ToggleMinimap, ""),
     ("View: Toggle Rulers", Cmd::ToggleRulers, ""),
+    ("View: Toggle Word Wrap", Cmd::ToggleWrap, "Alt+Z"),
+    ("View: Toggle Breadcrumbs", Cmd::ToggleBreadcrumbs, ""),
     ("Go to Next Change", Cmd::NextChange, "Alt+F5 / F7"),
     ("Go to Previous Change", Cmd::PrevChange, "Shift+Alt+F5 / Shift+F7"),
     ("Go to File...", Cmd::QuickOpen, "Ctrl+P"),
+    ("Go to Line/Column...", Cmd::GotoLine, "Ctrl+P :"),
+    ("Go to Symbol in Editor...", Cmd::GotoSymbol, "Ctrl+Shift+O"),
     ("File: Save", Cmd::Save, "Ctrl+S"),
     ("Developer: Reload Settings", Cmd::ReloadSettings, ""),
     ("Go to Definition", Cmd::Nav(crate::navui::Act::Definition), "F12"),
@@ -292,7 +306,12 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("Find All References", Cmd::Nav(crate::navui::Act::References), "Shift+F12"),
     ("Go Back", Cmd::Nav(crate::navui::Act::Back), "Alt+←"),
     ("Go Forward", Cmd::Nav(crate::navui::Act::Forward), "Alt+→"),
+    ("Markdown: Open Preview", Cmd::MdPreview(false), "Ctrl+Shift+V"),
+    ("Markdown: Open Preview to the Side", Cmd::MdPreview(true), "Ctrl+K V"),
 ];
+
+/// Recently used palette commands kept (in the layout file).
+const MAX_RECENT: usize = 10;
 
 /// Every palette command: the app's, then the Git ones.
 pub fn all_commands() -> impl Iterator<Item = (&'static str, Cmd)> {
@@ -300,11 +319,25 @@ pub fn all_commands() -> impl Iterator<Item = (&'static str, Cmd)> {
 }
 
 /// Commands matching `q`, best tier first, palette order within a tier.
+#[cfg(test)]
 pub fn filter_commands(q: &str) -> Vec<String> {
+    filter_commands_recent(q, &[])
+}
+
+/// `filter_commands`, with the recently used ones first (newest first) while nothing is
+/// typed, as VS Code lists them.
+pub fn filter_commands_recent(q: &str, recent: &[String]) -> Vec<String> {
     let mut v: Vec<(usize, usize, &str)> =
         all_commands().enumerate().filter_map(|(i, c)| parse::match_score(c.0, q).map(|s| (s / 100_000, i, c.0))).collect();
     v.sort();
-    v.into_iter().map(|(_, _, l)| l.to_string()).collect()
+    let mut out: Vec<String> = v.into_iter().map(|(_, _, l)| l.to_string()).collect();
+    if q.is_empty() {
+        let mut front: Vec<String> = recent.iter().filter(|r| out.contains(r)).cloned().collect();
+        out.retain(|l| !front.contains(l));
+        front.append(&mut out);
+        out = front;
+    }
+    out
 }
 
 /// Something with a scrollbar.
@@ -518,6 +551,13 @@ pub struct GroupHit {
     pub zone: Option<(u16, u16)>,
     /// A side-by-side diff: each side's text area (original, modified), for selecting.
     pub diff_text: Option<[Rect; 2]>,
+    /// With word wrap: the (line, first display column) each text row shows, `None` on
+    /// the peek zone's rows. Empty without wrap (a row is `scroll` + its offset).
+    pub rows: Vec<Option<(usize, usize)>>,
+    /// The breadcrumbs row (a click opens Go to Symbol).
+    pub crumbs: Rect,
+    /// A Markdown preview's rendered rows, for scrolling it.
+    pub preview_rows: usize,
 }
 
 enum Load {
@@ -631,6 +671,11 @@ pub struct App {
     pub ruler_on: bool,
     pub minimap_on: bool,
     pub rulers_on: bool,
+    pub breadcrumbs_on: bool,
+    /// Alt+Z's word wrap, over `editor.wordWrap` until settings reload.
+    pub wrap_on: Option<bool>,
+    /// Palette commands, most recent first.
+    pub recent_cmds: Vec<String>,
     pub peek: Option<Peek>,
     pub qdiff: HashMap<String, QDiff>,
     qdiff_due: Option<Instant>,
@@ -1079,6 +1124,11 @@ impl App {
             ruler_on: true,
             minimap_on: true,
             rulers_on: true,
+            breadcrumbs_on: true,
+            wrap_on: None,
+            recent_cmds: saved["recent_commands"].as_array().map_or_else(Vec::new, |a| {
+                a.iter().filter_map(|c| c.as_str().map(str::to_string)).take(MAX_RECENT).collect()
+            }),
             peek: None,
             qdiff: HashMap::new(),
             qdiff_due: None,
@@ -1145,6 +1195,8 @@ impl App {
         self.guides_on = s.guides;
         self.minimap_on = s.minimap.enabled;
         self.rulers_on = true;
+        self.breadcrumbs_on = s.breadcrumbs;
+        self.wrap_on = None;
         if !s.warnings.is_empty() {
             self.msg = format!("settings.json: {}", s.warnings.join("; "));
         }
@@ -1209,6 +1261,20 @@ impl App {
             Cmd::Save => self.save_active(),
             Cmd::Nav(a) => crate::navui::command(self, a),
             Cmd::Git(g) => crate::gitcmds::run_cmd(self, g),
+            Cmd::GotoLine => self.open_goto(":"),
+            Cmd::GotoSymbol => self.open_goto("@"),
+            Cmd::ToggleComment => self.toggle_comment(),
+            Cmd::ToggleWrap => {
+                let on = !self.active_tab_ref().is_some_and(|t| self.wraps(&t.key));
+                self.wrap_on = Some(on);
+                self.msg = format!("word wrap {}", on_off(on));
+                self.reveal();
+            }
+            Cmd::ToggleBreadcrumbs => {
+                self.breadcrumbs_on = !self.breadcrumbs_on;
+                self.msg = format!("breadcrumbs {}", on_off(self.breadcrumbs_on));
+            }
+            Cmd::MdPreview(side) => self.md_preview(side),
             Cmd::ReloadSettings => {
                 self.settings_stamp = None;
                 self.check_settings();
@@ -1217,6 +1283,68 @@ impl App {
                 }
             }
         }
+    }
+
+    /// `editor.wordWrap` for document `key`: Alt+Z's choice, else the setting, else on for
+    /// Markdown only (VS Code's `[markdown]` default). Files only, not diffs.
+    pub fn wraps(&self, key: &str) -> bool {
+        key.starts_with("file:") && self.wrap_on.or(self.settings.word_wrap).unwrap_or_else(|| crate::symbols::is_markdown(key))
+    }
+
+    fn active_tab_ref(&self) -> Option<&Tab> {
+        let grp = self.groups.get(self.ag)?;
+        grp.tabs.get(grp.active)
+    }
+
+    /// Ctrl+/: the language's line comment (or block pair) on the selected lines.
+    fn toggle_comment(&mut self) {
+        let Some((b, tab)) = self.ed() else { return };
+        let path = b.path.as_deref().and_then(Path::to_str).unwrap_or("").to_string();
+        let Some(marks) = editor::comment_marks(b.syntax_name(), &path) else {
+            self.msg = format!("no comment syntax for {}", b.syntax_name());
+            return;
+        };
+        if let Some(ro) = b.readonly.clone() {
+            self.msg = format!("read-only: {ro}");
+            return;
+        }
+        let before = b.version();
+        b.toggle_comment(&mut tab.view, marks);
+        if b.version() != before {
+            tab.preview = false;
+        }
+        self.reveal();
+        self.find_refresh();
+    }
+
+    /// Markdown: Open Preview (to the side): the active Markdown file rendered read-only,
+    /// following its unsaved edits. On a preview it goes back to the source.
+    fn md_preview(&mut self, side: bool) {
+        let Some(key) = self.active_tab_ref().map(|t| t.key.clone()) else { return };
+        if let Some(rel) = key.strip_prefix("preview:") {
+            return self.open_file(self.ag, rel, false);
+        }
+        let Some(rel) = key.strip_prefix("file:").filter(|r| crate::symbols::is_markdown(r)) else {
+            self.msg = "Markdown preview: the active editor is not a Markdown file".into();
+            return;
+        };
+        let pk = format!("preview:{rel}");
+        let from = self.ag;
+        let g = if !side {
+            from
+        } else if from + 1 < self.groups.len() {
+            from + 1
+        } else if self.groups.len() < MAX_GROUPS {
+            self.groups.insert(from + 1, Group::default());
+            from + 1
+        } else {
+            from
+        };
+        self.show_tab(g, pk, false);
+        if side && g != from {
+            self.ag = from; // to the side keeps the source focused, as VS Code does
+        }
+        self.focus = Focus::Editor;
     }
 
     fn fold_command(&mut self, cmd: Cmd, line: Option<usize>) {
@@ -2226,6 +2354,7 @@ impl App {
         match self.docs.get(key) {
             Some(Doc::Diff(d)) => d.title.clone(),
             _ => match key.split_once(':') {
+                Some(("preview", rel)) => format!("Preview {}", base(rel)),
                 Some(("diff" | "cdiff", rest)) => base(rest.split_once(':').map_or(rest, |(_, p)| p)).to_string(),
                 Some((_, rel)) => base(rel).to_string(),
                 None => key.to_string(),
@@ -2278,11 +2407,36 @@ impl App {
         // Rows the peek zone takes above the cursor are not text rows.
         let zone = self.ui.groups.get(self.ag).and_then(|g| g.zone).map_or(0, |(_, zh)| zh as usize);
         let before = self.peek.as_ref().filter(|p| p.group == self.ag).and_then(|p| self.qdiff.get(&p.key)?.hunks.get(p.hunk)).map(Hunk::peek_before);
+        let wrap = self.active_tab_ref().is_some_and(|t| self.wraps(&t.key));
         let Some((b, tab)) = self.ed() else { return };
         let v = &mut tab.view;
         let c = b.clamp(v.cursor);
         v.unfold_at(c.line);
         let h = if before.is_some_and(|l| c.line >= l) { h.saturating_sub(zone).max(1) } else { h };
+        if wrap {
+            // Rows, not lines: walk up from the cursor's row while the rows still fit.
+            v.hscroll = 0;
+            if c.line < v.scroll {
+                v.scroll = c.line;
+                return;
+            }
+            let rows = |l: usize| editor::wrap_starts(&b.lines[l], w).len();
+            let line = &b.lines[c.line];
+            let mut used = editor::wrap_row(&editor::wrap_starts(line, w), editor::display_col(line, c.col)) + 1;
+            let mut top = c.line;
+            while top > v.scroll {
+                let prev = v.shift_line(top, -1);
+                if prev >= top || used + rows(prev) > h {
+                    break;
+                }
+                used += rows(prev);
+                top = prev;
+            }
+            if top > v.scroll {
+                v.scroll = top;
+            }
+            return;
+        }
         if c.line < v.scroll {
             v.scroll = c.line;
         } else if v.row_of(c.line) >= v.row_of(v.scroll) + h {
@@ -2848,7 +3002,7 @@ impl App {
         if let Some(d) = p.parent() {
             let _ = fs::create_dir_all(d);
         }
-        let mut v = serde_json::json!({ "sidebar_visible": self.side_visible, "scm": self.gitui.layout() });
+        let mut v = serde_json::json!({ "sidebar_visible": self.side_visible, "scm": self.gitui.layout(), "recent_commands": self.recent_cmds });
         v["layout_version"] = 2.into();
         if let Some(w) = self.side_w {
             // Written as the sidebar's outer width, as it is drawn.
@@ -3054,18 +3208,93 @@ impl App {
             self.files.dedup();
         }
         let items = filter(&self.files, "");
-        self.quick = Some(Quick { query: String::new(), items, sel: 0, off: 0, commands: false });
+        self.quick = Some(Quick { query: String::new(), items, sel: 0, off: 0, commands: false, goto: Vec::new() });
     }
 
     fn open_palette(&mut self) {
-        self.quick = Some(Quick { query: String::new(), items: filter_commands(""), sel: 0, off: 0, commands: true });
+        let items = filter_commands_recent("", &self.recent_cmds);
+        self.quick = Some(Quick { query: String::new(), items, sel: 0, off: 0, commands: true, goto: Vec::new() });
+    }
+
+    /// Quick Open already typed `prefix`: `:` Go to Line, `@` Go to Symbol.
+    fn open_goto(&mut self, prefix: &str) {
+        self.open_quick();
+        let (items, goto) = self.quick_rows(prefix);
+        if let Some(q) = self.quick.as_mut() {
+            q.query = prefix.into();
+            (q.items, q.goto) = (items, goto);
+        }
+    }
+
+    /// Quick Open's rows for `query`: files; after `:` the line to go to, after `@` the
+    /// active editor's symbols, each with where it goes.
+    fn quick_rows(&mut self, query: &str) -> (Vec<String>, Vec<(Pos, String)>) {
+        let mode = query.chars().next().filter(|c| matches!(c, ':' | '@'));
+        let Some(mode) = mode else { return (filter(&self.files, query), Vec::new()) };
+        let rest = query[1..].trim();
+        let Some((b, tab)) = self.ed() else {
+            return (vec![format!("Open a text editor first to go to a {}.", if mode == ':' { "line" } else { "symbol" })], Vec::new());
+        };
+        if mode == ':' {
+            let n = b.lines.len();
+            let mut nums = rest.split([':', ',']).map(|s| s.trim().parse::<usize>().ok());
+            let Some(line) = nums.next().flatten() else {
+                let c = b.clamp(tab.view.cursor);
+                let ch = editor::display_col(&b.lines[c.line], c.col) + 1;
+                return (vec![format!("Current Line: {}, Character: {ch}. Type a line number between 1 and {n} to navigate to.", c.line + 1)], Vec::new());
+            };
+            let line = line.clamp(1, n);
+            let ch = nums.next().flatten();
+            let col = ch.map_or(0, |ch| editor::byte_at_display(&b.lines[line - 1], ch.saturating_sub(1)));
+            let label = match ch {
+                Some(ch) => format!("Go to line {line}, character {ch}."),
+                None => format!("Go to line {line}."),
+            };
+            return (vec![label], vec![(Pos::new(line - 1, col), String::new())]);
+        }
+        let lines = b.lines.clone();
+        let mut hits: Vec<(usize, usize, String, (Pos, String))> = b
+            .symbols()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| {
+                let tier = if rest.is_empty() { 0 } else { parse::match_score(&s.name, rest)? / 100_000 };
+                let col = lines[s.line].find(s.name.as_str()).unwrap_or(0);
+                let label = format!("{}{}", "  ".repeat(s.level.saturating_sub(1)), s.name);
+                Some((tier, i, label, (Pos::new(s.line, col), s.kind.to_string())))
+            })
+            .collect();
+        if hits.is_empty() {
+            let why = if rest.is_empty() { "No symbols found in this file." } else { "No matching symbols." };
+            return (vec![why.into()], Vec::new());
+        }
+        hits.sort_by_key(|h| (h.0, h.1));
+        hits.into_iter().map(|(_, _, label, to)| (label, to)).unzip()
     }
 
     /// Enter or click on a Quick Open / palette row.
     fn quick_pick(&mut self, i: usize) {
         let Some(q) = self.quick.take() else { return };
+        if !q.commands && matches!(q.query.chars().next(), Some(':' | '@')) {
+            let Some(&(p, _)) = q.goto.get(i) else { return };
+            let h = self.ui.groups.get(self.ag).map_or(20, |g| g.text.height.max(1) as usize);
+            if let Some((b, tab)) = self.ed() {
+                b.move_to(&mut tab.view, p, false);
+                tab.view.want_x = None;
+                // Centred, as VS Code reveals a line it jumps to.
+                let v = &mut tab.view;
+                v.scroll = v.line_of(v.row_of(p.line).saturating_sub(h / 2));
+            }
+            self.focus = Focus::Editor;
+            self.reveal();
+            return;
+        }
         let Some(item) = q.items.get(i).cloned() else { return };
         if q.commands {
+            self.recent_cmds.retain(|r| *r != item);
+            self.recent_cmds.insert(0, item.clone());
+            self.recent_cmds.truncate(MAX_RECENT);
+            self.save_layout();
             if let Some(c) = all_commands().find(|c| c.0 == item) {
                 self.run_command(c.1);
             }
@@ -3093,8 +3322,11 @@ impl App {
                     }
                     _ => return,
                 }
-                q.items = if q.commands { filter_commands(&q.query) } else { filter(&self.files, &q.query) };
-                q.sel = 0;
+                let (query, commands) = (q.query.clone(), q.commands);
+                let (items, goto) = if commands { (filter_commands_recent(&query, &self.recent_cmds), Vec::new()) } else { self.quick_rows(&query) };
+                if let Some(q) = self.quick.as_mut() {
+                    (q.items, q.goto, q.sel) = (items, goto, 0);
+                }
             }
             _ => {}
         }
@@ -3135,6 +3367,7 @@ impl App {
             if k.code == KeyCode::Enter { return self.pin_active(); }
             if ctrl && is('0') { return self.fold_command(Cmd::FoldAll, None); }
             if ctrl && is('j') { return self.fold_command(Cmd::UnfoldAll, None); }
+            if !ctrl && is('v') { return self.md_preview(true); }
         }
         if ctrl && is('q') {
             return self.request_quit();
@@ -3152,6 +3385,16 @@ impl App {
         // terminals send it as Ctrl+F, which is in-file find (VS Code's Ctrl+F).
         if ctrl && shift && is('f') {
             return self.show_side(Side::Search, true);
+        }
+        // Like Ctrl+Shift+F, these two arrive distinctly only with kitty keyboard support.
+        if ctrl && shift && is('o') {
+            return self.open_goto("@");
+        }
+        if ctrl && shift && is('v') {
+            return self.md_preview(false);
+        }
+        if alt && !ctrl && is('z') {
+            return self.run_command(Cmd::ToggleWrap);
         }
         if ctrl && is('e') {
             return self.show_side(Side::Explorer, false);
@@ -3364,6 +3607,9 @@ impl App {
                 tab.view.extra.clear();
             }
         }
+        if ctrl && k.code == KeyCode::Char('/') {
+            return self.toggle_comment();
+        }
         if ctrl && shift && matches!(k.code, KeyCode::Char('[' | ']' | '{' | '}')) {
             return self.fold_command(if matches!(k.code, KeyCode::Char('[' | '{')) { Cmd::Fold } else { Cmd::Unfold }, None);
         }
@@ -3399,7 +3645,7 @@ impl App {
             // Diff views scroll, both sides at once (F7 is routed in on_key).
             let rows = match self.active_tab().map(|t| t.key.clone()).and_then(|k| self.docs.get(&k)) {
                 Some(Doc::Diff(d)) => d.rows.len(),
-                _ => 0,
+                _ => self.ui.groups.get(self.ag).map_or(0, |g| g.preview_rows),
             };
             if let Some(t) = self.active_tab() {
                 let v = &mut t.view;
@@ -3423,10 +3669,26 @@ impl App {
         }
         let mut readonly_hit = None;
         let (brackets, quotes) = (self.settings.auto_brackets, self.settings.auto_quotes);
+        // Wrapped, Up/Down and the page keys go by screen rows (one cursor only).
+        let wrap_w = self.active_tab_ref().filter(|t| self.wraps(&t.key)).and_then(|_| self.ui.groups.get(self.ag)).map(|g| g.text.width.max(1) as usize);
         {
             let Some((b, tab)) = self.ed() else { return };
             let v = &mut tab.view;
             let before = b.version();
+            let rows = match k.code {
+                KeyCode::Up | KeyCode::Down if !ctrl && !alt => 1,
+                KeyCode::PageUp | KeyCode::PageDown if !ctrl && !alt => page,
+                _ => 0,
+            };
+            if let Some(w) = wrap_w.filter(|_| rows > 0 && v.extra.is_empty()) {
+                let up = matches!(k.code, KeyCode::Up | KeyCode::PageUp);
+                b.vertical_wrapped(v, if up { -rows } else { rows }, shift, w);
+                if matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) {
+                    v.scroll = v.shift_line(v.scroll, if up { -page } else { page }).min(b.lines.len() - 1);
+                }
+                self.reveal();
+                return;
+            }
             match k.code {
                 KeyCode::Char(c) if ctrl => match c.to_ascii_lowercase() {
                     'a' => b.select_all(v),
@@ -3735,6 +3997,11 @@ impl App {
         if self.ui.settings_btn.contains(p) {
             return crate::settingsui::open(self);
         }
+        if let Some(g) = self.ui.groups.iter().position(|gh| gh.crumbs.contains(p)) {
+            self.ag = g;
+            self.focus = Focus::Editor;
+            return self.open_goto("@");
+        }
         if let Some(&(_, g, side)) = self.ui.welcome.iter().find(|(r, _, _)| r.contains(p)) {
             self.ag = g;
             if let Some(side) = side {
@@ -3925,7 +4192,7 @@ impl App {
                     match grp.and_then(|grp| grp.tabs.get(grp.active)).and_then(|t| self.docs.get(&t.key)) {
                         Some(Doc::Text(b)) => b.lines.len(),
                         Some(Doc::Diff(d)) => d.rows.len(),
-                        None => 0,
+                        None => self.ui.groups.get(g).map_or(0, |gh| gh.preview_rows),
                     }
                 };
                 if let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) {
@@ -4019,6 +4286,21 @@ impl App {
         let grp = self.groups.get(g)?;
         let tab = grp.tabs.get(grp.active)?;
         let Some(Doc::Text(b)) = self.docs.get(&tab.key) else { return None };
+        if let Some(&last) = gh.rows.last() {
+            // Below the last row: the end of the last line.
+            let (line, start) = match gh.rows.get(p.y.checked_sub(gh.text.y)? as usize) {
+                Some(&r) => r?,
+                None => (last?.0, usize::MAX / 2),
+            };
+            let line = line.min(b.lines.len() - 1);
+            let text = &b.lines[line];
+            let starts = editor::wrap_starts(text, gh.text.width as usize);
+            let k = editor::wrap_row(&starts, start.min(editor::display_col(text, text.len())));
+            // A row ends before the next one starts: a click past it stays on it.
+            let end = starts.get(k + 1).map_or(usize::MAX, |&n| n.saturating_sub(1));
+            let x = (start + p.x.saturating_sub(gh.text.x) as usize).min(end);
+            return Some(Pos::new(line, editor::byte_at_display(text, x)));
+        }
         let line = self.line_at(g, p.y)?;
         let x = tab.view.hscroll + p.x.saturating_sub(gh.text.x) as usize;
         Some(Pos::new(line, editor::byte_at_display(&b.lines[line], x)))
@@ -4031,6 +4313,10 @@ impl App {
         let grp = self.groups.get(g)?;
         let tab = grp.tabs.get(grp.active)?;
         let Some(Doc::Text(b)) = self.docs.get(&tab.key) else { return None };
+        if let Some(&last) = gh.rows.last() {
+            let r = gh.rows.get(y.saturating_sub(gh.text.y) as usize).copied().unwrap_or(last)?;
+            return Some(r.0.min(b.lines.len() - 1));
+        }
         let mut row = y.saturating_sub(gh.text.y);
         if let Some((zy, zh)) = gh.zone {
             if y >= zy + zh {
@@ -4047,6 +4333,10 @@ impl App {
         let gh = self.ui.groups.get(g)?;
         let grp = self.groups.get(g)?;
         let v = &grp.tabs.get(grp.active)?.view;
+        if !gh.rows.is_empty() {
+            let i = gh.rows.iter().position(|r| r.is_some_and(|(l, _)| l == line))?;
+            return Some(gh.text.y + i as u16);
+        }
         if v.hidden(line) || line < v.scroll { return None; }
         let row = u16::try_from(v.row_of(line).checked_sub(v.row_of(v.scroll))?).ok()?;
         let mut y = gh.text.y.checked_add(row)?;
@@ -4302,7 +4592,7 @@ impl App {
             match grp.tabs.get(grp.active).and_then(|t| self.docs.get(&t.key)) {
                 Some(Doc::Text(b)) => b.lines.len(),
                 Some(Doc::Diff(dd)) => dd.rows.len(),
-                None => 0,
+                None => self.ui.groups[g].preview_rows,
             }
         };
         let Some(t) = self.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) else { return false };
@@ -4622,6 +4912,7 @@ mod tests {
     fn tab_accent_uses_the_left_edge_without_an_extra_row() {
         let root = repo("accent-row");
         let mut app = App::new(root.clone(), None);
+        app.breadcrumbs_on = false; // their row is tested on its own
         app.open_file(0, "src/main.rs", false);
         let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
         screen(&mut app, &mut t);
@@ -5971,6 +6262,7 @@ mod tests {
         cur.remove(40); // base line 40 (index 39) is now gone: index 40 after the insert
         fs::write(root.join("long.c"), cur.join("\n") + "\n").unwrap();
         let mut app = App::new(root.clone(), None);
+        app.breadcrumbs_on = false; // these tests measure the editor's own rows
         app.open_file(0, "long.c", false);
         wait(&mut app);
         app.update_qdiff();
@@ -6230,6 +6522,7 @@ mod tests {
         lines.extend((1..=100).map(|i| format!("int tail_{i} = {i};")));
         fs::write(root.join("f.c"), lines.join("\n") + "\n").unwrap();
         let mut app = App::new(root.clone(), None);
+        app.breadcrumbs_on = false;
         app.open_file(0, "f.c", false);
         wait(&mut app);
         app.settings.minimap.size = crate::minimap::Size::Proportional;
@@ -7635,6 +7928,8 @@ mod tests {
         let new = "static int value(void) {\n    /* inserted\n     * note\n     */\n    return 2;\n}\n";
         let mut app = App::new(root.clone(), None);
         app.settings.render_whitespace = editor::Whitespace::None; // dots are not syntax colours
+        // ponytail: the diff editor does not colour bracket pairs yet.
+        app.settings.bracket_colors = false;
         app.minimap_on = false;
         app.guides_on = false;
         app.focus = Focus::Editor;
@@ -8986,4 +9281,148 @@ mod tests {
         assert!(app.groups.iter().all(|g| g.tabs.is_empty()), "settings is a modal, not a file tab");
     }
 
+    #[test]
+    fn breadcrumbs_show_the_path_and_symbols_and_open_go_to_symbol() {
+        let root = repo("crumbs");
+        fs::write(root.join("src/lib.rs"), "struct A;\nimpl A {\n    fn run(&self) {\n        let x = 1;\n    }\n}\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "src/lib.rs", false);
+        app.groups[0].tabs[0].view.cursor = Pos::new(3, 8);
+        let mut t = Terminal::new(TestBackend::new(110, 20)).unwrap();
+        let shown = screen(&mut app, &mut t);
+        let gh = app.ui.groups[0].clone();
+        assert_eq!((gh.crumbs.y, gh.text.y), (gh.tabbar.y + 1, gh.tabbar.y + 2), "the code starts under the breadcrumbs");
+        let row = shown.lines().nth(gh.crumbs.y as usize).unwrap();
+        assert!(row.contains(" src › ") && row.contains("lib.rs › impl A › run"), "{row}");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), gh.crumbs.x + 3, gh.crumbs.y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), gh.crumbs.x + 3, gh.crumbs.y);
+        let q = app.quick.as_ref().expect("Go to Symbol");
+        assert_eq!((q.query.as_str(), q.items.clone()), ("@", vec!["A".to_string(), "impl A".into(), "run".into()]));
+        typ(&mut app, "ru");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.groups[0].tabs[0].view.cursor, Pos::new(2, 7), "on the name");
+        app.breadcrumbs_on = false;
+        screen(&mut app, &mut t);
+        assert_eq!(app.ui.groups[0].text.y, gh.tabbar.y + 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quick_open_goes_to_a_line_and_the_palette_lists_it_first_after() {
+        let root = repo("goto-line");
+        fs::write(root.join("a.txt"), (1..=50).map(|i| format!("line {i}\n")).collect::<String>()).unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "a.txt", false);
+        app.focus = Focus::Editor;
+        let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        screen(&mut app, &mut t);
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        typ(&mut app, ":");
+        assert!(app.quick.as_ref().unwrap().items[0].starts_with("Current Line: 1, Character: 1. Type a line number between 1 and 50"));
+        typ(&mut app, "30:4");
+        assert_eq!(app.quick.as_ref().unwrap().items, ["Go to line 30, character 4."]);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.quick.is_none());
+        assert_eq!(app.groups[0].tabs[0].view.cursor, Pos::new(29, 3));
+        let scroll = app.groups[0].tabs[0].view.scroll;
+        assert!((15..=29).contains(&scroll), "near the middle: {scroll}");
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        typ(&mut app, "go to line");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.quick.as_ref().map(|q| q.query.as_str()), Some(":"), "the command opens Quick Open at :");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
+        assert_eq!(app.quick.as_ref().unwrap().items[0], "Go to Line/Column...", "recently used first");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn markdown_wraps_long_lines_and_clicks_land_on_the_wrapped_text() {
+        let root = repo("wrap");
+        let long = (0..40).map(|i| format!("w{i:02}")).collect::<Vec<_>>().join(" ");
+        fs::write(root.join("README.md"), format!("{long}\nnext\n")).unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.minimap_on = false;
+        app.open_file(0, "README.md", false);
+        app.focus = Focus::Editor;
+        let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        screen(&mut app, &mut t);
+        assert!(app.wraps("file:README.md") && !app.wraps("file:src/main.rs"), "Markdown wraps by default");
+        let gh = app.ui.groups[0].clone();
+        let rows: Vec<usize> = gh.rows.iter().flatten().filter(|r| r.0 == 0).map(|r| r.1).collect();
+        assert!(rows.len() >= 2, "{rows:?}");
+        assert!(gh.rows.iter().flatten().any(|r| r.0 == 1), "the next line follows the wrapped rows");
+        let (x, y) = cell_of(&t, &format!("w{:02} ", rows[1] / 4), 0);
+        assert_eq!((x, y), (gh.text.x, gh.text.y + 1), "the second row starts with a whole word");
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 1, y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 1, y);
+        assert_eq!(app.groups[0].tabs[0].view.cursor, Pos::new(0, rows[1] + 1));
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        let c = app.groups[0].tabs[0].view.cursor;
+        assert_eq!(c.line, usize::from(rows.len() == 2), "Down goes one screen row: {c:?}");
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::ALT);
+        screen(&mut app, &mut t);
+        assert!(app.ui.groups[0].rows.is_empty(), "Alt+Z turns it off");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn markdown_preview_follows_the_unsaved_buffer_and_scrolls() {
+        let root = repo("md-preview");
+        let body: String = (1..=60).map(|i| format!("Paragraph {i}.\n\n")).collect();
+        fs::write(root.join("README.md"), format!("# Title\n\n{body}")).unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "README.md", false);
+        app.focus = Focus::Editor;
+        key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        typ(&mut app, " Now");
+        key(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+        assert_eq!((app.groups.len(), app.groups[1].tabs[0].key.as_str(), app.ag), (2, "preview:README.md", 0), "to the side, source focused");
+        let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        let shown = screen(&mut app, &mut t);
+        assert!(shown.contains("Preview README.md"), "the tab title");
+        let gh = app.ui.groups[1].clone();
+        let row = |t: &Terminal<TestBackend>, y: u16| (gh.text.x..gh.text.right()).map(|x| t.backend().buffer()[(x, y)].symbol()).collect::<String>();
+        assert_eq!(row(&t, gh.text.y).trim_end(), "Title Now", "the heading without its marks, unsaved text included");
+        assert!(gh.preview_rows > gh.text.height as usize);
+        app.ag = 1;
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        screen(&mut app, &mut t);
+        assert!(app.groups[1].tabs[0].view.scroll > 0);
+        assert!(row(&t, gh.text.y).starts_with("Paragraph"), "scrolled");
+        key(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(app.groups[1].tabs[app.groups[1].active].key, "file:README.md", "again: back to the source");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn brackets_are_coloured_by_depth_and_a_stray_closer_stands_out() {
+        let root = repo("brackets");
+        fs::write(root.join("b.c"), "f(a[1]);\n)\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.minimap_on = false;
+        app.open_file(0, "b.c", false);
+        let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        screen(&mut app, &mut t);
+        let (x, y) = cell_of(&t, "f(a[1]);", 0);
+        let fg = |dx: u16, dy: u16| t.backend().buffer()[(x + dx, y + dy)].fg;
+        let p = &crate::theme::P;
+        assert_eq!([fg(1, 0), fg(3, 0), fg(5, 0), fg(6, 0)], [p.bracket_fg[0], p.bracket_fg[1], p.bracket_fg[1], p.bracket_fg[0]]);
+        assert_eq!(fg(0, 1), p.bracket_bad);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_title_names_a_folder_called_herdr_code_once() {
+        let root = repo("title");
+        let mut app = App::new(root.clone(), None);
+        app.repo = "herdr-code".into();
+        app.open_file(0, "src/main.rs", false);
+        let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let shown = screen(&mut app, &mut t);
+        let title = shown.lines().next().unwrap();
+        assert!(title.contains("main.rs — herdr-code") && !title.contains("herdr-code — herdr-code"), "{title}");
+        let _ = fs::remove_dir_all(&root);
+    }
 }

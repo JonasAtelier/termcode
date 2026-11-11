@@ -93,6 +93,9 @@ const FIELDS: &[Field] = &[
         kind: Choice(&["singleFile", "off"]),
     },
     Field { category: 2, label: "Matching brackets", key: "editor.matchBrackets", kind: Choice(&["always", "never"]) },
+    Field { category: 2, label: "Bracket pair colours", key: "editor.bracketPairColorization.enabled", kind: Check(true) },
+    Field { category: 2, label: "Word wrap", key: "editor.wordWrap", kind: Choice(&["off", "on"]) },
+    Field { category: 2, label: "Breadcrumbs", key: "breadcrumbs.enabled", kind: Check(true) },
     Field {
         category: 2,
         label: "Auto-close brackets",
