@@ -51,7 +51,6 @@ pub enum GRow {
 pub struct Graph {
     pub commits: Vec<Commit>,
     pub rows: Vec<GraphRow>,
-    lanes: Lanes,
     pub more: bool,
     pub loading: bool,
     /// A page arrived since the last reset.
@@ -389,7 +388,12 @@ pub struct Pal {
 
 impl Pal {
     pub fn lane(&self, k: usize) -> Color {
-        self.lanes[k % self.lanes.len()]
+        match k {
+            crate::graph::CURRENT => self.ref_local,
+            crate::graph::REMOTE => self.ref_remote,
+            crate::graph::BRANCH => P.badge_bg,
+            k => self.lanes[k % self.lanes.len()],
+        }
     }
 }
 
@@ -622,8 +626,10 @@ pub fn drain(app: &mut App) -> bool {
                             *g = Graph { head: g.head.take(), gen: g.gen, list: sel, ..Default::default() };
                         }
                         if skip == g.commits.len() {
-                            g.rows.extend(g.lanes.rows(&p.items));
+                            // All pages laid out again: a merged branch's colour reaches
+                            // back up to its merge once its commit has loaded.
                             g.commits.extend(p.items);
+                            g.rows = Lanes::default().rows(&g.commits);
                             g.more = p.more;
                             g.loaded = true;
                         }
@@ -2088,6 +2094,32 @@ pub(crate) mod ui_tests {
 
     fn key_f7(app: &mut App) {
         key(app, KeyCode::F(7), KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn a_branch_colours_its_line_from_its_commit_down() {
+        let (t, r) = repo(
+            "tip-dots",
+            "git commit -q --allow-empty -m one; git tag v1; git commit -q --allow-empty -m two; git branch side
+             git commit -q --allow-empty -m plain; git commit -q --allow-empty -m three; git update-ref refs/remotes/origin/main HEAD
+             git commit -q --allow-empty -m four",
+        );
+        let mut app = app(&t, &r);
+        let mut tm = term();
+        app.show_side(Side::Scm, false);
+        settle(&mut app);
+        screen(&mut app, &mut tm);
+        let pal = pal(&app);
+        let dot = |tm: &Terminal<TestBackend>, subject: &str| {
+            let (x, y) = at(tm, subject);
+            let b = tm.backend().buffer();
+            (0..x).map(|x| &b[(x, y)]).find(|c| matches!(c.symbol(), "●" | "○")).map(|c| c.fg).unwrap()
+        };
+        assert_eq!(dot(&tm, "four"), pal.ref_local, "HEAD's branch");
+        assert_eq!(dot(&tm, "three"), pal.ref_remote, "a remote branch takes over");
+        assert_eq!(dot(&tm, "plain"), pal.ref_remote, "and keeps the line below it");
+        assert_eq!(dot(&tm, "two"), P.badge_bg, "a local branch");
+        assert_eq!(dot(&tm, "one"), P.badge_bg, "a tag changes nothing");
     }
 
     #[test]

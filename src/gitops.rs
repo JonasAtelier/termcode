@@ -1440,7 +1440,10 @@ mod tests {
                     break;
                 }
             }
-            assert_eq!(rows, one, "page size {size}");
+            // The shape; a branch's colour reaches across pages once the GRAPH lays out all
+            // of them again (scm), so colours are not compared here.
+            let shape = |rows: &[crate::graph::GraphRow]| rows.iter().map(|r| (r.node, r.cells.iter().map(|c| c.glyph).collect::<String>())).collect::<Vec<_>>();
+            assert_eq!(shape(&rows), shape(&one), "page size {size}");
         }
         let text: Vec<String> = one.iter().map(|r| r.cells.iter().map(|c| c.glyph).collect()).collect();
         assert!(text[0].starts_with("●─╮"), "{text:?}");
