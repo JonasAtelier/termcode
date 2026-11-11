@@ -1265,7 +1265,7 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
     let crect = Rect::new(ci.x, ci.y + 1, ci.width, ch).intersection(ci);
     let ghdr = Rect::new(gi.x, gi.y, gi.width, 1).intersection(gi);
     let grect = Rect::new(gi.x, gi.y + 1, gi.width, gh).intersection(gi);
-    pane_header(app, f, chdr, "WORK TREE", co, Hit::ChangesHead, "", keys && !gf);
+    pane_header(app, f, chdr, "WORKING TREE", co, Hit::ChangesHead, "", keys && !gf);
     app.gitui.hits.changes = crect;
     app.ui.side_list = Rect::default();
     if crect.height > 0 {
@@ -1854,14 +1854,14 @@ pub(crate) mod ui_tests {
         app.show_side(Side::Scm, false);
         settle(&mut app);
         let s = screen(&mut app, &mut tm);
-        assert!(s.contains("WORK TREE") && s.contains("GRAPH") && s.contains("Add commit") && s.contains("first"), "{s}");
+        assert!(s.contains("WORKING TREE") && s.contains("GRAPH") && s.contains("Add commit") && s.contains("first"), "{s}");
         assert_eq!(app.ui.activity.len(), 3, "no separate History item");
         assert!(!s.contains("HISTORY"));
         // CHANGES collapses and expands from its header.
-        click(&mut app, at(&tm, "WORK TREE"));
+        click(&mut app, at(&tm, "WORKING TREE"));
         let s = screen(&mut app, &mut tm);
         assert!(!s.contains("Add commit") && s.contains("first"), "{s}");
-        click(&mut app, at(&tm, "WORK TREE"));
+        click(&mut app, at(&tm, "WORKING TREE"));
         let s = screen(&mut app, &mut tm);
         assert!(s.contains("Add commit"), "{s}");
         // Dragging the GRAPH header moves the split; it is kept in layout.json.
@@ -1986,7 +1986,7 @@ pub(crate) mod ui_tests {
         assert!(!app.gitui.graph_focus && app.focus == Focus::Side);
         screen(&mut app, &mut tm);
         // Cards show focus on the pane card's border only (the header keeps its colour).
-        let (cx, cy) = at(&tm, "WORK TREE");
+        let (cx, cy) = at(&tm, "WORKING TREE");
         let sx = app.ui.sidebar.x;
         let edge = |tm: &Terminal<TestBackend>, y: u16| tm.backend().buffer()[(sx, y)].fg;
         assert_eq!(edge(&tm, cy), crate::blocks::border(true), "the focused pane's card");

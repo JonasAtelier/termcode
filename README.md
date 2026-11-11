@@ -284,11 +284,11 @@ unsaved buffer asks to save first: Save & Stage / Cancel); Revert edits the buff
 
 ## Source Control
 
-One view, VS Code's: the WORK TREE pane (VS Code's CHANGES) over the GRAPH pane. Click a header to collapse it;
+One view, VS Code's: the WORKING TREE pane (VS Code's CHANGES) over the GRAPH pane. Click a header to collapse it;
 drag the GRAPH header, or the line above it (lit in `sash.hoverBorder` on hover), to move the
 split (kept in layout.json).
 
-- WORK TREE: an **Add commit** button, then Merge Changes (conflicts), Staged Changes and
+- WORKING TREE: an **Add commit** button, then Merge Changes (conflicts), Staged Changes and
   Changes (untracked files as `U`). Row actions open, stage `+`, unstage `−`, discard `↶`
   (always asks). Merge Changes' `+` stages every conflict (marks it resolved); Changes' "Stage
   All" leaves conflicts alone.
@@ -297,7 +297,7 @@ split (kept in layout.json).
   "View more" loads the next 100 (scrolling never loads). Click a commit to list its files
   inline (status letters in `gitDecoration.*` colours), click a file for a read-only
   side-by-side diff: first parent left, commit right, rows aligned, F7 / Shift+F7 between
-  changes. Keys with the graph focused (Tab from WORK TREE): arrows, Enter, Left/Right
+  changes. Keys with the graph focused (Tab from WORKING TREE): arrows, Enter, Left/Right
   collapse/expand, `i` the commit card, `r` reload.
 - Side-by-side diffs (commit and working-tree) scroll as the editor does, both sides together:
   one scrollbar at the right edge (drag the slider, click the track to page) whose overview

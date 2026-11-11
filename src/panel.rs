@@ -6243,7 +6243,7 @@ mod tests {
                 }
                 assert_eq!(app.ui.commit_btn.x, app.ui.side_list.x + spacing.sidebar_padding.saturating_sub(1) / 2);
                 assert_eq!(app.ui.commit_btn.right(), input.right());
-                assert_eq!(cell_of(&t, "WORK TREE", 0).0, section, "WORK TREE matches Explorer's section label");
+                assert_eq!(cell_of(&t, "WORKING TREE", 0).0, section, "WORKING TREE matches Explorer's section label");
                 assert_eq!(cell_of(&t, "GRAPH", 0).0, section, "GRAPH matches Explorer's section label");
                 wait_idle(&mut app);
                 app.git_root = None;
