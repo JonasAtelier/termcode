@@ -186,7 +186,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Alt+1, Ctrl+E | Explorer |
 | Alt+2 / F2, Ctrl+G | Source Control |
 | `h` on an Explorer file | open it; the TIMELINE pane under the tree shows its history |
-| Alt+4 / F4 (Ctrl+Shift+F where it reaches) | Search in files |
+| Alt+4 / F4 (Ctrl+Shift+F where it reaches) | Search in files: it runs 0.3 s after you stop typing (Enter runs it at once and moves to the results; Esc cancels) |
 | Search result file arrow; Left / Right / Space on its header | collapse / expand that file's matches; clicking its name still opens the file. New searches start expanded |
 | click the active activity icon | hide or show the sidebar; drag the divider to resize |
 | Ctrl+P, Alt+P | Quick Open |
@@ -195,7 +195,7 @@ enable modifyOtherKeys for it. The fallbacks below always work.
 | Ctrl+/ where it reaches (F1 Toggle Line Comment) | comment or uncomment the selected lines at their least indent; HTML, Markdown and CSS get a block comment |
 | Alt+Z | toggle word wrap for every editor (until settings reload) |
 | Ctrl+K V, Ctrl+Shift+V where it reaches | Markdown preview to the side / in place, following unsaved edits; the same key on the preview goes back to the source |
-| double-click a file name in the Explorer | rename it in place (the stem selected); Enter or a click elsewhere accepts, Esc gives up. Open tabs follow it, unsaved edits included |
+| double-click a file or folder name in the Explorer | rename it in place (a file's stem or a folder's whole name selected; 2 clicks in the box select a word, 3 all of it); Enter or a click elsewhere accepts, Esc gives up. Open tabs follow it, unsaved edits included |
 | click / double-click | open as preview (italic tab) / keep open (upright); in the Explorer a double-click renames, so keep a file open with Enter or a double-click on its tab. Double-click the tab again to make it the preview once more (not with unsaved changes). Ctrl+K Enter also pins. A white dot before the bold close cross marks unsaved changes |
 | drag an Explorer file to an editor edge | open it in a new group (max 3); centre or tab bar = that group |
 | Ctrl+F, Ctrl+H | find / replace in the current file. Enter or F3 next, Shift+F3 previous, Alt+R regular expression (`$1` in the replacement), Esc closes |

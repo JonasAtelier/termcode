@@ -57,10 +57,13 @@ fn replaced(link: &Path) -> Option<PathBuf> {
     link.to_str()?.strip_suffix(" (deleted)").map(PathBuf::from)
 }
 
+/// Search on type: the pause after the last change to the query before it runs
+/// (VS Code's `search.searchOnTypeDebouncePeriod`).
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 /// How long the pointer rests on a cut Explorer name before its tooltip shows.
 const TIP_DELAY: Duration = Duration::from_millis(500);
 
-/// An Explorer name being edited in place (double-click a file): the item, the new
+/// An Explorer name being edited in place (double-click a file or folder): the item, the new
 /// name, the caret and the other end of the selection (bytes).
 pub struct Rename {
     pub path: String,
@@ -70,9 +73,9 @@ pub struct Rename {
 }
 
 impl Rename {
-    /// The name with its stem selected, as VS Code starts a rename.
-    fn new(path: &str, name: &str) -> Rename {
-        let stem = name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len());
+    /// The name with a file's stem (a folder's whole name) selected, as VS Code starts a rename.
+    fn new(path: &str, name: &str, dir: bool) -> Rename {
+        let stem = name.rfind('.').filter(|&i| i > 0 && !dir).unwrap_or(name.len());
         Rename { path: path.to_string(), text: name.to_string(), cur: stem, anchor: Some(0) }
     }
 
@@ -747,6 +750,8 @@ pub struct App {
     pub(crate) live_rg: Arc<AtomicUsize>,
     /// A search waits until fewer than MAX_LIVE_RG rg processes are left.
     pub queued_search: Option<(String, (bool, bool, bool))>,
+    /// The query changed: it runs at this time unless it changes again first.
+    search_due: Option<Instant>,
     gen: u64,
     tx: mpsc::SyncSender<(u64, Option<Hit>)>,
     rx: mpsc::Receiver<(u64, Option<Hit>)>,
@@ -1245,6 +1250,7 @@ impl App {
             search_stop: Arc::new(AtomicBool::new(false)),
             live_rg: Arc::new(AtomicUsize::new(0)),
             queued_search: None,
+            search_due: None,
             gen: 0,
             tx,
             rx,
@@ -1945,6 +1951,11 @@ impl App {
             self.update_qdiff();
             *dirty = true;
         }
+        if self.search_due.is_some_and(|t| Instant::now() >= t) {
+            self.search_due = None;
+            self.start_search();
+            *dirty = true;
+        }
         if self.refresh_due.is_some_and(|t| Instant::now() >= t) {
             self.refresh_due = None;
             self.refresh();
@@ -1988,7 +1999,7 @@ impl App {
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
         let upgrade_due = self.upgrade.next.filter(|_| self.upgrade.watch);
-        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due].into_iter().flatten() {
+        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due, self.search_due].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
         // A far jump's first highlighting catches up one budgeted slice per frame
@@ -2239,7 +2250,7 @@ impl App {
     /// Edit Explorer row `i`'s name in place.
     fn start_rename(&mut self, i: usize) {
         let Some(n) = self.tree.get(i) else { return };
-        self.rename = Some(Rename::new(&n.path, &n.name));
+        self.rename = Some(Rename::new(&n.path, &n.name, n.dir));
         self.focus = Focus::Side;
         self.tip = None;
     }
@@ -2348,6 +2359,12 @@ impl App {
                 if let Some(rel) = moved(rel) {
                     t.key = format!("{kind}:{rel}");
                 }
+            }
+        }
+        // A renamed folder and the folders in it stay expanded.
+        for n in self.tree.iter_mut() {
+            if let Some(path) = moved(&n.path) {
+                n.path = path;
             }
         }
         self.reload_all();
@@ -3898,21 +3915,33 @@ impl App {
     fn input_key(&mut self, k: KeyEvent, ctrl: bool, alt: bool) {
         match k.code {
             KeyCode::Enter => {
+                self.search_due = None;
                 self.start_search();
                 self.focus = Focus::Side;
             }
-            KeyCode::Esc if self.search.is_some() || self.queued_search.is_some() => {
+            KeyCode::Esc if self.search.is_some() || self.queued_search.is_some() || self.search_due.is_some() => {
+                self.search_due = None;
                 self.queued_search = None;
                 self.stop_search();
                 self.msg = "search cancelled".into();
             }
             KeyCode::Esc | KeyCode::Down => self.focus = Focus::Side,
             KeyCode::Backspace => {
-                self.query.pop();
+                if self.query.pop().is_some() {
+                    self.search_on_type();
+                }
             }
-            KeyCode::Char(c) if !ctrl && !alt => self.query.push(c),
+            KeyCode::Char(c) if !ctrl && !alt => {
+                self.query.push(c);
+                self.search_on_type();
+            }
             _ => {}
         }
+    }
+
+    /// The query changed: search once typing pauses (an emptied query clears the results).
+    fn search_on_type(&mut self) {
+        self.search_due = Some(Instant::now() + SEARCH_DEBOUNCE);
     }
 
     fn side_key(&mut self, k: KeyEvent) {
@@ -4239,7 +4268,10 @@ impl App {
             return crate::gitcmds::picker_paste(self, text);
         }
         match self.focus {
-            Focus::SearchInput => self.query.push_str(&text.replace(['\r', '\n'], " ")),
+            Focus::SearchInput => {
+                self.query.push_str(&text.replace(['\r', '\n'], " "));
+                self.search_on_type();
+            }
             Focus::Find => {
                 if let Some(f) = self.find.as_mut() {
                     let s = if f.field == 1 { f.replace.get_or_insert_with(String::new) } else { &mut f.query };
@@ -4498,8 +4530,9 @@ impl App {
                         self.drag = Drag::File { rel: n.path.clone(), from: p, active: false };
                     }
                 }
-                // Double-clicking a file's name edits it in place (the first click opened it).
-                if double && self.side == Side::Explorer && self.tree.get(i).is_some_and(|n| !n.dir) {
+                // Double-clicking a name edits it in place (the first click opened the file
+                // or folded the folder).
+                if double && self.side == Side::Explorer && i < self.tree.len() {
                     self.drag = Drag::None;
                     self.last_click = None;
                     return self.start_rename(i);
@@ -9935,6 +9968,69 @@ mod tests {
         app.upgrade_tick(Some(bin.clone()));
         assert!(app.quit && app.reload, "saved: it goes");
         wait_idle(&mut app);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn double_clicking_a_folder_renames_it_and_what_is_open_in_it_follows() {
+        let root = repo("rename-dir");
+        fs::create_dir_all(root.join("docs/deep")).unwrap();
+        fs::write(root.join("docs/deep/x.md"), "x\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "docs/deep/x.md", false);
+        let mut t = Terminal::new(TestBackend::new(110, 24)).unwrap();
+        screen(&mut app, &mut t);
+        let (x, y) = cell_of(&t, "docs", 0);
+        app.last_click = None;
+        for _ in 0..2 {
+            mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x + 1, y);
+            mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 1, y);
+        }
+        let rn = app.rename.as_ref().expect("a folder's name is edited too");
+        assert_eq!((rn.text.as_str(), rn.selection()), ("docs", Some((0, 4))), "a folder's whole name selected");
+        let i = app.tree.iter().position(|n| n.path == "docs").unwrap();
+        if !app.tree[i].open {
+            app.toggle(i);
+        }
+        let deep = app.tree.iter().position(|n| n.path == "docs/deep").unwrap();
+        app.toggle(deep);
+        typ(&mut app, "notes.d");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.rename.is_none(), "{}", app.msg);
+        assert!(root.join("notes.d/deep/x.md").exists() && !root.join("docs").exists());
+        assert_eq!(app.groups[0].tabs[0].key, "file:notes.d/deep/x.md", "the tab inside follows");
+        assert!(app.docs.contains_key("file:notes.d/deep/x.md"));
+        let open: Vec<&str> = app.tree.iter().filter(|n| n.open).map(|n| n.path.as_str()).collect();
+        assert_eq!(open, ["notes.d", "notes.d/deep"], "still expanded");
+        wait_idle(&mut app);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_runs_once_typing_pauses_without_enter() {
+        let root = repo("search-on-type");
+        let mut app = App::new(root.clone(), None);
+        let mut t = Terminal::new(TestBackend::new(110, 20)).unwrap();
+        key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::SearchInput);
+        typ(&mut app, "need");
+        assert!(app.search.is_none() && app.hits.is_empty(), "not on every key");
+        typ(&mut app, "le");
+        let due = app.search_due.expect("a search is due");
+        assert!(due > Instant::now() + SEARCH_DEBOUNCE / 2, "each key pushes it back");
+        app.search_due = Some(Instant::now()); // the pause
+        let mut dirty = false;
+        app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+        wait(&mut app);
+        assert!(app.hits.iter().any(|h| h.path == "src/main.rs"), "found without Enter");
+        assert_eq!(app.focus, Focus::SearchInput, "still typing");
+        // Emptied: the results go.
+        for _ in 0..6 {
+            key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        app.search_due = Some(Instant::now());
+        app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+        assert!(app.hits.is_empty());
         let _ = fs::remove_dir_all(&root);
     }
 
