@@ -10268,6 +10268,9 @@ mod tests {
         let shown = screen(&mut app, &mut t);
         let title = shown.lines().next().unwrap();
         assert!(title.contains("main.rs — herdr-code") && !title.contains("herdr-code — herdr-code"), "{title}");
+        let close = app.ui.close;
+        let cross = (close.x..close.right()).map(|x| &t.backend().buffer()[(x, close.y)]).find(|c| c.symbol() == crate::theme::icons().tab_close).expect("the tab's cross on Close");
+        assert!(cross.modifier.contains(Modifier::BOLD), "bold, as on a tab");
         let _ = fs::remove_dir_all(&root);
     }
 }

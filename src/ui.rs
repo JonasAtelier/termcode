@@ -285,7 +285,8 @@ fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let st = Style::new().fg(P.title_fg).bg(P.title_bg);
     fill(f, r, P.title_bg);
     let (tp, bp) = (lay.s.title_padding.div_ceil(2), lay.s.button_padding.div_ceil(2));
-    let close = format!("{}{}{}Close{}", sp(bp), icons().close, sp(lay.s.icon_gap.div_ceil(2)), sp(bp));
+    // The same cross as an editor tab's close button, bold.
+    let close = format!("{}{}{}Close{}", sp(bp), icons().tab_close, sp(lay.s.icon_gap.div_ceil(2)), sp(bp));
     let w = close.width() as u16;
     let t = fit(&text, r.width.saturating_sub(2 * (w + tp) + 2) as usize);
     let x = r.x + (r.width.saturating_sub(t.width() as u16)) / 2;
@@ -294,7 +295,7 @@ fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let hot = app.hover.is_some_and(|p| app.ui.close.contains(p)) && !matches!(app.drag, Drag::Close);
     let tint = Rgba(255, 255, 255, 255);
     let bg = if hot { tint.alpha(0.12).over(P.status_err_bg) } else { P.status_err_bg };
-    f.render_widget(Span::styled(close, Style::new().fg(P.status_err_fg).bg(bg)), app.ui.close);
+    f.render_widget(Span::styled(close, Style::new().fg(P.status_err_fg).bg(bg).add_modifier(Modifier::BOLD)), app.ui.close);
 }
 
 /// A button's colours, lit while the pointer is on it.
