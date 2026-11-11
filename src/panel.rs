@@ -63,6 +63,15 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 /// How long the pointer rests on a cut Explorer name before its tooltip shows.
 const TIP_DELAY: Duration = Duration::from_millis(500);
 
+impl Tip {
+    /// The row grown to show the whole name: from the name's column, one blank after it,
+    /// up to `right` (the screen's edge).
+    pub fn ext(&self, right: u16) -> Rect {
+        let w = (unicode_width::UnicodeWidthStr::width(self.text.as_str()) as u16 + 1).min(right.saturating_sub(self.x));
+        Rect::new(self.x, self.rect.y, w, 1)
+    }
+}
+
 /// An Explorer name being edited in place (double-click a file or folder): the item, the new
 /// name, the caret and the other end of the selection (bytes).
 pub struct Rename {
@@ -167,6 +176,8 @@ impl Rename {
 pub struct Tip {
     pub rect: Rect,
     pub text: String,
+    /// The column the cut name starts at: the full one is drawn from there.
+    pub x: u16,
     since: Instant,
     pub shown: bool,
 }
@@ -617,8 +628,10 @@ pub enum HRow {
 /// Screen areas from the last draw, for mouse hit-testing.
 #[derive(Default)]
 pub struct Hits {
-    /// Explorer rows whose names were cut, with the full name (for the tooltip).
-    pub tips: Vec<(Rect, String)>,
+    /// Explorer rows whose names were cut, with the full name and where it starts.
+    pub tips: Vec<(Rect, String, u16)>,
+    /// The hovered cut row grown to its whole name (part of that row for the mouse).
+    pub tip_ext: Rect,
     /// The Explorer row being renamed, its box and the display columns scrolled off it.
     pub rename: Rect,
     pub rename_field: (Rect, usize),
@@ -2057,11 +2070,16 @@ impl App {
                 crate::session::touch(self);
                 true
             }
-            Event::Mouse(m) => {
+            Event::Mouse(mut m) => {
                 let mut tip = false;
                 if m.kind != MouseEventKind::Moved {
                     crate::session::touch(self); // clicks, drags, wheel: tabs, cursors, scroll
-                    tip = self.tip.take().is_some_and(|t| t.shown);
+                    let button = matches!(m.kind, MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left));
+                    match self.tip.as_ref().filter(|t| t.shown && button && self.ui.tip_ext.contains(Position::new(m.column, m.row))) {
+                        // The grown name is its row: a click there selects, opens or renames it.
+                        Some(t) => (m.column, m.row) = (t.x, t.rect.y),
+                        None => tip = self.tip.take().is_some_and(|t| t.shown),
+                    }
                 }
                 crate::navui::on_mouse(self, m) || tip
             }
@@ -4349,14 +4367,17 @@ impl App {
     /// Start the tooltip timer on a cut Explorer name, keep it while the pointer stays on
     /// that row; true when a shown tooltip goes.
     fn track_tip(&mut self, p: Position) -> bool {
-        let hit = self.ui.tips.iter().rev().find(|(r, _)| r.contains(p)).cloned();
-        if let (Some(t), Some((r, _))) = (&self.tip, &hit) {
+        if self.tip.as_ref().is_some_and(|t| t.shown) && self.ui.tip_ext.contains(p) {
+            return false; // along the grown name: still that row
+        }
+        let hit = self.ui.tips.iter().rev().find(|(r, _, _)| r.contains(p)).cloned();
+        if let (Some(t), Some((r, _, _))) = (&self.tip, &hit) {
             if t.rect == *r {
                 return false;
             }
         }
         let was = self.tip.as_ref().is_some_and(|t| t.shown);
-        self.tip = hit.map(|(rect, text)| Tip { rect, text, since: Instant::now(), shown: false });
+        self.tip = hit.map(|(rect, text, x)| Tip { rect, text, x, since: Instant::now(), shown: false });
         was
     }
 
@@ -4393,7 +4414,7 @@ impl App {
         // a third the whole name, a drag selects); anywhere else accepts the name first.
         let clicks = self.clicks;
         if let Some(r) = self.rename.as_mut() {
-            if self.ui.rename.contains(p) {
+            if self.ui.rename.contains(p) || self.ui.rename_field.0.contains(p) {
                 let field = self.ui.rename_field;
                 if field.0.contains(p) {
                     let at = r.caret_at(field, p.x);
@@ -9830,8 +9851,8 @@ mod tests {
         let mut app = App::new(root.clone(), None);
         let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
         assert!(!screen(&mut app, &mut t).contains(&long), "cut in the Explorer");
-        let (r, _) = app.ui.tips.iter().find(|(_, s)| *s == long).cloned().expect("its row offers the full name");
-        assert!(app.ui.tips.iter().all(|(_, s)| *s == long), "only cut names do");
+        let (r, _, name_x) = app.ui.tips.iter().find(|(_, s, _)| *s == long).cloned().expect("its row offers the full name");
+        assert!(app.ui.tips.iter().all(|(_, s, _)| *s == long), "only cut names do");
         app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
         assert!(app.tip.as_ref().is_some_and(|t| !t.shown), "not at once");
         app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 6, row: r.y, modifiers: KeyModifiers::NONE });
@@ -9841,10 +9862,30 @@ mod tests {
         app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
         assert!(app.tip.as_ref().is_some_and(|t| t.shown), "the loop woke to draw it");
         let (x, y) = cell_of(&t, &long, 0);
-        assert_eq!(y, r.y + 2, "in a box under the row");
-        assert!(x >= r.x);
-        assert!(app.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))));
-        assert!(app.tip.is_none(), "a key closes it");
+        assert_eq!((x, y), (name_x, r.y), "the row itself grows to the whole name");
+        let b = t.backend().buffer();
+        assert_eq!(b[(x + long.len() as u16, y)].bg, b[(x, y)].bg, "in the row's own colours, a blank after it");
+        let end = x + long.len() as u16 - 1;
+        assert!(end >= app.ui.sidebar.right(), "past the Explorer");
+        // Along it, it stays; a double-click there renames that row, in a box as wide.
+        app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: end, row: y, modifiers: KeyModifiers::NONE });
+        assert!(app.tip.as_ref().is_some_and(|t| t.shown));
+        app.last_click = None;
+        for _ in 0..2 {
+            assert!(app.handle_event(Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: end, row: y, modifiers: KeyModifiers::NONE })));
+            app.handle_event(Event::Mouse(MouseEvent { kind: MouseEventKind::Up(MouseButton::Left), column: end, row: y, modifiers: KeyModifiers::NONE }));
+        }
+        assert_eq!(app.rename.as_ref().map(|r| r.text.as_str()), Some(long.as_str()), "{}", app.msg);
+        screen(&mut app, &mut t);
+        let field = app.ui.rename_field.0;
+        assert!(field.right() > end, "the rename box shows all of it: {field:?}");
+        // A click in its grown part places the caret, not the editor's.
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), end, y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), end, y);
+        assert_eq!(app.rename.as_ref().unwrap().cur, long.len() - 1);
+        assert!(app.tip.is_none(), "renaming closed it");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.rename.is_none());
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -260,7 +260,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         }
     }
     crate::blocks::finish(f);
-    tooltip(app, f, area);
+    explorer_overlay(app, f, area);
     crate::navui::draw(app, f);
     crate::scm::draw_popups(app, f, area);
     if app.quick.is_some() {
@@ -623,8 +623,8 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         match app.side {
             Side::Explorer => {
                 let (tip, field) = explorer_row(app, f, ir, bg, i);
-                if let Some(full) = tip {
-                    app.ui.tips.push((ir, full));
+                if let Some((full, x)) = tip {
+                    app.ui.tips.push((ir, full, x));
                 }
                 if let Some(field) = field {
                     (app.ui.rename, app.ui.rename_field) = (ir, field);
@@ -693,8 +693,8 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
             Side::Explorer if cap == 1 => breadcrumb_row(app, f, ir, bg, i),
             Side::Explorer => {
                 let (tip, field) = explorer_row(app, f, ir, bg, i);
-                if let Some(full) = tip {
-                    app.ui.tips.push((ir, full));
+                if let Some((full, x)) = tip {
+                    app.ui.tips.push((ir, full, x));
                 }
                 if let Some(field) = field {
                     (app.ui.rename, app.ui.rename_field) = (ir, field);
@@ -802,9 +802,13 @@ pub(crate) fn badge(n: usize, under: Color) -> Vec<Span<'static>> {
     pill(n.to_string(), Style::new().fg(P.badge_fg).bg(P.badge_bg), under)
 }
 
-/// One Explorer row; the full name when it had to be cut (for its tooltip), and the rename
-/// box with how far it is scrolled when this row is being renamed (for the mouse).
-fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> (Option<String>, Option<(Rect, usize)>) {
+/// An Explorer row's tooltip (full name, its column) and rename box (box, scrolled cols).
+type RowExtras = (Option<(String, u16)>, Option<(Rect, usize)>);
+
+/// One Explorer row; the full name when it had to be cut and the column the name starts
+/// at (for its tooltip), and the rename box with how far it is scrolled when this row is
+/// being renamed (for the mouse).
+fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> RowExtras {
     let n = &app.tree[i];
     let ic = icons();
     let fi = &app.settings.file_icons;
@@ -849,7 +853,7 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> (Opti
         let skip = rename_field(f, field, rn, app.rename_conflict());
         return (None, Some((field, skip)));
     }
-    ((name != n.name).then(|| n.name.clone()), None)
+    ((name != n.name).then(|| (n.name.clone(), name_x)), None)
 }
 
 /// The in-place rename box: the name on the input colours with its selection, scrolled
@@ -873,26 +877,32 @@ fn rename_field(f: &mut Frame, r: Rect, rn: &crate::panel::Rename, conflict: boo
     skip
 }
 
-/// A cut Explorer name in full, in a box under its row once the pointer has rested on it
-/// (above it where the screen ends first).
-fn tooltip(app: &App, f: &mut Frame, area: Rect) {
-    let Some(t) = app.tip.as_ref().filter(|t| t.shown) else { return };
-    let shown = app.hover.is_some_and(|p| t.rect.contains(p)) && app.ui.tips.iter().any(|(r, s)| *r == t.rect && *s == t.text);
-    if !shown || area.height < 4 {
+/// Over everything but popups, an Explorer row whose name was cut grows to the right to
+/// show all of it: the row the pointer rests on (a click or double-click there is a click
+/// on the row), and the rename box while it is being edited.
+fn explorer_overlay(app: &mut App, f: &mut Frame, area: Rect) {
+    if let Some(rn) = app.rename.as_ref() {
+        let (field, _) = app.ui.rename_field;
+        let need = rn.text.width() as u16 + 2;
+        if field.width > 0 && need > field.width {
+            let wide = Rect::new(field.x, field.y, need.min(area.right().saturating_sub(field.x)), 1);
+            let skip = rename_field(f, wide, rn, app.rename_conflict());
+            app.ui.rename_field = (wide, skip);
+        }
         return;
     }
-    // Wider than the screen: wrapped onto more rows.
-    let w = (t.text.width() as u16 + 4).min(area.width);
-    let text = Paragraph::new(t.text.clone()).wrap(ratatui::widgets::Wrap { trim: false });
-    let h = (text.line_count(w.saturating_sub(4)) as u16 + 2).min(area.height);
-    let x = t.rect.x.min(area.right().saturating_sub(w));
-    let y = if t.rect.bottom() + h <= area.bottom() { t.rect.bottom() } else { t.rect.y.saturating_sub(h) };
-    let r = Rect::new(x, y, w, h);
-    let block = popup_block(P.widget_bg, P.widget_fg, (1, 0));
-    let inner = block.inner(r);
-    f.render_widget(Clear, r);
-    f.render_widget(block, r);
-    f.render_widget(text, inner);
+    let Some(t) = app.tip.as_ref().filter(|t| t.shown) else { return };
+    let ext = t.ext(area.right());
+    let shown = app.hover.is_some_and(|p| t.rect.contains(p) || ext.contains(p)) && app.ui.tips.iter().any(|(r, s, _)| *r == t.rect && *s == t.text);
+    if !shown {
+        return;
+    }
+    // The row's own look (hover or selection background, git colour), carried on.
+    let look = f.buffer_mut()[(t.x, t.rect.y)].style();
+    f.render_widget(Clear, ext);
+    fill(f, ext, look.bg.unwrap_or(P.sidebar_bg));
+    f.render_widget(Span::styled(format!("{} ", t.text), look), ext);
+    app.ui.tip_ext = ext;
 }
 
 fn search_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow, i: usize) {
