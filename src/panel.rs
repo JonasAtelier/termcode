@@ -37,6 +37,10 @@ pub const MAX_GROUPS: usize = 3;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Set for the process a reload execs: the session comes back whatever the settings say.
 const RELOAD_ENV: &str = "HERDR_CODE_RELOADED";
+/// Changes made outside the panel (an agent, a shell) show without a focus or view
+/// switch: `git status` reruns this often, or ten times as long as it last took.
+const STATUS_POLL: Duration = Duration::from_secs(2);
+const STATUS_POLL_MAX: Duration = Duration::from_secs(30);
 /// How often a running panel looks for a newly installed binary.
 const UPGRADE_CHECK: Duration = Duration::from_secs(2);
 
@@ -795,6 +799,13 @@ pub struct App {
     status_again: bool,
     /// The running `git status` started then (a spinner after STATUS_SLOW).
     pub status_since: Option<Instant>,
+    /// Poll `git status` (the real panel only, never a test), when next, how long the
+    /// last one took, whether the running one is a poll, and what the last one said.
+    pub poll_status: bool,
+    status_poll_due: Option<Instant>,
+    status_took: Duration,
+    status_polled: bool,
+    status_seen: Option<(String, Vec<u8>, String)>,
     clip: String,
     load_tx: mpsc::Sender<(String, u64, Load)>,
     load_rx: mpsc::Receiver<(String, u64, Load)>,
@@ -879,6 +890,7 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     crate::session::restore(&mut app);
     (app.settings.restore_session, app.settings.restore_view_state) = wanted;
     app.upgrade.watch = true;
+    app.poll_status = true;
     if reloaded {
         app.msg = "reloaded".into();
     }
@@ -1287,6 +1299,11 @@ impl App {
             refresh_due: None,
             status_again: false,
             status_since: None,
+            poll_status: false,
+            status_poll_due: None,
+            status_took: Duration::ZERO,
+            status_polled: false,
+            status_seen: None,
             clip: String::new(),
             load_tx,
             load_rx,
@@ -1973,6 +1990,13 @@ impl App {
             *dirty = true;
         }
         // Source Control timers: the resting-pointer card, the blame delay, the op spinner.
+        if self.poll_status && self.status_poll_due.is_none_or(|t| Instant::now() >= t) {
+            if !self.loading.contains_key(STATUS_KEY) {
+                self.status_polled = true;
+                self.refresh_status();
+            }
+            self.status_poll_due = Some(Instant::now() + (self.status_took * 10).clamp(STATUS_POLL, STATUS_POLL_MAX));
+        }
         if self.upgrade.watch && self.upgrade.next.is_none_or(|t| Instant::now() >= t) {
             self.upgrade.next = Some(Instant::now() + UPGRADE_CHECK);
             let installed = fs::read_link("/proc/self/exe").ok().and_then(|l| replaced(&l));
@@ -2010,7 +2034,8 @@ impl App {
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
         let upgrade_due = self.upgrade.next.filter(|_| self.upgrade.watch);
-        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due, self.search_due].into_iter().flatten() {
+        let poll_due = self.status_poll_due.filter(|_| self.poll_status);
+        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due, self.search_due, poll_due].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
         // A far jump's first highlighting catches up one budgeted slice per frame
@@ -2135,6 +2160,7 @@ impl App {
     /// lands), decorations, and the disk state of open files.
     pub fn refresh(&mut self) {
         self.refresh_files();
+        self.status_polled = false;
         self.refresh_status();
     }
 
@@ -2521,6 +2547,16 @@ impl App {
             self.loading.remove(&key);
             if let Load::Status(st) = load {
                 let since = self.status_since;
+                if let Some(t) = since {
+                    self.status_took = t.elapsed();
+                }
+                // A poll that found what the last status said changes nothing: no frame.
+                let seen = (st.0.clone(), st.1.clone(), format!("{:?}", st.2));
+                if std::mem::take(&mut self.status_polled) && !self.status_again && self.status_seen.as_ref() == Some(&seen) {
+                    self.status_since = None;
+                    continue;
+                }
+                self.status_seen = Some(seen);
                 self.apply_status(st);
                 if std::mem::take(&mut self.status_again) {
                     // What landed is already older than the refresh asked for meanwhile:
@@ -6901,6 +6937,7 @@ mod tests {
         screen(&mut app, &mut t);
         let commit = app.ui.commit_btn;
         assert_eq!(bg(&t, commit), P.button_bg);
+        assert_eq!(app.gitui.hits.changes.y + 1, app.ui.side_list.y, "the list starts right under Add commit");
         app.hover = Some(Position::new(commit.x + 2, commit.y));
         screen(&mut app, &mut t);
         assert_eq!(bg(&t, commit), P.button_hover);
@@ -10129,6 +10166,35 @@ mod tests {
         assert!(row.contains(ic.case), "Match Case on: shown in the box");
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.find.is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn changes_follow_the_disk_without_a_focus_or_view_switch() {
+        let root = repo("status-poll");
+        let mut app = App::new(root.clone(), None);
+        wait(&mut app);
+        app.poll_status = true;
+        let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        fs::write(root.join("new.txt"), "n\n").unwrap();
+        assert!(!app.scm_files.iter().any(|f| f.path == "new.txt"));
+        let mut dirty = false;
+        app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+        wait(&mut app);
+        assert!(app.scm_files.iter().any(|f| f.path == "new.txt"), "picked up by the poll");
+        assert!(app.status_poll_due.is_some_and(|d| d > Instant::now()), "the next one is scheduled");
+        // Nothing changed since: the next poll asks for no frame.
+        app.status_poll_due = Some(Instant::now());
+        app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+        let mut changed = true;
+        for _ in 0..300 {
+            changed = app.drain();
+            if !app.loading.contains_key(STATUS_KEY) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!changed && !app.loading.contains_key(STATUS_KEY), "an unchanged status draws nothing");
         let _ = fs::remove_dir_all(&root);
     }
 

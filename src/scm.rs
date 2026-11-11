@@ -1233,7 +1233,7 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
         (true, true) => {
             let lo = body.min(3);
             // Nothing to commit: CHANGES keeps its button and header, GRAPH the rest.
-            let fit = app.scm_files.is_empty().then_some(2 + s.section_gap);
+            let fit = app.scm_files.is_empty().then_some(2);
             app.gitui.split.or(fit).unwrap_or(body / 2).clamp(lo, body.saturating_sub(3).max(lo))
         }
         (true, false) => body,
@@ -1278,7 +1278,8 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
         f.render_widget(Span::styled(fit(&label, btn.width as usize), Style::new().fg(P.button_fg).bg(bg)), Rect::new(bx, btn.y, btn.right().saturating_sub(bx), 1));
         crate::ui::round_ends(f, btn, bg, P.sidebar_bg);
         app.ui.commit_btn = btn;
-        let top = (1 + s.section_gap).min(crect.height);
+        // The list starts right under the button, no blank row between them.
+        let top = 1.min(crect.height);
         changes_list(app, f, Rect::new(crect.x, crect.y + top, crect.width, crect.height - top));
     }
     let n = app.gitui.graph.commits.len();
