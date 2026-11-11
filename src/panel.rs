@@ -2178,6 +2178,11 @@ impl App {
             return;
         }
         self.status_since = Some(Instant::now());
+        // A poll stays out of Git Output: it would bury what the user ran under a few
+        // lines every two seconds.
+        if self.status_polled {
+            return self.load(STATUS_KEY.into(), move |_| Load::Status(read_status(&g)));
+        }
         let log = self.gitui.log.clone();
         self.load(STATUS_KEY.into(), move |_| Load::Status(crate::gitops::with_log(&log, || read_status(&g))));
     }
@@ -10214,6 +10219,7 @@ mod tests {
         app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
         wait(&mut app);
         assert!(app.scm_files.iter().any(|f| f.path == "new.txt"), "picked up by the poll");
+        let logged = app.gitui.log.gen();
         assert!(app.status_poll_due.is_some_and(|d| d > Instant::now()), "the next one is scheduled");
         // Nothing changed since: the next poll asks for no frame.
         app.status_poll_due = Some(Instant::now());
@@ -10227,6 +10233,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!changed && !app.loading.contains_key(STATUS_KEY), "an unchanged status draws nothing");
+        assert_eq!(app.gitui.log.gen(), logged, "polls stay out of Git Output");
         let _ = fs::remove_dir_all(&root);
     }
 
