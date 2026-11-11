@@ -35,6 +35,28 @@ const QDIFF_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const MAX_HITS: usize = 5_000;
 pub const MAX_GROUPS: usize = 3;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// Set for the process a reload execs: the session comes back whatever the settings say.
+const RELOAD_ENV: &str = "HERDR_CODE_RELOADED";
+/// How often a running panel looks for a newly installed binary.
+const UPGRADE_CHECK: Duration = Duration::from_secs(2);
+
+/// A new herdr-code installed over the running one (`cargo install` renames a new file
+/// over it): seen once its size and mtime hold still between two checks.
+#[derive(Default)]
+pub struct Upgrade {
+    /// Only the real panel looks (`run`), never a test.
+    pub watch: bool,
+    next: Option<Instant>,
+    seen: Option<(Option<SystemTime>, u64)>,
+    /// "reloads once saved" was said: said once.
+    told: bool,
+}
+
+/// The installed path when `/proc/self/exe` says the running binary was replaced.
+fn replaced(link: &Path) -> Option<PathBuf> {
+    link.to_str()?.strip_suffix(" (deleted)").map(PathBuf::from)
+}
+
 /// How long the pointer rests on a cut Explorer name before its tooltip shows.
 const TIP_DELAY: Duration = Duration::from_millis(500);
 
@@ -368,6 +390,7 @@ pub enum Cmd {
     ToggleBreadcrumbs,
     /// Markdown: Open Preview; `true` to the side.
     MdPreview(bool),
+    ReloadWindow,
 }
 
 /// The F1 command palette: label, command, key hint.
@@ -394,6 +417,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("Go to Symbol in Editor...", Cmd::GotoSymbol, "Ctrl+Shift+O"),
     ("File: Save", Cmd::Save, "Ctrl+S"),
     ("Developer: Reload Settings", Cmd::ReloadSettings, ""),
+    ("Developer: Reload Window", Cmd::ReloadWindow, ""),
     ("Go to Definition", Cmd::Nav(crate::navui::Act::Definition), "F12"),
     ("Peek Definition", Cmd::Nav(crate::navui::Act::Peek), "Alt+F12"),
     ("Find All References", Cmd::Nav(crate::navui::Act::References), "Shift+F12"),
@@ -753,6 +777,9 @@ pub struct App {
     backup_instance: String,
     pub msg: String,
     pub quit: bool,
+    /// Quit to exec the installed binary in place (`run`), not to end.
+    pub reload: bool,
+    pub upgrade: Upgrade,
     pub ui: Hits,
     pub settings: Settings,
     pub settings_dlg: Option<crate::settingsui::Dialog>,
@@ -805,9 +832,22 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     // In place and in a tab alike: the same state dir, one session per launch folder
     // (`key`: where herdr-code was started; the root itself for a PATH).
     app.session.file = Some(crate::session::path(&state, &key));
+    // A reload brings the session back whatever the settings say, and is not a new launch:
+    // its FILE:L was opened already.
+    let reloaded = std::env::var_os(RELOAD_ENV).is_some();
+    std::env::remove_var(RELOAD_ENV); // not for git and rg
+    let wanted = (app.settings.restore_session, app.settings.restore_view_state);
+    if reloaded {
+        (app.settings.restore_session, app.settings.restore_view_state) = (true, true);
+    }
     crate::session::restore(&mut app);
+    (app.settings.restore_session, app.settings.restore_view_state) = wanted;
+    app.upgrade.watch = true;
+    if reloaded {
+        app.msg = "reloaded".into();
+    }
     // `herdr-code FILE:L` opens on top of the restored tabs.
-    if let Some(req) = req {
+    if let Some(req) = req.filter(|_| !reloaded) {
         app.request(&req);
     }
     // herdr closes a pane with HUP, then TERM, then KILL 500 ms later: catch the
@@ -849,12 +889,29 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     restore();
     finish(&mut app);
     leave(&mut app, token_file, SIGNALED.load(Ordering::SeqCst) || res.is_err());
+    // A reload: this process becomes the installed binary, same arguments, same pane.
+    if app.reload && matches!(res, Ok(Ok(()))) && !SIGNALED.load(Ordering::SeqCst) {
+        return Err(format!("reload failed: {}", reexec()));
+    }
     // Quitting just ends this process: herdr then closes the tab. Nothing here
     // signals or closes anything else.
     match res {
         Err(panic) => std::panic::resume_unwind(panic),
         Ok(r) => r.map_err(|e| e.to_string()),
     }
+}
+
+/// Exec the installed binary (the path the running one was started from) with this
+/// process's arguments; returns only when that fails.
+fn reexec() -> io::Error {
+    use std::os::unix::process::CommandExt;
+    let exe = match fs::read_link("/proc/self/exe") {
+        Ok(l) => replaced(&l).unwrap_or(l),
+        Err(e) => return e,
+    };
+    let mut args = std::env::args_os();
+    let arg0 = args.next().unwrap_or_else(|| exe.clone().into_os_string());
+    Command::new(&exe).arg0(arg0).args(args).env(RELOAD_ENV, "1").exec()
 }
 
 /// Every exit path (quit, HUP/TERM, an error, a panic) leaves the unsaved edits
@@ -1213,6 +1270,8 @@ impl App {
             ),
             msg: String::new(),
             quit: false,
+            reload: false,
+            upgrade: Upgrade::default(),
             ui: Hits::default(),
             settings: Settings::default(),
             settings_dlg: None,
@@ -1376,6 +1435,13 @@ impl App {
                 self.msg = format!("breadcrumbs {}", on_off(self.breadcrumbs_on));
             }
             Cmd::MdPreview(side) => self.md_preview(side),
+            Cmd::ReloadWindow => {
+                if self.unsaved() > 0 {
+                    self.msg = "save the unsaved files first: a reload starts without undo history".into();
+                } else {
+                    (self.reload, self.quit) = (true, true);
+                }
+            }
             Cmd::ReloadSettings => {
                 self.settings_stamp = None;
                 self.check_settings();
@@ -1383,6 +1449,33 @@ impl App {
                     self.msg = "settings reloaded".into();
                 }
             }
+        }
+    }
+
+    fn unsaved(&self) -> usize {
+        self.docs.values().filter(|d| matches!(d, Doc::Text(b) if b.dirty())).count()
+    }
+
+    /// A newly installed binary at `installed` (None: the running one is current): once
+    /// it holds still, reload into it when nothing would be lost (no unsaved file, no
+    /// dialog or git write under way); else say so once and try again later.
+    fn upgrade_tick(&mut self, installed: Option<PathBuf>) {
+        let Some(path) = installed else {
+            self.upgrade.seen = None;
+            return;
+        };
+        let stamp = fs::metadata(&path).ok().filter(|m| m.is_file()).map(|m| (m.modified().ok(), m.len()));
+        let still = stamp.is_some() && stamp == self.upgrade.seen;
+        self.upgrade.seen = stamp;
+        if !still {
+            return;
+        }
+        let busy = self.prompt.is_some() || self.quick.is_some() || self.settings_dlg.is_some() || self.gitui.dlg.is_some()
+            || self.rename.is_some() || !matches!(self.drag, Drag::None) || self.gitui.writes() > 0;
+        if self.unsaved() == 0 && !busy {
+            (self.reload, self.quit) = (true, true);
+        } else if !std::mem::replace(&mut self.upgrade.told, true) {
+            self.msg = "a new herdr-code is installed: it reloads once every file is saved".into();
         }
     }
 
@@ -1838,6 +1931,13 @@ impl App {
             *dirty = true;
         }
         // Source Control timers: the resting-pointer card, the blame delay, the op spinner.
+        if self.upgrade.watch && self.upgrade.next.is_none_or(|t| Instant::now() >= t) {
+            self.upgrade.next = Some(Instant::now() + UPGRADE_CHECK);
+            let installed = fs::read_link("/proc/self/exe").ok().and_then(|l| replaced(&l));
+            let told = self.upgrade.told;
+            self.upgrade_tick(installed);
+            *dirty |= self.upgrade.told != told;
+        }
         if let Some(t) = self.tip.as_mut().filter(|t| !t.shown && t.since.elapsed() >= TIP_DELAY) {
             t.shown = true;
             *dirty = true;
@@ -1867,7 +1967,8 @@ impl App {
             || self.gitui.busy();
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
-        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due].into_iter().flatten() {
+        let upgrade_due = self.upgrade.next.filter(|_| self.upgrade.watch);
+        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
         // A far jump's first highlighting catches up one budgeted slice per frame
@@ -9721,6 +9822,40 @@ mod tests {
         assert!(app.msg.contains("already exists") && app.rename.is_some(), "{}", app.msg);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.rename.is_none() && root.join("NOTES.md").exists());
+        wait_idle(&mut app);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_new_install_reloads_once_it_holds_still_and_nothing_is_unsaved() {
+        assert_eq!(replaced(Path::new("/x/herdr-code (deleted)")), Some(PathBuf::from("/x/herdr-code")));
+        assert_eq!(replaced(Path::new("/x/herdr-code")), None, "still the installed one");
+        let root = repo("upgrade");
+        let bin = root.join("herdr-code-new");
+        fs::write(&bin, "v2").unwrap();
+        let mut app = App::new(root.clone(), None);
+        wait_idle(&mut app); // its first git job done
+        app.upgrade_tick(Some(bin.clone()));
+        assert!(!app.quit, "just written: maybe still being copied");
+        app.upgrade_tick(Some(bin.clone()));
+        assert!(app.quit && app.reload, "held still, nothing unsaved: reload");
+        // Unsaved edits: told once, no reload; the manual command refuses too.
+        let mut app = App::new(root.clone(), None);
+        wait_idle(&mut app);
+        app.open_file(0, "README.md", false);
+        app.focus = Focus::Editor;
+        typ(&mut app, "x");
+        app.upgrade_tick(Some(bin.clone()));
+        app.upgrade_tick(Some(bin.clone()));
+        assert!(!app.quit && app.msg.contains("reloads once every file is saved"));
+        app.msg.clear();
+        app.upgrade_tick(Some(bin.clone()));
+        assert!(app.msg.is_empty(), "said once");
+        app.run_command(Cmd::ReloadWindow);
+        assert!(!app.quit && app.msg.contains("save the unsaved files first"));
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        app.upgrade_tick(Some(bin.clone()));
+        assert!(app.quit && app.reload, "saved: it goes");
         wait_idle(&mut app);
         let _ = fs::remove_dir_all(&root);
     }

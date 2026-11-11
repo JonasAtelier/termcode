@@ -72,6 +72,12 @@ The manifest runs `herdr-code` through PATH, so the herdr server's PATH must inc
 Start `herdr` in Ghostty, then run `herdr-code --tab .` from a herdr pane and
 select the resulting `Code: <name>` tab.
 
+A running panel picks up a new install by itself: within a few seconds of the binary
+being replaced it reloads in place (same pane, its tabs, cursors and scroll back from the
+session; undo history starts over). With unsaved files, a dialog open or a git write
+under way it waits, saying so once in the status bar. F1 `Developer: Reload Window` does
+the same by hand.
+
 ## Use
 
 ```sh
