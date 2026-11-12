@@ -2103,7 +2103,8 @@ fn minimap_draws_git_lane_find_and_slider_and_scrolls() {
     // Git lane: the modified line 5 (index 4) on its row, in minimapGutter.modifiedBackground.
     let row = m.mini.row_of(m.scroll, 4).unwrap();
     let lane = &buf[(m.area.x, m.area.y + row)];
-    assert_eq!((lane.symbol(), lane.fg), ("▎", crate::theme::P.mini_modified));
+    // Line 5 is its cell's first dot row (lines 5-8).
+    assert_eq!((lane.symbol(), lane.fg), ("⠉", crate::theme::P.mini_modified));
     // Braille by default (VS Code's renderCharacters): 4 lines a cell, a dot per run of
     // columns with code ("int line_N = N;": the first two dot columns), nothing past it.
     let p = &crate::theme::P;
@@ -5436,4 +5437,50 @@ fn the_terminal_button_opens_a_shell_under_the_editors_and_its_top_edge_resizes_
     }
     assert!(!app.term_open && app.focus == Focus::Editor);
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn minimap_git_lane_lights_only_the_dot_rows_of_changed_lines() {
+    let root = repo("mini-lane");
+    let body: String = (1..=200).map(|i| format!("let line_{i} = {i};\n")).collect();
+    fs::write(root.join("f.rs"), &body).unwrap();
+    let git = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(&root).args(args).status().unwrap().success());
+    git(&["add", "f.rs"]);
+    git(&["commit", "-qm", "f"]);
+    let mut lines: Vec<String> = body.lines().map(String::from).collect();
+    lines[49] = "let changed = 50;".into();
+    lines.insert(120, "let added = 0;".into());
+    lines.remove(171); // marked on the line above: index 170
+    fs::write(root.join("f.rs"), lines.join("\n") + "\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "f.rs", false);
+    wait(&mut app);
+    app.update_qdiff();
+    // 200 lines in 34 rows: about 6 lines a cell, 1.5 a dot row.
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    screen(&mut app, &mut t);
+    let m = app.ui.minimaps[0];
+    let p = &crate::theme::P;
+    let changed = [(49, p.mini_modified), (120, p.mini_added), (170, p.mini_deleted)];
+    let mut seen = 0;
+    for row in 0..m.area.height {
+        let mut dots = 0u32;
+        let mut color = None;
+        for (k, d) in [0x09, 0x12, 0x24, 0xc0].into_iter().enumerate() {
+            let slot = m.mini.slot_rows(m.scroll, row, k);
+            if let Some(&(_, c)) = changed.iter().find(|(l, _)| slot.contains(l)) {
+                (dots, color) = (dots | d, Some(c));
+            }
+        }
+        let lane = &t.backend().buffer()[(m.area.x, m.area.y + row)];
+        match color {
+            Some(c) => {
+                seen += 1;
+                assert_eq!((lane.symbol(), lane.fg), (char::from_u32(0x2800 + dots).unwrap().to_string().as_str(), c), "row {row}");
+            }
+            None => assert_eq!(lane.symbol(), " ", "row {row}"),
+        }
+    }
+    assert_eq!(seen, 3);
+    let _ = fs::remove_dir_all(&root);
 }

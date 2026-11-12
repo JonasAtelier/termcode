@@ -2057,23 +2057,30 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
     for row in 0..r.height {
         let y = r.y + row;
         let span = mini.slot_rows(scroll, row, 0).start..mini.slot_rows(scroll, row, slots - 1).end;
-        // Git lane: the strongest mark among the row's lines.
-        let lane = span
-            .clone()
-            .filter_map(|row| d.marks.get(v.line_of(row)).copied().flatten())
-            .max_by_key(|m| match m {
-                Mark::Modified => 3,
-                Mark::Added => 2,
-                Mark::Deleted => 1,
-            });
-        let (lg, lc) = match lane {
-            Some(Mark::Added) => (ic_lane(ascii), P.mini_added),
-            Some(Mark::Modified) => (ic_lane(ascii), P.mini_modified),
-            Some(Mark::Deleted) => (ic_lane(ascii), P.mini_deleted),
-            None => (" ", P.mini_bg),
+        // Git lane: lit on the slots (dot rows, halves) whose lines changed, beside the
+        // code they draw, in the strongest change's colour among them.
+        let prio = |m: &Mark| match m {
+            Mark::Modified => 3,
+            Mark::Added => 2,
+            Mark::Deleted => 1,
+        };
+        let mut lit = [false; 4];
+        let mut lane = None;
+        for (k, on) in lit.iter_mut().enumerate().take(slots) {
+            let m = mini.slot_rows(scroll, row, k).filter_map(|row| d.marks.get(v.line_of(row)).copied().flatten()).max_by_key(prio);
+            *on = m.is_some();
+            if m.is_some_and(|m| lane.is_none_or(|l: Mark| prio(&m) > prio(&l))) {
+                lane = m;
+            }
+        }
+        let lc = match lane {
+            Some(Mark::Added) => P.mini_added,
+            Some(Mark::Modified) => P.mini_modified,
+            Some(Mark::Deleted) => P.mini_deleted,
+            None => P.mini_bg,
         };
         let cell = &mut f.buffer_mut()[(r.x, y)];
-        cell.set_symbol(lg).set_fg(lc).set_bg(P.mini_bg);
+        cell.set_char(lane_glyph(&lit[..slots], ascii)).set_fg(lc).set_bg(P.mini_bg);
         let slot_samples: Vec<(std::ops::Range<usize>, Vec<Option<Color>>)> = (0..slots)
             .map(|k| {
                 let rows = mini.slot_rows(scroll, row, k);
@@ -2123,11 +2130,22 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
     mini
 }
 
-fn ic_lane(ascii: bool) -> &'static str {
-    if ascii {
-        "|"
-    } else {
-        "▎"
+/// The git lane's cell for its lit slots: braille dot rows (4 slots), the upper or lower
+/// quadrant (2), `|` in ASCII; blank when none changed.
+fn lane_glyph(lit: &[bool], ascii: bool) -> char {
+    match lit {
+        l if !l.contains(&true) => ' ',
+        _ if ascii => '|',
+        [a, b] => match (a, b) {
+            (true, true) => '▌',
+            (true, false) => '▘',
+            _ => '▖',
+        },
+        l => {
+            // Both dot columns of each lit row: 1+4, 2+5, 3+6, 7+8.
+            let dots: u32 = l.iter().zip([0x09, 0x12, 0x24, 0xc0]).filter(|(on, _)| **on).map(|(_, d)| d).sum();
+            char::from_u32(0x2800 + dots).unwrap_or('|')
+        }
     }
 }
 
@@ -2716,4 +2734,15 @@ fn prompt(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
         btns.push((br, i));
     }
     app.ui.prompt_btns = btns;
+}
+
+#[cfg(test)]
+mod lane_tests {
+    #[test]
+    fn the_git_lane_marks_each_slot() {
+        let g = |lit: &[bool], ascii| super::lane_glyph(lit, ascii);
+        assert_eq!([g(&[true, false], false), g(&[false, true], false), g(&[true, true], false), g(&[false, false], false)], ['▘', '▖', '▌', ' ']);
+        assert_eq!([g(&[true, false, false, false], false), g(&[false, true, true, false], false), g(&[true; 4], false)], ['⠉', '⠶', '⣿']);
+        assert_eq!(g(&[false, false, true, false], true), '|');
+    }
 }

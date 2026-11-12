@@ -15,6 +15,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ### Fixed
 - GRAPH and TIMELINE follow git run outside termcode (in its terminal or anywhere
   else): a commit, checkout, branch, tag, fetch, push or stash shows within seconds.
+- The minimap's change marks light only the dot rows of the changed lines, not the
+  whole cell (4 lines, or many more in a long file).
 
 ## [0.1.0] - 2026-11-12
 
