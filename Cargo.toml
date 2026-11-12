@@ -29,7 +29,7 @@ herdr plugin link /usr/share/termcode"""
 assets = [
     ["target/release/termcode", "usr/bin/", "755"],
     ["herdr-plugin.toml", "usr/share/termcode/", "644"],
-    ["README.md", "usr/share/doc/termcode/", "644"],
+    ["target/README.md", "usr/share/doc/termcode/README.md", "644"],
     ["CHANGELOG.md", "usr/share/doc/termcode/", "644"],
     ["target/termcode.1.gz", "usr/share/man/man1/", "644"],
     ["completions/termcode.bash", "usr/share/bash-completion/completions/termcode", "644"],

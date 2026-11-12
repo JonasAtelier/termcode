@@ -1,8 +1,8 @@
-id = "jonas.termcode"
+id = "jonasatelier.termcode"
 name = "termcode"
 version = "0.1.0"
 min_herdr_version = "0.9.1"
-description = "Terminal editor and Git panel for a folder, file or repo, as a Ghostty + herdr workspace tab"
+description = "A VS Code-style code editor and Git panel for a folder, file or repo, as a Code tab in this workspace"
 platforms = ["linux"]
 
 [[actions]]

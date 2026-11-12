@@ -39,6 +39,7 @@ jobs:
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
+          grep -qx "version = \"$version\"" herdr-plugin.toml || { echo "herdr-plugin.toml: set version = \"$version\""; exit 1; }
           head=$(grep -m1 "^## \[$version\]" CHANGELOG.md) || { echo "CHANGELOG.md has no ## [$version] section"; exit 1; }
           case "$head" in *unreleased*) echo "CHANGELOG.md: date the $version section"; exit 1;; esac
           # This version's section, for the release notes.

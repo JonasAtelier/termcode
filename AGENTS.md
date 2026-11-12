@@ -22,9 +22,10 @@ Tests live beside implementation in `src/`; `target/` contains ignored build out
 - `cargo test -j2 parse::tests`: run a focused module's tests.
 - `cargo run -- .`: open this repository in an interactive terminal.
 - `cargo run -- --tab .`: open a herdr workspace tab.
+- `README.md` is for both: blocks between `<!-- dev -->` and `<!-- /dev -->` (and table rows ending `<!--dev-->`) are for building termcode; `<!-- user` ... `user -->` blocks are for people who install it. `scripts/user-readme.sh` writes the installed copy.
 - `scripts/deb.sh`: build the static amd64 and arm64 `.deb`s (no build-machine paths in the binary).
 - Changes worth telling users go under the next version in `CHANGELOG.md` (SemVer; before 1.0, MINOR for features or changed settings/keys, PATCH for fixes).
-- Release: date that `CHANGELOG.md` section, bump `Cargo.toml`'s version, then push a `vX.Y.Z` tag; `.github/workflows/release.yml` (tags only) lints with `-D warnings`, tests, packages, install-tests and publishes.
+- Release: date that `CHANGELOG.md` section, bump the version in `Cargo.toml` and `herdr-plugin.toml`, then push a `vX.Y.Z` tag; `.github/workflows/release.yml` (tags only) lints with `-D warnings`, tests, packages, install-tests and publishes.
 - `cargo install --path . --root ~/.local -j2`: install locally; then `herdr plugin link "$PWD"` registers the plugin. Keep `~/.local/bin` on `PATH`.
 
 Check `free -m` before builds; adjust concurrency to available memory. Git and ripgrep (`rg`) support repository operations and search.

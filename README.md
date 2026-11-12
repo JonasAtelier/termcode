@@ -27,6 +27,24 @@ startup is its own timer, which leaves out the `code` launcher, so real use is h
 
 ---
 
+<!-- user
+## 1. Install
+
+termcode runs on Linux (x86_64 or arm64). On Debian or Ubuntu, download the package for
+your machine from [Releases](https://github.com/JonasAtelier/termcode-releases/releases)
+(`dpkg --print-architecture` says `amd64` or `arm64`), then:
+
+```sh
+sudo apt install ./termcode_*_$(dpkg --print-architecture).deb
+termcode --version
+```
+
+apt also installs git, ripgrep, xclip (copy and paste) and shellcheck (checks shell
+scripts). Optional: clang, to check C/C++ files; [herdr](https://herdr.dev), for termcode
+as a Code tab; [Ghostty](https://ghostty.org), the terminal termcode is tested in.
+
+user -->
+<!-- dev -->
 ## 1. What you need
 
 | Tool | Why | Check it |
@@ -60,6 +78,7 @@ curl -fsSL https://herdr.dev/install.sh | sh
 ```
 
 Already have Rust? Run `rustup update` to get 1.88 or newer.
+<!-- /dev -->
 
 ## 2. Fonts and icons (nothing to do)
 
@@ -99,6 +118,7 @@ colours where it doesn't, picked from the terminal's environment (`termcode.colo
 | GNOME Terminal, Ptyxis, Konsole, kitty, WezTerm, Alacritty, foot, iTerm2, Windows Terminal | 24-bit | should work, not tested here |
 | macOS Terminal | 256 | should work, not tested here |
 
+<!-- dev -->
 ## 3. Build and install
 
 ```sh
@@ -154,13 +174,24 @@ From the `termcode` folder:
 
 ```sh
 herdr plugin link "$PWD"                 # .deb install: herdr plugin link /usr/share/termcode
-herdr plugin list                        # shows jonas.termcode
+herdr plugin list                        # shows jonasatelier.termcode
 ```
 
 herdr finds `termcode` through `PATH`. If herdr was already running before you changed
 `PATH`, quit herdr and start it again.
 
 ## 5. Try it
+<!-- /dev -->
+<!-- user
+## 3. Add it to herdr (optional)
+
+```sh
+herdr plugin link /usr/share/termcode
+herdr plugin list                        # shows jonasatelier.termcode
+```
+
+## 4. Try it
+user -->
 
 ```sh
 cd ~/some/project
@@ -177,12 +208,19 @@ The new tab doesn't take focus: click **Code: project** in the tab bar.
 
 ## Updating
 
+<!-- dev -->
 ```sh
 cd termcode
 git pull
 cargo install --path . --root ~/.local
 # .deb install instead: scripts/deb.sh && sudo apt install ./target/deb/debian/termcode_*.deb
 ```
+<!-- /dev -->
+<!-- user
+Download the new package from
+[Releases](https://github.com/JonasAtelier/termcode-releases/releases) and install it the
+same way (`sudo apt install ./termcode_*.deb`).
+user -->
 
 That's all. A termcode that is already open reloads itself a few seconds later, keeping
 its tabs and cursors. It waits while you have unsaved files. To reload by hand: F1, then
@@ -190,10 +228,18 @@ its tabs and cursors. It waits while you have unsaved files. To reload by hand: 
 
 ## Uninstalling
 
+<!-- dev -->
 ```sh
-herdr plugin unlink jonas.termcode
+herdr plugin unlink jonasatelier.termcode
 rm ~/.local/bin/termcode               # .deb install: sudo apt remove termcode
 ```
+<!-- /dev -->
+<!-- user
+```sh
+herdr plugin unlink jonasatelier.termcode
+sudo apt remove termcode
+```
+user -->
 
 ---
 
@@ -214,7 +260,7 @@ termcode --tab src          # the same, as a herdr tab
 - **Subfolders:** `termcode drivers/net` shows only that folder, but Source Control still
   uses the whole repo.
 - **Keyboard shortcut for the Code tab:** none is set. In herdr, bind `plugin_action`
-  `jonas.termcode.open` to a free key.
+  `jonasatelier.termcode.open` to a free key.
 
 ### The sidebar
 
@@ -445,10 +491,10 @@ first time termcode starts.
 |---|---|
 | Colours look wrong (a yellow or garish background) | Set `"termcode.colors": "256"` (or `"16"`), or `COLORTERM=truecolor` if your terminal has 24-bit colour |
 | Icons show as boxes or `?` | Set `"termcode.icons": "unicode"` (a Nerd Font was found here but your terminal can't use it), or see step 2 |
-| `termcode: command not found` | Add `~/.local/bin` to `PATH` (step 3) |
+| `termcode: command not found` | Add `~/.local/bin` to `PATH` (step 3) <!--dev--> |
 | The Code tab doesn't open | Restart herdr after fixing `PATH`; check `herdr plugin list` |
 | Ctrl+Shift keys do nothing | Your terminal doesn't send them; use F1, the other key, or [your own key](#your-own-keys) |
-| Build runs out of memory | `cargo install --path . --root ~/.local -j2` |
+| Build runs out of memory | `cargo install --path . --root ~/.local -j2` <!--dev--> |
 | Source Control says "Git is off" | The repository's own settings run programs; trust it there if you know where it came from |
 | No error underlines | Install `shellcheck` / `clang`; the status bar says which is missing |
 | C/C++ says a header is not found | Build the kernel once, or add a `compile_commands.json` (see [Error checking](#error-checking)) |
@@ -464,6 +510,7 @@ first time termcode starts.
 - Light themes that don't set every colour get some dark panels.
 - Mouse back/forward buttons don't reach the panel (herdr drops them).
 
+<!-- dev -->
 ## Development
 
 ```sh
@@ -473,7 +520,8 @@ scripts/deb.sh     # build the .debs (arguments go to cargo deb)
 ```
 
 To release: note the changes under the version in `CHANGELOG.md` and date its heading
-(`## [0.2.0] - 2026-12-01`), set the same version in `Cargo.toml`, commit, then tag it:
+(`## [0.2.0] - 2026-12-01`), set the same version in `Cargo.toml` and `herdr-plugin.toml`,
+commit, then tag it:
 `git tag v0.2.0 && git push origin v0.2.0`. The release workflow checks the version and
 changelog, lints, tests, builds both packages, installs them on Ubuntu 22.04, 24.04 and
 Debian 12, and publishes them with that changelog section on
@@ -481,6 +529,8 @@ Debian 12, and publishes them with that changelog section on
 only for tags (a dry run: Actions, release, Run workflow).
 
 See [AGENTS.md](AGENTS.md) for the code layout and conventions.
+
+<!-- /dev -->
 
 ## Reporting problems
 
@@ -497,12 +547,12 @@ the next start reminds you to report it. Errors are logged in
 ## License
 
 termcode is free to install and use, for any purpose, on any number of computers. It may
-not be modified, resold or redistributed. See [LICENSE](LICENSE) (installed as
-`/usr/share/doc/termcode/copyright`).
+not be modified, resold or redistributed. The license comes with it, in
+`/usr/share/doc/termcode/copyright`.
 
 ## Credits
 
 The default colours and `assets/vscode_dark_defaults.json` come from VS Code (MIT, Microsoft);
 `assets/seti.json` from Seti UI (MIT, Jesse Weed). See `assets/vscode_LICENSE.txt`.
 The Rust crates termcode is built with, and their licenses, are listed in
-`/usr/share/doc/termcode/THIRD-PARTY-LICENSES` (written by `scripts/third-party.py`).
+`/usr/share/doc/termcode/THIRD-PARTY-LICENSES`.

@@ -21,6 +21,9 @@ export CARGO_PROFILE_RELEASE_STRIP=true
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld
 mkdir -p target
 
+# The README for people who install it (nothing about building it).
+scripts/user-readme.sh > target/README.md
+
 # The man page, compressed as Debian keeps them (-n: no timestamp, same bytes each build).
 gzip -9nc doc/termcode.1 > target/termcode.1.gz
 
