@@ -231,7 +231,7 @@ fn draft(app: &App) -> String {
 /// "Add commit": open the dialog with the saved draft.
 pub fn open(app: &mut App) {
     if app.git_root.is_none() {
-        app.msg = "The folder currently open doesn't have a git repository.".into();
+        app.msg = app.no_git_msg();
         return;
     }
     let (msg, view) = editable(&draft(app));

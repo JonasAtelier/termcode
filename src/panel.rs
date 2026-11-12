@@ -735,6 +735,9 @@ pub struct App {
     pub root: PathBuf,
     /// The git worktree holding the root (VS Code's parent-repo detection); None = no git.
     pub git_root: Option<PathBuf>,
+    /// The repository git is kept off in until the user trusts it, and its settings
+    /// that run programs (`trust`).
+    pub untrusted: Option<(PathBuf, Vec<String>)>,
     /// The root relative to git_root, "" or "sub/dir/": git paths under the root start with it.
     prefix: String,
     /// Launcher requests carry this (see `on_paste`); None = take none.
@@ -882,6 +885,9 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     let state = crate::data_dir(true);
     let mut app = App::new(root, Some(state.join("layout.json")));
     app.settings_file = Some(settings::path());
+    if app.untrusted.is_some() {
+        app.msg = "Git is off: this repository's own settings run programs (see Source Control).".into();
+    }
     // A first start leaves a settings.json to edit, every option listed at its default.
     let _ = settings::create(&settings::path());
     app.check_settings();
@@ -1248,7 +1254,15 @@ impl App {
         let (tx, rx) = mpsc::sync_channel(MAX_HITS + 1);
         let (load_tx, load_rx) = mpsc::channel();
         let repo = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let git_root = crate::repo_root(&root);
+        let mut git_root = crate::repo_root(&root);
+        // A repository whose own settings run programs gets no git until it is trusted.
+        let untrusted = git_root.as_ref().and_then(|g| {
+            let risky = crate::trust::risky(g);
+            (!risky.is_empty() && !crate::trust::trusted(g, &risky)).then(|| (g.clone(), risky))
+        });
+        if untrusted.is_some() {
+            git_root = None;
+        }
         let prefix = git_root
             .as_ref()
             .and_then(|g| root.strip_prefix(g).ok())
@@ -1263,6 +1277,7 @@ impl App {
         let mut a = App {
             root,
             git_root,
+            untrusted,
             prefix,
             token: None,
             repo,
@@ -1435,6 +1450,27 @@ impl App {
             self.msg = format!("settings.json: {}", s.warnings.join("; "));
         }
         self.settings = s;
+    }
+
+    /// Why git is not running here, for a git command asked for anyway.
+    pub fn no_git_msg(&self) -> String {
+        if self.untrusted.is_some() {
+            "Git is off until you trust this repository (see Source Control).".into()
+        } else {
+            "The folder currently open doesn't have a git repository.".into()
+        }
+    }
+
+    /// Trust the repository git was kept off in, then reload so git starts with it.
+    pub fn trust_repo(&mut self) {
+        let Some((repo, risky)) = self.untrusted.clone() else { return };
+        if let Err(e) = crate::trust::trust(&repo, &risky) {
+            self.msg = format!("could not save the trust: {e}");
+        } else if self.unsaved() > 0 {
+            self.msg = "Trusted. Save your files, then F1 Developer: Reload Window to turn git on.".into();
+        } else {
+            (self.reload, self.quit) = (true, true);
+        }
     }
 
     /// "Preferences: Open Settings (JSON)": the file, created from a commented template.
@@ -6877,6 +6913,42 @@ mod tests {
     }
 
     #[test]
+    fn a_repository_whose_settings_run_programs_gets_no_git_until_trusted() {
+        let root = repo("untrusted");
+        fs::write(root.join("a.txt"), "changed\n").unwrap();
+        let marker = root.join("../untrusted-ran");
+        let _ = fs::remove_file(&marker);
+        let hook = root.join(".git/evil.sh");
+        fs::write(&hook, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        let _ = Command::new("chmod").arg("+x").arg(&hook).status();
+        let _ = Command::new("git").arg("-C").arg(&root).args(["config", "core.fsmonitor"]).arg(&hook).status();
+        let mut app = App::new(root.clone(), None);
+        assert!(app.git_root.is_none() && app.untrusted.as_ref().is_some_and(|(_, r)| r[0].starts_with("core.fsmonitor=")));
+        // Every view and a refresh: still nothing runs the hook.
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        app.refresh();
+        for side in SIDES {
+            app.side = side;
+            screen(&mut app, &mut t);
+            wait_idle(&mut app);
+        }
+        app.commit();
+        assert_eq!(app.msg, "Git is off until you trust this repository (see Source Control).");
+        let s = screen(&mut app, &mut t);
+        assert!(s.contains("Git is off in this repository") && s.contains("core.fsmonitor="), "{s}");
+        assert!(!marker.exists(), "the repository's program ran");
+        // Trust Repository: saved, and the panel reloads with git on.
+        let (x, y) = cell_of(&t, "Trust Repository", 0);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+        assert!(app.reload && app.quit, "reloads to start git");
+        let again = App::new(root.clone(), None);
+        assert!(again.git_root.is_some() && again.untrusted.is_none(), "trusted now");
+        let _ = fs::remove_file(crate::trust::store());
+        fs::remove_dir_all(&root).unwrap();
+        let _ = fs::remove_file(&marker);
+    }
+
+    #[test]
     fn without_a_nerd_font_no_private_use_glyph_is_drawn() {
         use crate::theme::{test_icons, IconSet};
         let (root, mut app) = changed_file("nonerd");
@@ -9715,8 +9787,11 @@ mod tests {
         assert!(app.quit, "quit once git was done");
         // Quit Anyway: a slow real stage still lands.
         slow_git(&root);
+        // slow_git's fsmonitor is a program the repository runs: trusted, as the user would.
+        crate::trust::trust(&root, &crate::trust::risky(&root)).unwrap();
         fs::write(root.join("new.txt"), "n\n").unwrap();
         let mut app = App::new(root.clone(), None);
+        let _ = fs::remove_file(crate::trust::store()); // read at start only
         wait(&mut app);
         let i = app.scm_files.iter().position(|f| f.path == "new.txt").unwrap();
         app.scm_action(ScmAct::Stage(i));

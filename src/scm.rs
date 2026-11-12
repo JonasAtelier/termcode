@@ -113,6 +113,8 @@ pub enum Hit {
     RefsHead,
     /// REFERENCES row (index into `refs_rows`).
     Ref(usize),
+    /// "Trust Repository" in a repository git is kept off in.
+    Trust,
 }
 
 #[derive(Default)]
@@ -1069,6 +1071,7 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
     }
     let Some(hit) = hit else { return false };
     match hit {
+        Hit::Trust => app.trust_repo(),
         Hit::ChangesHead => {
             app.gitui.changes_open = !app.gitui.changes_open;
             save_layout(app);
@@ -1374,6 +1377,29 @@ fn pane_header(app: &mut App, f: &mut Frame, r: Rect, title: &str, open: bool, h
 /// The Source Control sidebar below its title: CHANGES over GRAPH.
 pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
     let s = app.settings.spacing;
+    if let Some((_, risky)) = app.untrusted.clone() {
+        // VS Code's Restricted Mode: what would run, and the way to allow it.
+        let r = crate::blocks::card(app.settings.blocks, f, r, P.sidebar_bg, app.focus == Focus::Side && !app.activity_lit);
+        let area = inset(r, (s.sidebar_padding.saturating_sub(1) / 2).max(1));
+        let mut lines = vec![
+            Line::raw("Git is off in this repository. Its own git settings run these programs, which git would start as soon as it looks at the files:"),
+            Line::raw(""),
+        ];
+        lines.extend(risky.iter().map(|k| Line::styled(format!("  {k}"), Style::new().fg(P.git_modified))));
+        lines.extend([Line::raw(""), Line::raw("Trust it only if you know where it came from.")]);
+        let p = ratatui::widgets::Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }).style(Style::new().fg(P.sidebar_fg));
+        let h = p.line_count(area.width) as u16;
+        f.render_widget(p, area);
+        let label = " Trust Repository ";
+        let b = Rect::new(area.x, area.y + h + 1, (label.len() as u16).min(area.width), 1);
+        if b.bottom() <= area.bottom() {
+            let hot = app.hover.is_some_and(|p| b.contains(p));
+            f.render_widget(Span::styled(label, crate::ui::button_style(true, hot)), b);
+            app.gitui.hits.areas.push((b, Hit::Trust));
+        }
+        app.ui.side_list = Rect::default();
+        return;
+    }
     if app.git_root.is_none() {
         // VS Code's Source Control view for a folder without a repository.
         let msg = "The folder currently open doesn't have a git repository.";

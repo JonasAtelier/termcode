@@ -18,6 +18,7 @@ mod graph;
 mod nav;
 mod navui;
 mod hover;
+mod trust;
 mod panel;
 mod parse;
 mod semantic;

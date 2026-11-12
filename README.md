@@ -240,6 +240,13 @@ Ctrl+1/2/3. Use F1 or the other key in the table instead.
 - **Merge conflicts:** click **Accept Current**, **Accept Incoming** or **Accept Both** above
   each conflict, save, then `+` to mark it resolved.
 
+**Repositories from elsewhere.** A repository's own git settings can make git run a
+program just by reading it (`core.fsmonitor`, `diff.external`, textconv drivers,
+filters). If the repository you open has any, termcode keeps git off and Source Control
+lists them with a **Trust Repository** button. Trusted repositories are remembered; if
+those settings change, you are asked again. Hooks, ssh, credential helpers and gpg run
+only when you commit, pull or push, as they do with git in a shell.
+
 Git runs in the background and never asks for a password inside the panel. If a command
 hangs, click the spinner in the status bar to cancel it. F1 **Git: Show Git Output** shows
 what ran.
@@ -354,6 +361,7 @@ first time termcode starts.
 | The Code tab doesn't open | Restart herdr after fixing `PATH`; check `herdr plugin list` |
 | Ctrl+Shift keys do nothing | Your terminal doesn't send them; use F1 or the other key |
 | Build runs out of memory | `cargo install --path . --root ~/.local -j2` |
+| Source Control says "Git is off" | The repository's own settings run programs; trust it there if you know where it came from |
 | A file opens read-only | It is over 1 MB / 20,000 lines, binary, or not UTF-8 |
 
 ## Known limits

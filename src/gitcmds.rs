@@ -302,7 +302,7 @@ pub enum Hit {
 fn repo(app: &mut App) -> Option<std::path::PathBuf> {
     let g = app.git_root.clone();
     if g.is_none() {
-        app.msg = "The folder currently open doesn't have a git repository.".into();
+        app.msg = app.no_git_msg();
     }
     g
 }
