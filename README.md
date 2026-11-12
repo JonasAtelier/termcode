@@ -46,14 +46,20 @@ startup is its own timer, which leaves out the `code` launcher, so real use is h
 <!-- user
 ## 1. Install
 
-termcode runs on Linux (x86_64 or arm64). On Debian or Ubuntu, download the package for
-your machine from [Releases](https://github.com/JonasAtelier/termcode-releases/releases)
-(`dpkg --print-architecture` says `amd64` or `arm64`), then:
+termcode runs on Linux (x86_64 or arm64). On Debian or Ubuntu, add its apt repository
+once, then install it:
 
 ```sh
-sudo apt install ./termcode_*_$(dpkg --print-architecture).deb
+sudo curl -fsSLo /usr/share/keyrings/termcode.gpg https://jonasatelier.github.io/termcode-releases/termcode.gpg
+echo "deb [signed-by=/usr/share/keyrings/termcode.gpg] https://jonasatelier.github.io/termcode-releases stable main" \
+  | sudo tee /etc/apt/sources.list.d/termcode.list
+sudo apt update && sudo apt install termcode
 termcode --version
 ```
+
+(Or download the package for your machine from
+[Releases](https://github.com/JonasAtelier/termcode-releases/releases) and
+`sudo apt install ./termcode_*.deb`.)
 
 apt also installs git, ripgrep, xclip (copy and paste) and shellcheck (checks shell
 scripts). Optional: clang, to check C/C++ files; [herdr](https://herdr.dev), for termcode
@@ -233,9 +239,9 @@ cargo install --path . --root ~/.local
 ```
 <!-- /dev -->
 <!-- user
-Download the new package from
-[Releases](https://github.com/JonasAtelier/termcode-releases/releases) and install it the
-same way (`sudo apt install ./termcode_*.deb`).
+```sh
+sudo apt update && sudo apt upgrade
+```
 user -->
 
 That's all. A termcode that is already open reloads itself a few seconds later, keeping
@@ -254,6 +260,7 @@ rm ~/.local/bin/termcode               # .deb install: sudo apt remove termcode
 ```sh
 herdr plugin unlink jonasatelier.termcode
 sudo apt remove termcode
+sudo rm /etc/apt/sources.list.d/termcode.list /usr/share/keyrings/termcode.gpg   # the repository too
 ```
 user -->
 

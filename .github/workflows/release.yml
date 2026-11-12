@@ -1,8 +1,15 @@
 # A release, run when a version tag is pushed (git tag v0.2.0 && git push origin v0.2.0):
 # lint and test, build the static amd64 and arm64 packages, install them on older and
-# newer Debian and Ubuntu, then publish them on the public termcode-releases repository.
+# newer Debian and Ubuntu, then publish them on the public termcode-releases repository:
+# a GitHub release, its front page, and the signed apt repository its Pages serve.
 # Nothing runs on ordinary pushes: this repository is private, and its Actions minutes
 # come out of the account's monthly allowance.
+#
+# Secrets (repository settings, Actions):
+#   RELEASES_TOKEN   fine-grained token, Contents: read and write on termcode-releases only
+#   APT_SIGNING_KEY  the apt repository's armored private key (scripts/apt-repo.sh)
+# Only the publishing steps get them: a crate's build script runs during the build and
+# the tests, and must never see either.
 name: release
 
 on:
@@ -19,13 +26,11 @@ jobs:
     timeout-minutes: 40
     env:
       CARGO_TERM_COLOR: always
-      # A fine-grained token with Contents: read and write on termcode-releases only.
-      RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Tools the tests use
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep shellcheck clang
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep shellcheck clang apt-utils
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -78,8 +83,19 @@ jobs:
           name: termcode-debs
           path: target/deb/debian/*.deb
 
+      # Says only whether both secrets are set (a secret cannot be tested in `if`).
+      - name: Ready to publish?
+        id: ready
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          if [ -n "$TOKEN" ] && [ -n "$KEY" ]; then echo "publish=yes" >> "$GITHUB_OUTPUT"
+          else echo "::warning::RELEASES_TOKEN or APT_SIGNING_KEY is not set: built and tested, not published"; fi
+
       - name: Publish on termcode-releases
-        if: startsWith(github.ref, 'refs/tags/') && env.RELEASES_TOKEN != ''
+        if: steps.ready.outputs.publish == 'yes'
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
@@ -95,3 +111,17 @@ jobs:
           git config user.name JonasAtelier
           git config user.email 98136255+JonasAtelier@users.noreply.github.com
           git diff --quiet || { git commit -qam "README for termcode ${GITHUB_REF_NAME#v}" && git push -q; }
+
+      - name: Update the apt repository
+        if: steps.ready.outputs.publish == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          git clone -q --depth 1 --branch gh-pages "https://x-access-token:${GH_TOKEN}@github.com/JonasAtelier/termcode-releases.git" apt-pages
+          scripts/apt-repo.sh apt-pages target/deb/debian/termcode_*.deb
+          cd apt-pages
+          git config user.name JonasAtelier
+          git config user.email 98136255+JonasAtelier@users.noreply.github.com
+          git add -A
+          git commit -qm "termcode ${GITHUB_REF_NAME#v}" && git push -q
