@@ -3,7 +3,26 @@ name = "termcode"
 version = "0.1.0"
 edition = "2021"
 description = "A VS Code-style code editor and Git panel in the terminal"
+repository = "https://github.com/JonasAtelier/termcode"
 publish = false
+
+# `cargo deb` -> target/debian/termcode_<version>-1_<arch>.deb; install with
+# `sudo apt install ./target/debian/termcode_*.deb`.
+[package.metadata.deb]
+maintainer = "JonasAtelier"
+copyright = "JonasAtelier"
+section = "editors"
+depends = "$auto, git, ripgrep"
+extended-description = """\
+A VS Code-style code editor and Git panel that runs inside the terminal, like vim, \
+or as a Code tab in a herdr workspace. To add the Code tab to herdr, run: \
+herdr plugin link /usr/share/termcode"""
+assets = [
+    ["target/release/termcode", "usr/bin/", "755"],
+    ["herdr-plugin.toml", "usr/share/termcode/", "644"],
+    ["README.md", "usr/share/doc/termcode/", "644"],
+    ["assets/vscode_LICENSE.txt", "usr/share/doc/termcode/", "644"],
+]
 
 [dependencies]
 libc = "0.2"

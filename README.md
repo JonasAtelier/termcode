@@ -102,13 +102,27 @@ termcode -h
 
 **Low on memory?** Add `-j2` to the `cargo install` line to build with 2 jobs.
 
+### Or: install it as a .deb package (Debian / Ubuntu)
+
+Instead of `cargo install`, build a package and let apt install it to `/usr/bin`
+(apt also installs git and ripgrep for you):
+
+```sh
+cargo install cargo-deb                             # once
+cargo deb                                           # -> target/debian/termcode_*.deb
+sudo apt install ./target/debian/termcode_*.deb
+```
+
+Pick one way: with both, the `~/.local/bin` copy usually wins. The package needs the same
+or a newer Debian/Ubuntu than the machine that built it, so build it where you install it.
+
 ## 4. Add it to herdr (optional)
 
 From the `termcode` folder:
 
 ```sh
-herdr plugin link "$PWD"
-herdr plugin list            # shows jonas.termcode
+herdr plugin link "$PWD"                 # .deb install: herdr plugin link /usr/share/termcode
+herdr plugin list                        # shows jonas.termcode
 ```
 
 herdr finds `termcode` through `PATH`. If herdr was already running before you changed
@@ -135,6 +149,7 @@ The new tab doesn't take focus: click **Code: project** in the tab bar.
 cd termcode
 git pull
 cargo install --path . --root ~/.local
+# .deb install instead: cargo deb && sudo apt install ./target/debian/termcode_*.deb
 ```
 
 That's all. A termcode that is already open reloads itself a few seconds later, keeping
@@ -145,7 +160,7 @@ its tabs and cursors. It waits while you have unsaved files. To reload by hand: 
 
 ```sh
 herdr plugin unlink jonas.termcode
-rm ~/.local/bin/termcode
+rm ~/.local/bin/termcode               # .deb install: sudo apt remove termcode
 ```
 
 ---
