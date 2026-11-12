@@ -1066,7 +1066,8 @@ pub fn status_blame(app: &mut App, f: &mut Frame, r: Rect, gap: u16) -> u16 {
         return r.right();
     }
     let br = Rect::new(r.right() - w, r.y, w - gap, 1);
-    f.render_widget(Span::styled(t, Style::new().fg(P.status_fg).bg(P.status_bg)), br);
+    let bg = if app.hover.is_some_and(|p| br.contains(p)) { P.status_hover } else { P.status_bg };
+    f.render_widget(Span::styled(t, Style::new().fg(P.status_fg).bg(bg)), br);
     app.gitui.hits.cmds.push((br, Hit::Blame));
     if let Some(h) = hash {
         app.gitui.hits.push_hover(br, h);

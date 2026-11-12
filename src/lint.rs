@@ -61,8 +61,6 @@ struct Found {
 struct Checked {
     ver: u64,
     diags: Vec<Diag>,
-    /// Why the file is not (fully) checked.
-    hint: Option<String>,
     /// Each problem's line in the current text (`placed_ver`), None while hidden.
     placed: Vec<Option<usize>>,
     placed_ver: u64,
@@ -118,14 +116,6 @@ impl Lints {
         let first = hits.first()?;
         Some((first.start, hits.iter().map(|d| (d.sev, d.msg.clone())).collect()))
     }
-
-    /// Error and warning counts for `key`, and why it was not fully checked (None: not a
-    /// checked file).
-    pub fn counts(&self, key: &str) -> Option<(usize, usize, Option<&str>)> {
-        let c = self.files.get(key)?;
-        let n = |s| c.diags.iter().zip(&c.placed).filter(|(d, l)| d.sev == s && l.is_some()).count();
-        Some((n(Sev::Error), n(Sev::Warning), c.hint.as_deref()))
-    }
 }
 
 fn tool(key: &str, b: &Buffer) -> Option<Tool> {
@@ -164,7 +154,7 @@ pub fn tick(app: &mut App) -> bool {
                 if let Some(h) = found.hint.as_ref().filter(|h| app.lints.told.insert(h.to_string())) {
                     app.msg = h.clone();
                 }
-                app.lints.files.insert(job.key, Checked { ver: job.ver, diags: found.diags, hint: found.hint, placed: Vec::new(), placed_ver: u64::MAX });
+                app.lints.files.insert(job.key, Checked { ver: job.ver, diags: found.diags, placed: Vec::new(), placed_ver: u64::MAX });
                 changed = true;
             }
             Err(TryRecvError::Disconnected) => app.lints.job = None,
@@ -765,14 +755,16 @@ mod tests {
             app.open_file(0, file, false);
             screen(&mut app, &mut t);
             let key = settle(&mut app);
-            assert_eq!(app.lints.counts(&key).map(|(e, w, _)| (e, w)), Some(count), "{file}");
+            let shown = app.lints.shown(&key);
+            let n = |s| shown.iter().filter(|p| p.3 == s).count();
+            assert_eq!((n(Sev::Error), n(Sev::Warning)), count, "{file}");
             let rows = screen(&mut app, &mut t);
             let y = rows.iter().position(|r| r.contains(word)).unwrap() as u16;
             let x = rows[y as usize].split(word).next().unwrap().chars().count() as u16;
             let cell = &t.backend().buffer()[(x, y)];
             assert!(cell.modifier.contains(ratatui::style::Modifier::UNDERLINED), "{file}: {cell:?}");
             assert_eq!((cell.fg, cell.underline_color), (crate::theme::P.problem[sev as usize], crate::theme::P.problem[sev as usize]));
-            assert!(rows.last().unwrap().contains(&format!("{} {}", count.0, crate::theme::icons().problem[1])), "status counts: {}", rows.last().unwrap());
+            assert!(!rows.last().unwrap().contains(crate::theme::icons().problem[1]), "the status bar stays clean: {}", rows.last().unwrap());
             // Rest the pointer on it: the card explains.
             crate::navui::on_mouse(&mut app, MouseEvent { kind: MouseEventKind::Moved, column: x, row: y, modifiers: KeyModifiers::NONE });
             app.nav.hover.due = Some(Instant::now());

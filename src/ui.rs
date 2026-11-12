@@ -268,6 +268,7 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     crate::blocks::finish(f);
     explorer_overlay(app, f, area);
     crate::navui::draw(app, f);
+    settings_notice(app, f, area);
     crate::scm::draw_popups(app, f, area);
     if app.quick.is_some() {
         quick(app, f, area, lay);
@@ -314,6 +315,34 @@ pub(crate) fn button_style(primary: bool, hot: bool) -> Style {
     }
 }
 
+/// A broken settings.json, as a notification above the status bar's right end (the
+/// last good settings stay in use). Close hides it until the error changes.
+fn settings_notice(app: &mut App, f: &mut Frame, area: Rect) {
+    let Some(e) = app.settings_err.clone().filter(|e| app.settings_err_closed.as_ref() != Some(e)) else { return };
+    let w = 60.min(area.width.saturating_sub(2));
+    if w < 24 {
+        return;
+    }
+    let body = ratatui::widgets::Paragraph::new(e.as_str()).wrap(ratatui::widgets::Wrap { trim: true });
+    let lines = body.line_count(w - 4).min(4) as u16;
+    let h = lines + 5;
+    if area.height < h + 2 {
+        return;
+    }
+    let r = Rect::new(area.right() - w - 1, area.bottom() - 1 - h, w, h);
+    f.render_widget(Clear, r);
+    let block = popup_block(P.widget_bg, P.widget_fg, (1, 0));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let icon = icons().problem[2];
+    f.render_widget(Line::from(vec![Span::styled(format!("{icon} "), Style::new().fg(P.error_fg)), Span::styled("settings.json has an error", Style::new().fg(P.widget_fg).bold())]), Rect::new(inner.x, inner.y, inner.width, 1));
+    f.render_widget(body.style(Style::new().fg(P.widget_fg)), Rect::new(inner.x, inner.y + 1, inner.width, lines));
+    let label = format!("{0}Close{0}", sp(app.settings.spacing.button_padding.min(1)));
+    let br = Rect::new(inner.x, inner.bottom() - 1, label.width() as u16, 1).intersection(inner);
+    f.render_widget(Span::styled(label, button_style(false, app.hover.is_some_and(|p| br.contains(p)))), br);
+    app.ui.notice_close = br;
+}
+
 fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let st = Style::new().fg(P.status_fg).bg(P.status_bg);
     fill(f, r, P.status_bg);
@@ -339,39 +368,35 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         };
         let eol = if b.crlf { "CRLF" } else { "LF" };
         items = vec![s, indent, enc, eol.to_string(), b.syntax_name().to_string()];
-        let key = &app.groups[app.ag].tabs[app.groups[app.ag].active].key;
-        if let Some((errors, warnings, hint)) = app.lints.counts(key) {
-            let (ic, g) = (icons(), sp(lay.s.icon_gap.div_ceil(2)));
-            // A file that could not be checked says why, not "0 0".
-            items.insert(0, match hint.filter(|_| errors + warnings == 0) {
-                Some(h) => format!("{}{g}{h}", ic.problem[1]),
-                None => format!("{}{g}{errors} {}{g}{warnings}", ic.problem[2], ic.problem[1]),
-            });
-        }
     }
+    // Only the branch, the blame, the message and these: problems and errors are shown
+    // where they are (underlines, the settings notification), never here.
+    app.ui.status_bar = r;
     // The left items stay whole. Short of room the message goes first (below), then the
     // right items from their left end: Ln/Col first, the language last.
-    let right_text = |items: &[String]| if items.is_empty() { String::new() } else { format!("{}{edge}", items.join(&sep)) };
-    while !items.is_empty() && lx as usize + gap as usize + right_text(&items).width() > r.right() as usize {
+    let width = |items: &[String]| if items.is_empty() { 0 } else { items.iter().map(|t| t.width()).sum::<usize>() + sep.len() * (items.len() - 1) + edge.len() };
+    while !items.is_empty() && lx as usize + gap as usize + width(&items) > r.right() as usize {
         items.remove(0);
     }
-    let right = right_text(&items);
-    let w = (right.width() as u16).min(r.width);
-    let rx = r.right().saturating_sub(w);
-    f.render_widget(Span::styled(right, st), Rect::new(rx, r.y, w, 1));
-    // Blame left of them; the message (a settings error first) in what is left, cut once
-    // with "…" and `gap` cells before what follows it.
-    let end = crate::gitcmds::status_blame(app, f, Rect::new(lx, r.y, rx.saturating_sub(lx), 1), gap);
-    let mut room = end.saturating_sub(lx + 2 * gap) as usize;
-    let mut left = vec![Span::styled(sep.clone(), st)];
-    if let Some(e) = &app.settings_err {
-        let t = fit(&format!(" settings.json: {e} "), room);
-        room = room.saturating_sub(t.width() + gap as usize);
-        left.push(Span::styled(t, Style::new().fg(P.status_err_fg).bg(P.status_err_bg)));
-        left.push(Span::styled(sep.clone(), st));
+    let all = items.len() == 5;
+    let mut x = r.right().saturating_sub((width(&items) as u16).min(r.width));
+    let rx = x;
+    for (k, t) in items.iter().enumerate() {
+        let ir = Rect::new(x, r.y, (t.width() as u16).min(r.right().saturating_sub(x)), 1);
+        let lit = app.hover.is_some_and(|p| ir.contains(p));
+        f.render_widget(Span::styled(t.clone(), if lit { st.bg(P.status_hover) } else { st }), ir);
+        app.ui.status_items.push(ir);
+        if k == 0 && all {
+            app.ui.status_line = ir;
+        }
+        x += ir.width + gap;
     }
+    // Blame left of them; the message in what is left, cut once with "…" and `gap` cells
+    // before what follows it.
+    let end = crate::gitcmds::status_blame(app, f, Rect::new(lx, r.y, rx.saturating_sub(lx), 1), gap);
+    let room = end.saturating_sub(lx + 2 * gap) as usize;
     // Under 8 cells a cut message is noise ("op…"): it goes.
-    left.push(Span::styled(if room < 8 { String::new() } else { fit(&app.msg, room) }, st));
+    let left = vec![Span::styled(sep.clone(), st), Span::styled(if room < 8 { String::new() } else { fit(&app.msg, room) }, st)];
     f.render_widget(Line::from(left), Rect::new(lx, r.y, end.saturating_sub(lx), 1));
 }
 

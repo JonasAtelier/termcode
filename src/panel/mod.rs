@@ -333,6 +333,8 @@ struct HoverKey {
     /// A commit-dialog button, a commit card's button, or (usize::MAX) Source Control's
     /// "Add commit": lit grey.
     button: Option<usize>,
+    /// The status bar item under the pointer (its column): statusBarItem.hoverBackground.
+    status: Option<u16>,
 }
 
 /// Events the loop batches before one frame: wheel ticks and plain pointer motion.
@@ -680,6 +682,13 @@ pub struct Hits {
     pub side_list: Rect,
     pub side_input: Rect,
     pub commit_btn: Rect,
+    /// The status bar row, its items on the right (each lit under the pointer), and
+    /// Ln/Col among them (a click: Go to Line).
+    pub status_bar: Rect,
+    pub status_items: Vec<Rect>,
+    pub status_line: Rect,
+    /// The settings.json error notification and its Close button.
+    pub notice_close: Rect,
     pub scm_btns: Vec<(Rect, ScmAct)>,
     pub search_folds: Vec<(Rect, usize)>,
     pub groups: Vec<GroupHit>,
@@ -882,6 +891,8 @@ pub struct App {
     settings_stamp: Option<(Stamp, Stamp)>,
     /// The last load failed: shown in the status bar until a good save.
     pub settings_err: Option<String>,
+    /// The settings error the user closed the notification of (shown again if it changes).
+    pub settings_err_closed: Option<String>,
     /// The theme last installed, so an unrelated settings change does not recolour.
     installed: ThemeData,
     /// Command-palette toggles, reset from settings.json on each load.
@@ -1439,6 +1450,7 @@ impl App {
             settings_file: None,
             settings_stamp: None,
             settings_err: None,
+            settings_err_closed: None,
             installed: Settings::default().theme,
             rainbow_on: true,
             guides_on: true,

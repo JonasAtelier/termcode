@@ -5347,3 +5347,36 @@ fn a_large_files_minimap_never_highlights_the_whole_file() {
     assert!(b.segs(10).is_some() && b.segs(n - 10).is_none(), "the view coloured, the far end left alone");
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn the_status_bar_keeps_to_its_items_lights_them_and_errors_go_to_a_notice() {
+    let root = repo("statusclean");
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "src/main.rs", false);
+    let mut t = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    screen(&mut app, &mut t);
+    let items = app.ui.status_items.clone();
+    assert_eq!(items.len(), 5, "Ln/Col, indent, encoding, line ends, language");
+    // Each item lights under the pointer, and moving between them redraws.
+    for r in &items {
+        let p = Position::new(r.x + 1, r.y);
+        assert!(app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: p.x, row: p.y, modifiers: KeyModifiers::NONE }), "moving onto {r:?} redraws");
+        screen(&mut app, &mut t);
+        assert_eq!(t.backend().buffer()[(p.x, p.y)].bg, crate::theme::P.status_hover, "{r:?} lit");
+    }
+    // Ln/Col: Go to Line.
+    let l = app.ui.status_line;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), l.x, l.y);
+    assert!(app.quick.is_some(), "Go to Line opened");
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    // A settings error: a notification, never the status bar; Close hides it until it changes.
+    app.settings_err = Some("line 3: expected `,`".into());
+    let s = screen(&mut app, &mut t);
+    assert!(!s.lines().last().unwrap().contains("settings.json") && s.contains("settings.json has an error") && s.contains("expected"), "{s}");
+    let c = app.ui.notice_close;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c.x, c.y);
+    assert!(!screen(&mut app, &mut t).contains("settings.json has an error"), "closed");
+    app.settings_err = Some("line 4: trailing garbage".into());
+    assert!(screen(&mut app, &mut t).contains("trailing garbage"), "a new error shows again");
+    fs::remove_dir_all(&root).unwrap();
+}

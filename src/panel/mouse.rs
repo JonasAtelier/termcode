@@ -103,11 +103,22 @@ impl App {
                     g.areas.iter().position(|(r, h)| matches!(h, crate::scm::Hit::CardCopy | crate::scm::Hit::CardOpen) && r.contains(p))
                 }),
             },
+            status: self.ui.status_bar.contains(p).then(|| {
+                let on_bar = |r: &Rect| r.y == self.ui.status_bar.y && r.contains(p);
+                g.cmds.iter().map(|(r, _)| r).chain(&self.ui.status_items).find(|r| on_bar(r)).map(|r| r.x)
+            }).flatten(),
         }
     }
 
     pub(super) fn click(&mut self, p: Position, double: bool, shift: bool) {
         self.activity_lit = self.ui.activity.iter().any(|(r, _)| r.contains(p));
+        if self.ui.notice_close.contains(p) {
+            self.settings_err_closed = self.settings_err.clone();
+            return;
+        }
+        if self.ui.status_line.contains(p) {
+            return self.run_command(Cmd::GotoLine);
+        }
         // A click in the name being edited places the caret (a second selects the word,
         // a third the whole name, a drag selects); anywhere else accepts the name first.
         let clicks = self.clicks;
