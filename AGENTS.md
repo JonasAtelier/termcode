@@ -5,7 +5,8 @@
 `termcode` is a Linux terminal editor and Git panel, built with Rust 2021 and Ratatui. It runs standalone or as a herdr workspace tab.
 
 - `src/main.rs`: CLI parsing, workspace resolution, and herdr launching.
-- `src/panel.rs`, `src/ui.rs`, `src/editor.rs`: application state, rendering, and editing.
+- `src/panel/`: application state (`mod.rs`: the `App`, commands, startup) and its behaviour by topic: `keys.rs`, `mouse.rs`, `tabs.rs`, `qdiff.rs`, `find.rs`, `search.rs`, `quick.rs`, `rename.rs`, `sidebar.rs`, `gitfs.rs`; its tests in `tests.rs`.
+- `src/ui.rs`, `src/editor.rs`: rendering and editing.
 - `src/git.rs`, `src/gitops.rs`, `src/scm.rs`, `src/gitcmds.rs`: Git backend and Source Control interactions.
 - `src/parse.rs`: pure parsers; `src/settings.rs`, `src/theme.rs`, `src/session.rs`: configuration, appearance, and persistence.
 - `assets/`: embedded themes, icon data, and upstream licenses.

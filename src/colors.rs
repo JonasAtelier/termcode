@@ -7,6 +7,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
 use std::sync::atomic::{AtomicU8, Ordering};
+#[cfg(not(test))]
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

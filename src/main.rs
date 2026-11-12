@@ -635,7 +635,16 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let forbidden = [["ki", "ll"].concat(), ["ki", "llpg"].concat(), ["rai", "se"].concat(), ["sig", "queue"].concat(), ["pthread_k", "ill"].concat()];
         let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-        for e in fs::read_dir(&dir).unwrap().flatten() {
+        // Every source file, src/panel/ and other module folders included.
+        let mut files = Vec::new();
+        let mut dirs = vec![dir];
+        while let Some(d) = dirs.pop() {
+            for e in fs::read_dir(&d).unwrap().flatten() {
+                if e.path().is_dir() { dirs.push(e.path()) } else { files.push(e) }
+            }
+        }
+        assert!(files.iter().any(|e| e.path().ends_with("panel/keys.rs")), "the module folders are searched");
+        for e in files {
             let text = fs::read_to_string(e.path()).unwrap();
             for (n, line) in text.lines().enumerate() {
                 let code = line.split("//").next().unwrap_or("").as_bytes();
