@@ -35,4 +35,5 @@ The first public release.
 - F1 Help: Report Issue copies what a bug report needs.
 
 ### Packages
-- Static amd64 and arm64 `.deb` packages for any Debian or Ubuntu release.
+- Static amd64 and arm64 `.deb` packages for any Debian or Ubuntu release, with a man
+  page (`man termcode`) and bash, zsh and fish completions.

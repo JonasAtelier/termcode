@@ -124,6 +124,15 @@ termcode --version          # termcode 0.1.0
 
 **Low on memory?** Add `-j2` to the `cargo install` line to build with 2 jobs.
 
+Optional, for `man termcode` and Tab completion of its options in bash (the .deb
+installs these, for zsh and fish too):
+
+```sh
+mkdir -p ~/.local/share/man/man1 ~/.local/share/bash-completion/completions
+cp doc/termcode.1 ~/.local/share/man/man1/
+cp completions/termcode.bash ~/.local/share/bash-completion/completions/termcode
+```
+
 ### Or: install it as a .deb package (Debian / Ubuntu)
 
 Instead of `cargo install`, build a package and let apt install it to `/usr/bin`

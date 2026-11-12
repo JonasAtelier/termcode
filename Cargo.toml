@@ -31,6 +31,10 @@ assets = [
     ["herdr-plugin.toml", "usr/share/termcode/", "644"],
     ["README.md", "usr/share/doc/termcode/", "644"],
     ["CHANGELOG.md", "usr/share/doc/termcode/", "644"],
+    ["target/termcode.1.gz", "usr/share/man/man1/", "644"],
+    ["completions/termcode.bash", "usr/share/bash-completion/completions/termcode", "644"],
+    ["completions/_termcode", "usr/share/zsh/vendor-completions/", "644"],
+    ["completions/termcode.fish", "usr/share/fish/vendor_completions.d/", "644"],
     # Debian's machine-readable copyright: termcode's license and each bundled one
     # (written by scripts/deb.sh).
     ["target/copyright", "usr/share/doc/termcode/copyright", "644"],

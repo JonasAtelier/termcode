@@ -1,0 +1,8 @@
+#compdef termcode
+# zsh completion for termcode.
+_arguments -s \
+  '--tab[open in a Code tab of this herdr workspace]' \
+  '(- *)--default-config[print the default settings.json]' \
+  '(- *)'{-V,--version}'[print the version]' \
+  '(- *)'{-h,--help}'[print the usage]' \
+  '1:folder or file:_files'

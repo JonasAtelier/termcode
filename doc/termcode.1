@@ -1,0 +1,133 @@
+.TH TERMCODE 1 "2026" "termcode" "User Commands"
+.SH NAME
+termcode \- a VS Code-style code editor and Git panel in the terminal
+.SH SYNOPSIS
+.B termcode
+.RB [ \-\-tab ]
+.RI [ path [: line [: column ]]]
+.br
+.B termcode
+.BR \-\-default\-config " | " \-V " | " \-h
+.SH DESCRIPTION
+.B termcode
+opens a folder, a file or a git repository in the terminal it is started in, the way
+.B code
+does in a window: a file Explorer, Search, Source Control with a commit graph, tabs and
+split editors, side\-by\-side diffs, a minimap, Go to Definition and VS Code themes.
+Quitting returns the terminal to the shell.
+.PP
+Without a
+.IR path ,
+it opens the git repository the current folder is in, or the folder itself.
+A folder becomes the workspace root; Source Control still covers its whole repository.
+A file opens at
+.I line
+and
+.I column
+when they are given, with its repository (or its folder) as the root.
+Relative paths resolve against the current folder; a name starting with
+.B \-
+needs
+.BR ./ .
+.SH OPTIONS
+.TP
+.B \-\-tab
+Open in a
+.B Code
+tab of the current herdr workspace instead (reused when one is open for that root).
+Also used when there is no terminal.
+.TP
+.B \-\-default\-config
+Print the default settings file: every option of the Settings window, commented out
+at its default.
+.TP
+.BR \-V ", " \-\-version
+Print the version.
+.TP
+.BR \-h ", " \-\-help
+Print the usage.
+.SH KEYS
+Press
+.B F1
+for every command and its key. Some to start with:
+.TP
+.B Ctrl+P
+Open a file by name;
+.B :42
+goes to a line,
+.B @
+to a function.
+.TP
+.B Ctrl+S\fR, \fBCtrl+W\fR, \fBCtrl+Q
+Save, close the tab, quit (each asks about unsaved changes).
+.TP
+.B Ctrl+F\fR, \fBCtrl+H
+Find, replace.
+.TP
+.B F12
+Go to Definition.
+.TP
+.B Ctrl+,
+Settings.
+.PP
+Any F1 command can have a key of your own: see
+.B termcode.keybindings
+below.
+.SH FILES
+.TP
+.I ~/.config/termcode/settings.json
+Settings, in VS Code's format (comments allowed). Written on the first start, listing
+every option at its default. Keys include
+.BR termcode.icons ,
+.BR termcode.colors ,
+.BR termcode.keybindings ,
+.B termcode.errorChecking
+and
+.BR workbench.colorTheme .
+.TP
+.I ~/.local/state/termcode/
+Sessions, layout, backups of unsaved files, commit drafts and trusted repositories.
+.PP
+.B XDG_CONFIG_HOME
+and
+.B XDG_STATE_HOME
+move these, as they do for other programs.
+.SH ENVIRONMENT
+.TP
+.B TERMCODE_ICONS
+.BR nerd ,
+.B unicode
+or
+.B ascii
+.RB ( 0
+is ascii): which icons to draw, over the setting.
+.TP
+.B TERMCODE_COLORS
+.BR truecolor ,
+.B 256
+or
+.BR 16 :
+the terminal's colours, over the setting.
+.TP
+.BR TERM ", " COLORTERM
+Read to pick the colour depth and icons when nothing sets them.
+.SH SECURITY
+A repository whose own git settings make git run a program while reading it
+(core.fsmonitor, diff.external, textconv, filters) gets no git command until you trust
+it in Source Control. A project's compile_commands.json never runs a program of its
+own: only a compiler found on
+.B PATH
+by name, with flags that only shape how code is read.
+.SH EXIT STATUS
+0 on a normal quit; 1 when the path does not exist or the options are wrong.
+.SH BUGS
+Report problems at
+.UR https://github.com/JonasAtelier/termcode\-releases/issues
+.UE ;
+in termcode,
+.B F1 Help: Report Issue
+copies what a report needs.
+.SH SEE ALSO
+.BR git (1),
+.BR rg (1),
+.BR shellcheck (1)
