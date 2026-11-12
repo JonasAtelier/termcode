@@ -6,7 +6,7 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-11-12
 
 The first public release.
 
