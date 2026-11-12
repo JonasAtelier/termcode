@@ -54,12 +54,14 @@ Open PATH like `code PATH`, in this terminal; quitting returns to the shell.
   (no PATH)     this folder's git repo, or the folder
   --tab         in a 'Code: <name>' tab of this herdr workspace instead (reused if open);
                 also used when there is no terminal
-Relative paths resolve against this folder.
+  --default-config  print the default settings.json (every option, commented out)
+Relative paths resolve against this folder. Settings: ~/.config/termcode/settings.json.
 (`termcode panel` is the plugin's pane entrypoint.)";
 
 #[derive(Debug, PartialEq)]
 enum Cmd {
     Help,
+    DefaultConfig,
     Panel,
     Open { tab: bool, path: Option<String> },
 }
@@ -74,6 +76,7 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
     for a in args {
         match a.as_str() {
             "-h" | "--help" => return Ok(Cmd::Help),
+            "--default-config" => return Ok(Cmd::DefaultConfig),
             "--tab" => tab = true,
             s if s.starts_with('-') => return Err(format!("unknown option {s:?} (a path starting with '-' needs ./)\n{USAGE}")),
             s if path.is_none() => path = Some(s.to_string()),
@@ -98,6 +101,10 @@ fn main() -> ExitCode {
     let result = parse_args(&args).and_then(|cmd| match cmd {
         Cmd::Help => {
             println!("{USAGE}");
+            Ok(())
+        }
+        Cmd::DefaultConfig => {
+            print!("{}", settingsui::template());
             Ok(())
         }
         // The launcher opens the pane with the workspace root as its cwd, and hands over

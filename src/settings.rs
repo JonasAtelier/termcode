@@ -776,63 +776,17 @@ fn token_rules(cust: Option<&Value>, names: &[String]) -> Vec<Value> {
     out
 }
 
-/// What "Preferences: Open Settings (JSON)" writes when there is no file yet.
-pub const TEMPLATE: &str = r##"// termcode settings, in VS Code's settings.json format (comments and
-// trailing commas are fine). Saving applies them; a broken file is reported in
-// the status bar and the last good settings stay. Every key is in README.md.
-{
-    // "workbench.colorTheme": "Visual Studio Dark - C++",   // a theme id, label or absolute path
-    // "termcode.followVSCode": false,   // take the theme and its customizations from VS Code
-    // "workbench.colorCustomizations": { "statusBar.background": "#007ACC" },
-    // "editor.tokenColorCustomizations": {
-    //     "comments": "#6A9955",
-    //     "textMateRules": [{ "scope": "keyword.control", "settings": { "foreground": "#C586C0" } }],
-    // },
-    // "workbench.density": "comfortable",   // or "compact"
-    // "termcode.spacing": {   // overrides the density's values, one key at a time
-    //     "sidebarWidth": 36, "sidebarPadding": 2, "sectionGap": 1, "editorPadding": 0,
-    //     "tabPadding": 2, "statusBarGap": 3, "activityBarWidth": 5, "listItemGap": 0,
-    //     "popupPadding": [3, 1], "iconGap": 2, "treeIndent": 2, "titleBarPadding": 2,
-    //     "buttonPadding": 2, "findWidgetPadding": 1, "statusBarPadding": 2,
-    // },
-    // "termcode.blocks.style": "cards",  // or "lines", "none" (compact density: "lines")
-    // "termcode.icons": "nerd",           // or "ascii"
-    // "termcode.fileIcons": {
-    //     "extensions": { "c": { "glyph": "", "color": "#519ABA" } },
-    //     "fileNames": { "Kconfig": { "glyph": "" } },
-    //     "folderNames": { "drivers": { "color": "#E2C08D" } },
-    //     "folder": { "glyph": "" },
-    //     "folderOpen": { "glyph": "" },
-    // },
-    // "indentRainbow.enabled": true,
-    // "indentRainbow.indicatorStyle": "classic",   // or "light"
-    // "editor.guides.indentation": true,
-    // "termcode.restoreSession": true,              // reopen the last tabs, groups and sidebar
-    // "workbench.editor.restoreViewState": true,      // and each file's cursor and scroll
-    // "workbench.tree.enableStickyScroll": true,      // pin the folders above the top row
-    // "workbench.tree.stickyScrollMaxItemCount": 1,  // up to 10: arch, then sh, boards, …
-    // "editor.tabSize": 4,
-    // "editor.renderWhitespace": "boundary",   // or "none", "selection", "trailing", "all"
-    // "editor.occurrencesHighlight": "singleFile", // or "off"
-    // "editor.matchBrackets": "always",        // or "never"
-    // "editor.bracketPairColorization.enabled": true,
-    // "editor.wordWrap": "on",                 // or "off"; unset wraps Markdown only (Alt+Z)
-    // "breadcrumbs.enabled": true,
-    // "editor.autoClosingBrackets": "always",  // or "never"
-    // "editor.autoClosingQuotes": "always",    // or "never"
-    // "files.trimTrailingWhitespace": true,   // on save, edited lines only; not Markdown or patches
-    // "files.insertFinalNewline": true,
-    // "editor.rulers": [90],   // [] for none; [{ "column": 80, "color": "#5A5A5A" }, 100]
-    // "editor.minimap.enabled": true,
-    // "editor.minimap.maxColumn": 120,
-    // "editor.minimap.renderCharacters": true,    // braille dots; false: half blocks
-    // "editor.minimap.showSlider": "mouseover",    // or "always"
-    // "editor.minimap.side": "right",              // or "left"
-    // "editor.minimap.size": "fill",               // or "proportional", "fit"
-    // "termcode.minimap.minEditorWidth": 40,     // shrink, then hide, below this
-    // "editor.gotoLocation.multipleDefinitions": "peek",   // or "gotoAndPeek", "goto"
+/// Creates the settings file from the commented template (`settingsui::template`) when it
+/// is missing: a new user starts with every option listed, each at its default.
+pub fn create(path: &Path) -> std::io::Result<()> {
+    use std::io::Write;
+    fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
+    match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut f) => f.write_all(crate::settingsui::template().as_bytes()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
 }
-"##;
 
 #[cfg(test)]
 mod tests {

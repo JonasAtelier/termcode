@@ -882,6 +882,8 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     let state = crate::data_dir(true);
     let mut app = App::new(root, Some(state.join("layout.json")));
     app.settings_file = Some(settings::path());
+    // A first start leaves a settings.json to edit, every option listed at its default.
+    let _ = settings::create(&settings::path());
     app.check_settings();
     // In place and in a tab alike: the same state dir, one session per launch folder
     // (`key`: where termcode was started; the root itself for a PATH).
@@ -1441,14 +1443,9 @@ impl App {
             self.msg = "no settings file in this session".into();
             return;
         };
-        if !path.exists() {
-            let made = path.parent().map_or(Ok(()), fs::create_dir_all).and_then(|_| {
-                fs::OpenOptions::new().write(true).create_new(true).open(&path)?.write_all(settings::TEMPLATE.as_bytes())
-            });
-            if let Err(e) = made {
-                self.msg = format!("{}: {e}", path.display());
-                return;
-            }
+        if let Err(e) = settings::create(&path) {
+            self.msg = format!("{}: {e}", path.display());
+            return;
         }
         self.open_file(self.ag, &path.to_string_lossy(), false);
         self.focus = Focus::Editor;

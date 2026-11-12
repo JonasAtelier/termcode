@@ -250,11 +250,20 @@ Press **Ctrl+,** (or click the gear at the bottom left). Change things, then:
 - **Apply** to try them out,
 - **Save** to keep them.
 
-Prefer a file? F1 **Preferences: Open Settings (JSON)** opens
-`~/.config/termcode/settings.json`. It uses VS Code's format,
-so comments are fine. A broken file never crashes the panel: the last good settings stay.
+Prefer a file? The first time termcode starts it writes
+**`~/.config/termcode/settings.json`**, listing every option of the Settings window at its
+default, commented out. To change one, remove the `//` in front of it and edit the value;
+saving applies it. F1 **Preferences: Open Settings (JSON)** opens the file from inside
+termcode. A broken file never crashes the panel: the last good settings stay.
 
-Example:
+```jsonc
+    // "termcode.icons": "nerd",           // Icons: "nerd", "ascii"
+    "termcode.icons": "ascii",             // <- uncommented and changed
+```
+
+Lost track of the defaults? `termcode --default-config` prints the full list again.
+
+A few more examples:
 
 ```jsonc
 {

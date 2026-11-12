@@ -345,13 +345,7 @@ impl Dialog {
                 return Value::from("lines");
             }
         }
-        match field.kind {
-            Check(b) => Value::from(b),
-            Number(_, _, n) => Value::from(n),
-            Choice(options) => Value::from(options[0]),
-            Text(s) => Value::from(s),
-            Json(s) => serde_json::from_str(s).unwrap(),
-        }
+        default_of(field.kind)
     }
 
     fn value(&self, row: usize) -> Value {
@@ -1141,9 +1135,88 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     }
 }
 
+/// A field's default (comfortable density).
+fn default_of(kind: Kind) -> Value {
+    match kind {
+        Check(b) => Value::from(b),
+        Number(_, _, n) => Value::from(n),
+        Choice(options) => Value::from(options[0]),
+        Text(s) => Value::from(s),
+        Json(s) => serde_json::from_str(s).unwrap(),
+    }
+}
+
+/// The settings.json a new user starts with (and `termcode --default-config` prints):
+/// this window's options in its categories, each commented out at its default, so
+/// uncommenting a line is all it takes to change one.
+pub fn template() -> String {
+    let mut out = String::from(
+        "// termcode settings: the options of the Settings window (Ctrl+,), each at its default.\n\
+         // Uncomment a line and change its value; saving applies it. This is VS Code's\n\
+         // settings.json format: comments and trailing commas are fine. A broken file is\n\
+         // reported in the status bar and the last good settings stay. More: README.md, Settings.\n{\n",
+    );
+    let line = |out: &mut String, indent: &str, key: &str, value: &Value, hint: &str| {
+        let entry = format!("\"{key}\": {},", serde_json::to_string(value).unwrap());
+        out.push_str(&format!("    // {indent}{entry:<width$} // {hint}\n", width = 52 - indent.len()));
+    };
+    for (c, name) in CATEGORIES.iter().enumerate() {
+        out.push_str(&format!("\n    // ---- {name} ----\n"));
+        let mut group: Option<&str> = None;
+        for f in FIELDS.iter().filter(|f| f.category == c) {
+            let hint = match f.kind {
+                Choice(o) => format!("{}: {}", f.label, o.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ")),
+                Number(lo, hi, _) => format!("{} ({lo} to {hi})", f.label),
+                _ => f.label.trim_end_matches(" (JSON)").to_string(),
+            };
+            let (key, member) = f.key.split_once('/').map_or((f.key, None), |(k, m)| (k, Some(m)));
+            if group.is_some() && group != member.map(|_| key) {
+                out.push_str("    // },\n");
+                group = None;
+            }
+            match member {
+                Some(m) => {
+                    if group.is_none() {
+                        out.push_str(&format!("    // \"{key}\": {{   // the compact density starts from smaller values\n"));
+                        group = Some(key);
+                    }
+                    line(&mut out, "    ", m, &default_of(f.kind), &hint);
+                }
+                None => line(&mut out, "", key, &default_of(f.kind), &hint),
+            }
+        }
+        if group.is_some() {
+            out.push_str("    // },\n");
+        }
+    }
+    out.push_str("}\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_settings_file_lists_every_option_at_its_default() {
+        let t = template();
+        assert!(crate::settings::parse_jsonc(&t).unwrap().is_empty(), "all commented out: the defaults");
+        // Uncomment every setting line: each key of the window, at the window's default.
+        let on: Vec<String> = t.lines().map(|l| {
+            let s = l.trim_start();
+            if s.starts_with("// \"") || s.starts_with("// }") || s.starts_with("//     \"") { l.replacen("// ", "", 1) } else { l.to_string() }
+        }).collect();
+        let m = crate::settings::parse_jsonc(&on.join("\n")).unwrap();
+        for f in FIELDS {
+            let got = match f.key.split_once('/') { Some((k, s)) => &m[k][s], None => &m[f.key] };
+            assert_eq!(got, &default_of(f.kind), "{}", f.key);
+        }
+        assert_eq!(m.len() + 14, FIELDS.len(), "nothing else: the 15 spacing members are one key");
+        assert!(crate::settings::resolve(&m).is_ok(), "uncommented, it loads");
+        for c in CATEGORIES {
+            assert!(t.contains(&format!("---- {c} ----")), "{c}");
+        }
+    }
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
     use std::fs;
