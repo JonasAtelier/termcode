@@ -1,0 +1,84 @@
+# A release, run when a version tag is pushed (git tag v0.2.0 && git push origin v0.2.0):
+# lint and test, build the static amd64 and arm64 packages, install them on older and
+# newer Debian and Ubuntu, then publish them on the public termcode-releases repository.
+# Nothing runs on ordinary pushes: this repository is private, and its Actions minutes
+# come out of the account's monthly allowance.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # a dry run from the Actions tab: everything but publishing
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: always
+      # A fine-grained token with Contents: read and write on termcode-releases only.
+      RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools the tests use
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep shellcheck clang
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: The tag names the version in Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
+
+      - name: Lint
+        run: cargo clippy --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+
+      - name: Build the packages
+        run: scripts/deb.sh
+
+      - name: Install and run on Debian and Ubuntu
+        run: |
+          for image in ubuntu:22.04 ubuntu:24.04 debian:12; do
+            echo "== $image"
+            docker run --rm -v "$PWD/target/deb/debian:/pkg:ro" "$image" sh -ec '
+              apt-get update -qq >/dev/null
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /pkg/termcode_*_amd64.deb >/dev/null
+              termcode --version
+              git init -q /tmp/p && echo hi > /tmp/p/a.txt
+              # On a 120x30 terminal for 3 s: it must draw and still be running.
+              script -qc "stty rows 30 cols 120; TERM=xterm-256color timeout --foreground 3 termcode /tmp/p; echo EXIT=\$?" /dev/null > /tmp/out 2>&1 || true
+              grep -q EXPLORER /tmp/out && grep -q EXIT=124 /tmp/out
+            '
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: termcode-debs
+          path: target/deb/debian/*.deb
+
+      - name: Publish on termcode-releases
+        if: startsWith(github.ref, 'refs/tags/') && env.RELEASES_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" target/deb/debian/*.deb \
+            --repo JonasAtelier/termcode-releases \
+            --title "termcode ${GITHUB_REF_NAME#v}" \
+            --notes "Install: download the .deb for your machine (dpkg --print-architecture), then sudo apt install ./termcode_*.deb"

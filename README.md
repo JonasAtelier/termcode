@@ -460,8 +460,14 @@ first time termcode starts.
 ```sh
 cargo run -- .     # run from source
 cargo test         # run the tests
-scripts/deb.sh     # build the .deb (arguments go to cargo deb, e.g. --target)
+scripts/deb.sh     # build the .debs (arguments go to cargo deb)
 ```
+
+To release, set the version in `Cargo.toml`, commit, then tag it:
+`git tag v0.2.0 && git push origin v0.2.0`. The release workflow lints, tests, builds
+both packages, installs them on Ubuntu 22.04, 24.04 and Debian 12, and publishes them on
+[termcode-releases](https://github.com/JonasAtelier/termcode-releases/releases). It runs
+only for tags (a dry run: Actions, release, Run workflow).
 
 See [AGENTS.md](AGENTS.md) for the code layout and conventions.
 

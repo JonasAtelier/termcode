@@ -2237,7 +2237,7 @@ pub(crate) fn diff_view(
     for (side, b) in buffers.iter_mut().enumerate() {
         let mut lines = d.rows[v.scroll..end].iter().filter_map(|r| if side == 0 { r.left.as_ref() } else { r.right.as_ref() }).map(|(n, _)| *n);
         if let Some(first) = lines.next() {
-            b.highlight_view(first, lines.last().unwrap_or(first) + 1);
+            b.highlight_view(first, lines.next_back().unwrap_or(first) + 1);
         }
     }
     let mut track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
