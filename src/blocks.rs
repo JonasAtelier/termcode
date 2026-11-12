@@ -1,10 +1,8 @@
 //! Block boundaries, `herdr-code.blocks.style`: "cards" frames each block (the activity
-//! bar, each sidebar section, each editor group) with rounded corners and leaves a 1-cell
-//! gutter between editor groups. The sidebar's neighbours touch at their borders;
-//! stacked cards share
-//! one border row (`├──┤`: a row is about twice as tall as a column is wide); "lines"
-//! draws one shared line between blocks, joined with ├ ┤ ┬ ┴ ┼ where they meet; "none" is
-//! the flat look. The title and status bars stay flat rows.
+//! bar, each sidebar section, each editor group) with rounded corners, side by side
+//! cards touching at their borders; stacked cards share one border row (`├──┤`: a row is
+//! about twice as tall as a column is wide); "lines" draws one shared line between blocks,
+//! joined with ├ ┤ ┬ ┴ ┼ where they meet; "none" is the flat look. The title and status bars stay flat rows.
 //!
 //! Frames come from the rects the layout hands out, and every hit rect is recorded from
 //! the inside a block was drawn in, so hit-testing follows the frames by construction.

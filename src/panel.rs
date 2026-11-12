@@ -5621,6 +5621,9 @@ mod tests {
         assert_eq!(app.groups.len(), 2);
         assert_eq!(app.groups[1].tabs[0].key, "file:README.md");
         assert_eq!(app.ag, 1);
+        screen(&mut app, &mut t);
+        let (a, b) = (app.ui.groups[0].area, app.ui.groups[1].area);
+        assert_eq!(b.x, a.right() + 2, "the two cards' borders touch, no gutter column");
 
         // Source Control: the saved edit is under Changes; diff, stage, commit.
         app.refresh();

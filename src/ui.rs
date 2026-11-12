@@ -1077,9 +1077,11 @@ pub(crate) fn input_marked(f: &mut Frame, r: Rect, text: &str, placeholder: &str
 
 fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let n = app.groups.len().max(1) as u16;
-    let gw = r.width.saturating_sub(n - 1) / n;
-    let mut x = r.x;
     let st = app.settings.blocks;
+    // Cards sit border to border; the other styles draw a 1-cell line between groups.
+    let sep = u16::from(st != BlockStyle::Cards);
+    let gw = r.width.saturating_sub((n - 1) * sep) / n;
+    let mut x = r.x;
     for g in 0..app.groups.len() {
         let w = if g + 1 == app.groups.len() { r.right().saturating_sub(x) } else { gw };
         // Find's box sits in the group: its card keeps the focus border.
@@ -1096,7 +1098,7 @@ fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
                 BlockStyle::Lines => crate::blocks::vline(x, r.y, r.bottom() - 1),
                 BlockStyle::Cards => {}
             }
-            x += 1;
+            x += sep;
         }
     }
 }
