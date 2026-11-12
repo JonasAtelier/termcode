@@ -102,7 +102,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
-          printf '\n### Install\nDownload the .deb for your machine (`dpkg --print-architecture`), then `sudo apt install ./termcode_*.deb`.\n' >> target-notes.md
+          { echo; cat doc/release-install.md; } >> target-notes.md
           gh release create "$GITHUB_REF_NAME" target/deb/debian/*.deb \
             --repo JonasAtelier/termcode-releases \
             --title "termcode ${GITHUB_REF_NAME#v}" \
