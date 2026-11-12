@@ -16,7 +16,12 @@ maintainer = "JonasAtelier"
 copyright = "2026 JonasAtelier"
 section = "editors"
 depends = "git, ripgrep" # the binary is static (scripts/deb.sh): no libc to depend on
-recommends = "shellcheck, clang"
+# apt installs Recommends (and theirs) by default. xclip copies where the terminal has no
+# OSC 52 (GNOME Terminal), on X11 and through XWayland, for ~15 small packages;
+# wl-clipboard recommends a desktop's worth (150+ on a bare system) and clang pulls in
+# LLVM, so those two are only suggested.
+recommends = "xclip, shellcheck"
+suggests = "wl-clipboard, clang"
 extended-description = """\
 A VS Code-style code editor and Git panel that runs inside the terminal, like vim, \
 or as a Code tab in a herdr workspace. To add the Code tab to herdr, run: \

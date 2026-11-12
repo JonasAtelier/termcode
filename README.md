@@ -37,11 +37,12 @@ startup is its own timer, which leaves out the `code` launcher, so real use is h
 | git | Source Control | `git --version` |
 | ripgrep (`rg`) | Search and Go to Definition | `rg --version` |
 | herdr 0.9.1 or newer | only for the Code tab (`--tab`) | `herdr --version` |
-| shellcheck, clang | optional: error checking for shell and C/C++ (the .deb recommends them) | `shellcheck --version` |
+| shellcheck, clang | optional: error checking for shell and C/C++ (the .deb installs shellcheck; clang is up to you) | `shellcheck --version` |
 | Any monospace font | the icons work with all common ones; a Nerd Font gives VS Code's | see step 2 |
 
 Optional: [Ghostty](https://ghostty.org) (the terminal termcode is tested in), and
-`wl-copy` or `xclip` for the clipboard.
+`wl-copy` (`wl-clipboard`) or `xclip` for the clipboard: GNOME Terminal can't copy
+without one (the .deb installs `xclip`).
 
 ### Install them
 
