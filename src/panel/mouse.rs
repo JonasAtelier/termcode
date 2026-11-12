@@ -450,7 +450,7 @@ impl App {
         } else {
             let text = diff_cell(d, pos.line, side).unwrap_or("");
             let (a, c) = match clicks {
-                2 => editor::word_at(text, pos.col).map_or((pos.col, pos.col), |w| w),
+                2 => editor::word_at(text, pos.col).unwrap_or((pos.col, pos.col)),
                 n if n >= 3 => (0, text.len()),
                 _ => (pos.col, pos.col),
             };

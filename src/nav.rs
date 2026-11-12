@@ -408,7 +408,15 @@ fn loc(path: &str, line: usize, at: usize, text: &str, kind: Kind) -> Location {
 /// Every rg (Search and lookups) goes through here, so no two callers can both see a
 /// free slot and take it. Give it back with `fetch_sub(1)` (or `reap`).
 pub(crate) fn take_slot(live: &AtomicUsize) -> bool {
-    live.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_LIVE_RG).then_some(n + 1)).is_ok()
+    // A compare-and-swap loop (what fetch_update, renamed try_update in newer Rust, does).
+    let mut n = live.load(Ordering::SeqCst);
+    while n < MAX_LIVE_RG {
+        match live.compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(now) => n = now,
+        }
+    }
+    false
 }
 
 /// Cancel flag and live-rg counter of one query.

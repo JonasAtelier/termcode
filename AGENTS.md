@@ -26,6 +26,7 @@ Tests live beside implementation in `src/`; `target/` contains ignored build out
 - `scripts/apt-repo.sh DIR debs...`: add packages to the apt repository (termcode-releases, branch `gh-pages`, served by GitHub Pages) and sign it; the key is in `~/.config/termcode-release/` here and the `APT_SIGNING_KEY` secret in CI.
 - `scripts/deb.sh`: build the static amd64 and arm64 `.deb`s (no build-machine paths in the binary).
 - Changes worth telling users go under the next version in `CHANGELOG.md` (SemVer; before 1.0, MINOR for features or changed settings/keys, PATCH for fixes).
+- CI builds with the Rust pinned in `.github/workflows/release.yml` (1.97.1, as here); bump it on purpose, after `cargo clippy --all-targets -- -D warnings` passes with the new one.
 - Release: date that `CHANGELOG.md` section, bump the version in `Cargo.toml` and `herdr-plugin.toml`, then push a `vX.Y.Z` tag; `.github/workflows/release.yml` (tags only) lints with `-D warnings`, tests, packages, install-tests and publishes.
 - `cargo install --path . --root ~/.local -j2`: install locally; then `herdr plugin link "$PWD"` registers the plugin. Keep `~/.local/bin` on `PATH`.
 
