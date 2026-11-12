@@ -119,7 +119,8 @@ pub struct Settings {
     /// `workbench.density: "compact"`: the original tight layout, no popup frames.
     pub compact: bool,
     pub spacing: Spacing,
-    pub ascii_icons: bool,
+    /// `termcode.icons`: a fixed set, or None for "auto" (`theme::auto_icons`).
+    pub icons: Option<crate::theme::IconSet>,
     pub file_icons: FileIcons,
     pub rainbow: Rainbow,
     pub guides: bool,
@@ -182,7 +183,7 @@ impl Default for Settings {
         Settings {
             compact: false,
             spacing: Spacing::COMFORTABLE,
-            ascii_icons: false,
+            icons: None,
             file_icons: FileIcons::default(),
             rainbow: Rainbow::default(),
             guides: true,
@@ -316,7 +317,12 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
     Ok(Settings {
         compact,
         spacing: Spacing::parse(base, g("termcode.spacing").unwrap_or(&Value::Null)),
-        ascii_icons: g("termcode.icons").and_then(Value::as_str) == Some("ascii"),
+        icons: match g("termcode.icons").and_then(Value::as_str) {
+            Some("nerd") => Some(crate::theme::IconSet::Nerd),
+            Some("unicode") => Some(crate::theme::IconSet::Unicode),
+            Some("ascii") => Some(crate::theme::IconSet::Ascii),
+            _ => None,
+        },
         file_icons: g("termcode.fileIcons").map(FileIcons::parse).unwrap_or_default(),
         rainbow,
         guides: g("editor.guides.indentation").and_then(Value::as_bool).unwrap_or(d.guides),
@@ -858,7 +864,7 @@ mod tests {
         let sp = from_maps(&m, None, &[]).unwrap().spacing;
         assert_eq!((sp.list_gap, sp.sidebar_width, sp.popup_padding), (1, 200, (5, 1)), "clamped; unset keys keep the density's");
         assert_eq!(sp.tab_padding, Spacing::COMFORTABLE.tab_padding);
-        assert!(s.guides && s.rainbow.enabled && !s.ascii_icons);
+        assert!(s.guides && s.rainbow.enabled && s.icons.is_none(), "icons: auto");
         assert!(parse_jsonc("").unwrap().is_empty(), "empty file = {{}}");
         assert!(parse_jsonc("// only a comment\n").unwrap().is_empty());
         let e = parse_jsonc("{\n  \"a\": 1\n  \"b\": 2\n}").unwrap_err();

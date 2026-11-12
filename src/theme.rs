@@ -9,7 +9,7 @@ use ratatui::style::Color;
 use serde_json::{Map, Value};
 use std::ops::Deref;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use syntect::highlighting::{
     Color as SColor, FontStyle, Highlighter, ScopeSelectors, Style as SStyle, StyleModifier, Theme, ThemeItem,
@@ -649,6 +649,51 @@ const CODICONS: Icons = Icons {
     border: ["╭", "╮", "╰", "╯", "─", "│"],
 };
 
+/// `termcode.icons: "unicode"`: standard Unicode symbols, no Nerd Font private-use
+/// glyphs. Each is in DejaVu Sans, the usual fallback font, so it shows whatever font the
+/// terminal uses (most common monospace fonts have most of them themselves); every one is
+/// one cell wide.
+const SYMBOLS: Icons = Icons {
+    files: "❐",
+    search: "⚲",
+    scm: "⎇",
+    history: "◷",
+    chev_right: "▸",
+    chev_down: "▾",
+    folder: " ",
+    folder_open: " ",
+    file: "▪",
+    close: "×",
+    tab_close: "×",
+    settings: "⚙",
+    dirty: "●",
+    split: "◫",
+    check: "✓",
+    add: "+",
+    remove: "−",
+    discard: "↩",
+    open_file: "↗",
+    case: "A",
+    regex: "*",
+    word: "W",
+    up: "↑",
+    down: "↓",
+    replace: "↪",
+    replace_all: "⇉",
+    branch: "⎇",
+    lock: "⊘",
+    folder_dot: "●",
+    gutter_bar: "▎",
+    gutter_del: "▸",
+    ws_space: "·",
+    ws_tab: "→",
+    guide: "▏",
+    lane_left: "▌",
+    lane_right: "▐",
+    lane_cursor: "─",
+    border: ["╭", "╮", "╰", "╯", "─", "│"],
+};
+
 /// `termcode.icons: "ascii"` or TERMCODE_ICONS=0: ASCII and narrow Unicode
 /// only (no East Asian ambiguous widths).
 const PLAIN: Icons = Icons {
@@ -692,23 +737,85 @@ const PLAIN: Icons = Icons {
     border: ["+", "+", "+", "+", "-", "|"],
 };
 
-static ASCII: AtomicBool = AtomicBool::new(false);
+/// The icon set in use (`termcode.icons`, resolved).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IconSet {
+    /// VS Code's codicons and Seti file icons, from a Nerd Font.
+    Nerd,
+    /// Standard Unicode symbols: any font.
+    Unicode,
+    Ascii,
+}
 
-/// `termcode.icons`; TERMCODE_ICONS=0 always wins.
-pub fn set_ascii(on: bool) {
-    ASCII.store(on, Ordering::Relaxed);
+static SET: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(test)]
+thread_local! {
+    /// A test's own icon set, so it never changes another test's.
+    static TEST_SET: std::cell::Cell<Option<IconSet>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub fn test_icons(s: Option<IconSet>) {
+    TEST_SET.with(|c| c.set(s));
+}
+
+pub fn set_icons(s: IconSet) {
+    SET.store(s as u8, Ordering::Relaxed);
+}
+
+/// TERMCODE_ICONS (`nerd`, `unicode`, `ascii`; `0` is ascii) wins over the setting.
+pub fn icon_set() -> IconSet {
+    #[cfg(test)]
+    if let Some(s) = TEST_SET.with(|c| c.get()) {
+        return s;
+    }
+    static ENV: OnceLock<Option<IconSet>> = OnceLock::new();
+    let env = *ENV.get_or_init(|| match std::env::var("TERMCODE_ICONS").ok()?.as_str() {
+        "0" | "ascii" => Some(IconSet::Ascii),
+        "unicode" => Some(IconSet::Unicode),
+        "nerd" => Some(IconSet::Nerd),
+        _ => None,
+    });
+    env.unwrap_or(match SET.load(Ordering::Relaxed) {
+        1 => IconSet::Unicode,
+        2 => IconSet::Ascii,
+        _ => IconSet::Nerd,
+    })
 }
 
 pub fn ascii() -> bool {
-    static ENV: OnceLock<bool> = OnceLock::new();
-    *ENV.get_or_init(|| std::env::var("TERMCODE_ICONS").as_deref() == Ok("0")) || ASCII.load(Ordering::Relaxed)
+    icon_set() == IconSet::Ascii
+}
+
+/// Nerd Font private-use glyphs may be drawn.
+pub fn nerd() -> bool {
+    icon_set() == IconSet::Nerd
+}
+
+/// `termcode.icons: "auto"`: Nerd Font icons when a font with them is installed here (the
+/// terminal falls back to it whatever font it uses), else Unicode; over SSH the fonts are
+/// the other computer's, so Unicode.
+pub fn auto_icons() -> IconSet {
+    static AUTO: OnceLock<IconSet> = OnceLock::new();
+    *AUTO.get_or_init(|| {
+        if cfg!(test) {
+            return IconSet::Nerd;
+        }
+        let ssh = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"].iter().any(|k| std::env::var_os(k).is_some());
+        let installed = || {
+            std::process::Command::new("fc-list").args([":charset=ea60", "family"]).output()
+                .is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
+        };
+        if !ssh && installed() { IconSet::Nerd } else { IconSet::Unicode }
+    })
 }
 
 pub fn icons() -> &'static Icons {
-    if ascii() {
-        &PLAIN
-    } else {
-        &CODICONS
+    match icon_set() {
+        IconSet::Nerd => &CODICONS,
+        IconSet::Unicode => &SYMBOLS,
+        IconSet::Ascii => &PLAIN,
     }
 }
 
@@ -798,6 +905,22 @@ pub fn jsonc_to_json(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unicode_and_ascii_sets_have_no_private_use_glyph_and_one_cell_each() {
+        use unicode_width::UnicodeWidthStr;
+        for (name, set) in [("unicode", &SYMBOLS), ("ascii", &PLAIN)] {
+            let all = [set.files, set.search, set.scm, set.history, set.chev_right, set.chev_down, set.folder, set.folder_open,
+                set.file, set.close, set.tab_close, set.settings, set.dirty, set.split, set.check, set.add, set.remove,
+                set.discard, set.open_file, set.case, set.regex, set.word, set.up, set.down, set.replace, set.replace_all,
+                set.branch, set.lock, set.folder_dot, set.gutter_bar, set.gutter_del, set.ws_space, set.ws_tab, set.guide,
+                set.lane_left, set.lane_right, set.lane_cursor];
+            for g in all.into_iter().chain(set.border) {
+                assert!(!g.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c)), "{name}: {g:?} needs a Nerd Font");
+                assert!(g.width() <= 1, "{name}: {g:?} is wider than a cell");
+            }
+        }
+    }
     use syntect::parsing::{Scope, ScopeStack};
 
     #[test]

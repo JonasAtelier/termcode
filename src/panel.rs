@@ -1418,7 +1418,7 @@ impl App {
     }
 
     pub fn apply_settings(&mut self, s: Settings) {
-        theme::set_ascii(s.ascii_icons);
+        theme::set_icons(s.icons.unwrap_or_else(theme::auto_icons));
         editor::set_tab(s.tab_size);
         if s.theme != self.installed {
             let colors = s.theme.json["colors"].as_object().cloned().unwrap_or_default();
@@ -6874,6 +6874,36 @@ mod tests {
         app.update_qdiff();
         assert_eq!(app.qdiff["file:long.c"].hunks.len(), 3);
         (root, app)
+    }
+
+    #[test]
+    fn without_a_nerd_font_no_private_use_glyph_is_drawn() {
+        use crate::theme::{test_icons, IconSet};
+        let (root, mut app) = changed_file("nonerd");
+        let mut t = Terminal::new(TestBackend::new(140, 36)).unwrap();
+        let nerd = |t: &Terminal<TestBackend>| -> Vec<String> {
+            let pua = |ch: char| matches!(ch, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{10ffff}');
+            t.backend().buffer().content.iter().map(|c| c.symbol()).filter(|s| s.chars().any(pua)).map(String::from).collect()
+        };
+        for set in [IconSet::Nerd, IconSet::Unicode, IconSet::Ascii] {
+            test_icons(Some(set));
+            let mut seen = Vec::new();
+            // Every view: file icons, tabs, the SCM badges and pills, the graph, the status bar.
+            for side in SIDES {
+                app.side = side;
+                screen(&mut app, &mut t);
+                wait_idle(&mut app);
+                screen(&mut app, &mut t);
+                seen.extend(nerd(&t));
+            }
+            if set == IconSet::Nerd {
+                assert!(!seen.is_empty(), "the check sees Nerd glyphs");
+            } else {
+                assert!(seen.is_empty(), "{set:?} drew {seen:?}");
+            }
+        }
+        test_icons(None);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

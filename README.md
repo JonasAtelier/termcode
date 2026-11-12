@@ -36,7 +36,7 @@ startup is its own timer, which leaves out the `code` launcher, so real use is h
 | git | Source Control | `git --version` |
 | ripgrep (`rg`) | Search and Go to Definition | `rg --version` |
 | herdr 0.9.1 or newer | only for the Code tab (`--tab`) | `herdr --version` |
-| A Nerd Font | the icons | see step 2 |
+| Any monospace font | the icons work with all common ones; a Nerd Font gives VS Code's | see step 2 |
 
 Optional: [Ghostty](https://ghostty.org) (the terminal termcode is tested in), and
 `wl-copy` or `xclip` for the clipboard.
@@ -58,24 +58,27 @@ curl -fsSL https://herdr.dev/install.sh | sh
 
 Already have Rust? Run `rustup update` to get 1.88 or newer.
 
-## 2. Set up a Nerd Font
+## 2. Fonts and icons (nothing to do)
 
-termcode draws its icons with a [Nerd Font](https://www.nerdfonts.com/font-downloads).
+termcode works with the font your terminal already uses, and picks its icons by itself:
 
-1. Download **JetBrainsMono Nerd Font** and install it (on Linux: unzip into
-   `~/.local/share/fonts/`, then run `fc-cache -f`).
-2. Pick the **Mono** variant in your terminal. For Ghostty, add this line to
-   `~/.config/ghostty/config`:
+| You have | Icons |
+|---|---|
+| a [Nerd Font](https://www.nerdfonts.com/font-downloads) installed (any one; the terminal falls back to it) | VS Code's icons |
+| no Nerd Font, or termcode runs over SSH | standard Unicode symbols: ❐ ⚲ ⎇ ⚙ ▸ ▾ × ● ✓ |
 
-   ```text
-   font-family = "JetBrainsMono Nerd Font Mono"
-   ```
+The Unicode symbols are tested with 13 common fonts: Cascadia Code, DejaVu Sans Mono,
+Fira Code, Hack, IBM Plex Mono, Inconsolata, JetBrains Mono, Liberation Mono, Noto Sans
+Mono, Roboto Mono, Source Code Pro, Space Mono and Ubuntu Mono. (Where a font lacks one,
+the terminal borrows it from DejaVu Sans, which Linux desktops have.)
 
-Can't install a font? Use plain ASCII icons instead (see [Settings](#settings)):
-`"termcode.icons": "ascii"`.
+**Want VS Code's icons?** Install a Nerd Font, e.g. **JetBrainsMono Nerd Font** (on
+Linux: unzip into `~/.local/share/fonts/`, then run `fc-cache -f`). Over SSH, install it
+on the computer in front of you (its terminal draws the icons) and set
+`"termcode.icons": "nerd"`.
 
-On a Mac connecting over SSH, install the font **on the Mac**: the terminal on your
-screen draws the icons.
+To choose yourself, set `termcode.icons` (see [Settings](#settings)) to `"nerd"`,
+`"unicode"` or `"ascii"`; `"auto"` is the default.
 
 ## 3. Build and install
 
@@ -257,8 +260,8 @@ saving applies it. F1 **Preferences: Open Settings (JSON)** opens the file from 
 termcode. A broken file never crashes the panel: the last good settings stay.
 
 ```jsonc
-    // "termcode.icons": "nerd",           // Icons: "nerd", "ascii"
-    "termcode.icons": "ascii",             // <- uncommented and changed
+    // "termcode.icons": "auto",                          // Icons: "auto", "nerd", "unicode", "ascii"
+    "termcode.icons": "unicode",                         // <- uncommented and changed
 ```
 
 Lost track of the defaults? `termcode --default-config` prints the full list again.
@@ -270,7 +273,7 @@ A few more examples:
     "workbench.colorTheme": "Default Dark Modern",   // any VS Code theme you have installed
     "workbench.colorCustomizations": { "statusBar.background": "#3B3B3B" },
     "workbench.density": "compact",                  // tighter layout
-    "termcode.icons": "ascii",                     // no Nerd Font needed
+    "termcode.icons": "unicode",                   // no Nerd Font needed
     "editor.tabSize": 8,
 }
 ```
@@ -286,7 +289,7 @@ A few more examples:
 | `termcode.followVSCode` | `false` | Take the three keys above from your VS Code settings |
 | `workbench.density` | `"comfortable"` | or `"compact"` |
 | `termcode.spacing` | per density | Fine-tune sizes, see below |
-| `termcode.icons` | `"nerd"` | `"ascii"`: no Nerd Font needed |
+| `termcode.icons` | `"auto"` | `"nerd"`, `"unicode"` (any font) or `"ascii"`; auto picks nerd when a Nerd Font is installed here |
 | `termcode.blocks.style` | `"cards"` | `"cards"` rounded boxes, `"lines"` shared lines, `"none"` flat |
 | `termcode.fileIcons` | `{}` | Custom file icons: `extensions`, `fileNames`, `folderNames` → `{ "glyph", "color" }` |
 | `indentRainbow.enabled` | `true` | Colour each indent level |
@@ -327,7 +330,7 @@ A few more examples:
 `popupPadding` [3,1]/[0,0], `iconGap` 2/1, `treeIndent` 2/2, `titleBarPadding` 2/1,
 `buttonPadding` 2/1, `findWidgetPadding` 1/0.
 
-Environment variables: `TERMCODE_ICONS=0` forces ASCII icons;
+Environment variables: `TERMCODE_ICONS=nerd|unicode|ascii` (`0`: ascii) overrides the setting;
 `TERMCODE_GRAPHICS=kitty|blocks|text` picks how Settings draws its controls.
 
 </details>
@@ -346,7 +349,7 @@ first time termcode starts.
 
 | Problem | Fix |
 |---|---|
-| Icons show as boxes or `?` | Use a Nerd Font **Mono** in your terminal (step 2), or set `"termcode.icons": "ascii"` |
+| Icons show as boxes or `?` | Set `"termcode.icons": "unicode"` (a Nerd Font was found here but your terminal can't use it), or see step 2 |
 | `termcode: command not found` | Add `~/.local/bin` to `PATH` (step 3) |
 | The Code tab doesn't open | Restart herdr after fixing `PATH`; check `herdr plugin list` |
 | Ctrl+Shift keys do nothing | Your terminal doesn't send them; use F1 or the other key |

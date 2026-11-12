@@ -782,10 +782,10 @@ pub(crate) fn right(f: &mut Frame, r: Rect, spans: Vec<Span<'static>>) -> u16 {
 }
 
 /// A pill: `text` in `st` between Nerd Font round caps (U+E0B6, U+E0B4) drawn in `st`'s
-/// background over `under`, the surface behind. With ASCII icons a space takes each
+/// background over `under`, the surface behind. Without a Nerd Font a space takes each
 /// cap's place: the square look. Either way one cell a side.
 pub(crate) fn pill(text: String, st: Style, under: Color) -> Vec<Span<'static>> {
-    if crate::theme::ascii() {
+    if !crate::theme::nerd() {
         return vec![Span::styled(format!(" {text} "), st)];
     }
     let cap = Style::new().fg(st.bg.unwrap_or(under)).bg(under);
@@ -793,10 +793,10 @@ pub(crate) fn pill(text: String, st: Style, under: Color) -> Vec<Span<'static>> 
 }
 
 /// Rounds a filled run's ends (see `pill`): `r`'s first and last cells become the caps,
-/// `fill` over `under`. Nothing with ASCII icons, or in a run too short for both.
+/// `fill` over `under`. Nothing without a Nerd Font, or in a run too short for both.
 pub(crate) fn round_ends(f: &mut Frame, r: Rect, fill: Color, under: Color) {
     let r = r.intersection(f.area());
-    if crate::theme::ascii() || r.width < 3 || r.height == 0 {
+    if !crate::theme::nerd() || r.width < 3 || r.height == 0 {
         return;
     }
     let st = Style::new().fg(fill).bg(under);

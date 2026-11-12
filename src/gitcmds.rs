@@ -551,7 +551,7 @@ fn ordered(mut refs: Vec<gitops::RefInfo>) -> Vec<gitops::RefInfo> {
 /// The status bar branch item / "Checkout to...": create, then every ref.
 pub fn branch_picker(app: &mut App) {
     let Some(g) = repo(app) else { return };
-    let plus = if crate::theme::ascii() { "+" } else { "\u{ea60}" };
+    let plus = if crate::theme::nerd() { "\u{ea60}" } else { "+" };
     let mut items = vec![
         Item { label: format!("{plus} Create new branch..."), detail: String::new(), pick: Pick::NewBranch(None) },
         Item { label: format!("{plus} Create new branch from..."), detail: String::new(), pick: Pick::BranchFrom },
@@ -1004,7 +1004,6 @@ pub fn status_left(app: &mut App, f: &mut Frame, r: Rect, edge: u16, gap: u16) -
         return r.x + edge;
     }
     let st = Style::new().fg(P.status_fg).bg(P.status_bg);
-    let ascii = crate::theme::ascii();
     let ig = sp(app.settings.spacing.icon_gap);
     let dirty = app.scm_files.iter().any(|f| f.section == crate::git::Section::Changes);
     let staged = app.scm_files.iter().any(|f| f.section == crate::git::Section::Staged);
@@ -1025,11 +1024,11 @@ pub fn status_left(app: &mut App, f: &mut Frame, r: Rect, edge: u16, gap: u16) -
         let on_branch = matches!(s.head, Head::Branch(_));
         match &s.upstream {
             Some(_) => {
-                let icon = if ascii { "" } else { "\u{ea77} " };
+                let icon = if crate::theme::nerd() { "\u{ea77} " } else { "" };
                 items.push((format!("{icon}{}↓ {}↑", s.behind, s.ahead), Hit::Sync));
             }
             None if on_branch => {
-                let icon = if ascii { "" } else { "\u{eac3} " };
+                let icon = if crate::theme::nerd() { "\u{eac3} " } else { "" };
                 items.push((format!("{icon}Publish Branch"), Hit::Publish));
             }
             None => {}
@@ -1093,7 +1092,11 @@ fn draw_toast(app: &mut App, f: &mut Frame, area: Rect) {
     let block = popup_block(P.widget_bg, P.widget_fg, (1, 0));
     let inner = block.inner(r);
     f.render_widget(block, r);
-    let icon = if crate::theme::ascii() { "!" } else { "\u{ea87}" };
+    let icon = match crate::theme::icon_set() {
+        crate::theme::IconSet::Nerd => "\u{ea87}",
+        crate::theme::IconSet::Unicode => "✗",
+        crate::theme::IconSet::Ascii => "!",
+    };
     let mut text = vec![Line::from(vec![Span::styled(format!("{icon} "), Style::new().fg(P.error_fg)), Span::styled("Git: the command failed", Style::new().fg(P.widget_fg).bold())])];
     text.extend(lines.iter().map(|l| Line::styled(fit(l, inner.width as usize), Style::new().fg(P.widget_fg))));
     f.render_widget(ratatui::widgets::Paragraph::new(text), inner);

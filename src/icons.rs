@@ -119,6 +119,8 @@ pub fn file_icon(name: &str, o: &FileIcons) -> (String, Color) {
         .copied()
         .unwrap_or(s.default);
     let (glyph, c) = s.icons.get(found).cloned().unwrap_or((" ".into(), None));
+    // Without a Nerd Font the Seti glyph cannot show: the set's file mark, in Seti's colour.
+    let glyph = if crate::theme::nerd() { glyph } else { icons().file.to_string() };
     let user = o.file_names.get(&lower).or_else(|| exts(&lower).find_map(|e| o.extensions.get(e)));
     match user {
         Some(u) => (u.glyph.clone().unwrap_or(glyph), color(u.color.or(c))),

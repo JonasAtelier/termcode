@@ -535,9 +535,9 @@ pub fn pal(app: &App) -> Pal {
     }
 }
 
-/// Codicons for refs and the info button (ASCII: none, and `i`).
+/// Codicons for refs and the info button (without a Nerd Font: none, and `i`).
 fn ref_icon(r: &RefLabel) -> &'static str {
-    if crate::theme::ascii() {
+    if !crate::theme::nerd() {
         return "";
     }
     match r {
@@ -549,10 +549,10 @@ fn ref_icon(r: &RefLabel) -> &'static str {
 }
 
 fn info_icon() -> &'static str {
-    if crate::theme::ascii() {
-        "i"
-    } else {
+    if crate::theme::nerd() {
         "\u{ea74}"
+    } else {
+        "i"
     }
 }
 
@@ -1717,7 +1717,11 @@ pub fn draw_timeline(app: &mut App, f: &mut Frame, r: Rect) {
     let s = app.settings.spacing;
     let pad = s.sidebar_padding.saturating_sub(1) / 2;
     let gap = sp(crate::blocks::icon_gap(s.icon_gap) / 2);
-    let dot = if crate::theme::ascii() { "o" } else { "\u{eafc}" };
+    let dot = match crate::theme::icon_set() {
+        crate::theme::IconSet::Nerd => "\u{eafc}",
+        crate::theme::IconSet::Unicode => "•",
+        crate::theme::IconSet::Ascii => "o",
+    };
     // Reserve Explorer's empty fold column so icons and labels share its grid.
     let lead = format!("  {gap}{dot}{gap}");
     let t = &app.gitui.timeline;
