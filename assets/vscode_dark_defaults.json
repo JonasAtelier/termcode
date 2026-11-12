@@ -130,5 +130,15 @@
   "editorBracketHighlight.unexpectedBracket.foreground": "#FF1212CC",
   "breadcrumb.foreground": ["foreground", 0.8],
   "breadcrumb.background": "editor.background",
-  "breadcrumb.focusForeground": "#E0E0E0"
+  "breadcrumb.focusForeground": "#E0E0E0",
+  "symbolIcon.functionForeground": "#B180D7",
+  "symbolIcon.structForeground": "foreground",
+  "symbolIcon.classForeground": "#EE9D28",
+  "symbolIcon.enumeratorForeground": "#EE9D28",
+  "symbolIcon.interfaceForeground": "#75BEFF",
+  "symbolIcon.moduleForeground": "foreground",
+  "symbolIcon.typeParameterForeground": "foreground",
+  "symbolIcon.constantForeground": "foreground",
+  "symbolIcon.variableForeground": "#75BEFF",
+  "symbolIcon.stringForeground": "foreground"
 }

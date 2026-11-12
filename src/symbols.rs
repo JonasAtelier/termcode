@@ -15,8 +15,17 @@ pub struct Symbol {
     pub level: usize,
 }
 
-/// Lines a definition head may span before its `{` (or Python's `:`).
-const HEAD_LINES: usize = 8;
+/// Every kind `symbols` gives, in the order of the icon set's and palette's symbol icons.
+pub const KINDS: [&str; 10] = ["function", "struct", "class", "enum", "interface", "module", "type", "constant", "variable", "heading"];
+
+/// `kind`'s place in `KINDS` (an unknown one draws as a variable).
+pub fn kind_index(kind: &str) -> usize {
+    KINDS.iter().position(|k| *k == kind).unwrap_or(8)
+}
+
+/// Lines a definition head may span before its `{` (or Python's `:`): rustfmt puts each
+/// parameter on a line of its own.
+const HEAD_LINES: usize = 24;
 
 pub fn symbols(path: &str, lines: &[String]) -> Vec<Symbol> {
     if is_markdown(path) {
@@ -60,12 +69,35 @@ pub fn path_at<'a>(syms: &'a [Symbol], lines: &[String], fold_ends: &[Option<usi
     syms.iter().take_while(|s| s.line <= line).filter(|s| line <= extent(s.line, lines, fold_ends)).collect()
 }
 
+/// Each symbol's depth in the Outline: how many others hold it, as `path_at` counts
+/// them, in one pass over the symbols (in line order).
+pub fn depths(syms: &[Symbol], lines: &[String], fold_ends: &[Option<usize>]) -> Vec<usize> {
+    // The holders still open: a heading's level, a definition's last line.
+    let mut open: Vec<usize> = Vec::new();
+    syms.iter()
+        .map(|s| {
+            if s.level > 0 {
+                open.retain(|&l| l < s.level);
+                open.push(s.level);
+            } else {
+                open.retain(|&end| s.line <= end);
+                open.push(extent(s.line, lines, fold_ends));
+            }
+            open.len() - 1
+        })
+        .collect()
+}
+
 /// The last line of the definition at `start`: its body's fold (the first head line that
 /// opens one with `{` or `:`), and the closing brace under it. A `;` first: no body.
 fn extent(start: usize, lines: &[String], fold_ends: &[Option<usize>]) -> usize {
     let n = lines.len().min(fold_ends.len());
     let open = (start..n.min(start + HEAD_LINES)).find_map(|j| {
         let t = lines[j].trim_end();
+        // A head has no blank line: past one is the next item.
+        if t.trim_start().is_empty() {
+            return Some(None);
+        }
         match (t.find('{'), t.find(';')) {
             (Some(b), Some(s)) if s < b => Some(None),
             (None, Some(_)) => Some(None),
@@ -317,6 +349,43 @@ mod tests {
         let path = |line| path_at(&s, &l, &[], line).iter().map(|s| s.name.clone()).collect::<Vec<_>>();
         assert_eq!(path(8), ["Top", "Sub", "Deep"]);
         assert_eq!(path(9), ["Top", "Next"]);
+    }
+
+    #[test]
+    fn a_signature_of_one_parameter_a_line_still_holds_its_body() {
+        let params: String = (0..10).map(|i| format!("    p{i}: u8,\n")).collect();
+        let src = format!("fn many(\n{params}) -> u8 {{\n    body();\n}}\ntype X = u8;\n\nfn next() {{}}\n");
+        let l = lines(&src);
+        let mut v = crate::editor::View::default();
+        crate::editor::Buffer::from_text(&src, "Rust", "test").clamp_view(&mut v);
+        let s = symbols("a.rs", &l);
+        let path = |line| path_at(&s, &l, &v.fold_ends, line).iter().map(|s| s.name.clone()).collect::<Vec<_>>();
+        assert_eq!(path(12), ["many"], "the body, 11 lines below the name");
+        assert_eq!(path(16), ["next"]);
+    }
+
+    #[test]
+    fn every_kind_given_has_its_own_icon() {
+        let src = "fn f() {}\nstruct S {}\nimpl S {}\nenum E {}\ntrait T {}\nmod m {}\ntype X = u8;\nconst C: u8 = 1;\nstatic V: u8 = 1;\n";
+        let kinds: Vec<&str> = symbols("a.rs", &lines(src)).iter().map(|s| s.kind).chain(symbols("a.md", &lines("# h\n")).iter().map(|s| s.kind)).collect();
+        assert_eq!(kinds, KINDS);
+    }
+
+    #[test]
+    fn outline_depths_nest_as_the_path_does() {
+        let src = "struct S;\nimpl A {\n    fn f() {\n        x();\n    }\n    fn h() {}\n}\nfn g() {}\n";
+        let l = lines(src);
+        let mut v = crate::editor::View::default();
+        crate::editor::Buffer::from_text(src, "Rust", "test").clamp_view(&mut v);
+        let s = symbols("a.rs", &l);
+        let names: Vec<(&str, usize)> = s.iter().map(|s| s.name.as_str()).zip(depths(&s, &l, &v.fold_ends)).collect();
+        assert_eq!(names, [("S", 0), ("impl A", 0), ("f", 1), ("h", 1), ("g", 0)]);
+        for (i, sym) in s.iter().enumerate() {
+            assert_eq!(depths(&s, &l, &v.fold_ends)[i] + 1, path_at(&s, &l, &v.fold_ends, sym.line).len(), "{}", sym.name);
+        }
+        let md = lines("# Top\n## Sub\n### Deep\n## Next\n# Two\n");
+        let h = symbols("README.md", &md);
+        assert_eq!(depths(&h, &md, &[]), [0, 1, 2, 1, 0]);
     }
 
     #[test]

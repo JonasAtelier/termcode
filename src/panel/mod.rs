@@ -330,6 +330,8 @@ struct HoverKey {
     peek: Option<usize>,
     /// A commit-dialog or sidebar splitter (usize::MAX): sash.hoverBorder.
     sash: Option<usize>,
+    /// The Outline row under the pointer (its screen row).
+    outline: Option<u16>,
     /// An activity bar item (its icon lights up).
     activity: Option<usize>,
     /// A commit-dialog button, a commit card's button, or (usize::MAX) Source Control's
@@ -444,6 +446,7 @@ pub enum Cmd {
     ToggleWrap,
     ToggleBreadcrumbs,
     ToggleTerminal,
+    ToggleOutline,
     /// Markdown: Open Preview; `true` to the side.
     MdPreview(bool),
     ReloadWindow,
@@ -474,6 +477,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Toggle Word Wrap", Cmd::ToggleWrap, "Alt+Z"),
     ("View: Toggle Breadcrumbs", Cmd::ToggleBreadcrumbs, ""),
     ("View: Toggle Terminal", Cmd::ToggleTerminal, "Ctrl+`"),
+    ("View: Toggle Outline", Cmd::ToggleOutline, ""),
     ("Go to Next Change", Cmd::NextChange, "Alt+F5 / F7"),
     ("Go to Previous Change", Cmd::PrevChange, "Shift+Alt+F5 / Shift+F7"),
     ("Go to File...", Cmd::QuickOpen, "Ctrl+P"),
@@ -617,6 +621,8 @@ pub enum Drag {
     Divider,
     /// The terminal panel's top border, its height's handle.
     TermSash,
+    /// The Outline's left border, its width's handle.
+    OutlineSash,
     File { rel: String, from: Position, active: bool },
     /// Tab `i` of group `g` (VS Code's tab drag and drop); active once moved 2 cells.
     Tab { g: usize, i: usize, from: Position, active: bool },
@@ -710,6 +716,12 @@ pub struct Hits {
     pub term_btns: Vec<Rect>,
     pub term_sash: Rect,
     pub term: Rect,
+    /// The Outline: its toggle button per group, its left border (the width handle), its
+    /// list, and each drawn row with where it goes.
+    pub outline_btns: Vec<Rect>,
+    pub outline_sash: Rect,
+    pub outline: Rect,
+    pub outline_rows: Vec<(Rect, editor::Pos)>,
     /// Empty editor shortcuts: group and optional sidebar (None opens Quick Open).
     pub welcome: Vec<(Rect, usize, Option<Side>)>,
     pub quick: Rect,
@@ -809,6 +821,12 @@ pub struct App {
     pub term: Option<crate::term::Term>,
     pub term_open: bool,
     pub term_h: Option<u16>,
+    /// The Outline right of the editors: shown, its dragged width (None: 30 columns),
+    /// its scroll, and the symbol it last followed the cursor to.
+    pub outline_open: bool,
+    pub outline_w: Option<u16>,
+    pub outline_off: usize,
+    pub outline_cur: Option<usize>,
     pub(crate) layout_file: Option<PathBuf>,
     pub focus: Focus,
     pub status: Vec<StatusEntry>,
@@ -1402,6 +1420,10 @@ impl App {
             term: None,
             term_open: false,
             term_h: saved["terminal_height"].as_u64().map(|h| h.clamp(3, 500) as u16),
+            outline_open: false,
+            outline_w: saved["outline_width"].as_u64().map(|w| w.clamp(16, 500) as u16),
+            outline_off: 0,
+            outline_cur: None,
             layout_file,
             focus: Focus::Side,
             status: Vec::new(),
@@ -1685,6 +1707,7 @@ impl App {
                 self.save_layout();
             }
             Cmd::ToggleTerminal => self.toggle_terminal(),
+            Cmd::ToggleOutline => self.outline_open = !self.outline_open,
             Cmd::ToggleMinimap => {
                 self.minimap_on = !self.minimap_on;
                 self.msg = format!("minimap {}", on_off(self.minimap_on));

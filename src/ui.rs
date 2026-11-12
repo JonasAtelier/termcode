@@ -251,6 +251,14 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
         x += u16::from(st != BlockStyle::Cards);
     }
     let mut ed = Rect::new(x, body.y, body.right().saturating_sub(x), body.height);
+    // The Outline right of the editors (and the terminal), its width dragged; the editors
+    // keep 30 columns. Drawn after them: a restored tab's document is read as it shows.
+    let mut outline = None;
+    if app.outline_open && ed.width >= 50 {
+        let w = app.outline_w.unwrap_or(30).clamp(16, ed.width - 30);
+        ed.width -= w;
+        outline = Some(Rect::new(ed.right(), ed.y, w, ed.height));
+    }
     // The terminal panel under the editor groups, their width; its height dragged, the
     // groups keeping at least a tab bar and a few lines.
     if app.term_open && ed.height >= 12 {
@@ -260,6 +268,9 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     }
     app.ui.editor_area = ed;
     editor_area(app, f, ed, lay);
+    if let Some(r) = outline {
+        outline_panel(app, f, r);
+    }
     if let Some((g, zone)) = app.drop {
         if let Some(gh) = app.ui.groups.get(g) {
             let a = gh.area;
@@ -1122,6 +1133,69 @@ pub(crate) fn input_marked(f: &mut Frame, r: Rect, text: &str, placeholder: &str
     }
 }
 
+/// The Outline in a frame: the active editor's symbols (Go to Symbol's), nested as the
+/// breadcrumbs nest them, the one holding the cursor highlighted and followed into view.
+/// Its left edge is the width's handle.
+fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
+    let hot = matches!(app.drag, Drag::OutlineSash) || app.hover.is_some_and(|p| p.x == r.x && (r.y..r.bottom()).contains(&p.y));
+    let block = Block::bordered()
+        .border_set(crate::blocks::border_set())
+        .border_style(Style::new().fg(crate::blocks::border(false)).bg(P.editor_bg))
+        .title(Span::styled(" Outline ", Style::new().fg(P.sidebar_title).bold()))
+        .style(Style::new().bg(P.sidebar_bg).fg(P.sidebar_fg));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    if hot {
+        for y in r.y..r.bottom() {
+            f.buffer_mut()[(r.x, y)].set_fg(P.sash_hover);
+        }
+    }
+    app.ui.outline_sash = Rect::new(r.x, r.y, 1, r.height);
+    app.ui.outline = inner;
+    let note = |f: &mut Frame, text: &str| {
+        f.render_widget(Paragraph::new(text.to_string()).wrap(ratatui::widgets::Wrap { trim: true }).style(Style::new().fg(P.dim)), inner);
+    };
+    let grp = &app.groups[app.ag.min(app.groups.len().saturating_sub(1))];
+    let Some(tab) = grp.tabs.get(grp.active) else { return note(f, " Open a file to see its outline.") };
+    let (cursor, folds) = (tab.view.cursor, tab.view.fold_ends.clone());
+    let Some(Doc::Text(b)) = app.docs.get_mut(&tab.key.clone()) else { return note(f, " No outline for this editor.") };
+    let syms = b.symbols().to_vec();
+    if syms.is_empty() {
+        return note(f, " No symbols found in this file.");
+    }
+    let depths = crate::symbols::depths(&syms, &b.lines, &folds);
+    let line = b.clamp(cursor).line;
+    let cur = crate::symbols::path_at(&syms, &b.lines, &folds, line).last().and_then(|s| syms.iter().position(|x| x.line == s.line));
+    let h = inner.height as usize;
+    // Follow the cursor into another symbol; the wheel scrolls freely meanwhile.
+    if cur != app.outline_cur {
+        app.outline_cur = cur;
+        if let Some(i) = cur.filter(|&i| i < app.outline_off || i >= app.outline_off + h) {
+            app.outline_off = i.saturating_sub(h / 2);
+        }
+    }
+    app.outline_off = app.outline_off.min(syms.len().saturating_sub(h));
+    let off = app.outline_off;
+    for (i, (s, d)) in syms.iter().zip(&depths).enumerate().skip(off).take(h) {
+        let rr = Rect::new(inner.x, inner.y + (i - off) as u16, inner.width, 1);
+        let bg = if Some(i) == cur {
+            P.list_inactive_bg
+        } else if app.hover.is_some_and(|p| rr.contains(p)) {
+            P.list_hover_bg
+        } else {
+            P.sidebar_bg
+        };
+        // Indent, the kind's icon in its colour, the name.
+        let k = crate::symbols::kind_index(s.kind);
+        let lead = format!(" {}", "  ".repeat(*d));
+        let name = fit(&format!(" {}", s.name), (inner.width as usize).saturating_sub(lead.width() + 1));
+        let icon = Span::styled(icons().symbols[k], Style::new().fg(P.symbol[k]));
+        row(f, rr, bg, vec![Span::raw(lead), icon, Span::styled(name, Style::new().fg(P.sidebar_fg))]);
+        let col = b.lines[s.line].find(s.name.as_str()).unwrap_or(0);
+        app.ui.outline_rows.push((rr, editor::Pos::new(s.line, col)));
+    }
+}
+
 /// The integrated terminal in a frame titled Terminal: its top edge is the height's
 /// handle (lit while hovered or dragged), its border blue while it has the keys.
 fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
@@ -1201,6 +1275,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     let split = Rect::new(tabbar.right().saturating_sub(3), tabbar.y, 2, 1);
     let show_split = app.groups.len() < crate::panel::MAX_GROUPS && !app.groups[g].tabs.is_empty();
     let term_btn = Rect::new(if show_split { split.x.saturating_sub(2) } else { split.x }, tabbar.y, 2, 1);
+    let outline_btn = Rect::new(term_btn.x.saturating_sub(2), tabbar.y, 2, 1);
     let mut x = tabbar.x;
     let hover = app.hover;
     let pad = lay.s.tab_padding.div_ceil(2);
@@ -1228,7 +1303,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         // Then [dirty dot] [blank] [cross]: fixed slots, so editing never moves the cross.
         let tail_w = 3 + tail_edge.len() as u16;
         let w = label.width() as u16 + tail_w;
-        if x + w > term_btn.x {
+        if x + w > outline_btn.x {
             break;
         }
         let tr = Rect::new(x, tabbar.y, w, 1);
@@ -1288,6 +1363,9 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     let lit = if app.term_open { P.tab_active_fg } else { P.icon_fg };
     f.render_widget(Span::styled(ic.terminal, Style::new().fg(lit)), term_btn);
     app.ui.term_btns.push(term_btn);
+    let lit = if app.outline_open { P.tab_active_fg } else { P.icon_fg };
+    f.render_widget(Span::styled(ic.outline, Style::new().fg(lit)), outline_btn);
+    app.ui.outline_btns.push(outline_btn);
     let top = 1;
     let mut body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
     let active = app.groups[g].active;

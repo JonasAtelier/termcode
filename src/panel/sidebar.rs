@@ -168,6 +168,9 @@ impl App {
         if let Some(h) = self.term_h {
             v["terminal_height"] = h.into();
         }
+        if let Some(w) = self.outline_w {
+            v["outline_width"] = w.into();
+        }
         let _ = fs::write(p, v.to_string());
     }
 

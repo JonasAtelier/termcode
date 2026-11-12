@@ -5484,3 +5484,48 @@ fn minimap_git_lane_lights_only_the_dot_rows_of_changed_lines() {
     assert_eq!(seen, 3);
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn the_outline_button_lists_the_symbols_right_of_the_editors_and_a_click_jumps() {
+    let root = repo("outline");
+    let src = "struct S;\nimpl S {\n    fn one(&self) {\n        let x = 1;\n    }\n    fn two(&self) {}\n}\nfn free() {}\n";
+    fs::write(root.join("src/lib.rs"), src).unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "src/lib.rs", false);
+    wait(&mut app);
+    let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    assert!(!screen(&mut app, &mut t).contains(" Outline "), "hidden until asked for");
+    let full = app.ui.editor_area;
+    let btn = app.ui.outline_btns[0];
+    assert_eq!(btn.right(), app.ui.term_btns[0].x, "just before Toggle Terminal");
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), btn.x, btn.y);
+    let s = screen(&mut app, &mut t);
+    assert!(app.outline_open && s.contains(" Outline "), "{s}");
+    let (ed, out) = (app.ui.editor_area, app.ui.outline);
+    assert_eq!((ed.x, ed.right() + 1, out.right() + 1), (full.x, out.x, full.right()), "right of the editors, to the edge");
+    // Nested as the breadcrumbs nest them.
+    let rows: Vec<String> = (0..5).map(|i| (0..out.width).map(|x| t.backend().buffer()[(out.x + x, out.y + i)].symbol()).collect::<String>().trim_end().to_string()).collect();
+    let ic = crate::theme::icons().symbols; // function, struct, class (impl), …
+    assert_eq!(rows, [format!(" {} S", ic[1]), format!(" {} impl S", ic[2]), format!("   {} one", ic[0]), format!("   {} two", ic[0]), format!(" {} free", ic[0])]);
+    assert_eq!(t.backend().buffer()[(out.x + 3, out.y + 2)].fg, crate::theme::P.symbol[0], "a function's icon in symbolIcon.functionForeground");
+    // The symbol holding the cursor is lit; a click goes to another.
+    let lit = |app: &App, t: &Terminal<TestBackend>, i: u16| t.backend().buffer()[(out.x + 2, out.y + i)].bg == crate::theme::P.list_inactive_bg && app.outline_cur == Some(i as usize);
+    assert!(lit(&app, &t, 0), "the cursor is on line 1: struct S");
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), out.x + 4, out.y + 3);
+    assert_eq!((app.ed().unwrap().1.view.cursor, app.focus), (editor::Pos::new(5, 7), Focus::Editor), "fn two: its name");
+    screen(&mut app, &mut t);
+    assert!(lit(&app, &t, 3));
+    // Its left edge, dragged 6 columns left, makes it 6 wider.
+    let (sash, w) = (app.ui.outline_sash, app.ui.outline.width + 2);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sash.x, sash.y + 5);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), sash.x - 6, sash.y + 5);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sash.x - 6, sash.y + 5);
+    screen(&mut app, &mut t);
+    assert_eq!((app.outline_w, app.ui.outline.width + 2), (Some(w + 6), w + 6));
+    // The button (moved left with the narrower editors) hides it again.
+    let btn = app.ui.outline_btns[0];
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), btn.x, btn.y);
+    assert!(!screen(&mut app, &mut t).contains(" Outline "));
+    assert_eq!(app.ui.editor_area, full);
+    fs::remove_dir_all(&root).unwrap();
+}

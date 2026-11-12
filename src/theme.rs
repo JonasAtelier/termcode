@@ -230,6 +230,8 @@ pub struct Pal {
     pub breadcrumb_bg: Color,
     pub breadcrumb_fg: Color,
     pub breadcrumb_focus: Color,
+    /// Symbol icons, in `symbols::KINDS` order (symbolIcon.*Foreground).
+    pub symbol: [Color; 10],
 }
 
 /// Build the palette; also returns the keys that resolved nowhere (a test keeps it empty).
@@ -376,6 +378,19 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         breadcrumb_bg: on("breadcrumb.background", editor_bg),
         breadcrumb_fg: on("breadcrumb.foreground", on("breadcrumb.background", editor_bg)),
         breadcrumb_focus: on("breadcrumb.focusForeground", on("breadcrumb.background", editor_bg)),
+        symbol: [
+            "symbolIcon.functionForeground",
+            "symbolIcon.structForeground",
+            "symbolIcon.classForeground",
+            "symbolIcon.enumeratorForeground",
+            "symbolIcon.interfaceForeground",
+            "symbolIcon.moduleForeground",
+            "symbolIcon.typeParameterForeground",
+            "symbolIcon.constantForeground",
+            "symbolIcon.variableForeground",
+            "symbolIcon.stringForeground",
+        ]
+        .map(|k| on(k, sidebar_bg)),
     };
     (pal, missing.into_inner())
 }
@@ -579,8 +594,9 @@ pub struct Icons {
     pub settings: &'static str,
     pub dirty: &'static str,
     pub split: &'static str,
-    /// Toggle Terminal, beside Split Editor.
+    /// Toggle Terminal, beside Split Editor, and Toggle Outline before it.
     pub terminal: &'static str,
+    pub outline: &'static str,
     pub check: &'static str,
     pub add: &'static str,
     pub remove: &'static str,
@@ -611,6 +627,8 @@ pub struct Icons {
     pub lane_cursor: &'static str,
     /// Popup border: top-left, top-right, bottom-left, bottom-right, horizontal, vertical.
     pub border: [&'static str; 6],
+    /// The Outline's symbol icons, in `symbols::KINDS` order.
+    pub symbols: [&'static str; 10],
 }
 
 /// Codepoints taken from VS Code's codicon registry (`codiconsLibrary`); the
@@ -631,6 +649,7 @@ const CODICONS: Icons = Icons {
     dirty: "\u{ea71}",
     split: "\u{eb56}",
     terminal: "\u{ea85}",
+    outline: "\u{f03a}",
     check: "\u{eab2}",
     add: "\u{ea60}",
     remove: "\u{eb3b}",
@@ -656,6 +675,7 @@ const CODICONS: Icons = Icons {
     lane_right: "▐",
     lane_cursor: "─",
     border: ["╭", "╮", "╰", "╯", "─", "│"],
+    symbols: ["\u{ea8c}", "\u{ea91}", "\u{eb5b}", "\u{ea95}", "\u{eb61}", "\u{ea8b}", "\u{ea92}", "\u{eb5d}", "\u{ea88}", "\u{eb8d}"],
 };
 
 /// `termcode.icons: "unicode"`: standard Unicode symbols, no Nerd Font private-use
@@ -678,6 +698,7 @@ const SYMBOLS: Icons = Icons {
     dirty: "●",
     split: "◫",
     terminal: "❯",
+    outline: "≡",
     check: "✓",
     add: "+",
     remove: "−",
@@ -703,6 +724,7 @@ const SYMBOLS: Icons = Icons {
     lane_right: "▐",
     lane_cursor: "─",
     border: ["╭", "╮", "╰", "╯", "─", "│"],
+    symbols: ["ƒ", "◇", "◆", "∈", "◎", "§", "τ", "π", "χ", "#"],
 };
 
 /// `termcode.icons: "ascii"` or TERMCODE_ICONS=0: ASCII and narrow Unicode
@@ -723,6 +745,7 @@ const PLAIN: Icons = Icons {
     dirty: "*",
     split: "|",
     terminal: ">",
+    outline: "=",
     check: "+",
     add: "+",
     remove: "-",
@@ -748,6 +771,7 @@ const PLAIN: Icons = Icons {
     lane_right: "=",
     lane_cursor: "-",
     border: ["+", "+", "+", "+", "-", "|"],
+    symbols: ["f", "S", "C", "E", "I", "M", "T", "K", "V", "#"],
 };
 
 /// The icon set in use (`termcode.icons`, resolved).
@@ -924,11 +948,11 @@ mod tests {
         use unicode_width::UnicodeWidthStr;
         for (name, set) in [("unicode", &SYMBOLS), ("ascii", &PLAIN)] {
             let all = [set.files, set.search, set.scm, set.history, set.chev_right, set.chev_down, set.folder, set.folder_open,
-                set.file, set.close, set.tab_close, set.settings, set.dirty, set.split, set.terminal, set.check, set.add, set.remove,
+                set.file, set.close, set.tab_close, set.settings, set.dirty, set.split, set.terminal, set.outline, set.check, set.add, set.remove,
                 set.discard, set.open_file, set.case, set.regex, set.word, set.up, set.down, set.replace, set.replace_all,
                 set.branch, set.lock, set.folder_dot, set.gutter_bar, set.gutter_del, set.ws_space, set.ws_tab, set.guide,
                 set.lane_left, set.lane_right, set.lane_cursor];
-            for g in all.into_iter().chain(set.border).chain(set.problem) {
+            for g in all.into_iter().chain(set.border).chain(set.problem).chain(set.symbols) {
                 assert!(!g.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c)), "{name}: {g:?} needs a Nerd Font");
                 assert!(g.width() <= 1, "{name}: {g:?} is wider than a cell");
             }

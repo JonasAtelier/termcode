@@ -11,10 +11,15 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ### Added
 - A terminal under the editors: Ctrl+` or the button beside Split Editor shows and hides
   it, its top edge resizes it, and the shell keeps running while it is hidden.
+- An Outline right of the editors: the file's symbols, nested, each with VS Code's icon
+  for its kind (function, struct, class, enum, …), the one under the cursor lit; a click
+  goes there. The button beside the terminal's shows and hides it.
 
 ### Fixed
 - GRAPH and TIMELINE follow git run outside termcode (in its terminal or anywhere
   else): a commit, checkout, branch, tag, fetch, push or stash shows within seconds.
+- The breadcrumbs (and the Outline) find the function around the cursor when its
+  signature puts each parameter on its own line.
 - The minimap's change marks light only the dot rows of the changed lines, not the
   whole cell (4 lines, or many more in a long file).
 

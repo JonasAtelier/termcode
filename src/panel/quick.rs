@@ -85,22 +85,26 @@ impl App {
         hits.into_iter().map(|(_, _, label, to)| (label, to)).unzip()
     }
 
+    /// The active editor's cursor to `p`, its line centred as VS Code reveals a line it
+    /// jumps to (Go to Line/Symbol, the Outline).
+    pub(crate) fn jump_to(&mut self, p: Pos) {
+        let h = self.ui.groups.get(self.ag).map_or(20, |g| g.text.height.max(1) as usize);
+        if let Some((b, tab)) = self.ed() {
+            b.move_to(&mut tab.view, p, false);
+            tab.view.want_x = None;
+            let v = &mut tab.view;
+            v.scroll = v.line_of(v.row_of(p.line).saturating_sub(h / 2));
+        }
+        self.focus = Focus::Editor;
+        self.reveal();
+    }
+
     /// Enter or click on a Quick Open / palette row.
     pub(super) fn quick_pick(&mut self, i: usize) {
         let Some(q) = self.quick.take() else { return };
         if !q.commands && matches!(q.query.chars().next(), Some(':' | '@')) {
             let Some(&(p, _)) = q.goto.get(i) else { return };
-            let h = self.ui.groups.get(self.ag).map_or(20, |g| g.text.height.max(1) as usize);
-            if let Some((b, tab)) = self.ed() {
-                b.move_to(&mut tab.view, p, false);
-                tab.view.want_x = None;
-                // Centred, as VS Code reveals a line it jumps to.
-                let v = &mut tab.view;
-                v.scroll = v.line_of(v.row_of(p.line).saturating_sub(h / 2));
-            }
-            self.focus = Focus::Editor;
-            self.reveal();
-            return;
+            return self.jump_to(p);
         }
         let Some(item) = q.items.get(i).cloned() else { return };
         if q.commands {
