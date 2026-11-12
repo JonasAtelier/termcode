@@ -914,6 +914,9 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     if app.untrusted.is_some() {
         app.msg = "Git is off: this repository's own settings run programs (see Source Control).".into();
     }
+    if take_crash(&state) {
+        app.msg = "termcode hit an error last time. Please report it: F1 Help: Report Issue copies the details.".into();
+    }
     // A first start leaves a settings.json to edit, every option listed at its default.
     let _ = settings::create(&settings::path());
     app.check_settings();
@@ -969,12 +972,18 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     let main = std::thread::current().id();
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let name = std::thread::current().name().unwrap_or("job").to_string();
+        log_panic(&crate::data_dir(true), &format!("thread '{name}' {info}"));
         if panic_restores(main) {
             restore();
             hook(info);
+            eprintln!(
+                "\ntermcode crashed. Unsaved files are kept and offered back when you open them again.\n\
+                 Please report it: {}/issues/new/choose (F1 Help: Report Issue in termcode copies the details).",
+                crate::ISSUES
+            );
         } else {
-            let name = std::thread::current().name().unwrap_or("job").to_string();
-            log_panic(&crate::data_dir(true), &format!("thread '{name}' {info}"));
+            JOB_PANICKED.store(true, Ordering::SeqCst);
         }
     }));
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1076,12 +1085,36 @@ fn panic_restores(main: std::thread::ThreadId) -> bool {
     std::thread::current().id() == main
 }
 
-/// A job thread's panic, appended to `panic.log` in `dir` (best effort: never in the UI).
+/// A panic, appended to `panic.log` in `dir` with the time and version (best effort).
 fn log_panic(dir: &Path, msg: &str) {
     let _ = fs::create_dir_all(dir);
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("panic.log")) {
-        let _ = writeln!(f, "{msg}");
+        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        let _ = writeln!(f, "{} termcode {}: {msg}", crate::scm::local_time(now), env!("CARGO_PKG_VERSION"));
     }
+}
+
+/// A job thread panicked since the last look (the UI says so once).
+static JOB_PANICKED: AtomicBool = AtomicBool::new(false);
+
+/// At start: whether the last run left errors in `panic.log`. They move to
+/// `panic-reported.log` (replacing older ones), so this is said once and the log stays small.
+fn take_crash(dir: &Path) -> bool {
+    let log = dir.join("panic.log");
+    let had = fs::metadata(&log).is_ok_and(|m| m.len() > 0);
+    if had {
+        let _ = fs::rename(&log, dir.join("panic-reported.log"));
+    }
+    had
+}
+
+/// The newest error in `dir`'s logs, for a bug report: where it happened and its message
+/// (one line each, cut short).
+fn last_error(dir: &Path) -> Option<String> {
+    let text = ["panic.log", "panic-reported.log"].iter().find_map(|f| fs::read_to_string(dir.join(f)).ok().filter(|t| !t.trim().is_empty()))?;
+    let start = text.rfind(" termcode ").and_then(|i| text[..i].rfind('\n').map(|n| n + 1).or(Some(0)))?;
+    let entry: Vec<&str> = text[start..].lines().take(2).collect();
+    Some(entry.iter().map(|l| l.chars().take(160).collect::<String>()).collect::<Vec<_>>().join(" / "))
 }
 
 /// Set once `restore` ran: the terminal's buffered output is dropped from then on.
@@ -1500,10 +1533,11 @@ impl App {
         let inside: Vec<&str> = [("HERDR_ENV", "herdr"), ("TMUX", "tmux"), ("SSH_CONNECTION", "ssh")]
             .into_iter().filter(|(k, _)| std::env::var_os(k).is_some()).map(|(_, n)| n).collect();
         let s = &self.settings;
+        let error = if cfg!(test) { None } else { last_error(&crate::data_dir(true)) };
         let icons = match s.icons { Some(i) => format!("{i:?}"), None => format!("auto ({:?})", theme::icon_set()) };
         format!(
             "termcode {}\nOS: {os}, Linux {}, {}\nTerminal: TERM={} TERM_PROGRAM={} {}\nInside: {}\n\
-             Settings: icons {icons}, colors {:?}, density {}, blocks {:?}, error checking {}\nTools: {}, {}, {}, {}\n",
+             Settings: icons {icons}, colors {:?}, density {}, blocks {:?}, error checking {}\nTools: {}, {}, {}, {}\n{}",
             env!("CARGO_PKG_VERSION"),
             kernel.trim(),
             std::env::consts::ARCH,
@@ -1519,6 +1553,7 @@ impl App {
             tool("rg"),
             tool("shellcheck"),
             tool("clang"),
+            error.map_or(String::new(), |e| format!("Last error: {e}\n")),
         )
     }
 
@@ -2141,6 +2176,10 @@ impl App {
         }
         if let Some(t) = self.tip.as_mut().filter(|t| !t.shown && t.since.elapsed() >= TIP_DELAY) {
             t.shown = true;
+            *dirty = true;
+        }
+        if JOB_PANICKED.swap(false, Ordering::SeqCst) {
+            self.msg = "A background task failed. Please report it: F1 Help: Report Issue copies the details.".into();
             *dirty = true;
         }
         *dirty |= crate::scm::tick(self);
@@ -6676,6 +6715,11 @@ mod tests {
         log_panic(&d, "thread 'nav' panicked at y.rs:2:2:\nagain");
         let log = fs::read_to_string(d.join("panic.log")).unwrap();
         assert!(log.contains("boom") && log.contains("again"), "{log}");
+        assert!(log.contains(&format!(" termcode {}: thread 'git'", env!("CARGO_PKG_VERSION"))), "dated and versioned: {log}");
+        // The report carries the newest one; the next start says so once.
+        assert_eq!(last_error(&d).as_deref(), Some(&*format!("{} / again", log.lines().nth(2).unwrap())));
+        assert!(take_crash(&d) && !take_crash(&d), "said once");
+        assert!(!d.join("panic.log").exists() && last_error(&d).is_some_and(|e| e.ends_with("again")), "kept for the report");
         fs::remove_dir_all(&d).unwrap();
     }
 

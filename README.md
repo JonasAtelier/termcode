@@ -485,9 +485,14 @@ See [AGENTS.md](AGENTS.md) for the code layout and conventions.
 ## Reporting problems
 
 Press **F1** and run **Help: Report Issue**: it copies your termcode version, system,
-terminal and settings summary (no file names or paths). Then open an issue at
+terminal and settings summary, and the last error termcode hit, if any (check it before
+you paste). Then open an issue at
 [termcode-releases](https://github.com/JonasAtelier/termcode-releases/issues/new/choose)
 and paste it.
+
+If termcode crashes, unsaved files are kept and offered back when you open them again;
+the next start reminds you to report it. Errors are logged in
+`~/.local/state/termcode/panic.log`.
 
 ## License
 
