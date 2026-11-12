@@ -19,6 +19,7 @@ The first public release.
 - Error checking: shellcheck for shell scripts, the project's compiler (or clang) for
   C/C++, with underlines and an explanation on hover.
 - Markdown preview; unsaved work survives a crash; sessions reopen where you left off.
+- Files up to 16 MB or 500,000 lines open whole and editable.
 
 ### Source Control
 - Changes with stage, unstage and discard, a commit dialog, and a commit graph coloured

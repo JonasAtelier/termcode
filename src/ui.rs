@@ -1956,8 +1956,12 @@ fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg: &minimap:
     let mini = Mini::new(r.height, n, view, slots, cfg.size);
     let end = v.line_of(mini.slot_rows(scroll, r.height.saturating_sub(1), slots - 1).end.saturating_sub(1)) + 1;
     // Request every line the minimap shows. The shared frame budget keeps this
-    // incremental, and hl_pending schedules redraws until its colours are ready.
-    b.highlight_upto(end);
+    // incremental, and hl_pending schedules redraws until its colours are ready. A large
+    // file's minimap takes the colours it has: highlighting it all would keep the CPU
+    // busy for many seconds.
+    if b.lines.len() <= editor::LARGE_LINES {
+        b.highlight_upto(end);
+    }
     let cols = r.width.saturating_sub(1) as usize;
     let dcols = if braille { cols * 2 } else { cols };
     let dcpc = minimap::chars_per_col(dcols, cfg.max_column);

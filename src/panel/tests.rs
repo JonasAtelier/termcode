@@ -5329,3 +5329,21 @@ fn the_title_names_a_folder_called_termcode_once() {
     assert!(cross.modifier.contains(Modifier::BOLD), "bold, as on a tab");
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_large_files_minimap_never_highlights_the_whole_file() {
+    let root = repo("largefile");
+    let n = crate::editor::LARGE_LINES + 10_000;
+    fs::write(root.join("big.rs"), "fn f() { let x = 1; }\n".repeat(n)).unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "big.rs", false);
+    let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    for _ in 0..50 {
+        t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+    }
+    assert!(!app.hl_pending(), "nothing more to do once the view is coloured");
+    let (b, _) = app.ed().unwrap();
+    assert!(b.readonly.is_none() && b.lines.len() == n, "opened whole and editable");
+    assert!(b.segs(10).is_some() && b.segs(n - 10).is_none(), "the view coloured, the far end left alone");
+    fs::remove_dir_all(&root).unwrap();
+}

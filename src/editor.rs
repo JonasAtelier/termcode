@@ -21,8 +21,15 @@ use syntect::highlighting::{Color as SColor, HighlightState, Highlighter, Ranged
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use unicode_width::UnicodeWidthChar;
 
-pub const MAX_BYTES: u64 = 1 << 20;
-pub const MAX_LINES: usize = 20_000;
+/// The most of a file opened: past either, the rest is cut and the buffer is read-only.
+/// Measured at 300,000 lines (12 MB): a key and its frame 7 ms, opening 90 ms, the
+/// quick diff 31 ms.
+pub const MAX_BYTES: u64 = 16 << 20;
+pub const MAX_LINES: usize = 500_000;
+/// Past this many lines a file is large: the minimap colours only what is already
+/// highlighted instead of highlighting the whole file behind it (8 s of CPU at 100,000
+/// lines, 37 s at 300,000).
+pub const LARGE_LINES: usize = 50_000;
 static TAB: AtomicUsize = AtomicUsize::new(4);
 
 /// `editor.tabSize`: tab stops, the indent unit for space-indented files, guides.
@@ -601,6 +608,13 @@ impl Buffer {
     }
 
     /// Read-only text (commit view, notices).
+    /// Cut to `max` lines and read-only: what `open` does past MAX_BYTES or MAX_LINES.
+    fn truncate_lines(&mut self, max: usize) {
+        self.lines.truncate(max);
+        self.line_ids.truncate(max);
+        self.readonly = Some(format!("truncated to {} MB / {MAX_LINES} lines: read-only, cannot be saved", MAX_BYTES >> 20));
+    }
+
     pub fn from_text(text: &str, syntax: &str, why: &str) -> Buffer {
         let mut b = Buffer::empty(None);
         b.set_text(text);
@@ -664,9 +678,7 @@ impl Buffer {
         };
         b.set_text(&text);
         if capped || b.lines.len() > MAX_LINES {
-            b.lines.truncate(MAX_LINES);
-            b.line_ids.truncate(MAX_LINES);
-            b.readonly = Some(format!("truncated to 1 MB / {MAX_LINES} lines: read-only, cannot be saved"));
+            b.truncate_lines(MAX_LINES);
         }
         let ss = syntaxes();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -3042,20 +3054,20 @@ mod tests {
             }
             assert!(frame < 10_000, "an edit kept it pending");
         }
-        // Cut to MAX_LINES: the pass ends at the last line kept, and stays done.
-        let d = std::env::temp_dir().join(format!("termcode-ed-trunc-{}", std::process::id()));
-        fs::create_dir_all(&d).unwrap();
-        fs::write(d.join("big.c"), "int x;\n".repeat(MAX_LINES + 500)).unwrap();
-        let mut t = Buffer::open(&d.join("big.c"));
-        assert!(t.readonly.is_some() && t.lines.len() == MAX_LINES);
+        // Cut (as `open` cuts at MAX_LINES; a small cut keeps this quick): the pass ends at
+        // the last line kept, and stays done.
+        let cut = 2_500;
+        let mut t = Buffer::from_text(&"int x;\n".repeat(cut + 500), "C", "test");
+        t.truncate_lines(cut);
+        assert!(t.readonly.is_some() && t.lines.len() == cut);
         for frame in 0.. {
-            starved_frame(&mut t, MAX_LINES - 30, MAX_LINES + 400);
+            starved_frame(&mut t, cut - 30, cut + 400);
             if !t.hl_pending() {
                 break;
             }
             assert!(frame < 100_000, "a truncated file kept it pending");
         }
-        starved_frame(&mut t, MAX_LINES - 30, MAX_LINES + 400);
+        starved_frame(&mut t, cut - 30, cut + 400);
         assert!(!t.hl_pending(), "stays done");
         let mut ro = Buffer::from_text("a\nb\n", "C", "read-only view");
         for _ in 0..5 {
@@ -3063,7 +3075,6 @@ mod tests {
         }
         assert!(!ro.hl_pending(), "a read-only view ends too");
         set_frame_budget(Some(FRAME_BUDGET));
-        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

@@ -498,7 +498,7 @@ first time termcode starts.
 | Source Control says "Git is off" | The repository's own settings run programs; trust it there if you know where it came from |
 | No error underlines | Install `shellcheck` / `clang`; the status bar says which is missing |
 | C/C++ says a header is not found | Build the kernel once, or add a `compile_commands.json` (see [Error checking](#error-checking)) |
-| A file opens read-only | It is over 1 MB / 20,000 lines, binary, or not UTF-8 |
+| A file opens read-only | It is over 16 MB / 500,000 lines, binary, or not UTF-8 |
 
 ## Known limits
 
@@ -506,6 +506,8 @@ first time termcode starts.
   definitions (C++ methods in a class body, macro-built names) are missed.
 - Error checking covers shell scripts and C/C++ only. A C/C++ problem's underline hides
   once you edit its line, until the next save.
+- In files over 50,000 lines the minimap colours only the parts you have scrolled
+  through (colouring it all would keep the CPU busy).
 - Find matches inside one line only. Lines over 4000 bytes aren't syntax-coloured.
 - Light themes that don't set every colour get some dark panels.
 - Mouse back/forward buttons don't reach the panel (herdr drops them).
