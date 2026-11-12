@@ -20,6 +20,8 @@ struct Target {
     pos: Pos,
     name: String,
     anchor: Position,
+    /// Over a problem (`lint`): its messages, no lookup.
+    problem: bool,
 }
 
 pub struct Card {
@@ -29,6 +31,8 @@ pub struct Card {
     area: Rect,
     scroll: usize,
     max_scroll: usize,
+    /// A problem card: these messages instead of a signature and documentation.
+    problems: Vec<(crate::lint::Sev, String)>,
 }
 
 #[derive(Default)]
@@ -54,6 +58,7 @@ fn blocked(app: &App) -> bool {
 
 fn target_at(app: &App, p: Position) -> Option<Target> {
     if blocked(app) { return None; }
+    if let Some(t) = problem_at(app, p) { return Some(t); }
     let (group, pos, range, name) = navui::symbol_under(app, p)?;
     let grp = &app.groups[group];
     let tab = grp.tabs.get(grp.active)?;
@@ -67,7 +72,18 @@ fn target_at(app: &App, p: Position) -> Option<Target> {
     }
     let x = editor::display_col(line, range.start).saturating_sub(tab.view.hscroll);
     Some(Target { group, key: tab.key.clone(), version: b.version(), pos: Pos::new(pos.line, range.start), name,
-        anchor: Position::new(app.ui.groups[group].text.x + x as u16, p.y) })
+        anchor: Position::new(app.ui.groups[group].text.x + x as u16, p.y), problem: false })
+}
+
+/// A problem under the pointer, anchored at its start (moving along it keeps the target).
+fn problem_at(app: &App, p: Position) -> Option<Target> {
+    let (group, pos) = navui::pos_under(app, p)?;
+    let tab = app.groups[group].tabs.get(app.groups[group].active)?;
+    let Some(Doc::Text(b)) = app.docs.get(&tab.key) else { return None };
+    let (start, _) = app.lints.at(&tab.key, pos.line, pos.col)?;
+    let x = editor::display_col(&b.lines[pos.line], start).saturating_sub(tab.view.hscroll);
+    Some(Target { group, key: tab.key.clone(), version: b.version(), pos: Pos::new(pos.line, start), name: String::new(),
+        anchor: Position::new(app.ui.groups[group].text.x + x as u16, p.y), problem: true })
 }
 
 // Only scan this line's prefix; never reparse a file on every mouse motion.
@@ -149,6 +165,13 @@ pub fn poll(app: &mut App) -> bool {
     if !valid(app) { return dismiss(app); }
     if app.nav.hover.due.is_some_and(|t| Instant::now() >= t) {
         app.nav.hover.due = None;
+        let t = app.nav.hover.target.as_ref().unwrap();
+        if t.problem {
+            let problems = app.lints.at(&t.key, t.pos.line, t.pos.col).map(|(_, m)| m).unwrap_or_default();
+            app.nav.hover.card = Some(Card { signature: Buffer::from_lines("", vec![String::new()], "problem hover"), lines: Vec::new(),
+                source: None, area: Rect::default(), scroll: 0, max_scroll: 0, problems });
+            return true;
+        }
         start(app, false);
     }
     let res = match app.nav.hover.pending.as_ref().map(|p| p.rx.try_recv()) {
@@ -177,7 +200,7 @@ pub fn poll(app: &mut App) -> bool {
             let text = signature(lines, at, nav::lang_for(&path));
             let signature = Buffer::from_lines(&path, vec![text], "function hover");
             app.nav.hover.card = Some(Card { signature, lines: docs, source,
-                area: Rect::default(), scroll: 0, max_scroll: 0 });
+                area: Rect::default(), scroll: 0, max_scroll: 0, problems: Vec::new() });
             changed = true;
             if documented { return true; }
         }
@@ -388,14 +411,24 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     if area.width < 16 || area.height < 3 { return; }
     let docs = doc_lines(&card.lines, &c);
     let sig = &card.signature.lines[0];
-    let w = (docs.iter().map(Line::width).chain([sig.width()]).max().unwrap_or(20) + 4).clamp(16, 84).min(area.width as usize) as u16;
-    card.signature.highlight_upto(1);
-    let sig = &card.signature.lines[0];
-    let code = ui::render_line(sig, card.signature.segs(0), &[], None, 0, sig.width().max(1), Style::new().fg(c.fg).bg(c.bg));
-    let mut lines = vec![code];
-    if !docs.is_empty() {
-        lines.push(Line::styled(theme::icons().border[4].repeat((w - 4) as usize), Style::new().fg(c.border)));
-        lines.extend(docs);
+    let mut lines = Vec::new();
+    // A problem card: each message after its severity's icon, the worst first.
+    for (sev, msg) in &card.problems {
+        let icon = Span::styled(format!("{} ", theme::icons().problem[*sev as usize]), Style::new().fg(P.problem[*sev as usize]));
+        let mut rows = msg.lines();
+        lines.push(Line::from(vec![icon, Span::raw(rows.next().unwrap_or("").to_string())]));
+        lines.extend(rows.map(|r| Line::raw(format!("  {r}"))));
+    }
+    let w = (lines.iter().chain(&docs).map(Line::width).chain([if lines.is_empty() { sig.width() } else { 0 }]).max().unwrap_or(20) + 4)
+        .clamp(16, 84).min(area.width as usize) as u16;
+    if lines.is_empty() {
+        card.signature.highlight_upto(1);
+        let sig = &card.signature.lines[0];
+        lines.push(ui::render_line(sig, card.signature.segs(0), &[], None, 0, sig.width().max(1), Style::new().fg(c.fg).bg(c.bg)));
+        if !docs.is_empty() {
+            lines.push(Line::styled(theme::icons().border[4].repeat((w - 4) as usize), Style::new().fg(c.border)));
+            lines.extend(docs);
+        }
     }
     let paragraph = Paragraph::new(lines).style(Style::new().fg(c.fg).bg(c.bg)).wrap(Wrap { trim: false });
     let total = paragraph.line_count(w - 4);

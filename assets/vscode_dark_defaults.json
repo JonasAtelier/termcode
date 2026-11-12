@@ -25,6 +25,7 @@
   "editorIndentGuide.background": "editorWhitespace.foreground",
   "editorIndentGuide.activeBackground": "editorWhitespace.foreground",
   "editorError.foreground": "#F14C4C",
+  "editorWarning.foreground": "#CCA700",
   "editorGutter.addedBackground": "#487E02",
   "editorGutter.modifiedBackground": "#1B81A8",
   "editorGutter.deletedBackground": "editorError.foreground",

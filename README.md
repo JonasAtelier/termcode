@@ -6,7 +6,8 @@ A VS Code-style code editor and Git panel that runs **inside your terminal**.
 - Inside [herdr](https://herdr.dev), `termcode --tab` opens it as a **Code** tab instead.
 
 What you get: a file Explorer, Search, Source Control with a commit graph, tabs and split
-editors, side-by-side diffs, a minimap, Go to Definition, and VS Code themes.
+editors, side-by-side diffs, a minimap, Go to Definition, error checking for shell and
+C/C++, and VS Code themes.
 
 ### How light is it?
 
@@ -36,6 +37,7 @@ startup is its own timer, which leaves out the `code` launcher, so real use is h
 | git | Source Control | `git --version` |
 | ripgrep (`rg`) | Search and Go to Definition | `rg --version` |
 | herdr 0.9.1 or newer | only for the Code tab (`--tab`) | `herdr --version` |
+| shellcheck, clang | optional: error checking for shell and C/C++ (the .deb recommends them) | `shellcheck --version` |
 | Any monospace font | the icons work with all common ones; a Nerd Font gives VS Code's | see step 2 |
 
 Optional: [Ghostty](https://ghostty.org) (the terminal termcode is tested in), and
@@ -45,9 +47,9 @@ Optional: [Ghostty](https://ghostty.org) (the terminal termcode is tested in), a
 
 ```sh
 # git, ripgrep and a C linker: pick your distro
-sudo apt install git ripgrep build-essential     # Debian / Ubuntu
-sudo dnf install git ripgrep gcc                 # Fedora
-sudo pacman -S git ripgrep base-devel            # Arch
+sudo apt install git ripgrep build-essential shellcheck clang   # Debian / Ubuntu
+sudo dnf install git ripgrep gcc ShellCheck clang               # Fedora
+sudo pacman -S git ripgrep base-devel shellcheck clang          # Arch
 
 # Rust (press Enter for the default install, then open a new terminal)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -227,6 +229,40 @@ Rest the pointer on a function to see its docs.
 Some terminals (GNOME Terminal, Ptyxis) can't send Ctrl+Shift keys, Ctrl+Tab or
 Ctrl+1/2/3. Use F1 or the other key in the table instead.
 
+### Error checking
+
+Shell scripts and C/C++ files are checked as you work. A problem gets a **red** (error),
+**yellow** (warning) or **blue** (info) underline; rest the pointer on it to read why.
+The status bar counts errors and warnings, and the scrollbar marks where they are.
+
+| Files | Checked by | When |
+|---|---|---|
+| `.sh`, `.bash`, scripts with a `#!/bin/sh` or `bash` line | `shellcheck` | as you type (after a short pause) |
+| `.c`, `.h`, `.cpp`, … | the project's compiler, else `clang` | when you open or save the file |
+
+C/C++ needs the project's include folders and flags. termcode finds them in:
+
+1. a `compile_commands.json` in the project (or its `build/` folder), or
+2. a **built Linux kernel tree**: nothing to set up, the build's `.o.cmd` files are read.
+
+If the compiler named there isn't installed (a cross-compiler such as
+`aarch64-…-gcc`), `clang` checks the file for that target instead. Other projects can
+make a `compile_commands.json` with:
+
+```sh
+cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON   # CMake projects
+bear -- make                                        # Make projects
+```
+
+Without either, termcode guesses (the file's folder and the repo's `include/`). If a
+header still can't be found, the status bar says so instead of showing false errors.
+
+A project's `compile_commands.json` never runs anything of its own: termcode runs only a
+compiler found on your `PATH` by name (gcc, clang, cc, …, else clang), and passes only
+the flags that change how code is read, never ones that load plugins or write files.
+
+Turn error checking off with `"termcode.errorChecking": false`.
+
 ### Source Control
 
 - **Changes:** `+` stages a file, `−` unstages it, `↶` discards (always asks).
@@ -325,6 +361,7 @@ A few more examples:
 | `files.insertFinalNewline` | `true` | On save |
 | `workbench.tree.enableStickyScroll` | `true` | Keep the current folder pinned while scrolling |
 | `workbench.tree.stickyScrollMaxItemCount` | `1` | More than 1: nested rows, like VS Code |
+| `termcode.errorChecking` | `true` | Underline problems in shell scripts and C/C++ files |
 | `termcode.restoreSession` | `true` | Reopen last session's tabs |
 | `workbench.editor.restoreViewState` | `true` | Restore cursor and scroll per file |
 | `git.blame.statusBarItem.enabled` | `true` | Line author in the status bar |
@@ -362,12 +399,16 @@ first time termcode starts.
 | Ctrl+Shift keys do nothing | Your terminal doesn't send them; use F1 or the other key |
 | Build runs out of memory | `cargo install --path . --root ~/.local -j2` |
 | Source Control says "Git is off" | The repository's own settings run programs; trust it there if you know where it came from |
+| No error underlines | Install `shellcheck` / `clang`; the status bar says which is missing |
+| C/C++ says a header is not found | Build the kernel once, or add a `compile_commands.json` (see [Error checking](#error-checking)) |
 | A file opens read-only | It is over 1 MB / 20,000 lines, binary, or not UTF-8 |
 
 ## Known limits
 
 - No language server: Go to Definition and References search the code with `rg`, so some
   definitions (C++ methods in a class body, macro-built names) are missed.
+- Error checking covers shell scripts and C/C++ only. A C/C++ problem's underline hides
+  once you edit its line, until the next save.
 - Find matches inside one line only. Lines over 4000 bytes aren't syntax-coloured.
 - Light themes that don't set every colour get some dark panels.
 - Mouse back/forward buttons don't reach the panel (herdr drops them).

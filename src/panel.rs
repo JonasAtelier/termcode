@@ -873,6 +873,8 @@ pub struct App {
     pub nav: crate::navui::Nav,
     /// Source Control view, Timeline, hover card and commit dialog state.
     pub gitui: crate::scm::GitUi,
+    /// Problems from shellcheck and the C/C++ compiler (`lint`).
+    pub lints: crate::lint::Lints,
     /// The saved session of the launch folder (`session`).
     pub session: crate::session::State,
 }
@@ -1386,6 +1388,7 @@ impl App {
             diff_syntax: HashMap::new(),
             nav: Default::default(),
             gitui: crate::scm::GitUi::new(&saved),
+            lints: Default::default(),
             session: Default::default(),
         };
         a.backup_dir = a.layout_file.as_ref().and_then(|p| p.parent()).map(|d| d.join("backup"));
@@ -1434,6 +1437,8 @@ impl App {
 
     pub fn apply_settings(&mut self, s: Settings) {
         theme::set_icons(s.icons.unwrap_or_else(theme::auto_icons));
+        // Tests run no checker unless one turns it on (`lint::Lints`).
+        self.lints.on = s.error_checking && !cfg!(test);
         editor::set_tab(s.tab_size);
         if s.theme != self.installed {
             let colors = s.theme.json["colors"].as_object().cloned().unwrap_or_default();
@@ -2060,6 +2065,7 @@ impl App {
             *dirty = true;
         }
         *dirty |= crate::scm::tick(self);
+        *dirty |= crate::lint::tick(self);
         *dirty |= crate::session::tick(self);
         *dirty |= self.drain();
         if std::mem::take(dirty) {
@@ -2082,12 +2088,13 @@ impl App {
             || self.backup_due.is_some()
             || self.nav.busy()
             || self.gitui.busy()
-            || self.gitui.refs.busy();
+            || self.gitui.refs.busy()
+            || self.lints.busy();
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
         let upgrade_due = self.upgrade.next.filter(|_| self.upgrade.watch);
         let poll_due = self.status_poll_due.filter(|_| self.poll_status);
-        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due, self.search_due, poll_due].into_iter().flatten() {
+        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due, self.search_due, poll_due, self.lints.due()].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
         // A far jump's first highlighting catches up one budgeted slice per frame

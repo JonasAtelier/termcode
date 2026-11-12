@@ -96,6 +96,7 @@ const FIELDS: &[Field] = &[
     Field { category: 2, label: "Bracket pair colours", key: "editor.bracketPairColorization.enabled", kind: Check(true) },
     Field { category: 2, label: "Word wrap", key: "editor.wordWrap", kind: Choice(&["off", "on"]) },
     Field { category: 2, label: "Breadcrumbs", key: "breadcrumbs.enabled", kind: Check(true) },
+    Field { category: 2, label: "Error checking (shell, C/C++)", key: "termcode.errorChecking", kind: Check(true) },
     Field {
         category: 2,
         label: "Auto-close brackets",

@@ -191,6 +191,8 @@ pub struct Pal {
     pub badge_bg: Color,
     pub badge_fg: Color,
     pub error_fg: Color,
+    /// `editorInfo/Warning/Error.foreground`, by `lint::Sev`: problem underlines and marks.
+    pub problem: [Color; 3],
     pub git_added: Color,
     pub git_modified: Color,
     pub git_deleted: Color,
@@ -341,6 +343,7 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
         badge_bg: on("badge.background", sidebar_bg),
         badge_fg: on("badge.foreground", on("badge.background", sidebar_bg)),
         error_fg: on("errorForeground", status_bg),
+        problem: [on("editorInfo.foreground", editor_bg), on("editorWarning.foreground", editor_bg), on("editorError.foreground", editor_bg)],
         git_added: on("gitDecoration.addedResourceForeground", sidebar_bg),
         git_modified: on("gitDecoration.modifiedResourceForeground", sidebar_bg),
         git_deleted: on("gitDecoration.deletedResourceForeground", sidebar_bg),
@@ -595,6 +598,8 @@ pub struct Icons {
     /// Quick-diff gutter: added/modified bar, deleted marker.
     pub gutter_bar: &'static str,
     pub gutter_del: &'static str,
+    /// Info, warning, error (`lint::Sev`).
+    pub problem: [&'static str; 3],
     pub guide: &'static str,
     pub ws_space: &'static str,
     pub ws_tab: &'static str,
@@ -640,6 +645,7 @@ const CODICONS: Icons = Icons {
     folder_dot: "●",
     gutter_bar: "▎",
     gutter_del: "▸",
+    problem: ["\u{ea74}", "\u{ea6c}", "\u{ea87}"],
     ws_space: "·",
     ws_tab: "→",
     guide: "▏",
@@ -685,6 +691,7 @@ const SYMBOLS: Icons = Icons {
     folder_dot: "●",
     gutter_bar: "▎",
     gutter_del: "▸",
+    problem: ["ℹ", "⚠", "✗"],
     ws_space: "·",
     ws_tab: "→",
     guide: "▏",
@@ -728,6 +735,7 @@ const PLAIN: Icons = Icons {
     folder_dot: "*",
     gutter_bar: "|",
     gutter_del: "_",
+    problem: ["i", "!", "x"],
     ws_space: ".",
     ws_tab: ">",
     guide: "|",
@@ -915,7 +923,7 @@ mod tests {
                 set.discard, set.open_file, set.case, set.regex, set.word, set.up, set.down, set.replace, set.replace_all,
                 set.branch, set.lock, set.folder_dot, set.gutter_bar, set.gutter_del, set.ws_space, set.ws_tab, set.guide,
                 set.lane_left, set.lane_right, set.lane_cursor];
-            for g in all.into_iter().chain(set.border) {
+            for g in all.into_iter().chain(set.border).chain(set.problem) {
                 assert!(!g.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c)), "{name}: {g:?} needs a Nerd Font");
                 assert!(g.width() <= 1, "{name}: {g:?} is wider than a cell");
             }

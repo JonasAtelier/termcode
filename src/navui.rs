@@ -529,6 +529,20 @@ fn byte_under(line: &str, x: usize) -> usize {
 
 /// The identifier drawn at cell `p` of an editor: group, cursor position, byte range, name.
 pub fn symbol_under(app: &App, p: Position) -> Option<(usize, Pos, Range<usize>, String)> {
+    let (g, Pos { line, col: byte }) = pos_under(app, p)?;
+    let grp = app.groups.get(g)?;
+    let Some(Doc::Text(b)) = app.docs.get(&grp.tabs.get(grp.active)?.key) else { return None };
+    let text = &b.lines[line];
+    // The cell itself must be part of the name (the keyboard's symbol_at also takes the end).
+    if !text.as_bytes().get(byte).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_') {
+        return None;
+    }
+    let (name, r) = nav::symbol_at(text, byte)?;
+    Some((g, Pos::new(line, byte), r, name))
+}
+
+/// The editor group and text position under `p` (a byte past the line's end there).
+pub fn pos_under(app: &App, p: Position) -> Option<(usize, Pos)> {
     let g = app.ui.groups.iter().position(|g| g.text.contains(p))?;
     let gh = &app.ui.groups[g];
     let grp = app.groups.get(g)?;
@@ -538,13 +552,7 @@ pub fn symbol_under(app: &App, p: Position) -> Option<(usize, Pos, Range<usize>,
     // of the file maps to no line here.
     let line = app.line_at(g, p.y).filter(|&l| app.line_y(g, l) == Some(p.y))?;
     let text = b.lines.get(line)?;
-    let byte = byte_under(text, tab.view.hscroll + (p.x - gh.text.x) as usize);
-    // The cell itself must be part of the name (the keyboard's symbol_at also takes the end).
-    if !text.as_bytes().get(byte).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_') {
-        return None;
-    }
-    let (name, r) = nav::symbol_at(text, byte)?;
-    Some((g, Pos::new(line, byte), r, name))
+    Some((g, Pos::new(line, byte_under(text, tab.view.hscroll + (p.x - gh.text.x) as usize))))
 }
 
 fn split(path: &str) -> (String, String) {

@@ -14,6 +14,7 @@ maintainer = "JonasAtelier"
 copyright = "2026 JonasAtelier"
 section = "editors"
 depends = "$auto, git, ripgrep"
+recommends = "shellcheck, clang"
 extended-description = """\
 A VS Code-style code editor and Git panel that runs inside the terminal, like vim, \
 or as a Code tab in a herdr workspace. To add the Code tab to herdr, run: \

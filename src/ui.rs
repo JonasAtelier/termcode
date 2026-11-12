@@ -333,6 +333,15 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         };
         let eol = if b.crlf { "CRLF" } else { "LF" };
         items = vec![s, indent, enc, eol.to_string(), b.syntax_name().to_string()];
+        let key = &app.groups[app.ag].tabs[app.groups[app.ag].active].key;
+        if let Some((errors, warnings, hint)) = app.lints.counts(key) {
+            let (ic, g) = (icons(), sp(lay.s.icon_gap.div_ceil(2)));
+            // A file that could not be checked says why, not "0 0".
+            items.insert(0, match hint.filter(|_| errors + warnings == 0) {
+                Some(h) => format!("{}{g}{h}", ic.problem[1]),
+                None => format!("{}{g}{errors} {}{g}{warnings}", ic.problem[2], ic.problem[1]),
+            });
+        }
     }
     // The left items stay whole. Short of room the message goes first (below), then the
     // right items from their left end: Ln/Col first, the language last.
@@ -1290,6 +1299,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             let lang = lang_id(b.syntax_name());
             let rb = &app.settings.rainbow;
             let qd = app.qdiff.get(&key);
+            let mut problems = app.lints.shown(&key);
+            problems.sort_by_key(|p| p.3);
             let peek = app.peek.as_ref().filter(|p| p.group == g && p.key == key).and_then(|p| {
                 let q = qd?;
                 Some(PeekDraw {
@@ -1322,6 +1333,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 wrap,
                 peek,
                 rulers: &rulers,
+                problems: &problems,
             };
             let out = text_editor(f, b, view, body, focused_group, editor_focus, &deco);
             if let Some(p) = out.caret.filter(|p| !card.is_some_and(|r| r.contains(*p))) {
@@ -1547,6 +1559,8 @@ struct Deco<'a> {
     wrap: bool,
     peek: Option<PeekDraw<'a>>,
     rulers: &'a [(usize, Color)],
+    /// Problems (`lint`): line, byte range, severity; mildest first, so the worst draws last.
+    problems: &'a [(usize, usize, usize, crate::lint::Sev)],
 }
 
 /// editor.rulers on one row: the cell at display column N (0-based), so the
@@ -1819,6 +1833,17 @@ fn text_editor(
                     f.buffer_mut()[(x, y)].set_fg(fg);
                 }
             }
+            // Problems: underlined, text and line in the severity's colour (herdr carries
+            // no underline colour, so the text colour is what makes the line red there).
+            for &(_, s, e, sev) in d.problems.iter().filter(|p| p.0 == i) {
+                let a = editor::display_col(line, s);
+                let z = editor::display_col(line, e).max(a + 1);
+                let c = P.problem[sev as usize];
+                let st = Style::new().fg(c).underline_color(c).add_modifier(Modifier::UNDERLINED);
+                for x in (a..z).filter_map(visible) {
+                    f.buffer_mut()[(x, y)].set_style(st);
+                }
+            }
             for p in v.extra.iter().filter(|p| group_focus && p.line == i) {
                 if let Some(x) = visible(editor::display_col(line, p.col)) {
                     f.buffer_mut()[(x, y)].set_style(Style::new().add_modifier(Modifier::REVERSED));
@@ -1892,6 +1917,9 @@ fn text_editor(
                 None => continue,
             };
             put(row_of(i), 1, ic.lane_left, c);
+        }
+        for &(l, _, _, sev) in d.problems {
+            put(row_of(l), 2, ic.lane_right, P.problem[sev as usize]);
         }
         for (a, _) in d.find.map_or(&[][..], |fd| &fd.matches[..]) {
             put(row_of(a.line), 2, ic.lane_right, P.ruler_find);
@@ -2325,6 +2353,7 @@ pub(crate) fn diff_view(
             wrap: false,
             peek: None,
             rulers: &[],
+            problems: &[],
         };
         // App::hl_pending counts this buffer (by its MiniHit) while it catches up.
         out_mini = Some((mr, draw_minimap(f, m.buf, v, mr, &m.cfg, &deco, ms)));
