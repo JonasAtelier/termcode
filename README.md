@@ -102,7 +102,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # zsh: ~/.zshrc
 Open a new terminal and check:
 
 ```sh
-termcode -h
+termcode --version          # termcode 0.1.0
 ```
 
 **Low on memory?** Add `-j2` to the `cargo install` line to build with 2 jobs.

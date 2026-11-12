@@ -57,12 +57,14 @@ Open PATH like `code PATH`, in this terminal; quitting returns to the shell.
   --tab         in a 'Code: <name>' tab of this herdr workspace instead (reused if open);
                 also used when there is no terminal
   --default-config  print the default settings.json (every option, commented out)
+  -V, --version     print the version
 Relative paths resolve against this folder. Settings: ~/.config/termcode/settings.json.
 (`termcode panel` is the plugin's pane entrypoint.)";
 
 #[derive(Debug, PartialEq)]
 enum Cmd {
     Help,
+    Version,
     DefaultConfig,
     Panel,
     Open { tab: bool, path: Option<String> },
@@ -78,6 +80,7 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
     for a in args {
         match a.as_str() {
             "-h" | "--help" => return Ok(Cmd::Help),
+            "-V" | "--version" => return Ok(Cmd::Version),
             "--default-config" => return Ok(Cmd::DefaultConfig),
             "--tab" => tab = true,
             s if s.starts_with('-') => return Err(format!("unknown option {s:?} (a path starting with '-' needs ./)\n{USAGE}")),
@@ -103,6 +106,10 @@ fn main() -> ExitCode {
     let result = parse_args(&args).and_then(|cmd| match cmd {
         Cmd::Help => {
             println!("{USAGE}");
+            Ok(())
+        }
+        Cmd::Version => {
+            println!("termcode {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Cmd::DefaultConfig => {
@@ -532,6 +539,7 @@ mod tests {
         assert_eq!(a(&["panel"]), Ok(Cmd::Panel));
         assert_eq!(a(&["--tab", "panel"]), open(true, Some("panel")), "a folder named panel");
         assert_eq!(a(&["-h"]), Ok(Cmd::Help));
+        assert_eq!((a(&["--version"]), a(&["-V"]), a(&["x", "--version"])), (Ok(Cmd::Version), Ok(Cmd::Version), Ok(Cmd::Version)));
         assert_eq!(a(&["x", "--help"]), Ok(Cmd::Help));
         assert!(a(&["--bogus"]).unwrap_err().contains("unknown option"));
         assert!(a(&["a", "b"]).unwrap_err().contains("unexpected argument \"b\""));
