@@ -30,6 +30,7 @@ assets = [
     ["target/release/termcode", "usr/bin/", "755"],
     ["herdr-plugin.toml", "usr/share/termcode/", "644"],
     ["README.md", "usr/share/doc/termcode/", "644"],
+    ["CHANGELOG.md", "usr/share/doc/termcode/", "644"],
     # Debian's machine-readable copyright: termcode's license and each bundled one
     # (written by scripts/deb.sh).
     ["target/copyright", "usr/share/doc/termcode/copyright", "644"],

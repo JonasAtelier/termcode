@@ -1,0 +1,38 @@
+# Changelog
+
+What changed in each termcode release, newest first.
+
+Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MINOR
+version (0.2.0) adds features or changes settings or keys, and a new PATCH version
+(0.1.1) only fixes bugs.
+
+## [0.1.0] - unreleased
+
+The first public release.
+
+### Editor
+- Tabs, preview tabs and up to three editor groups; drag a file to an edge to split.
+- Syntax colours from VS Code themes, a minimap, indent guides and rainbow, rulers,
+  word wrap, folding, multiple cursors, find and replace, bracket colours.
+- Go to Definition, Peek, Find All References and a REFERENCES pane, searched with
+  ripgrep (no language server).
+- Error checking: shellcheck for shell scripts, the project's compiler (or clang) for
+  C/C++, with underlines and an explanation on hover.
+- Markdown preview; unsaved work survives a crash; sessions reopen where you left off.
+
+### Source Control
+- Changes with stage, unstage and discard, a commit dialog, and a commit graph coloured
+  by branch with a card for each commit.
+- Pull, push, sync, branches, merges, rebases and stashes from F1.
+- A repository whose own git settings run programs keeps git off until you trust it.
+
+### Look and setup
+- Works in the terminal it is started in, or as a Code tab in a herdr workspace.
+- Icons from a Nerd Font when one is installed, standard Unicode symbols otherwise.
+- 24-bit colour where the terminal has it, else the nearest of 256 or 16.
+- A Settings window (Ctrl+,) and a settings file listing every option at its default.
+- Your own keys for any F1 command (`termcode.keybindings`).
+- F1 Help: Report Issue copies what a bug report needs.
+
+### Packages
+- Static amd64 and arm64 `.deb` packages for any Debian or Ubuntu release.

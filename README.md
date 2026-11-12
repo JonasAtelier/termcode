@@ -463,9 +463,11 @@ cargo test         # run the tests
 scripts/deb.sh     # build the .debs (arguments go to cargo deb)
 ```
 
-To release, set the version in `Cargo.toml`, commit, then tag it:
-`git tag v0.2.0 && git push origin v0.2.0`. The release workflow lints, tests, builds
-both packages, installs them on Ubuntu 22.04, 24.04 and Debian 12, and publishes them on
+To release: note the changes under the version in `CHANGELOG.md` and date its heading
+(`## [0.2.0] - 2026-12-01`), set the same version in `Cargo.toml`, commit, then tag it:
+`git tag v0.2.0 && git push origin v0.2.0`. The release workflow checks the version and
+changelog, lints, tests, builds both packages, installs them on Ubuntu 22.04, 24.04 and
+Debian 12, and publishes them with that changelog section on
 [termcode-releases](https://github.com/JonasAtelier/termcode-releases/releases). It runs
 only for tags (a dry run: Actions, release, Run workflow).
 
