@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn lock_is_exclusive_until_dropped() {
-        let p = std::env::temp_dir().join(format!("herdr-code-lock-{}/k.json", std::process::id()));
+        let p = std::env::temp_dir().join(format!("termcode-lock-{}/k.json", std::process::id()));
         let first = crate::try_lock(&p).unwrap();
         assert!(first.is_some());
         // A second open file description cannot take it, even in the same process.
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn repo_root_from_subdir_and_outside() {
-        let tmp = std::env::temp_dir().join(format!("herdr-code-root-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("termcode-root-{}", std::process::id()));
         let sub = tmp.join("a/b");
         std::fs::create_dir_all(&sub).unwrap();
         let ok = Command::new("git").args(["init", "-q"]).arg(&tmp).status().unwrap();

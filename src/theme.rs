@@ -649,7 +649,7 @@ const CODICONS: Icons = Icons {
     border: ["╭", "╮", "╰", "╯", "─", "│"],
 };
 
-/// `herdr-code.icons: "ascii"` or HERDR_CODE_ICONS=0: ASCII and narrow Unicode
+/// `termcode.icons: "ascii"` or TERMCODE_ICONS=0: ASCII and narrow Unicode
 /// only (no East Asian ambiguous widths).
 const PLAIN: Icons = Icons {
     files: "F",
@@ -694,14 +694,14 @@ const PLAIN: Icons = Icons {
 
 static ASCII: AtomicBool = AtomicBool::new(false);
 
-/// `herdr-code.icons`; HERDR_CODE_ICONS=0 always wins.
+/// `termcode.icons`; TERMCODE_ICONS=0 always wins.
 pub fn set_ascii(on: bool) {
     ASCII.store(on, Ordering::Relaxed);
 }
 
 pub fn ascii() -> bool {
     static ENV: OnceLock<bool> = OnceLock::new();
-    *ENV.get_or_init(|| std::env::var("HERDR_CODE_ICONS").as_deref() == Ok("0")) || ASCII.load(Ordering::Relaxed)
+    *ENV.get_or_init(|| std::env::var("TERMCODE_ICONS").as_deref() == Ok("0")) || ASCII.load(Ordering::Relaxed)
 }
 
 pub fn icons() -> &'static Icons {

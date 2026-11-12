@@ -1,5 +1,5 @@
 //! settings.json in VS Code's format (JSONC: comments and trailing commas) from
-//! `$HERDR_PLUGIN_CONFIG_DIR`. A missing file means the defaults; a bad one is
+//! ~/.config/termcode (`data_dir`). A missing file means the defaults; a bad one is
 //! an error the panel shows while it keeps the last good settings.
 
 use crate::decor::{js_regex, Rainbow};
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// The id the embedded cpptools theme has in VS Code.
 pub const EMBEDDED_ID: &str = "Visual Studio Dark - C++";
 
-/// `herdr-code.spacing`. The density gives the defaults; each key overrides one.
+/// `termcode.spacing`. The density gives the defaults; each key overrides one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spacing {
     /// Sidebar columns until the divider is dragged (a drag is persisted).
@@ -154,7 +154,7 @@ pub struct Settings {
     pub theme: ThemeData,
     /// `git.blame.statusBarItem.enabled`: the cursor line's blame in the status bar.
     pub blame_status: bool,
-    /// `herdr-code.blocks.style`: cards, lines or none between the blocks.
+    /// `termcode.blocks.style`: cards, lines or none between the blocks.
     pub blocks: crate::blocks::BlockStyle,
     /// `git.blame.editorDecoration.enabled`: the same as ghost text after the cursor line.
     pub blame_decoration: bool,
@@ -162,7 +162,7 @@ pub struct Settings {
     pub confirm_sync: bool,
     /// `workbench.editor.restoreViewState`: cursors and scroll come back with a file.
     pub restore_view_state: bool,
-    /// `herdr-code.restoreSession`: the groups, tabs and sidebar of the last session.
+    /// `termcode.restoreSession`: the groups, tabs and sidebar of the last session.
     pub restore_session: bool,
     /// Parts that were skipped (a bad regex): shown, the rest still applies.
     pub warnings: Vec<String>,
@@ -220,12 +220,12 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-/// `$HERDR_PLUGIN_CONFIG_DIR/settings.json`, or where herdr would put it.
+/// `~/.config/termcode/settings.json` (`data_dir`).
 pub fn path() -> PathBuf {
-    crate::plugin_dir(false).join("settings.json")
+    crate::data_dir(false).join("settings.json")
 }
 
-/// VS Code's user settings, for `herdr-code.followVSCode`.
+/// VS Code's user settings, for `termcode.followVSCode`.
 pub fn vscode_path() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|d| !d.is_empty())
@@ -291,7 +291,7 @@ pub fn load(path: &Path) -> Result<Settings, String> {
 
 /// Resolve an in-memory draft through the same path as settings.json.
 pub fn resolve(user: &Map<String, Value>) -> Result<Settings, String> {
-    let vscode = if user.get("herdr-code.followVSCode").and_then(Value::as_bool) == Some(true) {
+    let vscode = if user.get("termcode.followVSCode").and_then(Value::as_bool) == Some(true) {
         Some(read_jsonc(&vscode_path())?.unwrap_or_default())
     } else {
         None
@@ -315,9 +315,9 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
     let base = if compact { Spacing::COMPACT } else { Spacing::COMFORTABLE };
     Ok(Settings {
         compact,
-        spacing: Spacing::parse(base, g("herdr-code.spacing").unwrap_or(&Value::Null)),
-        ascii_icons: g("herdr-code.icons").and_then(Value::as_str) == Some("ascii"),
-        file_icons: g("herdr-code.fileIcons").map(FileIcons::parse).unwrap_or_default(),
+        spacing: Spacing::parse(base, g("termcode.spacing").unwrap_or(&Value::Null)),
+        ascii_icons: g("termcode.icons").and_then(Value::as_str) == Some("ascii"),
+        file_icons: g("termcode.fileIcons").map(FileIcons::parse).unwrap_or_default(),
         rainbow,
         guides: g("editor.guides.indentation").and_then(Value::as_bool).unwrap_or(d.guides),
         sticky: g("workbench.tree.enableStickyScroll").and_then(Value::as_bool).unwrap_or(d.sticky),
@@ -346,11 +346,11 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         goto_multiple: crate::navui::goto_mode(g("editor.gotoLocation.multipleDefinitions")),
         theme: ThemeData { json, extra_rules },
         blame_status: g("git.blame.statusBarItem.enabled").and_then(Value::as_bool).unwrap_or(d.blame_status),
-        blocks: crate::blocks::parse(g("herdr-code.blocks.style"), compact),
+        blocks: crate::blocks::parse(g("termcode.blocks.style"), compact),
         blame_decoration: g("git.blame.editorDecoration.enabled").and_then(Value::as_bool).unwrap_or(d.blame_decoration),
         confirm_sync: g("git.confirmSync").and_then(Value::as_bool).unwrap_or(d.confirm_sync),
         restore_view_state: g("workbench.editor.restoreViewState").and_then(Value::as_bool).unwrap_or(d.restore_view_state),
-        restore_session: g("herdr-code.restoreSession").and_then(Value::as_bool).unwrap_or(d.restore_session),
+        restore_session: g("termcode.restoreSession").and_then(Value::as_bool).unwrap_or(d.restore_session),
         warnings,
     })
 }
@@ -777,27 +777,27 @@ fn token_rules(cust: Option<&Value>, names: &[String]) -> Vec<Value> {
 }
 
 /// What "Preferences: Open Settings (JSON)" writes when there is no file yet.
-pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.json format (comments and
+pub const TEMPLATE: &str = r##"// termcode settings, in VS Code's settings.json format (comments and
 // trailing commas are fine). Saving applies them; a broken file is reported in
 // the status bar and the last good settings stay. Every key is in README.md.
 {
     // "workbench.colorTheme": "Visual Studio Dark - C++",   // a theme id, label or absolute path
-    // "herdr-code.followVSCode": false,   // take the theme and its customizations from VS Code
+    // "termcode.followVSCode": false,   // take the theme and its customizations from VS Code
     // "workbench.colorCustomizations": { "statusBar.background": "#007ACC" },
     // "editor.tokenColorCustomizations": {
     //     "comments": "#6A9955",
     //     "textMateRules": [{ "scope": "keyword.control", "settings": { "foreground": "#C586C0" } }],
     // },
     // "workbench.density": "comfortable",   // or "compact"
-    // "herdr-code.spacing": {   // overrides the density's values, one key at a time
+    // "termcode.spacing": {   // overrides the density's values, one key at a time
     //     "sidebarWidth": 36, "sidebarPadding": 2, "sectionGap": 1, "editorPadding": 0,
     //     "tabPadding": 2, "statusBarGap": 3, "activityBarWidth": 5, "listItemGap": 0,
     //     "popupPadding": [3, 1], "iconGap": 2, "treeIndent": 2, "titleBarPadding": 2,
     //     "buttonPadding": 2, "findWidgetPadding": 1, "statusBarPadding": 2,
     // },
-    // "herdr-code.blocks.style": "cards",  // or "lines", "none" (compact density: "lines")
-    // "herdr-code.icons": "nerd",           // or "ascii"
-    // "herdr-code.fileIcons": {
+    // "termcode.blocks.style": "cards",  // or "lines", "none" (compact density: "lines")
+    // "termcode.icons": "nerd",           // or "ascii"
+    // "termcode.fileIcons": {
     //     "extensions": { "c": { "glyph": "", "color": "#519ABA" } },
     //     "fileNames": { "Kconfig": { "glyph": "" } },
     //     "folderNames": { "drivers": { "color": "#E2C08D" } },
@@ -807,7 +807,7 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "indentRainbow.enabled": true,
     // "indentRainbow.indicatorStyle": "classic",   // or "light"
     // "editor.guides.indentation": true,
-    // "herdr-code.restoreSession": true,              // reopen the last tabs, groups and sidebar
+    // "termcode.restoreSession": true,              // reopen the last tabs, groups and sidebar
     // "workbench.editor.restoreViewState": true,      // and each file's cursor and scroll
     // "workbench.tree.enableStickyScroll": true,      // pin the folders above the top row
     // "workbench.tree.stickyScrollMaxItemCount": 1,  // up to 10: arch, then sh, boards, …
@@ -829,7 +829,7 @@ pub const TEMPLATE: &str = r##"// herdr-code settings, in VS Code's settings.jso
     // "editor.minimap.showSlider": "mouseover",    // or "always"
     // "editor.minimap.side": "right",              // or "left"
     // "editor.minimap.size": "fill",               // or "proportional", "fit"
-    // "herdr-code.minimap.minEditorWidth": 40,     // shrink, then hide, below this
+    // "termcode.minimap.minEditorWidth": 40,     // shrink, then hide, below this
     // "editor.gotoLocation.multipleDefinitions": "peek",   // or "gotoAndPeek", "goto"
 }
 "##;
@@ -839,7 +839,7 @@ mod tests {
     use super::*;
 
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("herdr-code-set-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-set-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
@@ -900,7 +900,7 @@ mod tests {
         assert!(s.compact);
         assert_eq!(s.spacing, Spacing::COMPACT);
         assert_eq!(s.tab_size, 2);
-        let m = parse_jsonc(r#"{"herdr-code.spacing": {"listItemGap": 1, "sidebarWidth": 500, "popupPadding": [5]}}"#).unwrap();
+        let m = parse_jsonc(r#"{"termcode.spacing": {"listItemGap": 1, "sidebarWidth": 500, "popupPadding": [5]}}"#).unwrap();
         let sp = from_maps(&m, None, &[]).unwrap().spacing;
         assert_eq!((sp.list_gap, sp.sidebar_width, sp.popup_padding), (1, 200, (5, 1)), "clamped; unset keys keep the density's");
         assert_eq!(sp.tab_padding, Spacing::COMFORTABLE.tab_padding);
@@ -1019,11 +1019,11 @@ mod tests {
     fn settings_dialog_saves_structured_values_and_keeps_jsonc_outside_them() {
         let dir = tmp("dialog-jsonc");
         let path = dir.join("settings.json");
-        let text = "// leading 中\n{\n  \"editor.tabSize\": 2,\n  \"editor.tabSize\": /* before */ 4 /* after */,\n  \"workbench.colorCustomizations\": {\"old\": [1, {\"text\": \"} // ,\"}]},\n  \"custom.key\": \"keep 中文\",\n  \"herdr-code.spacing\": { /* spacing */ \"sidebarWidth\": 36, /* width */ \"iconGap\": 3 /* gap */ },\n}\n";
+        let text = "// leading 中\n{\n  \"editor.tabSize\": 2,\n  \"editor.tabSize\": /* before */ 4 /* after */,\n  \"workbench.colorCustomizations\": {\"old\": [1, {\"text\": \"} // ,\"}]},\n  \"custom.key\": \"keep 中文\",\n  \"termcode.spacing\": { /* spacing */ \"sidebarWidth\": 36, /* width */ \"iconGap\": 3 /* gap */ },\n}\n";
         fs::write(&path, text).unwrap();
         let changes = serde_json::json!({
             "editor.tabSize": 6,
-            "herdr-code.spacing": {"sidebarWidth": 42, "iconGap": 3},
+            "termcode.spacing": {"sidebarWidth": 42, "iconGap": 3},
             "workbench.colorCustomizations": {"editor.background": "#123456"},
             "editor.rulers": [80, {"column": 100, "color": "#555555"}],
         }).as_object().unwrap().clone();

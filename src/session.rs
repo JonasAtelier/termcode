@@ -239,7 +239,7 @@ fn usable(app: &App, key: &str, gone: &HashSet<String>) -> bool {
     }
 }
 
-/// Bring the saved session back: per `herdr-code.restoreSession` the groups,
+/// Bring the saved session back: per `termcode.restoreSession` the groups,
 /// tabs and sidebar; per `workbench.editor.restoreViewState` the cursors and
 /// scroll (of the tabs, and of files reopened later). Anything off or invalid is
 /// left as a fresh start.

@@ -35,7 +35,7 @@ pub struct Cfg {
     pub slider_always: bool,
     pub left: bool,
     pub size: Size,
-    /// `herdr-code.minimap.minEditorWidth`: text columns the minimap must leave.
+    /// `termcode.minimap.minEditorWidth`: text columns the minimap must leave.
     pub min_text: u16,
 }
 
@@ -70,7 +70,7 @@ impl Cfg {
                 _ => d.size,
             },
             min_text: user
-                .get("herdr-code.minimap.minEditorWidth")
+                .get("termcode.minimap.minEditorWidth")
                 .and_then(Value::as_u64)
                 .map_or(d.min_text, |n| n.clamp(10, 400) as u16),
         }

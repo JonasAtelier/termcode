@@ -46,7 +46,7 @@ struct Req {
     act: Act,
     sym: String,
     pending: Pending,
-    /// A root below its repo (`herdr-code drivers/net`): the same lookup over the whole
+    /// A root below its repo (`termcode drivers/net`): the same lookup over the whole
     /// repo, run when the root has no definition, in repo-relative paths.
     repo: Option<Query>,
     /// Results in repo-relative paths (the repo-wide run), and the root's declarations
@@ -732,7 +732,7 @@ mod tests {
     const CALL: usize = 3;
 
     fn app(tag: &str) -> (App, PathBuf) {
-        let d = std::env::temp_dir().join(format!("herdr-code-navui-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-navui-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         for (p, t) in [("inc/dsa.h", DSA_H), ("net/port.c", PORT_C), ("net/a.c", A_C), ("net/b.c", B_C), ("net/user.c", USER_C), ("net/far.c", FAR_C), ("net/far_use.c", "int f(void)\n{\n\treturn far_away();\n}\n")] {
             let f = d.join(p);

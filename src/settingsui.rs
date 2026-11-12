@@ -32,51 +32,51 @@ struct Field {
 use Kind::*;
 const FIELDS: &[Field] = &[
     Field { category: 0, label: "Color theme", key: "workbench.colorTheme", kind: Text(settings::EMBEDDED_ID) },
-    Field { category: 0, label: "Follow VS Code theme", key: "herdr-code.followVSCode", kind: Check(false) },
+    Field { category: 0, label: "Follow VS Code theme", key: "termcode.followVSCode", kind: Check(false) },
     Field { category: 0, label: "Density", key: "workbench.density", kind: Choice(&["comfortable", "compact"]) },
     Field {
         category: 0,
         label: "Block borders",
-        key: "herdr-code.blocks.style",
+        key: "termcode.blocks.style",
         kind: Choice(&["cards", "lines", "none"]),
     },
-    Field { category: 0, label: "Icons", key: "herdr-code.icons", kind: Choice(&["nerd", "ascii"]) },
+    Field { category: 0, label: "Icons", key: "termcode.icons", kind: Choice(&["nerd", "ascii"]) },
     Field { category: 0, label: "Workbench colors (JSON)", key: "workbench.colorCustomizations", kind: Json("{}") },
     Field { category: 0, label: "Token colors (JSON)", key: "editor.tokenColorCustomizations", kind: Json("{}") },
-    Field { category: 0, label: "File icons (JSON)", key: "herdr-code.fileIcons", kind: Json("{}") },
-    Field { category: 1, label: "Sidebar width", key: "herdr-code.spacing/sidebarWidth", kind: Number(12, 200, 36) },
-    Field { category: 1, label: "Sidebar padding", key: "herdr-code.spacing/sidebarPadding", kind: Number(0, 4, 2) },
-    Field { category: 1, label: "Section gap", key: "herdr-code.spacing/sectionGap", kind: Number(0, 3, 1) },
-    Field { category: 1, label: "Editor padding", key: "herdr-code.spacing/editorPadding", kind: Number(0, 8, 0) },
-    Field { category: 1, label: "Tab padding", key: "herdr-code.spacing/tabPadding", kind: Number(0, 4, 2) },
-    Field { category: 1, label: "Status item gap", key: "herdr-code.spacing/statusBarGap", kind: Number(1, 8, 3) },
+    Field { category: 0, label: "File icons (JSON)", key: "termcode.fileIcons", kind: Json("{}") },
+    Field { category: 1, label: "Sidebar width", key: "termcode.spacing/sidebarWidth", kind: Number(12, 200, 36) },
+    Field { category: 1, label: "Sidebar padding", key: "termcode.spacing/sidebarPadding", kind: Number(0, 4, 2) },
+    Field { category: 1, label: "Section gap", key: "termcode.spacing/sectionGap", kind: Number(0, 3, 1) },
+    Field { category: 1, label: "Editor padding", key: "termcode.spacing/editorPadding", kind: Number(0, 8, 0) },
+    Field { category: 1, label: "Tab padding", key: "termcode.spacing/tabPadding", kind: Number(0, 4, 2) },
+    Field { category: 1, label: "Status item gap", key: "termcode.spacing/statusBarGap", kind: Number(1, 8, 3) },
     Field {
         category: 1,
         label: "Activity bar width",
-        key: "herdr-code.spacing/activityBarWidth",
+        key: "termcode.spacing/activityBarWidth",
         kind: Number(2, 9, 5),
     },
-    Field { category: 1, label: "List item gap", key: "herdr-code.spacing/listItemGap", kind: Number(0, 1, 0) },
+    Field { category: 1, label: "List item gap", key: "termcode.spacing/listItemGap", kind: Number(0, 1, 0) },
     Field {
         category: 1,
         label: "Popup padding [x,y] (JSON)",
-        key: "herdr-code.spacing/popupPadding",
+        key: "termcode.spacing/popupPadding",
         kind: Json("[3,1]"),
     },
-    Field { category: 1, label: "Icon gap", key: "herdr-code.spacing/iconGap", kind: Number(1, 4, 2) },
-    Field { category: 1, label: "Tree indent", key: "herdr-code.spacing/treeIndent", kind: Number(0, 8, 2) },
-    Field { category: 1, label: "Title padding", key: "herdr-code.spacing/titleBarPadding", kind: Number(0, 6, 2) },
-    Field { category: 1, label: "Button padding", key: "herdr-code.spacing/buttonPadding", kind: Number(0, 4, 2) },
+    Field { category: 1, label: "Icon gap", key: "termcode.spacing/iconGap", kind: Number(1, 4, 2) },
+    Field { category: 1, label: "Tree indent", key: "termcode.spacing/treeIndent", kind: Number(0, 8, 2) },
+    Field { category: 1, label: "Title padding", key: "termcode.spacing/titleBarPadding", kind: Number(0, 6, 2) },
+    Field { category: 1, label: "Button padding", key: "termcode.spacing/buttonPadding", kind: Number(0, 4, 2) },
     Field {
         category: 1,
         label: "Find widget padding",
-        key: "herdr-code.spacing/findWidgetPadding",
+        key: "termcode.spacing/findWidgetPadding",
         kind: Number(0, 3, 1),
     },
     Field {
         category: 1,
         label: "Status bar padding",
-        key: "herdr-code.spacing/statusBarPadding",
+        key: "termcode.spacing/statusBarPadding",
         kind: Number(0, 6, 2),
     },
     Field { category: 2, label: "Tab size", key: "editor.tabSize", kind: Number(1, 16, 4) },
@@ -135,7 +135,7 @@ const FIELDS: &[Field] = &[
     Field {
         category: 3,
         label: "Minimum editor width",
-        key: "herdr-code.minimap.minEditorWidth",
+        key: "termcode.minimap.minEditorWidth",
         kind: Number(10, 400, 40),
     },
     Field { category: 4, label: "Enable indent rainbow", key: "indentRainbow.enabled", kind: Check(true) },
@@ -186,7 +186,7 @@ const FIELDS: &[Field] = &[
     },
     Field { category: 5, label: "Trim trailing whitespace", key: "files.trimTrailingWhitespace", kind: Check(true) },
     Field { category: 5, label: "Insert final newline", key: "files.insertFinalNewline", kind: Check(true) },
-    Field { category: 5, label: "Restore session", key: "herdr-code.restoreSession", kind: Check(true) },
+    Field { category: 5, label: "Restore session", key: "termcode.restoreSession", kind: Check(true) },
     Field {
         category: 5,
         label: "Restore file view state",
@@ -323,25 +323,25 @@ impl Dialog {
         let compact = map.get("workbench.density").and_then(Value::as_str) == Some("compact");
         if compact {
             let spacing = match field.key {
-                "herdr-code.spacing/sidebarWidth" => Some(30),
-                "herdr-code.spacing/sidebarPadding"
-                | "herdr-code.spacing/sectionGap"
-                | "herdr-code.spacing/findWidgetPadding" => Some(0),
-                "herdr-code.spacing/tabPadding"
-                | "herdr-code.spacing/iconGap"
-                | "herdr-code.spacing/titleBarPadding"
-                | "herdr-code.spacing/buttonPadding"
-                | "herdr-code.spacing/statusBarPadding" => Some(1),
-                "herdr-code.spacing/activityBarWidth" => Some(3),
+                "termcode.spacing/sidebarWidth" => Some(30),
+                "termcode.spacing/sidebarPadding"
+                | "termcode.spacing/sectionGap"
+                | "termcode.spacing/findWidgetPadding" => Some(0),
+                "termcode.spacing/tabPadding"
+                | "termcode.spacing/iconGap"
+                | "termcode.spacing/titleBarPadding"
+                | "termcode.spacing/buttonPadding"
+                | "termcode.spacing/statusBarPadding" => Some(1),
+                "termcode.spacing/activityBarWidth" => Some(3),
                 _ => None,
             };
             if let Some(n) = spacing {
                 return Value::from(n);
             }
-            if field.key == "herdr-code.spacing/popupPadding" {
+            if field.key == "termcode.spacing/popupPadding" {
                 return serde_json::json!([0, 0]);
             }
-            if field.key == "herdr-code.blocks.style" {
+            if field.key == "termcode.blocks.style" {
                 return Value::from("lines");
             }
         }
@@ -844,7 +844,7 @@ fn validate(key: &str, v: &Value) -> Result<(), String> {
             return Err("invalid color".into());
         }
     }
-    if key == "herdr-code.spacing/popupPadding" {
+    if key == "termcode.spacing/popupPadding" {
         let a = v.as_array().ok_or("expected [horizontal, vertical]")?;
         if a.len() != 2 || !a[0].as_u64().is_some_and(|n| n <= 8) || !a[1].as_u64().is_some_and(|n| n <= 4) {
             return Err("padding must be [0..8, 0..4]".into());
@@ -1187,7 +1187,7 @@ mod tests {
     }
 
     fn setup(tag: &str) -> (App, Terminal<TestBackend>, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("herdr-code-settingsui-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termcode-settingsui-{tag}-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
         fs::write(&path, "// keep this comment\n{\n  \"editor.tabSize\": 4, // keep this too\n  \"custom.unrelated\": {\"value\": 9},\n}\n").unwrap();
@@ -1388,10 +1388,10 @@ mod tests {
             app.on_mouse(MouseEvent { kind, column: x, row: track.y, modifiers: KeyModifiers::NONE });
         };
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), track.x);
-        assert_eq!(app.settings_dlg.as_ref().unwrap().draft["herdr-code.spacing"]["sidebarWidth"], 12);
+        assert_eq!(app.settings_dlg.as_ref().unwrap().draft["termcode.spacing"]["sidebarWidth"], 12);
         mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), track.right() + 10);
         mouse(&mut app, MouseEventKind::Up(MouseButton::Left), track.right() + 10);
-        assert_eq!(app.settings_dlg.as_ref().unwrap().draft["herdr-code.spacing"]["sidebarWidth"], 200);
+        assert_eq!(app.settings_dlg.as_ref().unwrap().draft["termcode.spacing"]["sidebarWidth"], 200);
         assert_eq!(app.settings.spacing.sidebar_width, 36);
         click(&mut app, &mut t, "Save");
         assert_eq!(settings::load(&path).unwrap().spacing.sidebar_width, 200);

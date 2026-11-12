@@ -1,5 +1,5 @@
 {
-  "//": "VS Code colour-registry defaults for dark themes (registerColor dark values, VS Code 1.106 workbench.desktop.main.js and extensions/git/package.json). A value is #hex, another key, or [key, alpha factor] (VS Code's transparent()). Only keys herdr-code draws with. Exceptions: sideBarStickyScroll.border (VS Code: none) is herdr-code's own default, and tab.inactiveBorderLeft (the grey edge of tabs not shown) is herdr-code's own key.",
+  "//": "VS Code colour-registry defaults for dark themes (registerColor dark values, VS Code 1.106 workbench.desktop.main.js and extensions/git/package.json). A value is #hex, another key, or [key, alpha factor] (VS Code's transparent()). Only keys termcode draws with. Exceptions: sideBarStickyScroll.border (VS Code: none) is termcode's own default, and tab.inactiveBorderLeft (the grey edge of tabs not shown) is termcode's own key.",
   "foreground": "#CCCCCC",
   "descriptionForeground": ["foreground", 0.7],
   "errorForeground": "#F48771",

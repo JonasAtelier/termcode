@@ -1,9 +1,9 @@
-# herdr-code
+# termcode
 
 A VS Code-style code editor and Git panel that runs **inside your terminal**.
 
-- Run `herdr-code` in a folder and it opens right there, like `vim`. Quit and you are back at your shell.
-- Inside [herdr](https://herdr.dev), `herdr-code --tab` opens it as a **Code** tab instead.
+- Run `termcode` in a folder and it opens right there, like `vim`. Quit and you are back at your shell.
+- Inside [herdr](https://herdr.dev), `termcode --tab` opens it as a **Code** tab instead.
 
 What you get: a file Explorer, Search, Source Control with a commit graph, tabs and split
 editors, side-by-side diffs, a minimap, Go to Definition, and VS Code themes.
@@ -12,7 +12,7 @@ editors, side-by-side diffs, a minimap, Go to Definition, and VS Code themes.
 
 Both opening this repo and one file, fresh profiles, median of 5 runs (Linux, 12 cores):
 
-| | herdr-code | VS Code 1.146 |
+| | termcode | VS Code 1.146 |
 |---|---|---|
 | Startup | **0.1 s** | 1.0 s |
 | Memory (PSS) | **20 MB** | 800–1070 MB |
@@ -21,7 +21,7 @@ Both opening this repo and one file, fresh profiles, median of 5 runs (Linux, 12
 | CPU when idle | 0.9% | 9% |
 | Install size | 8 MB | 1.9 GB |
 
-herdr-code's numbers leave out the terminal it runs in. VS Code had no extensions and its
+termcode's numbers leave out the terminal it runs in. VS Code had no extensions and its
 startup is its own timer, which leaves out the `code` launcher, so real use is heavier.
 
 ---
@@ -31,14 +31,14 @@ startup is its own timer, which leaves out the `code` launcher, so real use is h
 | Tool | Why | Check it |
 |---|---|---|
 | Linux | the only supported OS | |
-| Rust 1.88 or newer | to build herdr-code | `cargo --version` |
+| Rust 1.88 or newer | to build termcode | `cargo --version` |
 | A C linker (`cc`) | Rust needs it to link | `cc --version` |
 | git | Source Control | `git --version` |
 | ripgrep (`rg`) | Search and Go to Definition | `rg --version` |
 | herdr 0.9.1 or newer | only for the Code tab (`--tab`) | `herdr --version` |
 | A Nerd Font | the icons | see step 2 |
 
-Optional: [Ghostty](https://ghostty.org) (the terminal herdr-code is tested in), and
+Optional: [Ghostty](https://ghostty.org) (the terminal termcode is tested in), and
 `wl-copy` or `xclip` for the clipboard.
 
 ### Install them
@@ -60,7 +60,7 @@ Already have Rust? Run `rustup update` to get 1.88 or newer.
 
 ## 2. Set up a Nerd Font
 
-herdr-code draws its icons with a [Nerd Font](https://www.nerdfonts.com/font-downloads).
+termcode draws its icons with a [Nerd Font](https://www.nerdfonts.com/font-downloads).
 
 1. Download **JetBrainsMono Nerd Font** and install it (on Linux: unzip into
    `~/.local/share/fonts/`, then run `fc-cache -f`).
@@ -72,7 +72,7 @@ herdr-code draws its icons with a [Nerd Font](https://www.nerdfonts.com/font-dow
    ```
 
 Can't install a font? Use plain ASCII icons instead (see [Settings](#settings)):
-`"herdr-code.icons": "ascii"`.
+`"termcode.icons": "ascii"`.
 
 On a Mac connecting over SSH, install the font **on the Mac**: the terminal on your
 screen draws the icons.
@@ -80,13 +80,13 @@ screen draws the icons.
 ## 3. Build and install
 
 ```sh
-git clone https://github.com/JonasAtelier/herdr-code.git
-cd herdr-code
+git clone https://github.com/JonasAtelier/termcode.git
+cd termcode
 cargo install --path . --root ~/.local
 ```
 
-This builds herdr-code (a few minutes the first time) and puts it at
-`~/.local/bin/herdr-code`.
+This builds termcode (a few minutes the first time) and puts it at
+`~/.local/bin/termcode`.
 
 Make sure `~/.local/bin` is on your `PATH`:
 
@@ -97,34 +97,34 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # zsh: ~/.zshrc
 Open a new terminal and check:
 
 ```sh
-herdr-code -h
+termcode -h
 ```
 
 **Low on memory?** Add `-j2` to the `cargo install` line to build with 2 jobs.
 
 ## 4. Add it to herdr (optional)
 
-From the `herdr-code` folder:
+From the `termcode` folder:
 
 ```sh
 herdr plugin link "$PWD"
-herdr plugin list            # shows jonas.herdr-code
+herdr plugin list            # shows jonas.termcode
 ```
 
-herdr finds `herdr-code` through `PATH`. If herdr was already running before you changed
+herdr finds `termcode` through `PATH`. If herdr was already running before you changed
 `PATH`, quit herdr and start it again.
 
 ## 5. Try it
 
 ```sh
 cd ~/some/project
-herdr-code                 # opens this folder; Ctrl+Q quits
+termcode                 # opens this folder; Ctrl+Q quits
 ```
 
 Inside a herdr pane:
 
 ```sh
-herdr-code --tab           # opens a "Code: project" tab
+termcode --tab           # opens a "Code: project" tab
 ```
 
 The new tab doesn't take focus: click **Code: project** in the tab bar.
@@ -132,20 +132,20 @@ The new tab doesn't take focus: click **Code: project** in the tab bar.
 ## Updating
 
 ```sh
-cd herdr-code
+cd termcode
 git pull
 cargo install --path . --root ~/.local
 ```
 
-That's all. A herdr-code that is already open reloads itself a few seconds later, keeping
+That's all. A termcode that is already open reloads itself a few seconds later, keeping
 its tabs and cursors. It waits while you have unsaved files. To reload by hand: F1, then
 **Developer: Reload Window**.
 
 ## Uninstalling
 
 ```sh
-herdr plugin unlink jonas.herdr-code
-rm ~/.local/bin/herdr-code
+herdr plugin unlink jonas.termcode
+rm ~/.local/bin/termcode
 ```
 
 ---
@@ -155,19 +155,19 @@ rm ~/.local/bin/herdr-code
 ### Opening things
 
 ```sh
-herdr-code                    # this folder (its git repo if inside one)
-herdr-code ~/proj             # any folder
-herdr-code src/main.rs:120    # a file at line 120 (also :LINE:COL)
-herdr-code --tab src          # the same, as a herdr tab
+termcode                    # this folder (its git repo if inside one)
+termcode ~/proj             # any folder
+termcode src/main.rs:120    # a file at line 120 (also :LINE:COL)
+termcode --tab src          # the same, as a herdr tab
 ```
 
 - **Quitting:** Ctrl+Q, or Close in the title bar. You are asked about unsaved files first.
 - **Sessions:** open the same folder again and your tabs, cursors and layout come back.
   Unsaved text survives a crash too.
-- **Subfolders:** `herdr-code drivers/net` shows only that folder, but Source Control still
+- **Subfolders:** `termcode drivers/net` shows only that folder, but Source Control still
   uses the whole repo.
 - **Keyboard shortcut for the Code tab:** none is set. In herdr, bind `plugin_action`
-  `jonas.herdr-code.open` to a free key.
+  `jonas.termcode.open` to a free key.
 
 ### The sidebar
 
@@ -236,7 +236,7 @@ Press **Ctrl+,** (or click the gear at the bottom left). Change things, then:
 - **Save** to keep them.
 
 Prefer a file? F1 **Preferences: Open Settings (JSON)** opens
-`~/.config/herdr/plugins/config/jonas.herdr-code/settings.json`. It uses VS Code's format,
+`~/.config/termcode/settings.json`. It uses VS Code's format,
 so comments are fine. A broken file never crashes the panel: the last good settings stay.
 
 Example:
@@ -246,7 +246,7 @@ Example:
     "workbench.colorTheme": "Default Dark Modern",   // any VS Code theme you have installed
     "workbench.colorCustomizations": { "statusBar.background": "#3B3B3B" },
     "workbench.density": "compact",                  // tighter layout
-    "herdr-code.icons": "ascii",                     // no Nerd Font needed
+    "termcode.icons": "ascii",                     // no Nerd Font needed
     "editor.tabSize": 8,
 }
 ```
@@ -259,12 +259,12 @@ Example:
 | `workbench.colorTheme` | "Visual Studio Dark - C++" | A VS Code theme name, or a path to a theme JSON |
 | `workbench.colorCustomizations` | `{}` | Override UI colours, also per theme (`"[Theme Name]": {…}`) |
 | `editor.tokenColorCustomizations` | `{}` | Override code colours (`comments`, `strings`, `textMateRules`, …) |
-| `herdr-code.followVSCode` | `false` | Take the three keys above from your VS Code settings |
+| `termcode.followVSCode` | `false` | Take the three keys above from your VS Code settings |
 | `workbench.density` | `"comfortable"` | or `"compact"` |
-| `herdr-code.spacing` | per density | Fine-tune sizes, see below |
-| `herdr-code.icons` | `"nerd"` | `"ascii"`: no Nerd Font needed |
-| `herdr-code.blocks.style` | `"cards"` | `"cards"` rounded boxes, `"lines"` shared lines, `"none"` flat |
-| `herdr-code.fileIcons` | `{}` | Custom file icons: `extensions`, `fileNames`, `folderNames` → `{ "glyph", "color" }` |
+| `termcode.spacing` | per density | Fine-tune sizes, see below |
+| `termcode.icons` | `"nerd"` | `"ascii"`: no Nerd Font needed |
+| `termcode.blocks.style` | `"cards"` | `"cards"` rounded boxes, `"lines"` shared lines, `"none"` flat |
+| `termcode.fileIcons` | `{}` | Custom file icons: `extensions`, `fileNames`, `folderNames` → `{ "glyph", "color" }` |
 | `indentRainbow.enabled` | `true` | Colour each indent level |
 | `indentRainbow.indicatorStyle` | `"classic"` | `"light"`: a thin line instead of a background |
 | `indentRainbow.colors`, `.errorColor`, `.tabmixColor` | the extension's | Rainbow colours |
@@ -284,27 +284,27 @@ Example:
 | `editor.minimap.size` | `"fill"` | `"proportional"` or `"fit"` |
 | `editor.minimap.renderCharacters` | `true` | `false`: blocks instead of dots |
 | `editor.minimap.maxColumn` | `120` | Columns the minimap covers |
-| `herdr-code.minimap.minEditorWidth` | `40` | Hide the minimap when the editor gets narrower |
+| `termcode.minimap.minEditorWidth` | `40` | Hide the minimap when the editor gets narrower |
 | `editor.gotoLocation.multipleDefinitions` | `"peek"` | `"gotoAndPeek"` or `"goto"` |
 | `breadcrumbs.enabled` | `true` | The path row under the tabs |
 | `files.trimTrailingWhitespace` | `true` | On save, on edited lines |
 | `files.insertFinalNewline` | `true` | On save |
 | `workbench.tree.enableStickyScroll` | `true` | Keep the current folder pinned while scrolling |
 | `workbench.tree.stickyScrollMaxItemCount` | `1` | More than 1: nested rows, like VS Code |
-| `herdr-code.restoreSession` | `true` | Reopen last session's tabs |
+| `termcode.restoreSession` | `true` | Reopen last session's tabs |
 | `workbench.editor.restoreViewState` | `true` | Restore cursor and scroll per file |
 | `git.blame.statusBarItem.enabled` | `true` | Line author in the status bar |
 | `git.blame.editorDecoration.enabled` | `false` | Line author after the cursor line |
 | `git.confirmSync` | `true` | Ask before pull + push |
 
-`herdr-code.spacing` keys (comfortable / compact): `sidebarWidth` 36/30,
+`termcode.spacing` keys (comfortable / compact): `sidebarWidth` 36/30,
 `sidebarPadding` 2/0, `sectionGap` 1/0, `editorPadding` 0/0, `tabPadding` 2/1,
 `statusBarGap` 3/3, `statusBarPadding` 2/1, `activityBarWidth` 5/3, `listItemGap` 0/0,
 `popupPadding` [3,1]/[0,0], `iconGap` 2/1, `treeIndent` 2/2, `titleBarPadding` 2/1,
 `buttonPadding` 2/1, `findWidgetPadding` 1/0.
 
-Environment variables: `HERDR_CODE_ICONS=0` forces ASCII icons;
-`HERDR_CODE_GRAPHICS=kitty|blocks|text` picks how Settings draws its controls.
+Environment variables: `TERMCODE_ICONS=0` forces ASCII icons;
+`TERMCODE_GRAPHICS=kitty|blocks|text` picks how Settings draws its controls.
 
 </details>
 
@@ -312,15 +312,18 @@ Environment variables: `HERDR_CODE_ICONS=0` forces ASCII icons;
 
 | What | Where |
 |---|---|
-| Settings | `~/.config/herdr/plugins/config/jonas.herdr-code/settings.json` |
-| Sessions, layout, unsaved-file backups, commit drafts | `~/.local/state/herdr/plugins/jonas.herdr-code/` |
+| Settings | `~/.config/termcode/settings.json` |
+| Sessions, layout, unsaved-file backups, commit drafts | `~/.local/state/termcode/` |
+
+Upgrading from herdr-code? Your settings and sessions are copied to these folders the
+first time termcode starts.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| Icons show as boxes or `?` | Use a Nerd Font **Mono** in your terminal (step 2), or set `"herdr-code.icons": "ascii"` |
-| `herdr-code: command not found` | Add `~/.local/bin` to `PATH` (step 3) |
+| Icons show as boxes or `?` | Use a Nerd Font **Mono** in your terminal (step 2), or set `"termcode.icons": "ascii"` |
+| `termcode: command not found` | Add `~/.local/bin` to `PATH` (step 3) |
 | The Code tab doesn't open | Restart herdr after fixing `PATH`; check `herdr plugin list` |
 | Ctrl+Shift keys do nothing | Your terminal doesn't send them; use F1 or the other key |
 | Build runs out of memory | `cargo install --path . --root ~/.local -j2` |

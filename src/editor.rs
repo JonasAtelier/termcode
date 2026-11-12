@@ -1814,7 +1814,7 @@ impl Buffer {
         } else {
             let dir = target.parent().ok_or("no parent directory")?;
             let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let tmp = dir.join(format!(".{name}.herdr-code.{}.tmp", std::process::id()));
+            let tmp = dir.join(format!(".{name}.termcode.{}.tmp", std::process::id()));
             let _ = fs::remove_file(&tmp);
             let mode = self.mode.unwrap_or(0o644);
             match fs::OpenOptions::new().write(true).create_new(true).mode(mode & 0o777).open(&tmp) {
@@ -1953,11 +1953,11 @@ pub fn read_backup(bak: &Path, file: &Path) -> Option<serde_json::Value> {
 /// Backups in `dir` no running panel owns, newest first: any session, any panel,
 /// and the older key formats too (found by content, so never renamed). A record
 /// is a running panel's while its `pid` lives under the command name `live`.
-// ponytail: pid + comm liveness; a dead panel's pid reused by another herdr-code
+// ponytail: pid + comm liveness; a dead panel's pid reused by another termcode
 // hides that backup until the other one exits. A per-panel flock if that bites.
-pub fn orphan_backups(dir: &Path, live: &str) -> Vec<(PathBuf, serde_json::Value)> {
+pub fn orphan_backups(dir: &Path, live: &[&str]) -> Vec<(PathBuf, serde_json::Value)> {
     let running = |v: &serde_json::Value| {
-        v["pid"].as_u64().is_some_and(|p| fs::read_to_string(format!("/proc/{p}/comm")).is_ok_and(|c| c.trim_end() == live))
+        v["pid"].as_u64().is_some_and(|p| fs::read_to_string(format!("/proc/{p}/comm")).is_ok_and(|c| live.contains(&c.trim_end())))
     };
     let mut v: Vec<(PathBuf, serde_json::Value)> = fs::read_dir(dir)
         .into_iter()
@@ -2061,11 +2061,11 @@ mod tests {
         }
         fs::write(bak.join("x.tmp"), "{}").unwrap();
         let comm = fs::read_to_string("/proc/self/comm").unwrap();
-        let names = |live: &str| -> Vec<String> {
+        let names = |live: &[&str]| -> Vec<String> {
             orphan_backups(&bak, live).iter().map(|(p, _)| p.file_stem().unwrap().to_string_lossy().into_owned()).collect()
         };
-        assert_eq!(names(comm.trim_end()), ["old", "dead"], "our own pid is a running panel");
-        assert_eq!(names("herdr-code"), ["live", "old", "dead"], "a pid under another name is no panel");
+        assert_eq!(names(&[comm.trim_end()]), ["old", "dead"], "our own pid is a running panel");
+        assert_eq!(names(&["termcode"]), ["live", "old", "dead"], "a pid under another name is no panel");
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -2699,7 +2699,7 @@ mod tests {
     }
 
     fn tmpdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("herdr-code-ed-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-ed-{tag}-{}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         d
     }
@@ -3043,7 +3043,7 @@ mod tests {
             assert!(frame < 10_000, "an edit kept it pending");
         }
         // Cut to MAX_LINES: the pass ends at the last line kept, and stays done.
-        let d = std::env::temp_dir().join(format!("herdr-code-ed-trunc-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-ed-trunc-{}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         fs::write(d.join("big.c"), "int x;\n".repeat(MAX_LINES + 500)).unwrap();
         let mut t = Buffer::open(&d.join("big.c"));

@@ -1,5 +1,5 @@
-id = "jonas.herdr-code"
-name = "herdr-code"
+id = "jonas.termcode"
+name = "termcode"
 version = "0.1.0"
 min_herdr_version = "0.9.1"
 description = "Terminal editor and Git panel for a folder, file or repo, as a Ghostty + herdr workspace tab"
@@ -9,10 +9,10 @@ platforms = ["linux"]
 id = "open"
 title = "Open a Code tab for this pane's repo or folder"
 contexts = ["pane"]
-command = ["herdr-code", "--tab"]
+command = ["termcode", "--tab"]
 
 [[panes]]
 id = "panel"
 title = "Code"
 placement = "tab"
-command = ["herdr-code", "panel"]
+command = ["termcode", "panel"]

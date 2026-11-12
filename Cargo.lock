@@ -279,21 +279,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "herdr-code"
-version = "0.1.0"
-dependencies = [
- "fancy-regex",
- "image",
- "libc",
- "ratatui",
- "ratatui-image",
- "serde_json",
- "similar",
- "syntect",
- "unicode-width 0.2.0",
-]
-
-[[package]]
 name = "icy_sixel"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -812,6 +797,21 @@ dependencies = [
  "serde_derive",
  "thiserror 2.0.21",
  "walkdir",
+]
+
+[[package]]
+name = "termcode"
+version = "0.1.0"
+dependencies = [
+ "fancy-regex",
+ "image",
+ "libc",
+ "ratatui",
+ "ratatui-image",
+ "serde_json",
+ "similar",
+ "syntect",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

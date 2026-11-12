@@ -33,7 +33,7 @@ mod visual_tests {
     }
 }
 
-/// `workbench.density` plus `herdr-code.spacing`: comfortable (default) frames
+/// `workbench.density` plus `termcode.spacing`: comfortable (default) frames
 /// popups and pads the gutter; compact is the original tight layout.
 #[derive(Clone, Copy)]
 struct Lay {
@@ -278,8 +278,8 @@ fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         .get(app.ag)
         .and_then(|g| g.tabs.get(g.active))
         .map(|t| app.tab_title(&t.key));
-    // file — folder — app, a part equal to the one before it once (herdr-code's own repo).
-    let mut parts: Vec<String> = active.into_iter().chain([app.repo.clone(), "herdr-code".into()]).collect();
+    // file — folder — app, a part equal to the one before it once (termcode's own repo).
+    let mut parts: Vec<String> = active.into_iter().chain([app.repo.clone(), "termcode".into()]).collect();
     parts.dedup();
     let text = parts.join(" — ");
     let st = Style::new().fg(P.title_fg).bg(P.title_bg);

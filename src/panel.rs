@@ -36,7 +36,7 @@ pub const MAX_HITS: usize = 5_000;
 pub const MAX_GROUPS: usize = 3;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Set for the process a reload execs: the session comes back whatever the settings say.
-const RELOAD_ENV: &str = "HERDR_CODE_RELOADED";
+const RELOAD_ENV: &str = "TERMCODE_RELOADED";
 /// Changes made outside the panel (an agent, a shell) show without a focus or view
 /// switch: `git status` reruns this often, or ten times as long as it last took.
 const STATUS_POLL: Duration = Duration::from_secs(2);
@@ -44,7 +44,7 @@ const STATUS_POLL_MAX: Duration = Duration::from_secs(30);
 /// How often a running panel looks for a newly installed binary.
 const UPGRADE_CHECK: Duration = Duration::from_secs(2);
 
-/// A new herdr-code installed over the running one (`cargo install` renames a new file
+/// A new termcode installed over the running one (`cargo install` renames a new file
 /// over it): seen once its size and mtime hold still between two checks.
 #[derive(Default)]
 pub struct Upgrade {
@@ -185,8 +185,9 @@ pub struct Tip {
     since: Instant,
     pub shown: bool,
 }
-/// /proc/<pid>/comm of a running panel: its backups are its own.
-const PANEL_COMM: &str = "herdr-code";
+/// /proc/<pid>/comm of a running panel (herdr-code: its name before termcode): its
+/// backups are its own.
+const PANEL_COMM: &[&str] = &["termcode", "herdr-code"];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Side {
@@ -742,7 +743,7 @@ pub struct App {
     pub branch: String,
     pub side: Side,
     pub side_visible: bool,
-    /// Dragged sidebar width; None = `herdr-code.spacing.sidebarWidth`.
+    /// Dragged sidebar width; None = `termcode.spacing.sidebarWidth`.
     pub side_w: Option<u16>,
     /// `side_w` came from a layout.json before version 2: a content width, not an outer one.
     pub side_w_legacy: bool,
@@ -875,20 +876,29 @@ pub struct App {
 
 /// The TUI on this process's terminal for `root`, first opening `req`
 /// (`open:<path>:<line>:<col>`, see `request`). `tab`: the plugin's tab pane,
-/// which also takes requests from `herdr-code --tab FILE`; in place it does not.
+/// which also takes requests from `termcode --tab FILE`; in place it does not.
 /// Every exit restores the terminal, so in place the shell gets it back.
 pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> {
-    let state = crate::plugin_dir(true);
+    let state = crate::data_dir(true);
     let mut app = App::new(root, Some(state.join("layout.json")));
     app.settings_file = Some(settings::path());
     app.check_settings();
     // In place and in a tab alike: the same state dir, one session per launch folder
-    // (`key`: where herdr-code was started; the root itself for a PATH).
+    // (`key`: where termcode was started; the root itself for a PATH).
     app.session.file = Some(crate::session::path(&state, &key));
     // A reload brings the session back whatever the settings say, and is not a new launch:
     // its FILE:L was opened already.
-    let reloaded = std::env::var_os(RELOAD_ENV).is_some();
+    let mut reloaded = std::env::var_os(RELOAD_ENV).is_some();
     std::env::remove_var(RELOAD_ENV); // not for git and rg
+    // A herdr-code (termcode's old name) reloading into termcode is a reload too, and its
+    // session, saved just now, is in the old folder.
+    if std::env::var_os("HERDR_CODE_RELOADED").is_some() {
+        std::env::remove_var("HERDR_CODE_RELOADED");
+        reloaded = true;
+        if let Some(new) = &app.session.file {
+            let _ = fs::copy(crate::session::path(&crate::old_data_dir(true), &key), new);
+        }
+    }
     let wanted = (app.settings.restore_session, app.settings.restore_view_state);
     if reloaded {
         (app.settings.restore_session, app.settings.restore_view_state) = (true, true);
@@ -900,7 +910,7 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     if reloaded {
         app.msg = "reloaded".into();
     }
-    // `herdr-code FILE:L` opens on top of the restored tabs.
+    // `termcode FILE:L` opens on top of the restored tabs.
     if let Some(req) = req.filter(|_| !reloaded) {
         app.request(&req);
     }
@@ -930,7 +940,7 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
             hook(info);
         } else {
             let name = std::thread::current().name().unwrap_or("job").to_string();
-            log_panic(&crate::plugin_dir(true), &format!("thread '{name}' {info}"));
+            log_panic(&crate::data_dir(true), &format!("thread '{name}' {info}"));
         }
     }));
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1537,7 +1547,7 @@ impl App {
         if self.unsaved() == 0 && !busy {
             (self.reload, self.quit) = (true, true);
         } else if !std::mem::replace(&mut self.upgrade.told, true) {
-            self.msg = "a new herdr-code is installed: it reloads once every file is saved".into();
+            self.msg = "a new termcode is installed: it reloads once every file is saved".into();
         }
     }
 
@@ -4311,9 +4321,9 @@ impl App {
     }
 
     /// A bracketed paste: a launcher request when it starts with
-    /// `herdr-code:<our token>:` (never inserted anywhere), else ordinary text.
+    /// `termcode:<our token>:` (never inserted anywhere), else ordinary text.
     pub fn on_paste(&mut self, s: &str) {
-        let req = self.token.as_deref().and_then(|t| s.strip_prefix("herdr-code:")?.strip_prefix(t)?.strip_prefix(':'));
+        let req = self.token.as_deref().and_then(|t| s.strip_prefix("termcode:")?.strip_prefix(t)?.strip_prefix(':'));
         match req {
             Some(body) => self.request(body),
             None => self.paste_text(s),
@@ -5285,7 +5295,7 @@ mod tests {
 
     /// A throwaway repo with one commit; local config keeps hooks and signing out.
     fn repo(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("herdr-code-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("src")).unwrap();
         let g = |args: &[&str]| {
@@ -6113,7 +6123,7 @@ mod tests {
         assert_eq!(app.quick.as_ref().unwrap().items[0], "Preferences: Open Settings (JSON)");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.quick.is_none() && cfg.exists(), "created from the template");
-        assert!(app.ed().unwrap().0.text().starts_with("// herdr-code settings"));
+        assert!(app.ed().unwrap().0.text().starts_with("// termcode settings"));
         assert!(app.settings_err.is_none(), "the all-comments template is valid");
         let set = |app: &mut App, text: &str| {
             let (b, tab) = app.ed().unwrap();
@@ -6530,7 +6540,7 @@ mod tests {
         let main = std::thread::current().id();
         assert!(panic_restores(main));
         assert!(!std::thread::spawn(move || panic_restores(main)).join().unwrap(), "a job thread leaves the terminal and the gate alone");
-        let d = std::env::temp_dir().join(format!("herdr-code-panic-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-panic-{}", std::process::id()));
         log_panic(&d, "thread 'git' panicked at x.rs:1:1:\nboom");
         log_panic(&d, "thread 'nav' panicked at y.rs:2:2:\nagain");
         let log = fs::read_to_string(d.join("panic.log")).unwrap();
@@ -6827,7 +6837,7 @@ mod tests {
     #[test]
     fn hup_ends_the_loop_and_saves_the_session() {
         let root = repo("hup");
-        let state = std::env::temp_dir().join(format!("herdr-code-hup-state-{}", std::process::id()));
+        let state = std::env::temp_dir().join(format!("termcode-hup-state-{}", std::process::id()));
         let mut app = App::new(root.clone(), Some(state.join("layout.json")));
         app.session.file = Some(crate::session::path(&state, &root));
         app.open_file(0, "README.md", false);
@@ -7731,7 +7741,7 @@ mod tests {
 
     #[test]
     fn search_streams_and_stops_at_cap() {
-        let tmp = std::env::temp_dir().join(format!("herdr-code-cap-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("termcode-cap-{}", std::process::id()));
         fs::create_dir_all(&tmp).unwrap();
         fs::write(tmp.join("many.txt"), "e\n".repeat(MAX_HITS * 3)).unwrap();
         let mut app = App::new(tmp.clone(), None);
@@ -7913,7 +7923,7 @@ mod tests {
 
     #[test]
     fn a_folder_without_git_has_no_scm_and_runs_no_git() {
-        let d = std::env::temp_dir().join(format!("herdr-code-nogit-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-nogit-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(d.join("sub")).unwrap();
         fs::write(d.join("sub/a.txt"), "alpha\nbeta\n").unwrap();
@@ -7947,7 +7957,7 @@ mod tests {
         let mut app = App::new(root.clone(), None);
         app.token = Some("t0k".into());
         let main = root.join("src/main.rs");
-        let req = |p: &Path, rest: &str| format!("herdr-code:t0k:open:{}{rest}", p.display());
+        let req = |p: &Path, rest: &str| format!("termcode:t0k:open:{}{rest}", p.display());
         // A request opens the file pinned at line:col (col in characters); nothing is inserted.
         app.on_paste(&req(&main, ":2:5"));
         let tab = &app.groups[0].tabs[app.groups[0].active];
@@ -7956,15 +7966,15 @@ mod tests {
         let clean = "fn main() {\n    println!(\"needle\");\n}";
         assert!(text(&app, "file:src/main.rs").starts_with(clean));
         // Refused, never inserted: outside the root, not a regular file, bad numbers, a relative path.
-        let out = std::env::temp_dir().join(format!("herdr-code-req-out-{}", std::process::id()));
+        let out = std::env::temp_dir().join(format!("termcode-req-out-{}", std::process::id()));
         fs::write(&out, "x").unwrap();
         let bad = [
             (req(&out, ":1:1"), "outside"),
             (req(&root.join("src"), ":1:1"), "not a regular file"),
             (req(&main, ":x:1"), "open:"),
             (req(&main, ":1"), "open:"),
-            ("herdr-code:t0k:open:src/main.rs:1:1".into(), "open:"),
-            ("herdr-code:t0k:shell:true".into(), "shell"),
+            ("termcode:t0k:open:src/main.rs:1:1".into(), "open:"),
+            ("termcode:t0k:shell:true".into(), "shell"),
         ];
         for (body, why) in bad {
             app.on_paste(&body);
@@ -7973,9 +7983,9 @@ mod tests {
         assert_eq!(app.groups[0].tabs.len(), 1);
         assert!(text(&app, "file:src/main.rs").starts_with(clean));
         // Another token is no request, and any other paste is ordinary text.
-        app.on_paste("herdr-code:bad:open:/x:1:1");
+        app.on_paste("termcode:bad:open:/x:1:1");
         app.on_paste("hi");
-        assert!(text(&app, "file:src/main.rs").contains("    herdr-code:bad:open:/x:1:1hiprintln!"));
+        assert!(text(&app, "file:src/main.rs").contains("    termcode:bad:open:/x:1:1hiprintln!"));
         fs::remove_file(&out).unwrap();
         wait_idle(&mut app);
         fs::remove_dir_all(&root).unwrap();
@@ -7984,7 +7994,7 @@ mod tests {
     /// A non-git tree arch/{sh/{boards/b00..b59.c, kernel.c}, x86/x.c}, block/{blk,blk2}.c,
     /// zz.txt, with arch, sh and boards expanded.
     fn deep_tree(tag: &str) -> (PathBuf, App) {
-        let d = std::env::temp_dir().join(format!("herdr-code-sticky-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-sticky-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         for dir in ["arch/sh/boards", "arch/x86", "block"] {
             fs::create_dir_all(d.join(dir)).unwrap();
@@ -8694,7 +8704,7 @@ mod tests {
 
     #[test]
     fn diff_tabs_scroll_like_the_editor() {
-        let d = std::env::temp_dir().join(format!("herdr-code-dscroll-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-dscroll-{}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         let mut app = App::new(d.canonicalize().unwrap(), None);
         let rows = open_big_diff(&mut app);
@@ -8851,7 +8861,7 @@ mod tests {
     /// side's text without line numbers, signs or filler rows.
     #[test]
     fn a_reloaded_diff_with_new_rows_drops_the_selection() {
-        let d = std::env::temp_dir().join(format!("herdr-code-dreload-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-dreload-{}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         let mut app = App::new(d.canonicalize().unwrap(), None);
         let rows = open_big_diff(&mut app);
@@ -8957,7 +8967,7 @@ mod tests {
 
     #[test]
     fn diff_selection_copies_one_side() {
-        let d = std::env::temp_dir().join(format!("herdr-code-dsel-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-dsel-{}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         let mut app = App::new(d.canonicalize().unwrap(), None);
         let rows = open_big_diff(&mut app);
@@ -9039,7 +9049,7 @@ mod tests {
         let buf = t.backend().buffer();
         assert_eq!((buf[(cx, y(chg, &app))].symbol(), buf[(cx, y(chg, &app))].bg), ("c", crate::theme::P.selection));
         assert_ne!(buf[(cx - 2, y(chg, &app))].bg, crate::theme::P.selection, "outside it, the diff's colours");
-        if let Some(out) = std::env::var_os("HERDR_CODE_ANSI") {
+        if let Some(out) = std::env::var_os("TERMCODE_ANSI") {
             {
             let (from, to) = ((r.x + 5, y(17, &app)), (r.x + 9, y(chg, &app)));
             drag(&mut app, from, to);
@@ -9056,7 +9066,7 @@ mod tests {
 
     #[test]
     fn tiny_terminals_with_a_diff_tab_never_panic() {
-        let d = std::env::temp_dir().join(format!("herdr-code-dtiny-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-dtiny-{}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         let mut app = App::new(d.canonicalize().unwrap(), None);
         open_big_diff(&mut app);
@@ -9082,12 +9092,12 @@ mod tests {
     }
 
     /// The sweep on a real tree, read only:
-    /// `HERDR_CODE_BIG_TREE=<kernel tree> cargo test -- --ignored --nocapture sticky_sweep`
+    /// `TERMCODE_BIG_TREE=<kernel tree> cargo test -- --ignored --nocapture sticky_sweep`
     /// expands arch, arch/sh, arch/sh/boards and scrolls one row at a time to past arch.
     #[test]
     #[ignore]
     fn sticky_sweep_on_a_big_tree() {
-        let Some(root) = std::env::var_os("HERDR_CODE_BIG_TREE").map(PathBuf::from) else { return };
+        let Some(root) = std::env::var_os("TERMCODE_BIG_TREE").map(PathBuf::from) else { return };
         let mut app = App::new(root.canonicalize().unwrap(), None);
         for p in ["arch", "arch/sh", "arch/sh/boards"] {
             let i = at(&app, p);
@@ -9128,12 +9138,12 @@ mod tests {
     }
 
     /// Frame time over big lists, sticky scroll on and off. Read only:
-    /// `HERDR_CODE_BIG_TREE=<kernel tree> cargo test --release -- --ignored --nocapture frame_time`
+    /// `TERMCODE_BIG_TREE=<kernel tree> cargo test --release -- --ignored --nocapture frame_time`
     /// expands its drivers/ in full; Search gets 5000 synthetic hits.
     #[test]
     #[ignore]
     fn frame_time_with_big_lists() {
-        let Some(root) = std::env::var_os("HERDR_CODE_BIG_TREE").map(PathBuf::from) else { return };
+        let Some(root) = std::env::var_os("TERMCODE_BIG_TREE").map(PathBuf::from) else { return };
         let mut app = App::new(root.canonicalize().unwrap(), None);
         let d = at(&app, "drivers");
         app.toggle(d);
@@ -10083,10 +10093,10 @@ mod tests {
 
     #[test]
     fn a_new_install_reloads_once_it_holds_still_and_nothing_is_unsaved() {
-        assert_eq!(replaced(Path::new("/x/herdr-code (deleted)")), Some(PathBuf::from("/x/herdr-code")));
-        assert_eq!(replaced(Path::new("/x/herdr-code")), None, "still the installed one");
+        assert_eq!(replaced(Path::new("/x/termcode (deleted)")), Some(PathBuf::from("/x/termcode")));
+        assert_eq!(replaced(Path::new("/x/termcode")), None, "still the installed one");
         let root = repo("upgrade");
-        let bin = root.join("herdr-code-new");
+        let bin = root.join("termcode-new");
         fs::write(&bin, "v2").unwrap();
         let mut app = App::new(root.clone(), None);
         wait_idle(&mut app); // its first git job done
@@ -10409,15 +10419,15 @@ mod tests {
     }
 
     #[test]
-    fn the_title_names_a_folder_called_herdr_code_once() {
+    fn the_title_names_a_folder_called_termcode_once() {
         let root = repo("title");
         let mut app = App::new(root.clone(), None);
-        app.repo = "herdr-code".into();
+        app.repo = "termcode".into();
         app.open_file(0, "src/main.rs", false);
         let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
         let shown = screen(&mut app, &mut t);
         let title = shown.lines().next().unwrap();
-        assert!(title.contains("main.rs — herdr-code") && !title.contains("herdr-code — herdr-code"), "{title}");
+        assert!(title.contains("main.rs — termcode") && !title.contains("termcode — termcode"), "{title}");
         let close = app.ui.close;
         let cross = (close.x..close.right()).map(|x| &t.backend().buffer()[(x, close.y)]).find(|c| c.symbol() == crate::theme::icons().tab_close).expect("the tab's cross on Close");
         assert!(cross.modifier.contains(Modifier::BOLD), "bold, as on a tab");

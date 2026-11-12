@@ -16,7 +16,7 @@ enum Mode {
 }
 
 fn mode(get: impl Fn(&str) -> Option<String>) -> Mode {
-    match get("HERDR_CODE_GRAPHICS").as_deref() {
+    match get("TERMCODE_GRAPHICS").as_deref() {
         Some("kitty") => return Mode::Kitty,
         Some("blocks") => return Mode::Blocks,
         Some("text") => return Mode::Text,
@@ -250,15 +250,15 @@ mod tests {
                 Mode::Blocks,
             ),
             (
-                vec![("TERM_PROGRAM", "ghostty"), ("HERDR_CODE_GRAPHICS", "text")],
+                vec![("TERM_PROGRAM", "ghostty"), ("TERMCODE_GRAPHICS", "text")],
                 Mode::Text,
             ),
             (
-                vec![("TERM", "xterm-kitty"), ("HERDR_CODE_GRAPHICS", "blocks")],
+                vec![("TERM", "xterm-kitty"), ("TERMCODE_GRAPHICS", "blocks")],
                 Mode::Blocks,
             ),
             (
-                vec![("HERDR_CODE_GRAPHICS", "kitty"), ("TMUX", "socket")],
+                vec![("TERMCODE_GRAPHICS", "kitty"), ("TMUX", "socket")],
                 Mode::Kitty,
             ),
         ] {

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-`herdr-code` is a Linux terminal editor and Git panel, built with Rust 2021 and Ratatui. It runs standalone or as a herdr workspace tab.
+`termcode` is a Linux terminal editor and Git panel, built with Rust 2021 and Ratatui. It runs standalone or as a herdr workspace tab.
 
 - `src/main.rs`: CLI parsing, workspace resolution, and herdr launching.
 - `src/panel.rs`, `src/ui.rs`, `src/editor.rs`: application state, rendering, and editing.
@@ -35,4 +35,4 @@ Use Rust's built-in `#[test]` functions inside `#[cfg(test)] mod tests`, with de
 
 ## Commit & Pull Request Guidelines
 
-Follow the history's `herdr-code: <short imperative summary>` convention. Explain changed behavior in concise body bullets and include actual test results. Keep changes focused. PRs should describe the problem, link relevant issues, list verification, and attach terminal screenshots for visible UI changes. Update `README.md` when commands, settings, or keybindings change.
+Follow the history's `termcode: <short imperative summary>` convention. Explain changed behavior in concise body bullets and include actual test results. Keep changes focused. PRs should describe the problem, link relevant issues, list verification, and attach terminal screenshots for visible UI changes. Update `README.md` when commands, settings, or keybindings change.

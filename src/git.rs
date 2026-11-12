@@ -148,9 +148,9 @@ fn scratch() -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = if cfg!(test) { std::env::temp_dir() } else { crate::plugin_dir(true) };
+    let dir = if cfg!(test) { std::env::temp_dir() } else { crate::data_dir(true) };
     fs::create_dir_all(&dir)?;
-    let p = dir.join(format!(".herdr-code-git-{}-{n}", std::process::id()));
+    let p = dir.join(format!(".termcode-git-{}-{n}", std::process::id()));
     let f = fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&p)?;
     let _ = fs::remove_file(&p);
     Ok(f)
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn glob_named_files_are_literal() {
-        let d = std::env::temp_dir().join(format!("herdr-code-glob-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-glob-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         assert!(Command::new("git").args(["init", "-q"]).arg(&d).status().unwrap().success());

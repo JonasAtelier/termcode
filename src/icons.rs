@@ -1,6 +1,6 @@
 //! Explorer file icons: VS Code's default file icon theme (Seti) mapped to the
 //! Nerd Font's `nf-seti-*` glyphs (assets/seti.json, from `cargo run --example gen_seti`),
-//! with per-name overrides from `herdr-code.fileIcons`.
+//! with per-name overrides from `termcode.fileIcons`.
 
 use crate::theme::{icons, Rgba, P};
 use ratatui::style::Color;
@@ -28,7 +28,7 @@ fn glyph(s: &str) -> Option<String> {
     (unicode_width::UnicodeWidthChar::width(c) == Some(1)).then(|| c.to_string())
 }
 
-/// `herdr-code.fileIcons`.
+/// `termcode.fileIcons`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileIcons {
     pub extensions: HashMap<String, Over>,

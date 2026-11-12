@@ -700,7 +700,7 @@ mod tests {
     }
 
     fn fixture(tag: &str, files: &[(&str, &str)]) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("herdr-code-nav-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-nav-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         for (p, text) in files {
             let f = d.join(p);

@@ -1,8 +1,8 @@
 [package]
-name = "herdr-code"
+name = "termcode"
 version = "0.1.0"
 edition = "2021"
-description = "herdr plugin: a terminal editor and Git panel for Ghostty + herdr workspaces"
+description = "A VS Code-style code editor and Git panel in the terminal"
 publish = false
 
 [dependencies]

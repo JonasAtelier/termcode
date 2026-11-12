@@ -843,7 +843,7 @@ pub fn finish_writes(app: &mut App, limit: Option<Duration>) {
     while app.gitui.writes > 0 && limit.is_none_or(|l| start.elapsed() < l) {
         let line = app.gitui.waiting_line();
         if line != shown {
-            eprint!("\r\x1b[Kherdr-code: {line}");
+            eprint!("\r\x1b[Ktermcode: {line}");
             shown = line;
         }
         drain(app);
@@ -1961,7 +1961,7 @@ pub(crate) mod ui_tests {
 
     /// `<tmp>/r`: a repo on main (hooks and signing off), after `script`.
     pub(crate) fn repo(tag: &str, script: &str) -> (Tmp, PathBuf) {
-        let t = Tmp(std::env::temp_dir().join(format!("herdr-code-scm-{tag}-{}", std::process::id())));
+        let t = Tmp(std::env::temp_dir().join(format!("termcode-scm-{tag}-{}", std::process::id())));
         let _ = fs::remove_dir_all(&t.0);
         fs::create_dir_all(&t.0).unwrap();
         let init = "git init -q -b main r; cd r; git config user.name Tester; git config user.email t@example.com; \
@@ -2052,7 +2052,7 @@ pub(crate) mod ui_tests {
             "narrow",
             &format!(
                 "mkdir -p src/a/rather/deep/folder; echo needle > {file}; git add .; \
-                 GIT_AUTHOR_DATE=\"@$(($(date +%s) - 3700)) +0000\" git commit -qm 'herdr-code: tighter rows for the narrow sidebar layout'; \
+                 GIT_AUTHOR_DATE=\"@$(($(date +%s) - 3700)) +0000\" git commit -qm 'termcode: tighter rows for the narrow sidebar layout'; \
                  git tag v1.0.0; git branch feature-with-a-long-name; echo needle again >> {file}"
             ),
         );
@@ -2091,7 +2091,7 @@ pub(crate) mod ui_tests {
                     seen.push('\n');
                 }
             }
-            assert!(seen.contains("herdr-code: tight") && seen.contains("with_a_long") && seen.contains("needle again"), "width {w}:\n{seen}");
+            assert!(seen.contains("termcode: tight") && seen.contains("with_a_long") && seen.contains("needle again"), "width {w}:\n{seen}");
             let hdr = seen.lines().find(|l| l.contains("TIMELINE")).unwrap_or("");
             assert!(hdr.contains("with_a_long_file_name.rs") || hdr.contains("with_a_lo") && hdr.contains('…'), "width {w}: header {hdr:?}");
             let time = if w == 50 { "  1 hour ago" } else { "  1h" };

@@ -1335,7 +1335,7 @@ mod tests {
     }
 
     fn tmp(name: &str) -> Tmp {
-        let d = std::env::temp_dir().join(format!("herdr-code-gitops-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termcode-gitops-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         Tmp(d)
@@ -1864,7 +1864,7 @@ mod tests {
         let got = fs::read_to_string(&probe).unwrap();
         let mut lines = got.lines();
         let fd2 = lines.next().unwrap();
-        assert!(!fd2.starts_with("pipe:") && fd2.contains(".herdr-code-git-") && fd2.ends_with("(deleted)"), "{fd2}");
+        assert!(!fd2.starts_with("pipe:") && fd2.contains(".termcode-git-") && fd2.ends_with("(deleted)"), "{fd2}");
         let sid: i64 = lines.next().unwrap().trim().parse().unwrap();
         // SAFETY: getsid(0) only reads this process's session id.
         assert_ne!(sid, unsafe { libc::getsid(0) } as i64, "its own session");

@@ -1,4 +1,4 @@
-//! Block boundaries, `herdr-code.blocks.style`: "cards" frames each block (the activity
+//! Block boundaries, `termcode.blocks.style`: "cards" frames each block (the activity
 //! bar, each sidebar section, each editor group) with rounded corners, side by side
 //! cards touching at their borders; stacked cards share one border row (`├──┤`: a row is
 //! about twice as tall as a column is wide); "lines" draws one shared line between blocks,
@@ -21,7 +21,7 @@ pub enum BlockStyle {
     None,
 }
 
-/// `herdr-code.blocks.style`; unset, compact density draws lines (no room for frames).
+/// `termcode.blocks.style`; unset, compact density draws lines (no room for frames).
 pub fn parse(v: Option<&Value>, compact: bool) -> BlockStyle {
     match v.and_then(Value::as_str) {
         Some("cards") => BlockStyle::Cards,

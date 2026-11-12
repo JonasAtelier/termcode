@@ -423,7 +423,7 @@ mod tests {
     use super::*;
 
     fn fixture(tag: &str, docs: &str) -> (App, Terminal<ratatui::backend::TestBackend>, std::path::PathBuf, Position) {
-        let root = std::env::temp_dir().join(format!("herdr-code-hover-{tag}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termcode-hover-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("f.c"), format!("{docs}static int foo(void) {{ return 0; }}\nint use(void) {{ return foo(); }}\n")).unwrap();
