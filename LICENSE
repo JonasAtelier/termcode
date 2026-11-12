@@ -15,8 +15,8 @@ Copyright (c) 2026 JonasAtelier. All rights reserved.
 
 3. Third-party components. The Software contains components licensed by others under
    their own terms, reproduced alongside it (in the Debian package:
-   /usr/share/doc/termcode/copyright). Nothing in this license limits your rights under
-   those terms.
+   /usr/share/doc/termcode/copyright and THIRD-PARTY-LICENSES). Nothing in this license
+   limits your rights under those terms.
 
 4. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

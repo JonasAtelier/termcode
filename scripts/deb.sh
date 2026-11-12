@@ -12,14 +12,20 @@ export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=~ --remap-path-prefix
 # Its own build folder: those flags would otherwise rebuild `cargo install`'s every time.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/deb}"
 
+# The Rust crates built into the binary and their license texts.
+host=$(rustc -vV | sed -n 's/^host: //p')
+mkdir -p target
+cargo metadata --format-version 1 --locked --filter-platform "$host" | python3 -I scripts/third-party.py > target/THIRD-PARTY-LICENSES
+
 # Debian's machine-readable copyright file: termcode's LICENSE, then every bundled
 # license, each text indented one space with "." for blank lines.
 text() { sed -e 's/^$/./' -e 's/^/ /' "$1"; }
-mkdir -p target
 {
     printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n'
     printf 'Upstream-Name: termcode\nUpstream-Contact: JonasAtelier\n'
-    printf 'Source: https://github.com/JonasAtelier/termcode\n\n'
+    printf 'Source: https://github.com/JonasAtelier/termcode\n'
+    printf 'Comment: The Rust crates built into termcode, with their copyright and\n'
+    printf ' license texts, are listed in /usr/share/doc/termcode/THIRD-PARTY-LICENSES.\n\n'
     printf 'Files: *\nCopyright: 2026 JonasAtelier\nLicense: LicenseRef-termcode\n'
     text LICENSE
     printf '\nFiles: assets/vscode_dark_defaults.json assets/seti.json\n'

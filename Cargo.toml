@@ -25,6 +25,7 @@ assets = [
     # Debian's machine-readable copyright: termcode's license and each bundled one
     # (written by scripts/deb.sh).
     ["target/copyright", "usr/share/doc/termcode/copyright", "644"],
+    ["target/THIRD-PARTY-LICENSES", "usr/share/doc/termcode/", "644"],
 ]
 
 [dependencies]

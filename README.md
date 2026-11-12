@@ -384,3 +384,5 @@ not be modified, resold or redistributed. See [LICENSE](LICENSE) (installed as
 
 The default colours and `assets/vscode_dark_defaults.json` come from VS Code (MIT, Microsoft);
 `assets/seti.json` from Seti UI (MIT, Jesse Weed). See `assets/vscode_LICENSE.txt`.
+The Rust crates termcode is built with, and their licenses, are listed in
+`/usr/share/doc/termcode/THIRD-PARTY-LICENSES` (written by `scripts/third-party.py`).
