@@ -59,7 +59,7 @@ pub struct Graph {
     /// The expanded commit and its files (None while they load).
     pub open: Option<(usize, Option<Vec<FileChange>>)>,
     pub list: List,
-    /// HEAD as of the last load: a new HEAD reloads the graph.
+    /// `git_key` as of the last load: a new one reloads the graph.
     head: Option<String>,
     gen: u64,
     /// The commit-graph cache was checked for (`gitops::ensure_commit_graph`).
@@ -76,6 +76,8 @@ pub struct Timeline {
     pub loading: bool,
     pub list: List,
     gen: u64,
+    /// `git_key` as of the last load: a new one reloads the timeline.
+    head: Option<String>,
 }
 
 /// The commit hover card.
@@ -668,33 +670,45 @@ pub fn load_graph(app: &mut App, reset: bool) {
     app.gitui.spawn(move || Msg::Page(gen, skip, gitops::log_page(&root, skip, PAGE)));
 }
 
-/// After a status landed (HEAD came with it, in the sync state): a new HEAD reloads a
-/// visible graph; an open dialog relists. No git runs here.
+/// HEAD and every ref, from the last status: what the graph and the timeline show.
+fn git_key(app: &App) -> Option<String> {
+    app.gitui.cmds.sync.as_ref().map(|s| format!("{:?} {:x}", s.head, s.refs))
+}
+
+/// After a status landed (HEAD and the refs came with it, in the sync state): a commit,
+/// checkout, branch, tag, fetch, push or stash, in termcode or in a shell, reloads a
+/// visible graph and the timeline; an open dialog relists. No git runs here.
 pub fn on_refresh(app: &mut App) {
     if app.git_root.is_none() {
         return;
     }
+    let key = git_key(app);
     if app.side == Side::Scm && app.side_visible {
-        let head = app.gitui.cmds.sync.as_ref().map(|s| format!("{:?}", s.head));
         let g = &mut app.gitui.graph;
-        if head != g.head || !g.loaded && !g.loading {
-            g.head = head;
+        if key != g.head || !g.loaded && !g.loading {
+            g.head = key.clone();
             load_graph(app, true);
         }
+    }
+    let t = &mut app.gitui.timeline;
+    if t.open && t.path.is_some() && key != t.head {
+        t.head = key;
+        load_timeline(app, true);
     }
     if app.gitui.dlg.is_some() {
         commitdlg::relist(app);
     }
 }
 
-fn load_timeline(app: &mut App) {
+/// The first page (`reset`: it replaces what shows once it lands) or the next one.
+fn load_timeline(app: &mut App, reset: bool) {
     let Some(root) = app.git_root.clone() else { return };
     let Some(path) = app.gitui.timeline.path.clone() else { return };
     let Some(rp) = app.repo_path(&path) else { return };
     let t = &mut app.gitui.timeline;
     t.gen += 1;
     t.loading = true;
-    let (gen, skip) = (t.gen, t.items.len());
+    let (gen, skip) = (t.gen, if reset { 0 } else { t.items.len() });
     app.gitui.spawn(move || {
         let page = gitops::file_history(&root, &rp, skip, PAGE);
         Msg::Timeline(gen, path, skip, page)
@@ -711,9 +725,10 @@ fn sync_timeline(app: &mut App) {
     if app.repo_path(&rel).is_none() || app.gitui.timeline.path.as_deref() == Some(rel.as_str()) {
         return;
     }
+    let head = git_key(app);
     let t = &mut app.gitui.timeline;
-    *t = Timeline { open: true, path: Some(rel), gen: t.gen, ..Default::default() };
-    load_timeline(app);
+    *t = Timeline { open: true, path: Some(rel), gen: t.gen, head, ..Default::default() };
+    load_timeline(app, true);
 }
 
 /// Fold finished jobs in; true when something changed.
@@ -797,12 +812,15 @@ pub fn drain(app: &mut App) -> bool {
             },
             Msg::Timeline(gen, path, skip, page) => {
                 let t = &mut app.gitui.timeline;
-                if gen != t.gen || t.path.as_deref() != Some(path.as_str()) || skip != t.items.len() {
+                if gen != t.gen || t.path.as_deref() != Some(path.as_str()) || skip != 0 && skip != t.items.len() {
                     continue;
                 }
                 t.loading = false;
                 match page {
                     Ok(p) => {
+                        if skip == 0 {
+                            t.items.clear();
+                        }
                         t.items.extend(p.items);
                         t.more = p.more;
                     }
@@ -1102,7 +1120,7 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
                 open_commit(app, &h, &s, Some(path));
             }
         }
-        Hit::TimelineMore => load_timeline(app),
+        Hit::TimelineMore => load_timeline(app, false),
         Hit::RefsHead => {
             app.gitui.refs.open = !app.gitui.refs.open;
             save_layout(app);
@@ -2191,6 +2209,37 @@ pub(crate) mod ui_tests {
         app.scm_action(ScmAct::StageMerge);
         settle(&mut app);
         assert!(!app.scm_files.iter().any(|f| f.letter == '!'), "{:?}", app.scm_files);
+    }
+
+    #[test]
+    fn git_run_in_a_shell_shows_in_the_graph_and_timeline_at_the_next_status() {
+        let (t, r) = repo("outside", "echo 1 > f.txt; git add f.txt; git commit -qm first");
+        let mut app = app(&t, &r);
+        let mut tm = term();
+        app.open_file(0, "f.txt", false);
+        app.show_side(Side::Explorer, false);
+        screen(&mut app, &mut tm);
+        settle(&mut app);
+        app.show_side(Side::Scm, false);
+        settle(&mut app);
+        let subjects = |app: &App| app.gitui.graph.commits.iter().map(|c| c.subject.clone()).collect::<Vec<_>>();
+        assert_eq!(subjects(&app), ["first"]);
+        let status = |app: &mut App| {
+            app.refresh();
+            settle(app);
+        };
+        // A commit on the same branch: HEAD's name is the same, its commit is not.
+        sh(&r, "echo 2 > f.txt; git commit -qam second");
+        status(&mut app);
+        assert_eq!(subjects(&app), ["second", "first"]);
+        // A tag, and a remote branch as a fetch leaves it: no new commit, new labels.
+        sh(&r, "git tag v9; git update-ref refs/remotes/origin/main HEAD~1");
+        status(&mut app);
+        let refs = |i: usize| app.gitui.graph.commits[i].refs.clone();
+        assert!(refs(0).contains(&gitops::RefLabel::Tag("v9".into())), "{:?}", refs(0));
+        assert!(refs(1).contains(&gitops::RefLabel::Remote("origin/main".into())), "{:?}", refs(1));
+        // The file's TIMELINE follows too.
+        assert_eq!(app.gitui.timeline.items.iter().map(|c| c.commit.subject.as_str()).collect::<Vec<_>>(), ["second", "first"]);
     }
 
     #[test]

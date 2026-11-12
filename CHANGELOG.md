@@ -12,6 +12,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - A terminal under the editors: Ctrl+` or the button beside Split Editor shows and hides
   it, its top edge resizes it, and the shell keeps running while it is hidden.
 
+### Fixed
+- GRAPH and TIMELINE follow git run outside termcode (in its terminal or anywhere
+  else): a commit, checkout, branch, tag, fetch, push or stash shows within seconds.
+
 ## [0.1.0] - 2026-11-12
 
 The first public release.

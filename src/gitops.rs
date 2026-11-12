@@ -691,6 +691,9 @@ pub struct SyncStatus {
     pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+    /// A digest of HEAD's commit and every ref: it changes with a commit, checkout,
+    /// branch, tag, fetch, push or stash, whoever ran it.
+    pub refs: u64,
 }
 
 pub fn sync_status(repo: &Path) -> Res<SyncStatus> {
@@ -708,7 +711,14 @@ pub fn sync_status(repo: &Path) -> Res<SyncStatus> {
         behind = n.next().unwrap_or(0);
         ahead = n.next().unwrap_or(0);
     }
-    Ok(SyncStatus { head, upstream, ahead, behind })
+    // No refs yet (a new repository) fails: digest nothing.
+    let refs = read(repo, &["show-ref", "--head"]).map_or(0, |o| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        o.stdout.hash(&mut h);
+        h.finish()
+    });
+    Ok(SyncStatus { head, upstream, ahead, behind, refs })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
