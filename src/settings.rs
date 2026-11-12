@@ -121,6 +121,8 @@ pub struct Settings {
     pub spacing: Spacing,
     /// `termcode.icons`: a fixed set, or None for "auto" (`theme::auto_icons`).
     pub icons: Option<crate::theme::IconSet>,
+    /// `termcode.colors`: a fixed colour depth, or None for auto (`colors::detect`).
+    pub colors: Option<crate::colors::Depth>,
     /// `termcode.errorChecking`: shellcheck and the C/C++ compiler underline problems.
     pub error_checking: bool,
     pub file_icons: FileIcons,
@@ -187,6 +189,7 @@ impl Default for Settings {
             spacing: Spacing::COMFORTABLE,
             icons: None,
             error_checking: true,
+            colors: None,
             file_icons: FileIcons::default(),
             rainbow: Rainbow::default(),
             guides: true,
@@ -321,6 +324,7 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         compact,
         spacing: Spacing::parse(base, g("termcode.spacing").unwrap_or(&Value::Null)),
         error_checking: g("termcode.errorChecking").and_then(Value::as_bool).unwrap_or(true),
+        colors: g("termcode.colors").and_then(Value::as_str).and_then(crate::colors::parse),
         icons: match g("termcode.icons").and_then(Value::as_str) {
             Some("nerd") => Some(crate::theme::IconSet::Nerd),
             Some("unicode") => Some(crate::theme::IconSet::Unicode),

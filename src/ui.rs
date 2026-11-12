@@ -194,6 +194,12 @@ pub fn lang_id(name: &str) -> String {
 }
 
 pub fn draw(app: &mut App, f: &mut Frame) {
+    draw_frame(app, f);
+    // A terminal without 24-bit colour gets the nearest it has (`colors`).
+    crate::colors::fit(f.buffer_mut());
+}
+
+fn draw_frame(app: &mut App, f: &mut Frame) {
     app.ui = Hits::default();
     app.gitui.hits = Default::default();
     let lay = lay(app);

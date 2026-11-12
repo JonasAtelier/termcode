@@ -6,6 +6,7 @@
 //!   termcode panel                       the TUI, the plugin's `[[panes]]` entrypoint
 
 mod blocks;
+mod colors;
 mod decor;
 mod diff;
 mod editor;

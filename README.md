@@ -82,6 +82,22 @@ on the computer in front of you (its terminal draws the icons) and set
 To choose yourself, set `termcode.icons` (see [Settings](#settings)) to `"nerd"`,
 `"unicode"` or `"ascii"`; `"auto"` is the default.
 
+### Terminals
+
+termcode uses 24-bit colour where the terminal has it, and the nearest of 256 or 16
+colours where it doesn't, picked from the terminal's environment (`termcode.colors` or
+`TERMCODE_COLORS=truecolor|256|16` overrides it).
+
+| Terminal | Colours | Status |
+|---|---|---|
+| Ghostty, alone or in herdr | 24-bit | tested |
+| tmux 3.6 | 24-bit (tmux converts for the terminal outside) | tested |
+| GNU screen 4.9 | 256 or 16 | tested |
+| Over SSH | 256 unless `TERM` names a 24-bit terminal; Unicode icons | tested |
+| Linux console (`TERM=linux`) | 16 | tested by its environment |
+| GNOME Terminal, Ptyxis, Konsole, kitty, WezTerm, Alacritty, foot, iTerm2, Windows Terminal | 24-bit | should work, not tested here |
+| macOS Terminal | 256 | should work, not tested here |
+
 ## 3. Build and install
 
 ```sh
@@ -362,6 +378,7 @@ A few more examples:
 | `files.insertFinalNewline` | `true` | On save |
 | `workbench.tree.enableStickyScroll` | `true` | Keep the current folder pinned while scrolling |
 | `workbench.tree.stickyScrollMaxItemCount` | `1` | More than 1: nested rows, like VS Code |
+| `termcode.colors` | `"auto"` | `"truecolor"`, `"256"` or `"16"`; auto reads the terminal's environment |
 | `termcode.errorChecking` | `true` | Underline problems in shell scripts and C/C++ files |
 | `termcode.restoreSession` | `true` | Reopen last session's tabs |
 | `workbench.editor.restoreViewState` | `true` | Restore cursor and scroll per file |
@@ -375,7 +392,8 @@ A few more examples:
 `popupPadding` [3,1]/[0,0], `iconGap` 2/1, `treeIndent` 2/2, `titleBarPadding` 2/1,
 `buttonPadding` 2/1, `findWidgetPadding` 1/0.
 
-Environment variables: `TERMCODE_ICONS=nerd|unicode|ascii` (`0`: ascii) overrides the setting;
+Environment variables: `TERMCODE_ICONS=nerd|unicode|ascii` (`0`: ascii) and
+`TERMCODE_COLORS=truecolor|256|16` override their settings;
 `TERMCODE_GRAPHICS=kitty|blocks|text` picks how Settings draws its controls.
 
 </details>
@@ -394,6 +412,7 @@ first time termcode starts.
 
 | Problem | Fix |
 |---|---|
+| Colours look wrong (a yellow or garish background) | Set `"termcode.colors": "256"` (or `"16"`), or `COLORTERM=truecolor` if your terminal has 24-bit colour |
 | Icons show as boxes or `?` | Set `"termcode.icons": "unicode"` (a Nerd Font was found here but your terminal can't use it), or see step 2 |
 | `termcode: command not found` | Add `~/.local/bin` to `PATH` (step 3) |
 | The Code tab doesn't open | Restart herdr after fixing `PATH`; check `herdr plugin list` |

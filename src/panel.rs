@@ -1439,6 +1439,7 @@ impl App {
 
     pub fn apply_settings(&mut self, s: Settings) {
         theme::set_icons(s.icons.unwrap_or_else(theme::auto_icons));
+        crate::colors::set(s.colors);
         // Tests run no checker unless one turns it on (`lint::Lints`).
         self.lints.on = s.error_checking && !cfg!(test);
         editor::set_tab(s.tab_size);
@@ -1479,7 +1480,7 @@ impl App {
         let icons = match s.icons { Some(i) => format!("{i:?}"), None => format!("auto ({:?})", theme::icon_set()) };
         format!(
             "termcode {}\nOS: {os}, Linux {}, {}\nTerminal: TERM={} TERM_PROGRAM={} {}\nInside: {}\n\
-             Settings: icons {icons}, density {}, blocks {:?}, error checking {}\nTools: {}, {}, {}, {}\n",
+             Settings: icons {icons}, colors {:?}, density {}, blocks {:?}, error checking {}\nTools: {}, {}, {}, {}\n",
             env!("CARGO_PKG_VERSION"),
             kernel.trim(),
             std::env::consts::ARCH,
@@ -1487,6 +1488,7 @@ impl App {
             env("TERM_PROGRAM"),
             env("TERM_PROGRAM_VERSION"),
             if inside.is_empty() { "a plain terminal".to_string() } else { inside.join(", ") },
+            crate::colors::depth(),
             if s.compact { "compact" } else { "comfortable" },
             s.blocks,
             if s.error_checking { "on" } else { "off" },
@@ -7014,6 +7016,27 @@ mod tests {
         let _ = fs::remove_file(crate::trust::store());
         fs::remove_dir_all(&root).unwrap();
         let _ = fs::remove_file(&marker);
+    }
+
+    #[test]
+    fn a_256_or_16_colour_terminal_gets_no_24_bit_colour() {
+        use crate::colors::{test_depth, Depth};
+        let (root, mut app) = changed_file("depth");
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        for (d, ok) in [(Depth::C256, &(|c: Color| matches!(c, Color::Indexed(16..)) || c == Color::Reset) as &dyn Fn(Color) -> bool),
+                        (Depth::C16, &|c: Color| !matches!(c, Color::Rgb(..) | Color::Indexed(_)))] {
+            test_depth(Some(d));
+            for side in SIDES {
+                app.side = side;
+                screen(&mut app, &mut t);
+                let bad: Vec<Color> = t.backend().buffer().content.iter().flat_map(|c| [c.fg, c.bg]).filter(|&c| !ok(c)).take(3).collect();
+                assert!(bad.is_empty(), "{d:?} {side:?}: {bad:?}");
+            }
+        }
+        test_depth(None);
+        screen(&mut app, &mut t);
+        assert!(t.backend().buffer().content.iter().any(|c| matches!(c.bg, Color::Rgb(..))), "24-bit by default");
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

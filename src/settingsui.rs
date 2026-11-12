@@ -41,6 +41,7 @@ const FIELDS: &[Field] = &[
         kind: Choice(&["cards", "lines", "none"]),
     },
     Field { category: 0, label: "Icons", key: "termcode.icons", kind: Choice(&["auto", "nerd", "unicode", "ascii"]) },
+    Field { category: 0, label: "Colors", key: "termcode.colors", kind: Choice(&["auto", "truecolor", "256", "16"]) },
     Field { category: 0, label: "Workbench colors (JSON)", key: "workbench.colorCustomizations", kind: Json("{}") },
     Field { category: 0, label: "Token colors (JSON)", key: "editor.tokenColorCustomizations", kind: Json("{}") },
     Field { category: 0, label: "File icons (JSON)", key: "termcode.fileIcons", kind: Json("{}") },
