@@ -636,6 +636,7 @@ pub fn now() -> i64 {
 
 /// Local "YYYY-MM-DD HH:MM".
 pub fn local_time(t: i64) -> String {
+    #[allow(deprecated)] // libc marks musl's time_t for a future change; it is 64-bit here
     let tt = t as libc::time_t;
     // SAFETY: tm is plain data; localtime_r only writes into it.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };

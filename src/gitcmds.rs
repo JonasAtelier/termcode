@@ -765,6 +765,7 @@ pub fn click(app: &mut App, p: Position) -> bool {
 // ---------------------------------------------------------------- Git Output
 
 fn stamp((s, ms): (i64, u32)) -> String {
+    #[allow(deprecated)] // libc marks musl's time_t for a future change; it is 64-bit here
     let tt = s as libc::time_t;
     // SAFETY: tm is plain data; localtime_r only writes into it.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };

@@ -31,7 +31,7 @@ startup is its own timer, which leaves out the `code` launcher, so real use is h
 
 | Tool | Why | Check it |
 |---|---|---|
-| Linux | the only supported OS | |
+| Linux, x86_64 or arm64 | the only supported OS | `uname -m` |
 | Rust 1.88 or newer | to build termcode | `cargo --version` |
 | A C linker (`cc`) | Rust needs it to link | `cc --version` |
 | git | Source Control | `git --version` |
@@ -114,12 +114,13 @@ Instead of `cargo install`, build a package and let apt install it to `/usr/bin`
 
 ```sh
 cargo install cargo-deb                             # once
-scripts/deb.sh                                      # -> target/deb/debian/termcode_*.deb
-sudo apt install ./target/deb/debian/termcode_*.deb
+scripts/deb.sh                                      # -> target/deb/debian/, amd64 and arm64
+sudo apt install ./target/deb/debian/termcode_*_$(dpkg --print-architecture).deb
 ```
 
-Pick one way: with both, the `~/.local/bin` copy usually wins. The package needs the same
-or a newer Debian/Ubuntu than the machine that built it, so build it where you install it.
+The binary inside is static, so one package installs on any Debian or Ubuntu release
+(tested on Debian 10 and Ubuntu 22.04; it even runs on Alpine). Pick one way: with both,
+the `~/.local/bin` copy usually wins.
 
 ## 4. Add it to herdr (optional)
 

@@ -9,13 +9,13 @@ homepage = "https://github.com/JonasAtelier/termcode-releases"
 license-file = "LICENSE"
 publish = false
 
-# Build with scripts/deb.sh (cargo deb without build-machine paths in the binary),
+# Build with scripts/deb.sh (static amd64 and arm64 binaries, no build-machine paths),
 # install with `sudo apt install ./target/deb/debian/termcode_*.deb`.
 [package.metadata.deb]
 maintainer = "JonasAtelier"
 copyright = "2026 JonasAtelier"
 section = "editors"
-depends = "$auto, git, ripgrep"
+depends = "git, ripgrep" # the binary is static (scripts/deb.sh): no libc to depend on
 recommends = "shellcheck, clang"
 extended-description = """\
 A VS Code-style code editor and Git panel that runs inside the terminal, like vim, \
