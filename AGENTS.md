@@ -21,6 +21,7 @@ Tests live beside implementation in `src/`; `target/` contains ignored build out
 - `cargo test -j2 parse::tests`: run a focused module's tests.
 - `cargo run -- .`: open this repository in an interactive terminal.
 - `cargo run -- --tab .`: open a herdr workspace tab.
+- `scripts/deb.sh`: build the `.deb` (no build-machine paths in the binary).
 - `cargo install --path . --root ~/.local -j2`: install locally; then `herdr plugin link "$PWD"` registers the plugin. Keep `~/.local/bin` on `PATH`.
 
 Check `free -m` before builds; adjust concurrency to available memory. Git and ripgrep (`rg`) support repository operations and search.

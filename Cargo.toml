@@ -6,8 +6,8 @@ description = "A VS Code-style code editor and Git panel in the terminal"
 repository = "https://github.com/JonasAtelier/termcode"
 publish = false
 
-# `cargo deb` -> target/debian/termcode_<version>-1_<arch>.deb; install with
-# `sudo apt install ./target/debian/termcode_*.deb`.
+# Build with scripts/deb.sh (cargo deb without build-machine paths in the binary),
+# install with `sudo apt install ./target/deb/debian/termcode_*.deb`.
 [package.metadata.deb]
 maintainer = "JonasAtelier"
 copyright = "JonasAtelier"

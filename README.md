@@ -109,8 +109,8 @@ Instead of `cargo install`, build a package and let apt install it to `/usr/bin`
 
 ```sh
 cargo install cargo-deb                             # once
-cargo deb                                           # -> target/debian/termcode_*.deb
-sudo apt install ./target/debian/termcode_*.deb
+scripts/deb.sh                                      # -> target/deb/debian/termcode_*.deb
+sudo apt install ./target/deb/debian/termcode_*.deb
 ```
 
 Pick one way: with both, the `~/.local/bin` copy usually wins. The package needs the same
@@ -149,7 +149,7 @@ The new tab doesn't take focus: click **Code: project** in the tab bar.
 cd termcode
 git pull
 cargo install --path . --root ~/.local
-# .deb install instead: cargo deb && sudo apt install ./target/debian/termcode_*.deb
+# .deb install instead: scripts/deb.sh && sudo apt install ./target/deb/debian/termcode_*.deb
 ```
 
 That's all. A termcode that is already open reloads itself a few seconds later, keeping
@@ -366,6 +366,7 @@ first time termcode starts.
 ```sh
 cargo run -- .     # run from source
 cargo test         # run the tests
+scripts/deb.sh     # build the .deb (arguments go to cargo deb, e.g. --target)
 ```
 
 See [AGENTS.md](AGENTS.md) for the code layout and conventions.
