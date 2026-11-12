@@ -88,3 +88,10 @@ jobs:
             --repo JonasAtelier/termcode-releases \
             --title "termcode ${GITHUB_REF_NAME#v}" \
             --notes-file target-notes.md
+          # The front page follows this release's README.
+          git clone -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/JonasAtelier/termcode-releases.git" releases-page
+          scripts/user-readme.sh --releases > releases-page/README.md
+          cd releases-page
+          git config user.name JonasAtelier
+          git config user.email 98136255+JonasAtelier@users.noreply.github.com
+          git diff --quiet || { git commit -qam "README for termcode ${GITHUB_REF_NAME#v}" && git push -q; }

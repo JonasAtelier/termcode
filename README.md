@@ -9,6 +9,22 @@ What you get: a file Explorer, Search, Source Control with a commit graph, tabs 
 editors, side-by-side diffs, a minimap, Go to Definition, error checking for shell and
 C/C++, and VS Code themes.
 
+### Is it for you?
+
+termcode is for working on code where your terminal already is: on a server over SSH, in
+tmux or herdr, or whenever a full IDE is too heavy and vim or nano too bare. It has VS
+Code's look and keys, but it is not VS Code:
+
+| termcode has | termcode doesn't have |
+|---|---|
+| Editing, Explorer, Search, Source Control, diffs | Extensions |
+| Go to Definition and references, found by searching the code | A language server: no completion, no type-aware rename or navigation |
+| Error checking for shell scripts and C/C++ | A debugger, a built-in terminal, remote development |
+| VS Code themes and keys | Settings Sync; only the settings its Settings window lists |
+
+Need a language server or extensions? Use VS Code or an editor built on one. termcode is
+the quick, light one for everything else.
+
 ### How light is it?
 
 Both opening this repo and one file, fresh profiles, median of 5 runs (Linux, 12 cores):
@@ -527,7 +543,8 @@ commit, then tag it:
 `git tag v0.2.0 && git push origin v0.2.0`. The release workflow checks the version and
 changelog, lints, tests, builds both packages, installs them on Ubuntu 22.04, 24.04 and
 Debian 12, and publishes them with that changelog section on
-[termcode-releases](https://github.com/JonasAtelier/termcode-releases/releases). It runs
+[termcode-releases](https://github.com/JonasAtelier/termcode-releases/releases), whose
+front page it updates from this README. It runs
 only for tags (a dry run: Actions, release, Run workflow).
 
 See [AGENTS.md](AGENTS.md) for the code layout and conventions.
