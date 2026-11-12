@@ -95,7 +95,7 @@ impl App {
             peek: self.ui.peek_btns.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.peek_zone.contains(p).then_some(usize::MAX)),
             sash: self.gitui.dlg.as_ref().and_then(|d| d.hits.sashes.iter().position(|r| r.contains(p))).or_else(|| {
                 g.areas.iter().any(|(r, h)| matches!(h, crate::scm::Hit::GraphSash | crate::scm::Hit::TimelineSash) && r.contains(p)).then_some(usize::MAX)
-            }),
+            }).or_else(|| self.ui.term_sash.contains(p).then_some(usize::MAX - 1)),
             activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.settings_btn.contains(p).then_some(SIDES.len())),
             button: match self.gitui.dlg.as_ref() {
                 Some(d) => d.hits.btns.iter().position(|(r, _)| r.contains(p)),
@@ -201,6 +201,17 @@ impl App {
         }
         if self.ui.divider.contains(p) {
             self.drag = Drag::Divider;
+            return;
+        }
+        if self.ui.term_btns.iter().any(|r| r.contains(p)) {
+            return if self.term_open { self.hide_terminal() } else { self.toggle_terminal() };
+        }
+        if self.ui.term_sash.contains(p) {
+            self.drag = Drag::TermSash;
+            return;
+        }
+        if self.ui.term.contains(p) {
+            self.focus = Focus::Term;
             return;
         }
         if let Some(sb) = self.ui.scrollbars.iter().find(|s| s.track.contains(p)).copied() {
@@ -569,6 +580,8 @@ impl App {
                 self.side_w = Some(p.x.saturating_sub(start).clamp(12, max));
                 self.side_w_legacy = false;
             }
+            // The panel's bottom stays; its top border follows the pointer (ui.rs clamps it).
+            Drag::TermSash => self.term_h = Some((self.ui.term.bottom() + 1).saturating_sub(p.y).max(3)),
             Drag::File { from, active, .. } => {
                 if !*active && (from.x.abs_diff(p.x) + from.y.abs_diff(p.y)) >= 2 {
                     *active = true;
@@ -648,7 +661,7 @@ impl App {
             return;
         }
         match std::mem::replace(&mut self.drag, Drag::None) {
-            Drag::Divider => self.save_layout(),
+            Drag::Divider | Drag::TermSash => self.save_layout(),
             Drag::File { rel, active: true, .. } => {
                 if let Some((g, zone)) = self.drop.take() {
                     let target = match zone {
@@ -755,6 +768,10 @@ impl App {
             return q.sel != old;
         }
         if crate::scm::wheel(self, p, d) {
+            return true;
+        }
+        if let Some(t) = self.term.as_mut().filter(|_| self.ui.term.contains(p)) {
+            t.wheel(d, (p.x - self.ui.term.x, p.y - self.ui.term.y));
             return true;
         }
         if self.ui.peek_zone.contains(p) {

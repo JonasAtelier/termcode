@@ -29,6 +29,7 @@ mod settings;
 mod settingsui;
 mod settingsgraphics;
 mod symbols;
+mod term;
 mod mdpreview;
 mod theme;
 mod ui;

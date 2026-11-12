@@ -24,7 +24,7 @@ impl App {
         self.quick = Some(Quick { query: String::new(), items, sel: 0, off: 0, commands: false, goto: Vec::new() });
     }
 
-    pub(super) fn open_palette(&mut self) {
+    pub(crate) fn open_palette(&mut self) {
         let items = filter_commands_recent("", &self.recent_cmds);
         self.quick = Some(Quick { query: String::new(), items, sel: 0, off: 0, commands: true, goto: Vec::new() });
     }

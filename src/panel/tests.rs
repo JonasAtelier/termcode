@@ -5380,3 +5380,60 @@ fn the_status_bar_keeps_to_its_items_lights_them_and_errors_go_to_a_notice() {
     assert!(screen(&mut app, &mut t).contains("trailing garbage"), "a new error shows again");
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn the_terminal_button_opens_a_shell_under_the_editors_and_its_top_edge_resizes_it() {
+    let root = repo("terminal");
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "src/main.rs", false);
+    wait(&mut app);
+    let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    assert!(!screen(&mut app, &mut t).contains(" Terminal "), "hidden until asked for");
+    let full = app.ui.editor_area;
+    let btn = app.ui.term_btns[0];
+    assert_eq!(btn.right(), app.ui.split_btns[0].0.x, "just before Split Editor");
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), btn.x, btn.y);
+    assert!(app.term_open && app.focus == Focus::Term);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains(" Terminal "), "{s}");
+    let (ed, term) = (app.ui.editor_area, app.ui.term);
+    assert_eq!((ed.x, ed.width, ed.bottom()), (full.x, full.width, app.ui.term_sash.y), "the editors above it");
+    assert_eq!((term.x - 1, term.width + 2, term.bottom() + 1), (full.x, full.width, full.bottom()), "as wide as the editors");
+
+    // Keys go to the shell, and its output is drawn.
+    typ(&mut app, "echo hi-$((40+2))");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !screen(&mut app, &mut t).contains("hi-42") {
+        assert!(Instant::now() < deadline, "no output");
+        app.term_pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Its top edge, dragged up 4 rows, makes it 4 rows taller.
+    let (sash, h) = (app.ui.term_sash, app.ui.term.height + 2);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sash.x + 20, sash.y);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), sash.x + 20, sash.y - 4);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sash.x + 20, sash.y - 4);
+    screen(&mut app, &mut t);
+    assert_eq!((app.term_h, app.ui.term.height + 2), (Some(h + 4), h + 4));
+
+    // Ctrl+` hides it with the shell still running; the button shows it again.
+    key(&mut app, KeyCode::Char('`'), KeyModifiers::CONTROL);
+    assert!(!app.term_open && app.term.is_some() && app.focus == Focus::Editor);
+    assert!(!screen(&mut app, &mut t).contains(" Terminal "));
+    assert_eq!(app.ui.editor_area, full);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), btn.x, btn.y);
+    assert!(screen(&mut app, &mut t).contains("hi-42"), "the same shell");
+
+    // The shell exiting closes the panel.
+    typ(&mut app, "exit");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    while app.term.is_some() {
+        assert!(Instant::now() < deadline, "the shell exited");
+        app.term_pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!app.term_open && app.focus == Focus::Editor);
+    fs::remove_dir_all(&root).unwrap();
+}

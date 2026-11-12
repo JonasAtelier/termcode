@@ -165,6 +165,9 @@ impl App {
             v["sidebar_width"] = w.into();
             v["sidebar_dragged"] = true.into();
         }
+        if let Some(h) = self.term_h {
+            v["terminal_height"] = h.into();
+        }
         let _ = fs::write(p, v.to_string());
     }
 

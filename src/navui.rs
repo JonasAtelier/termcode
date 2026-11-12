@@ -377,7 +377,7 @@ pub fn on_key(app: &mut App, k: KeyEvent) {
     if crate::hover::dismiss(app) && k.code == KeyCode::Esc { return; }
     // Modal UI (prompt, quick pick, the commit dialog, a git picker) takes every key.
     let modal = app.prompt.is_some() || app.quick.is_some() || app.gitui.dlg.is_some() || app.gitui.cmds.picker.is_some();
-    if modal || !nav_key(app, k) {
+    if modal || app.focus == Focus::Term || !nav_key(app, k) {
         app.on_key(k);
     }
 }

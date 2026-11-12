@@ -17,9 +17,9 @@ Code's look and keys, but it is not VS Code:
 
 | termcode has | termcode doesn't have |
 |---|---|
-| Editing, Explorer, Search, Source Control, diffs | Extensions |
+| Editing, Explorer, Search, Source Control, diffs, a terminal | Extensions |
 | Go to Definition and references, found by searching the code | A language server: no completion, no type-aware rename or navigation |
-| Error checking for shell scripts and C/C++ | A debugger, a built-in terminal, remote development |
+| Error checking for shell scripts and C/C++ | A debugger, remote development |
 | VS Code themes and keys | Settings Sync; only the settings its Settings window lists |
 
 Need a language server or extensions? Use VS Code or an editor built on one. termcode is
@@ -317,10 +317,15 @@ Click the active sidebar icon to hide the sidebar. Drag any divider to resize.
 | F7 / Shift+F7 | Next / previous change in a diff |
 | Ctrl+PgDn / Ctrl+PgUp | Next / previous tab |
 | Ctrl+, | Settings |
+| Ctrl+` | Show / hide the terminal |
 
 **Mouse:** click a file to preview it (italic tab), double-click its tab to keep it open.
 Double-click a name in the Explorer to rename it. Drag a file to an editor edge to split.
 Rest the pointer on a function to see its docs.
+
+**Terminal:** Ctrl+` or the terminal button beside Split Editor opens your shell under the
+editors. Drag its top edge to resize it. While it has the keys, every key goes to the shell
+except Ctrl+`, F1 and Ctrl+Q. Hiding it keeps the shell running; `exit` closes it.
 
 Some terminals (GNOME Terminal, Ptyxis) can't send Ctrl+Shift keys, Ctrl+Tab or
 Ctrl+1/2/3. Use F1 or the other key in the table instead, or bind your own.

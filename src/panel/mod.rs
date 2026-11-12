@@ -216,6 +216,8 @@ pub enum Focus {
     Editor,
     SearchInput,
     Find,
+    /// The integrated terminal: keys go to its shell.
+    Term,
 }
 
 pub struct Node {
@@ -441,6 +443,7 @@ pub enum Cmd {
     ToggleComment,
     ToggleWrap,
     ToggleBreadcrumbs,
+    ToggleTerminal,
     /// Markdown: Open Preview; `true` to the side.
     MdPreview(bool),
     ReloadWindow,
@@ -470,6 +473,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Toggle Rulers", Cmd::ToggleRulers, ""),
     ("View: Toggle Word Wrap", Cmd::ToggleWrap, "Alt+Z"),
     ("View: Toggle Breadcrumbs", Cmd::ToggleBreadcrumbs, ""),
+    ("View: Toggle Terminal", Cmd::ToggleTerminal, "Ctrl+`"),
     ("Go to Next Change", Cmd::NextChange, "Alt+F5 / F7"),
     ("Go to Previous Change", Cmd::PrevChange, "Shift+Alt+F5 / Shift+F7"),
     ("Go to File...", Cmd::QuickOpen, "Ctrl+P"),
@@ -611,6 +615,8 @@ pub enum Drag {
     /// Released inside Close; paint its hover state before starting the quit procedure.
     ClosePending,
     Divider,
+    /// The terminal panel's top border, its height's handle.
+    TermSash,
     File { rel: String, from: Position, active: bool },
     /// Tab `i` of group `g` (VS Code's tab drag and drop); active once moved 2 cells.
     Tab { g: usize, i: usize, from: Position, active: bool },
@@ -699,6 +705,11 @@ pub struct Hits {
     pub prompt_btns: Vec<(Rect, usize)>,
     /// "Split Editor Right" button per group.
     pub split_btns: Vec<(Rect, usize)>,
+    /// The terminal: its toggle button per group, its panel's top border (the height
+    /// handle) and its screen.
+    pub term_btns: Vec<Rect>,
+    pub term_sash: Rect,
+    pub term: Rect,
     /// Empty editor shortcuts: group and optional sidebar (None opens Quick Open).
     pub welcome: Vec<(Rect, usize, Option<Side>)>,
     pub quick: Rect,
@@ -793,6 +804,11 @@ pub struct App {
     pub side_w: Option<u16>,
     /// `side_w` came from a layout.json before version 2: a content width, not an outer one.
     pub side_w_legacy: bool,
+    /// The integrated terminal's shell (kept while its panel is hidden), whether the panel
+    /// shows, and its dragged height (None: a third of the editor area).
+    pub term: Option<crate::term::Term>,
+    pub term_open: bool,
+    pub term_h: Option<u16>,
     pub(crate) layout_file: Option<PathBuf>,
     pub focus: Focus,
     pub status: Vec<StatusEntry>,
@@ -1183,26 +1199,31 @@ fn keeps_cursors(code: KeyCode, ctrl: bool, alt: bool, shift: bool) -> bool {
     }
 }
 
-/// What a wait on the terminal's input found.
+/// What a wait on the terminal's input found. `Shell`: no input, but the integrated
+/// terminal's shell wrote (or closed it).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Input {
     Ready,
     Idle,
     Gone,
+    Shell,
 }
 
-/// Wait up to `wait` for input on `fd`. A signal ends the wait early, as `Idle`.
+/// Wait up to `wait` for input on `fd`, or for the integrated terminal's shell. A signal
+/// ends the wait early, as `Idle`.
 fn wait_input(fd: libc::c_int, wait: Duration) -> Input {
-    let mut poll = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    // poll skips the second entry while no terminal is open (fd -1).
+    let mut polls = [fd, crate::term::fd()].map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 });
     let ms = wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
-    // SAFETY: one valid pollfd.
-    if unsafe { libc::poll(&mut poll, 1, ms) } <= 0 {
+    // SAFETY: two valid pollfds.
+    if unsafe { libc::poll(polls.as_mut_ptr(), 2, ms) } <= 0 {
         return Input::Idle;
     }
-    if poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-        Input::Gone
-    } else {
-        Input::Ready
+    match (polls[0].revents, polls[1].revents) {
+        (r, _) if r & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 => Input::Gone,
+        (0, 0) => Input::Idle,
+        (0, _) => Input::Shell,
+        _ => Input::Ready,
     }
 }
 
@@ -1211,12 +1232,17 @@ fn wait_input(fd: libc::c_int, wait: Duration) -> Input {
 /// returns. A vanished terminal ends the event loop the way HUP does.
 fn next_event(wait: Duration) -> io::Result<Option<Event>> {
     for wait in [Duration::ZERO, wait] {
-        if wait_input(libc::STDIN_FILENO, wait) == Input::Gone {
+        let got = wait_input(libc::STDIN_FILENO, wait);
+        if got == Input::Gone {
             SIGNALED.store(true, Ordering::SeqCst);
             return Ok(None);
         }
         if event::poll(Duration::ZERO)? {
             return event::read().map(Some);
+        }
+        // The shell's output: the loop reads and draws it, then waits again.
+        if got == Input::Shell {
+            return Ok(None);
         }
     }
     Ok(None)
@@ -1373,6 +1399,9 @@ impl App {
                 .map(|w| w.clamp(12, 200) as u16),
             // Before layout_version 2 the width was the content's: a card adds its frame.
             side_w_legacy: saved["layout_version"].as_u64().unwrap_or(1) < 2,
+            term: None,
+            term_open: false,
+            term_h: saved["terminal_height"].as_u64().map(|h| h.clamp(3, 500) as u16),
             layout_file,
             focus: Focus::Side,
             status: Vec::new(),
@@ -1655,6 +1684,7 @@ impl App {
                 }
                 self.save_layout();
             }
+            Cmd::ToggleTerminal => self.toggle_terminal(),
             Cmd::ToggleMinimap => {
                 self.minimap_on = !self.minimap_on;
                 self.msg = format!("minimap {}", on_off(self.minimap_on));

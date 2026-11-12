@@ -38,6 +38,10 @@ impl App {
         if k.code == KeyCode::Esc && (self.gitui.card.take().is_some() || self.gitui.cmds.toast.take().is_some()) {
             return;
         }
+        // A palette command's keys (`replaying`) are termcode's, never the shell's.
+        if self.focus == Focus::Term && !self.replaying {
+            return self.term_key(k);
+        }
         // The user's keybindings come before the default keys ("" turns a key off).
         if !self.replaying {
             let key = crate::parse::chord(&k);
@@ -61,6 +65,9 @@ impl App {
         }
         if ctrl && is(',') {
             return crate::settingsui::open(self);
+        }
+        if crate::term::toggle_key(&k) {
+            return self.toggle_terminal();
         }
         if ctrl && shift && is('p') {
             return self.open_palette();
@@ -151,6 +158,7 @@ impl App {
             Focus::SearchInput => self.input_key(k, ctrl, alt),
             Focus::Side => self.side_key(k),
             Focus::Editor => self.editor_key(k, ctrl, alt, shift),
+            Focus::Term => {}
         }
     }
 
@@ -604,6 +612,11 @@ impl App {
             }
             // A paste while a list has focus is dropped, never redirected into a file.
             Focus::Side => {}
+            Focus::Term => {
+                if let Some(t) = self.term.as_mut() {
+                    t.paste(text);
+                }
+            }
             Focus::Editor => {
                 if let Some((b, tab)) = self.ed() {
                     b.at_cursors(&mut tab.view, editor::Kind::Other, |b, v| b.insert(v, text));

@@ -395,6 +395,7 @@ impl App {
         *dirty |= crate::lint::tick(self);
         *dirty |= crate::session::tick(self);
         *dirty |= self.drain();
+        *dirty |= self.term_pump();
         if std::mem::take(dirty) {
             t.draw(|f| crate::ui::draw(self, f))?;
             self.last_draw = Some(Instant::now());

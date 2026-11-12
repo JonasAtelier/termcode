@@ -250,7 +250,14 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
         }
         x += u16::from(st != BlockStyle::Cards);
     }
-    let ed = Rect::new(x, body.y, body.right().saturating_sub(x), body.height);
+    let mut ed = Rect::new(x, body.y, body.right().saturating_sub(x), body.height);
+    // The terminal panel under the editor groups, their width; its height dragged, the
+    // groups keeping at least a tab bar and a few lines.
+    if app.term_open && ed.height >= 12 {
+        let h = app.term_h.unwrap_or(ed.height / 3).clamp(5, ed.height - 7);
+        ed.height -= h;
+        terminal_panel(app, f, Rect::new(ed.x, ed.bottom(), ed.width, h));
+    }
     app.ui.editor_area = ed;
     editor_area(app, f, ed, lay);
     if let Some((g, zone)) = app.drop {
@@ -1115,6 +1122,34 @@ pub(crate) fn input_marked(f: &mut Frame, r: Rect, text: &str, placeholder: &str
     }
 }
 
+/// The integrated terminal in a frame titled Terminal: its top edge is the height's
+/// handle (lit while hovered or dragged), its border blue while it has the keys.
+fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
+    let focused = app.focus == Focus::Term;
+    let hot = matches!(app.drag, Drag::TermSash) || app.hover.is_some_and(|p| p.y == r.y && (r.x..r.right()).contains(&p.x));
+    let block = Block::bordered()
+        .border_set(crate::blocks::border_set())
+        .border_style(Style::new().fg(crate::blocks::border(focused)).bg(P.editor_bg))
+        .title(Span::styled(" Terminal ", Style::new().fg(P.editor_fg).bold()))
+        .style(Style::new().bg(P.editor_bg).fg(P.editor_fg));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    if hot {
+        let buf = f.buffer_mut();
+        for x in r.x..r.right() {
+            if buf[(x, r.y)].fg == crate::blocks::border(focused) {
+                buf[(x, r.y)].set_fg(P.sash_hover);
+            }
+        }
+    }
+    app.ui.term_sash = Rect::new(r.x, r.y, r.width, 1);
+    app.ui.term = inner;
+    if let Some(t) = app.term.as_mut() {
+        t.resize(inner.height, inner.width);
+        t.draw(f.buffer_mut(), inner, P.editor_fg, P.editor_bg, focused);
+    }
+}
+
 fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let n = app.groups.len().max(1) as u16;
     let st = app.settings.blocks;
@@ -1162,8 +1197,10 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     fill(f, tabbar, P.tabs_bg);
     let focused_group = g == app.ag;
     let ic = icons();
-    // Split Editor button at the right end of the tab bar.
+    // Split Editor button at the right end of the tab bar, Toggle Terminal before it.
     let split = Rect::new(tabbar.right().saturating_sub(3), tabbar.y, 2, 1);
+    let show_split = app.groups.len() < crate::panel::MAX_GROUPS && !app.groups[g].tabs.is_empty();
+    let term_btn = Rect::new(if show_split { split.x.saturating_sub(2) } else { split.x }, tabbar.y, 2, 1);
     let mut x = tabbar.x;
     let hover = app.hover;
     let pad = lay.s.tab_padding.div_ceil(2);
@@ -1191,7 +1228,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         // Then [dirty dot] [blank] [cross]: fixed slots, so editing never moves the cross.
         let tail_w = 3 + tail_edge.len() as u16;
         let w = label.width() as u16 + tail_w;
-        if x + w > split.x {
+        if x + w > term_btn.x {
             break;
         }
         let tr = Rect::new(x, tabbar.y, w, 1);
@@ -1244,10 +1281,13 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         let st = Style::new().fg(P.tab_dnd_border).bg(P.tabs_bg);
         f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▌" }, st), Rect::new(mx, tabbar.y, 1, 1));
     }
-    if app.groups.len() < crate::panel::MAX_GROUPS && !app.groups[g].tabs.is_empty() {
+    if show_split {
         f.render_widget(Span::styled(ic.split, Style::new().fg(P.icon_fg)), split);
         app.ui.split_btns.push((split, g));
     }
+    let lit = if app.term_open { P.tab_active_fg } else { P.icon_fg };
+    f.render_widget(Span::styled(ic.terminal, Style::new().fg(lit)), term_btn);
+    app.ui.term_btns.push(term_btn);
     let top = 1;
     let mut body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
     let active = app.groups[g].active;

@@ -75,15 +75,10 @@ pub fn gutter() -> Color {
     P.editor_bg
 }
 
-/// Draws `r` as a card and returns its inside, filled with `bg`. Other styles, and a
-/// block too small for a frame (tiny terminals), get `r` back unframed.
-pub fn card(st: BlockStyle, f: &mut Frame, r: Rect, bg: Color, focused: bool) -> Rect {
-    let r = r.intersection(f.area());
-    if st != BlockStyle::Cards || r.width < 4 || r.height < 3 {
-        return r;
-    }
+/// The icon set's frame characters (ASCII ones in ascii mode).
+pub fn border_set() -> ratatui::symbols::border::Set {
     let s = icons().border;
-    let set = ratatui::symbols::border::Set {
+    ratatui::symbols::border::Set {
         top_left: s[0],
         top_right: s[1],
         bottom_left: s[2],
@@ -92,8 +87,17 @@ pub fn card(st: BlockStyle, f: &mut Frame, r: Rect, bg: Color, focused: bool) ->
         horizontal_bottom: s[4],
         vertical_left: s[5],
         vertical_right: s[5],
-    };
-    let block = Block::bordered().border_set(set).border_style(Style::new().fg(border(focused)).bg(gutter())).style(Style::new().bg(bg));
+    }
+}
+
+/// Draws `r` as a card and returns its inside, filled with `bg`. Other styles, and a
+/// block too small for a frame (tiny terminals), get `r` back unframed.
+pub fn card(st: BlockStyle, f: &mut Frame, r: Rect, bg: Color, focused: bool) -> Rect {
+    let r = r.intersection(f.area());
+    if st != BlockStyle::Cards || r.width < 4 || r.height < 3 {
+        return r;
+    }
+    let block = Block::bordered().border_set(border_set()).border_style(Style::new().fg(border(focused)).bg(gutter())).style(Style::new().bg(bg));
     let inner = block.inner(r);
     f.render_widget(block, r);
     inner

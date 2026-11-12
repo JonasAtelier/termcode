@@ -579,6 +579,8 @@ pub struct Icons {
     pub settings: &'static str,
     pub dirty: &'static str,
     pub split: &'static str,
+    /// Toggle Terminal, beside Split Editor.
+    pub terminal: &'static str,
     pub check: &'static str,
     pub add: &'static str,
     pub remove: &'static str,
@@ -628,6 +630,7 @@ const CODICONS: Icons = Icons {
     settings: "\u{eb51}",
     dirty: "\u{ea71}",
     split: "\u{eb56}",
+    terminal: "\u{ea85}",
     check: "\u{eab2}",
     add: "\u{ea60}",
     remove: "\u{eb3b}",
@@ -674,6 +677,7 @@ const SYMBOLS: Icons = Icons {
     settings: "⚙",
     dirty: "●",
     split: "◫",
+    terminal: "❯",
     check: "✓",
     add: "+",
     remove: "−",
@@ -718,6 +722,7 @@ const PLAIN: Icons = Icons {
     settings: "*",
     dirty: "*",
     split: "|",
+    terminal: ">",
     check: "+",
     add: "+",
     remove: "-",
@@ -919,7 +924,7 @@ mod tests {
         use unicode_width::UnicodeWidthStr;
         for (name, set) in [("unicode", &SYMBOLS), ("ascii", &PLAIN)] {
             let all = [set.files, set.search, set.scm, set.history, set.chev_right, set.chev_down, set.folder, set.folder_open,
-                set.file, set.close, set.tab_close, set.settings, set.dirty, set.split, set.check, set.add, set.remove,
+                set.file, set.close, set.tab_close, set.settings, set.dirty, set.split, set.terminal, set.check, set.add, set.remove,
                 set.discard, set.open_file, set.case, set.regex, set.word, set.up, set.down, set.replace, set.replace_all,
                 set.branch, set.lock, set.folder_dot, set.gutter_bar, set.gutter_del, set.ws_space, set.ws_tab, set.guide,
                 set.lane_left, set.lane_right, set.lane_cursor];
