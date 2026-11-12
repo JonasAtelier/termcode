@@ -244,7 +244,27 @@ Double-click a name in the Explorer to rename it. Drag a file to an editor edge 
 Rest the pointer on a function to see its docs.
 
 Some terminals (GNOME Terminal, Ptyxis) can't send Ctrl+Shift keys, Ctrl+Tab or
-Ctrl+1/2/3. Use F1 or the other key in the table instead.
+Ctrl+1/2/3. Use F1 or the other key in the table instead, or bind your own.
+
+### Your own keys
+
+Any F1 command can have a key. Add `termcode.keybindings` to your settings file, the key
+on the left and the command's name as F1 shows it on the right:
+
+```jsonc
+"termcode.keybindings": {
+    "ctrl+alt+p": "Git: Pull",
+    "f6": "View: Close Editor",
+    "alt+left": "Go Back",
+    "ctrl+q": ""                  // "" turns a key off
+}
+```
+
+Keys are `ctrl`, `alt` and `shift` joined with `+` to a letter, digit, symbol, `f1`-`f24`,
+`enter`, `tab`, `esc`, `space`, `backspace`, `delete`, `home`, `end`, `pageup`,
+`pagedown` or an arrow (`up`, `down`, `left`, `right`). Your keys come before the
+default ones, and F1 shows them next to their commands. A key or command name that
+doesn't exist is reported in the status bar.
 
 ### Error checking
 
@@ -379,6 +399,7 @@ A few more examples:
 | `workbench.tree.enableStickyScroll` | `true` | Keep the current folder pinned while scrolling |
 | `workbench.tree.stickyScrollMaxItemCount` | `1` | More than 1: nested rows, like VS Code |
 | `termcode.colors` | `"auto"` | `"truecolor"`, `"256"` or `"16"`; auto reads the terminal's environment |
+| `termcode.keybindings` | `{}` | Your own keys for F1 commands, see [Your own keys](#your-own-keys) |
 | `termcode.errorChecking` | `true` | Underline problems in shell scripts and C/C++ files |
 | `termcode.restoreSession` | `true` | Reopen last session's tabs |
 | `workbench.editor.restoreViewState` | `true` | Restore cursor and scroll per file |
@@ -416,7 +437,7 @@ first time termcode starts.
 | Icons show as boxes or `?` | Set `"termcode.icons": "unicode"` (a Nerd Font was found here but your terminal can't use it), or see step 2 |
 | `termcode: command not found` | Add `~/.local/bin` to `PATH` (step 3) |
 | The Code tab doesn't open | Restart herdr after fixing `PATH`; check `herdr plugin list` |
-| Ctrl+Shift keys do nothing | Your terminal doesn't send them; use F1 or the other key |
+| Ctrl+Shift keys do nothing | Your terminal doesn't send them; use F1, the other key, or [your own key](#your-own-keys) |
 | Build runs out of memory | `cargo install --path . --root ~/.local -j2` |
 | Source Control says "Git is off" | The repository's own settings run programs; trust it there if you know where it came from |
 | No error underlines | Install `shellcheck` / `clang`; the status bar says which is missing |

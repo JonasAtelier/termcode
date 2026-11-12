@@ -116,9 +116,104 @@ pub fn base64(data: &[u8]) -> String {
     s
 }
 
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+/// A key as keybindings name it: the key and Ctrl/Alt/Shift, a letter in lower case
+/// (Shift+P arrives as `P` from some terminals and as Shift+`p` from others).
+pub type Chord = (KeyCode, KeyModifiers);
+
+pub fn chord(k: &KeyEvent) -> Chord {
+    let mods = k.modifiers & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT);
+    match k.code {
+        KeyCode::Char(c) if c.is_ascii_uppercase() => (KeyCode::Char(c.to_ascii_lowercase()), mods | KeyModifiers::SHIFT),
+        code => (code, mods),
+    }
+}
+
+/// `"ctrl+alt+p"`, `"shift+f12"`, `"alt+left"`: a keybinding's key.
+pub fn parse_chord(s: &str) -> Result<Chord, String> {
+    let mut mods = KeyModifiers::NONE;
+    let lower = s.trim().to_ascii_lowercase();
+    // "ctrl++" is Ctrl and the plus key.
+    let (head, key) = match lower.strip_suffix("++") {
+        Some(h) => (h, "+"),
+        None => lower.rsplit_once('+').unwrap_or(("", lower.as_str())),
+    };
+    for m in head.split('+').filter(|m| !m.is_empty()) {
+        mods |= match m {
+            "ctrl" | "control" => KeyModifiers::CONTROL,
+            "alt" | "meta" | "option" => KeyModifiers::ALT,
+            "shift" => KeyModifiers::SHIFT,
+            _ => return Err(format!("{s:?}: unknown modifier {m:?} (ctrl, alt, shift)")),
+        };
+    }
+    let code = match key {
+        "enter" | "return" => KeyCode::Enter,
+        "tab" => KeyCode::Tab,
+        "esc" | "escape" => KeyCode::Esc,
+        "space" => KeyCode::Char(' '),
+        "backspace" => KeyCode::Backspace,
+        "delete" | "del" => KeyCode::Delete,
+        "insert" | "ins" => KeyCode::Insert,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" | "pgup" => KeyCode::PageUp,
+        "pagedown" | "pgdn" => KeyCode::PageDown,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        f if f.starts_with('f') && f[1..].parse::<u8>().is_ok_and(|n| (1..=24).contains(&n)) => KeyCode::F(f[1..].parse().unwrap()),
+        c if c.chars().count() == 1 => KeyCode::Char(c.chars().next().unwrap()),
+        _ => return Err(format!("{s:?}: unknown key {key:?}")),
+    };
+    Ok(chord(&KeyEvent::new(code, mods)))
+}
+
+/// "Ctrl+Alt+P": a chord as the palette shows it.
+pub fn chord_label((code, mods): Chord) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for (m, name) in [(KeyModifiers::CONTROL, "Ctrl"), (KeyModifiers::ALT, "Alt"), (KeyModifiers::SHIFT, "Shift")] {
+        if mods.contains(m) {
+            parts.push(name.into());
+        }
+    }
+    parts.push(match code {
+        KeyCode::Char(' ') => "Space".into(),
+        KeyCode::Char(c) => c.to_ascii_uppercase().to_string(),
+        KeyCode::F(n) => format!("F{n}"),
+        KeyCode::PageUp => "PgUp".into(),
+        KeyCode::PageDown => "PgDn".into(),
+        KeyCode::Left => "←".into(),
+        KeyCode::Right => "→".into(),
+        KeyCode::Up => "↑".into(),
+        KeyCode::Down => "↓".into(),
+        other => format!("{other:?}"),
+    });
+    parts.join("+")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keybinding_keys_parse_and_match_what_terminals_send() {
+        let c = KeyModifiers::CONTROL;
+        assert_eq!(parse_chord("ctrl+alt+p"), Ok((KeyCode::Char('p'), c | KeyModifiers::ALT)));
+        assert_eq!(parse_chord("Ctrl+Shift+P"), Ok((KeyCode::Char('p'), c | KeyModifiers::SHIFT)));
+        assert_eq!(parse_chord("shift+f12"), Ok((KeyCode::F(12), KeyModifiers::SHIFT)));
+        assert_eq!(parse_chord("alt+left"), Ok((KeyCode::Left, KeyModifiers::ALT)));
+        assert_eq!(parse_chord("ctrl++"), Ok((KeyCode::Char('+'), c)));
+        assert_eq!(parse_chord("f5"), Ok((KeyCode::F(5), KeyModifiers::NONE)));
+        assert!(parse_chord("hyper+x").unwrap_err().contains("unknown modifier"));
+        assert!(parse_chord("ctrl+banana").unwrap_err().contains("unknown key"));
+        // Shift+P as an upper-case P (legacy) or as Shift and p (kitty keys): one chord.
+        let legacy = chord(&KeyEvent::new(KeyCode::Char('P'), c));
+        let kitty = chord(&KeyEvent::new(KeyCode::Char('p'), c | KeyModifiers::SHIFT));
+        assert_eq!((legacy, kitty), (parse_chord("ctrl+shift+p").unwrap(), parse_chord("ctrl+shift+p").unwrap()));
+        assert_eq!(chord_label(parse_chord("ctrl+alt+p").unwrap()), "Ctrl+Alt+P");
+    }
     use std::process::Command;
 
     #[test]

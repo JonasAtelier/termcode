@@ -2556,8 +2556,10 @@ fn quick(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
         }
         if q.commands {
             row(f, rr, bg, vec![Span::styled(format!(" {item}"), Style::new().fg(fg))]);
-            if let Some(c) = COMMANDS.iter().find(|c| c.0 == item).filter(|c| !c.2.is_empty()) {
-                right(f, rr, vec![Span::styled(format!("{} ", c.2), Style::new().fg(P.dim))]);
+            // The user's own key for it first, else the default one.
+            let user = app.settings.keybindings.iter().find(|(_, l)| l == item).map(|(c, _)| crate::parse::chord_label(*c));
+            if let Some(hint) = user.or_else(|| COMMANDS.iter().find(|c| c.0 == item).filter(|c| !c.2.is_empty()).map(|c| c.2.to_string())) {
+                right(f, rr, vec![Span::styled(format!("{hint} "), Style::new().fg(P.dim))]);
             }
             continue;
         }

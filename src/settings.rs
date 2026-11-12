@@ -123,6 +123,8 @@ pub struct Settings {
     pub icons: Option<crate::theme::IconSet>,
     /// `termcode.colors`: a fixed colour depth, or None for auto (`colors::detect`).
     pub colors: Option<crate::colors::Depth>,
+    /// `termcode.keybindings`: key -> F1 command name ("" turns the key off).
+    pub keybindings: Vec<(crate::parse::Chord, String)>,
     /// `termcode.errorChecking`: shellcheck and the C/C++ compiler underline problems.
     pub error_checking: bool,
     pub file_icons: FileIcons,
@@ -190,6 +192,7 @@ impl Default for Settings {
             icons: None,
             error_checking: true,
             colors: None,
+            keybindings: Vec::new(),
             file_icons: FileIcons::default(),
             rainbow: Rainbow::default(),
             guides: true,
@@ -290,6 +293,21 @@ pub fn read_text(path: &Path) -> Result<Option<String>, String> {
     Ok(Some(text))
 }
 
+/// `termcode.keybindings`: `{ "ctrl+alt+p": "Git: Pull" }`. A key or command that does
+/// not exist is an error, so a typo shows instead of a key that silently does nothing.
+fn keybindings(v: Option<&Value>) -> Result<Vec<(crate::parse::Chord, String)>, String> {
+    let Some(v) = v else { return Ok(Vec::new()) };
+    let map = v.as_object().ok_or("termcode.keybindings: an object of \"key\": \"command\"")?;
+    map.iter().map(|(key, cmd)| {
+        let chord = crate::parse::parse_chord(key).map_err(|e| format!("termcode.keybindings: {e}"))?;
+        let cmd = cmd.as_str().ok_or_else(|| format!("termcode.keybindings: {key:?} needs a command name"))?;
+        if !cmd.is_empty() && !crate::panel::all_commands().any(|(l, _)| l == cmd) {
+            return Err(format!("termcode.keybindings: no command {cmd:?} (F1 lists them)"));
+        }
+        Ok((chord, cmd.to_string()))
+    }).collect()
+}
+
 /// Read and resolve the settings file (and VS Code's, when followed).
 pub fn load(path: &Path) -> Result<Settings, String> {
     let user = read_jsonc(path)?.unwrap_or_default();
@@ -325,6 +343,7 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         spacing: Spacing::parse(base, g("termcode.spacing").unwrap_or(&Value::Null)),
         error_checking: g("termcode.errorChecking").and_then(Value::as_bool).unwrap_or(true),
         colors: g("termcode.colors").and_then(Value::as_str).and_then(crate::colors::parse),
+        keybindings: keybindings(g("termcode.keybindings"))?,
         icons: match g("termcode.icons").and_then(Value::as_str) {
             Some("nerd") => Some(crate::theme::IconSet::Nerd),
             Some("unicode") => Some(crate::theme::IconSet::Unicode),

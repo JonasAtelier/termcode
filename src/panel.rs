@@ -431,6 +431,12 @@ pub enum Cmd {
     MdPreview(bool),
     ReloadWindow,
     ReportIssue,
+    ShowSide(Side),
+    Quit,
+    /// Find, or Find and Replace.
+    Find(bool),
+    /// An action the default keys do: the key, as if pressed (no keybinding in between).
+    Keys(KeyCode, KeyModifiers),
 }
 
 /// The F1 command palette: label, command, key hint.
@@ -466,6 +472,20 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("Go Forward", Cmd::Nav(crate::navui::Act::Forward), "Alt+→"),
     ("Markdown: Open Preview", Cmd::MdPreview(false), "Ctrl+Shift+V"),
     ("Markdown: Open Preview to the Side", Cmd::MdPreview(true), "Ctrl+K V"),
+    ("View: Show Explorer", Cmd::ShowSide(Side::Explorer), "Alt+1, Ctrl+E"),
+    ("View: Show Search", Cmd::ShowSide(Side::Search), "Alt+4, F4"),
+    ("View: Show Source Control", Cmd::ShowSide(Side::Scm), "Alt+2, F2, Ctrl+G"),
+    ("View: Open Next Editor", Cmd::Keys(KeyCode::PageDown, KeyModifiers::CONTROL), "Ctrl+PgDn"),
+    ("View: Open Previous Editor", Cmd::Keys(KeyCode::PageUp, KeyModifiers::CONTROL), "Ctrl+PgUp"),
+    ("View: Focus First Editor Group", Cmd::Keys(KeyCode::Char('1'), KeyModifiers::CONTROL), "Ctrl+1"),
+    ("View: Focus Second Editor Group", Cmd::Keys(KeyCode::Char('2'), KeyModifiers::CONTROL), "Ctrl+2"),
+    ("View: Focus Third Editor Group", Cmd::Keys(KeyCode::Char('3'), KeyModifiers::CONTROL), "Ctrl+3"),
+    ("View: Close Editor", Cmd::Keys(KeyCode::Char('w'), KeyModifiers::CONTROL), "Ctrl+W"),
+    ("File: Quit", Cmd::Quit, "Ctrl+Q"),
+    ("Find", Cmd::Find(false), "Ctrl+F"),
+    ("Replace", Cmd::Find(true), "Ctrl+H"),
+    ("Add Cursor Above", Cmd::Keys(KeyCode::Up, KeyModifiers::CONTROL.union(KeyModifiers::SHIFT)), "Ctrl+Shift+↑"),
+    ("Add Cursor Below", Cmd::Keys(KeyCode::Down, KeyModifiers::CONTROL.union(KeyModifiers::SHIFT)), "Ctrl+Shift+↓"),
 ];
 
 /// Recently used palette commands kept (in the layout file).
@@ -798,6 +818,8 @@ pub struct App {
     clicks: u8,
     pub hover: Option<Position>,
     pending_k: bool,
+    /// Running a `Cmd::Keys`: its key does what it does by default, past the keybindings.
+    replaying: bool,
     /// A key or click that ended a wheel/motion batch: handled after that batch's frame.
     pending_ev: Option<Event>,
     /// When the last frame was drawn (wheel/motion frames are at most one per FRAME).
@@ -1332,6 +1354,7 @@ impl App {
             clicks: 0,
             hover: None,
             pending_k: false,
+            replaying: false,
             pending_ev: None,
             last_draw: None,
             refresh_due: None,
@@ -1537,6 +1560,14 @@ impl App {
     fn run_command(&mut self, c: Cmd) {
         let on_off = |b: bool| if b { "on" } else { "off" };
         match c {
+            Cmd::ShowSide(side) => self.show_side(side, side == Side::Search),
+            Cmd::Quit => self.request_quit(),
+            Cmd::Find(replace) => self.open_find(replace),
+            Cmd::Keys(code, mods) => {
+                self.replaying = true;
+                self.on_key(KeyEvent::new(code, mods));
+                self.replaying = false;
+            }
             Cmd::ReportIssue => {
                 let text = self.report_details();
                 let how = clipboard_set(&text);
@@ -3934,6 +3965,18 @@ impl App {
         }
         if k.code == KeyCode::Esc && (self.gitui.card.take().is_some() || self.gitui.cmds.toast.take().is_some()) {
             return;
+        }
+        // The user's keybindings come before the default keys ("" turns a key off).
+        if !self.replaying {
+            let key = crate::parse::chord(&k);
+            if let Some((_, name)) = self.settings.keybindings.iter().find(|(c, _)| *c == key) {
+                let name = name.clone();
+                if let Some((_, cmd)) = all_commands().find(|(l, _)| *l == name) {
+                    self.pending_k = false;
+                    self.run_command(cmd);
+                }
+                return;
+            }
         }
         if std::mem::take(&mut self.pending_k) {
             if k.code == KeyCode::Enter { return self.pin_active(); }
@@ -6965,6 +7008,42 @@ mod tests {
         app.update_qdiff();
         assert_eq!(app.qdiff["file:long.c"].hunks.len(), 3);
         (root, app)
+    }
+
+    #[test]
+    fn keybindings_run_palette_commands_turn_keys_off_and_show_in_f1() {
+        let root = repo("keys");
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "README.md", false);
+        app.open_file(0, "src/main.rs", false);
+        let json = r#"{ "termcode.keybindings": { "ctrl+alt+m": "View: Toggle Minimap", "ctrl+q": "", "f6": "View: Close Editor", "ctrl+w": "Find" } }"#;
+        let s = crate::settings::resolve(&crate::settings::parse_jsonc(json).unwrap()).unwrap();
+        app.apply_settings(s);
+        let on = app.minimap_on;
+        key(&mut app, KeyCode::Char('m'), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        assert_eq!(app.minimap_on, !on, "Ctrl+Alt+M runs its command");
+        key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert!(!app.quit && app.prompt.is_none(), "\"\" turns Ctrl+Q off");
+        // F6 closes the editor the way Ctrl+W does by default, though Ctrl+W is rebound.
+        let tabs = app.groups[0].tabs.len();
+        key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
+        assert_eq!(app.groups[0].tabs.len(), tabs - 1, "F6: View: Close Editor");
+        key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert!(app.find.is_some() && app.groups[0].tabs.len() == tabs - 1, "Ctrl+W: Find now");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        // F1 shows the user's key beside its command.
+        let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        app.open_palette();
+        typ(&mut app, "toggle minimap");
+        let s = screen(&mut app, &mut t);
+        assert!(s.lines().any(|l| l.contains("View: Toggle Minimap") && l.contains("Ctrl+Alt+M")), "{s}");
+        // A typo is an error, not a key that silently does nothing.
+        for (bad, why) in [(r#"{"termcode.keybindings": {"ctrl+m": "View: Toggle Minimapp"}}"#, "no command"),
+                           (r#"{"termcode.keybindings": {"hyper+m": "Find"}}"#, "unknown modifier")] {
+            let e = crate::settings::resolve(&crate::settings::parse_jsonc(bad).unwrap()).unwrap_err();
+            assert!(e.contains(why), "{e}");
+        }
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
