@@ -374,6 +374,12 @@ scripts/deb.sh     # build the .deb (arguments go to cargo deb, e.g. --target)
 
 See [AGENTS.md](AGENTS.md) for the code layout and conventions.
 
+## License
+
+termcode is free to install and use, for any purpose, on any number of computers. It may
+not be modified, resold or redistributed. See [LICENSE](LICENSE) (installed as
+`/usr/share/doc/termcode/copyright`).
+
 ## Credits
 
 The default colours and `assets/vscode_dark_defaults.json` come from VS Code (MIT, Microsoft);
