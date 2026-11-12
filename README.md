@@ -423,6 +423,13 @@ scripts/deb.sh     # build the .deb (arguments go to cargo deb, e.g. --target)
 
 See [AGENTS.md](AGENTS.md) for the code layout and conventions.
 
+## Reporting problems
+
+Press **F1** and run **Help: Report Issue**: it copies your termcode version, system,
+terminal and settings summary (no file names or paths). Then open an issue at
+[termcode-releases](https://github.com/JonasAtelier/termcode-releases/issues/new/choose)
+and paste it.
+
 ## License
 
 termcode is free to install and use, for any purpose, on any number of computers. It may

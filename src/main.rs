@@ -45,6 +45,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
+/// Where users report problems and ask for features (public; the source is not).
+pub const ISSUES: &str = "https://github.com/JonasAtelier/termcode-releases";
 const PLUGIN_ID: &str = "jonas.termcode";
 /// herdr labels a plugin pane with its `[[panes]]` title.
 const PANE_LABEL: &str = "Code";

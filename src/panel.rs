@@ -430,6 +430,7 @@ pub enum Cmd {
     /// Markdown: Open Preview; `true` to the side.
     MdPreview(bool),
     ReloadWindow,
+    ReportIssue,
 }
 
 /// The F1 command palette: label, command, key hint.
@@ -457,6 +458,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("File: Save", Cmd::Save, "Ctrl+S"),
     ("Developer: Reload Settings", Cmd::ReloadSettings, ""),
     ("Developer: Reload Window", Cmd::ReloadWindow, ""),
+    ("Help: Report Issue", Cmd::ReportIssue, ""),
     ("Go to Definition", Cmd::Nav(crate::navui::Act::Definition), "F12"),
     ("Peek Definition", Cmd::Nav(crate::navui::Act::Peek), "Alt+F12"),
     ("Find All References", Cmd::Nav(crate::navui::Act::References), "Shift+F12"),
@@ -1457,6 +1459,44 @@ impl App {
         self.settings = s;
     }
 
+    /// "Help: Report Issue": what a bug report needs about this setup, and nothing private
+    /// (no paths, file or repository names).
+    fn report_details(&self) -> String {
+        let os = fs::read_to_string("/etc/os-release").ok()
+            .and_then(|t| t.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string())))
+            .unwrap_or_else(|| "unknown".into());
+        let kernel = fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| "-".into());
+        // "git 2.53.0": the first word of `--version` that starts with a digit.
+        let tool = |prog: &str| {
+            let v = Command::new(prog).arg("--version").stdin(Stdio::null()).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().find(|w| w.starts_with(|c: char| c.is_ascii_digit())).map(str::to_string));
+            format!("{prog} {}", v.as_deref().unwrap_or("not installed"))
+        };
+        let inside: Vec<&str> = [("HERDR_ENV", "herdr"), ("TMUX", "tmux"), ("SSH_CONNECTION", "ssh")]
+            .into_iter().filter(|(k, _)| std::env::var_os(k).is_some()).map(|(_, n)| n).collect();
+        let s = &self.settings;
+        let icons = match s.icons { Some(i) => format!("{i:?}"), None => format!("auto ({:?})", theme::icon_set()) };
+        format!(
+            "termcode {}\nOS: {os}, Linux {}, {}\nTerminal: TERM={} TERM_PROGRAM={} {}\nInside: {}\n\
+             Settings: icons {icons}, density {}, blocks {:?}, error checking {}\nTools: {}, {}, {}, {}\n",
+            env!("CARGO_PKG_VERSION"),
+            kernel.trim(),
+            std::env::consts::ARCH,
+            env("TERM"),
+            env("TERM_PROGRAM"),
+            env("TERM_PROGRAM_VERSION"),
+            if inside.is_empty() { "a plain terminal".to_string() } else { inside.join(", ") },
+            if s.compact { "compact" } else { "comfortable" },
+            s.blocks,
+            if s.error_checking { "on" } else { "off" },
+            tool("git"),
+            tool("rg"),
+            tool("shellcheck"),
+            tool("clang"),
+        )
+    }
+
     /// Why git is not running here, for a git command asked for anyway.
     pub fn no_git_msg(&self) -> String {
         if self.untrusted.is_some() {
@@ -1495,6 +1535,12 @@ impl App {
     fn run_command(&mut self, c: Cmd) {
         let on_off = |b: bool| if b { "on" } else { "off" };
         match c {
+            Cmd::ReportIssue => {
+                let text = self.report_details();
+                let how = clipboard_set(&text);
+                self.msg = format!("Report details copied ({how}): paste them at {}/issues/new/choose", crate::ISSUES);
+                self.clip = text;
+            }
             Cmd::Fold | Cmd::Unfold | Cmd::FoldAll | Cmd::UnfoldAll => self.fold_command(c, None),
             Cmd::OpenSettings => self.open_settings(),
             Cmd::SettingsPanel => crate::settingsui::open(self),
@@ -6917,6 +6963,21 @@ mod tests {
         app.update_qdiff();
         assert_eq!(app.qdiff["file:long.c"].hunks.len(), 3);
         (root, app)
+    }
+
+    #[test]
+    fn report_issue_copies_the_setup_and_names_where_to_report() {
+        let root = repo("report");
+        let mut app = App::new(root.clone(), None);
+        app.run_command(Cmd::ReportIssue);
+        assert!(app.msg.contains("https://github.com/JonasAtelier/termcode-releases/issues/new/choose"), "{}", app.msg);
+        let text = &app.clip;
+        assert!(text.starts_with(&format!("termcode {}\n", env!("CARGO_PKG_VERSION"))), "{text}");
+        for part in ["OS: ", "Terminal: TERM=", "Settings: icons ", "Tools: git "] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        assert!(!text.contains(&*root.to_string_lossy()) && !text.contains("report-"), "nothing about the files: {text}");
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

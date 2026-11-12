@@ -22,8 +22,8 @@ cargo metadata --format-version 1 --locked --filter-platform "$host" | python3 -
 text() { sed -e 's/^$/./' -e 's/^/ /' "$1"; }
 {
     printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n'
-    printf 'Upstream-Name: termcode\nUpstream-Contact: JonasAtelier\n'
-    printf 'Source: https://github.com/JonasAtelier/termcode\n'
+    printf 'Upstream-Name: termcode\n'
+    printf 'Upstream-Contact: https://github.com/JonasAtelier/termcode-releases/issues\n'
     printf 'Comment: The Rust crates built into termcode, with their copyright and\n'
     printf ' license texts, are listed in /usr/share/doc/termcode/THIRD-PARTY-LICENSES.\n\n'
     printf 'Files: *\nCopyright: 2026 JonasAtelier\nLicense: LicenseRef-termcode\n'

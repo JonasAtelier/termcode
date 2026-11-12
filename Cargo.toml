@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "A VS Code-style code editor and Git panel in the terminal"
 repository = "https://github.com/JonasAtelier/termcode"
+# Public: releases and issues (the repository above is private).
+homepage = "https://github.com/JonasAtelier/termcode-releases"
 license-file = "LICENSE"
 publish = false
 
