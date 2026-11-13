@@ -5796,3 +5796,37 @@ fn the_outline_folds_and_walks_by_keys_and_its_chevrons() {
     assert_eq!((app.ed().unwrap().1.view.cursor.line, app.focus), (7, Focus::Editor));
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn a_long_query_scrolls_and_leaves_the_caret_a_blank_cell_before_the_toggles() {
+    let root = repo("long-query");
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "src/main.rs", false);
+    wait(&mut app);
+    let mut t = Terminal::new(TestBackend::new(110, 20)).unwrap();
+    let long = "a_very_long_search_query_that_runs_past_the_box_end_XYZ";
+    // Search: the end of the query, then the caret on a blank cell, then the toggles.
+    app.show_side(Side::Search, true);
+    typ(&mut app, long);
+    screen(&mut app, &mut t);
+    let caret = t.get_cursor_position().unwrap();
+    let b = t.backend().buffer();
+    assert_eq!((b[(caret.x - 3, caret.y)].symbol(), b[(caret.x - 1, caret.y)].symbol(), b[(caret.x, caret.y)].symbol()), ("X", "Z", " "));
+    let toggle = app.ui.find_btns.iter().map(|(r, _)| r.x).min().unwrap();
+    assert_eq!(toggle, caret.x + 1, "the toggles follow the caret's cell");
+    // Find, with all three toggles on: the same, its text never under them.
+    app.focus = Focus::Editor;
+    key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    typ(&mut app, long);
+    for c in ['c', 'w', 'r'] {
+        key(&mut app, KeyCode::Char(c), KeyModifiers::ALT);
+    }
+    screen(&mut app, &mut t);
+    let caret = t.get_cursor_position().unwrap();
+    let b = t.backend().buffer();
+    assert_eq!((b[(caret.x - 1, caret.y)].symbol(), b[(caret.x, caret.y)].symbol()), ("Z", " "));
+    let q = app.ui.find_inputs[0].0;
+    let rest: String = (caret.x + 1..q.right()).map(|x| b[(x, caret.y)].symbol()).collect();
+    assert!(!rest.contains(|c: char| c.is_ascii_alphanumeric() || c == '_'), "only toggles after the caret: {rest:?}");
+    let _ = fs::remove_dir_all(&root);
+}

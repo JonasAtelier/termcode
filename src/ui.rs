@@ -1113,7 +1113,7 @@ pub(crate) fn input(f: &mut Frame, r: Rect, text: &str, placeholder: &str, focus
 
 /// An `input` field's whole text drawn selected (Ctrl+A, a double-click).
 fn select_all(f: &mut Frame, r: Rect, text: &str) {
-    let w = (text.width() as u16).min(r.width.saturating_sub(1));
+    let w = (text.width() as u16).min(r.width.saturating_sub(2));
     for x in r.x + 1..r.x + 1 + w {
         f.buffer_mut()[(x, r.y)].set_bg(P.selection);
     }
@@ -1128,7 +1128,9 @@ pub(crate) fn input_marked(f: &mut Frame, r: Rect, text: &str, placeholder: &str
     } else {
         (text.to_string(), Style::new().fg(P.input_fg))
     };
-    let w = r.width.saturating_sub(1) as usize;
+    // A blank before the text, and its last cell kept for the caret (the callers put it
+    // at most there), so a long text never runs under it or into what follows.
+    let w = r.width.saturating_sub(2) as usize;
     // Keep the end (where the caret is) visible.
     let shown = if t.width() > w && !text.is_empty() {
         t.chars().rev().scan(0, |acc, c| {
@@ -2665,6 +2667,12 @@ fn diff_overview(f: &mut Frame, rows: &[crate::diff::Row], v: &View, track: Rect
     }
 }
 
+/// How many of Find's toggles (Match Case, Whole Word, Regex) are on: each shows in the
+/// query box, two cells wide.
+fn on_count(fd: &crate::panel::Find) -> u16 {
+    [fd.case, fd.word, fd.regex].into_iter().filter(|&on| on).count() as u16
+}
+
 fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     let Some(fd) = app.find.as_ref() else { return };
     let ic = icons();
@@ -2703,9 +2711,12 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     // The focus mark turns red while the query finds nothing.
     let missed = fd.invalid || (fd.matches.is_empty() && !fd.query.is_empty());
     let mark = (app.focus == Focus::Find && fd.field == 0).then_some(if missed { P.error_fg } else { P.focus_border });
-    input_marked(f, q, &fd.query, "Find", mark);
+    // The query's text stops before the toggles that are on (drawn at its right end).
+    let qt = Rect { width: iw.saturating_sub(2 * on_count(fd)), ..q };
+    fill(f, q, P.input_bg);
+    input_marked(f, qt, &fd.query, "Find", mark);
     if mark.is_some() && fd.all {
-        select_all(f, q, &fd.query);
+        select_all(f, qt, &fd.query);
     }
     let on: Vec<&str> = [(ic.case, fd.case), (ic.word, fd.word), (ic.regex, fd.regex)].into_iter().filter(|t| t.1).map(|t| t.0).collect();
     for (k, icon) in on.iter().rev().enumerate() {
@@ -2733,8 +2744,8 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
         }
     }
     if app.focus == Focus::Find {
-        let (field, s) = if fd.field == 1 { (1, fd.replace.as_deref().unwrap_or("")) } else { (0, fd.query.as_str()) };
-        let cx = q.x + 1 + (s.width() as u16).min(iw.saturating_sub(6));
+        let (field, s, w) = if fd.field == 1 { (1, fd.replace.as_deref().unwrap_or(""), iw) } else { (0, fd.query.as_str(), qt.width) };
+        let cx = q.x + 1 + (s.width() as u16).min(w.saturating_sub(2));
         f.set_cursor_position((cx, r.y + field));
     }
     app.ui.find_btns.extend(btns);

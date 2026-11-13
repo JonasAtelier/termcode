@@ -28,6 +28,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   signature puts each parameter on its own line.
 - A commit's hover card shows its whole message, long lines wrapped, and scrolls with
   the wheel (it showed 12 lines of it); its buttons stay in view.
+- A query longer than its box (Search, Find, Quick Open) no longer runs under the caret
+  or Find's toggles: its end shows, then the caret on a blank cell.
 - The minimap's change marks light only the dot rows of the changed lines, not the
   whole cell (4 lines, or many more in a long file).
 
