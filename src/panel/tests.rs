@@ -5703,3 +5703,41 @@ fn quitting_or_reloading_waits_on_a_program_running_in_the_terminal() {
     app.term = None;
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn the_find_fields_select_whole_by_ctrl_a_or_double_click_to_copy_cut_or_replace() {
+    let root = repo("find-sel");
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "src/main.rs", false);
+    wait(&mut app);
+    app.focus = Focus::Editor;
+    let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
+    key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    typ(&mut app, "needle");
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert!(app.find.as_ref().unwrap().all, "focus {:?}", app.focus);
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(app.clip, "needle");
+    assert!(app.find.as_ref().unwrap().all, "still selected after copying");
+    screen(&mut app, &mut t);
+    let q = app.ui.find_inputs[0].0;
+    assert_eq!(t.backend().buffer()[(q.x + 2, q.y)].bg, crate::theme::P.selection, "shown selected");
+    typ(&mut app, "pin");
+    assert_eq!(app.find.as_ref().unwrap().query, "pin", "typing replaced it");
+    // The Replace field: a double-click selects it, Ctrl+X cuts it.
+    key(&mut app, KeyCode::Char('h'), KeyModifiers::CONTROL);
+    typ(&mut app, "thread");
+    screen(&mut app, &mut t);
+    let r = app.ui.find_inputs[1].0;
+    for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)].repeat(2) {
+        mouse(&mut app, kind, r.x + 2, r.y);
+    }
+    key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+    assert_eq!((app.clip.as_str(), app.find.as_ref().unwrap().replace.as_deref()), ("thread", Some("")));
+    // A paste replaces a selected field.
+    typ(&mut app, "abc");
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    app.on_paste("xyz");
+    assert_eq!(app.find.as_ref().unwrap().replace.as_deref(), Some("xyz"));
+    let _ = fs::remove_dir_all(&root);
+}

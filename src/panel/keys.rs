@@ -190,8 +190,34 @@ impl App {
             }
         }
         let Some(f) = self.find.as_mut() else { return };
-        let field = if f.field == 1 { f.replace.as_mut() } else { Some(&mut f.query) };
+        let all = std::mem::take(&mut f.all);
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let mut field = if f.field == 1 { f.replace.as_mut() } else { Some(&mut f.query) };
+        let text = field.as_deref().cloned().unwrap_or_default();
+        // A selected field goes as the first change starts (typing, Backspace, a cut).
+        let all = all && !text.is_empty();
+        if all && matches!(k.code, KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_)) && (!modded || ctrl && matches!(k.code, KeyCode::Char('x' | 'v'))) {
+            if let Some(s) = field.as_deref_mut() {
+                s.clear();
+            }
+        }
         match k.code {
+            KeyCode::Char('a') if ctrl => f.all = true,
+            // Nothing selected: Ctrl+C still takes the whole field.
+            KeyCode::Char('c') if ctrl && !text.is_empty() => {
+                f.all = all;
+                self.msg = format!("copied via {}", clipboard_set(&text));
+                self.clip = text;
+            }
+            KeyCode::Char('x') if ctrl && all => {
+                self.msg = format!("cut via {}", clipboard_set(&text));
+                self.clip = text;
+                self.find_incremental();
+            }
+            KeyCode::Char('v') if ctrl => {
+                let t = clipboard_get().unwrap_or_else(|| self.clip.clone());
+                self.paste_text(&t);
+            }
             KeyCode::Esc => {
                 self.find = None;
                 self.focus = Focus::Editor;
@@ -636,7 +662,11 @@ impl App {
             }
             Focus::Find => {
                 if let Some(f) = self.find.as_mut() {
+                    let all = std::mem::take(&mut f.all);
                     let s = if f.field == 1 { f.replace.get_or_insert_with(String::new) } else { &mut f.query };
+                    if all {
+                        s.clear();
+                    }
                     s.push_str(text.lines().next().unwrap_or(""));
                 }
                 self.find_refresh();

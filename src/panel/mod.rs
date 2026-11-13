@@ -271,6 +271,8 @@ pub struct Find {
     pub replace: Option<String>,
     /// 0 = find field, 1 = replace field.
     pub field: usize,
+    /// The focused field's whole text is selected (Ctrl+A, a double-click).
+    pub all: bool,
     pub matches: Vec<(Pos, Pos)>,
     pub cur: Option<usize>,
     /// Match Case / Match Whole Word toggles.

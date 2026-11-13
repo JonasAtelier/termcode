@@ -622,10 +622,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             // toggles keep their columns; the card border and the caret show focus.
             input(f, text, &app.query, "Search", focused && crate::theme::ascii());
             if focused && app.query_all {
-                let w = (app.query.width() as u16).min(text.width.saturating_sub(1));
-                for x in text.x + 1..text.x + 1 + w {
-                    f.buffer_mut()[(x, y)].set_bg(P.selection);
-                }
+                select_all(f, text, &app.query);
             }
             round_ends(f, inp, P.input_bg, P.sidebar_bg);
             app.ui.side_input = inp;
@@ -1112,6 +1109,14 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
 
 pub(crate) fn input(f: &mut Frame, r: Rect, text: &str, placeholder: &str, focused: bool) {
     input_marked(f, r, text, placeholder, focused.then_some(P.focus_border));
+}
+
+/// An `input` field's whole text drawn selected (Ctrl+A, a double-click).
+fn select_all(f: &mut Frame, r: Rect, text: &str) {
+    let w = (text.width() as u16).min(r.width.saturating_sub(1));
+    for x in r.x + 1..r.x + 1 + w {
+        f.buffer_mut()[(x, r.y)].set_bg(P.selection);
+    }
 }
 
 /// `input` with the focus mark in `mark`: a thin bar at its left edge, as a tab's.
@@ -2644,6 +2649,9 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     let missed = fd.invalid || (fd.matches.is_empty() && !fd.query.is_empty());
     let mark = (app.focus == Focus::Find && fd.field == 0).then_some(if missed { P.error_fg } else { P.focus_border });
     input_marked(f, q, &fd.query, "Find", mark);
+    if mark.is_some() && fd.all {
+        select_all(f, q, &fd.query);
+    }
     let on: Vec<&str> = [(ic.case, fd.case), (ic.word, fd.word), (ic.regex, fd.regex)].into_iter().filter(|t| t.1).map(|t| t.0).collect();
     for (k, icon) in on.iter().rev().enumerate() {
         let tr = Rect::new(q.right().saturating_sub(2 + 2 * k as u16), r.y, 1, 1);
@@ -2659,6 +2667,9 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     if let Some(rep) = &fd.replace {
         let rq = Rect::new(q.x, r.y + 1, iw, 1);
         input(f, rq, rep, "Replace", app.focus == Focus::Find && fd.field == 1);
+        if app.focus == Focus::Find && fd.field == 1 && fd.all {
+            select_all(f, rq, rep);
+        }
         app.ui.find_inputs.push((rq, 1));
         for (k, (icon, b)) in [(ic.replace, FindBtn::ReplaceOne), (ic.replace_all, FindBtn::ReplaceAll)].into_iter().enumerate() {
             let br = Rect::new(rq.right() + 2 + 2 * k as u16, rq.y, 1, 1);

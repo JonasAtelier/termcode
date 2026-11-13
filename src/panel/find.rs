@@ -32,6 +32,7 @@ impl App {
             query: String::new(),
             replace: None,
             field: 0,
+            all: false,
             matches: Vec::new(),
             cur: None,
             case: false,

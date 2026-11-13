@@ -245,7 +245,8 @@ impl App {
         }
         if let Some(&(_, field)) = self.ui.find_inputs.iter().find(|(r, _)| r.contains(p)) {
             if let Some(f) = self.find.as_mut() {
-                f.field = field;
+                // A double-click selects the field's whole text.
+                (f.field, f.all) = (field, double);
             }
             self.focus = Focus::Find;
             return;
