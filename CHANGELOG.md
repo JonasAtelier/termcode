@@ -18,6 +18,12 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   for its kind (function, struct, class, enum, …), the one under the cursor lit; a click
   goes there. The button beside the terminal's shows and hides it. Its rows fold, and
   F1 View: Focus Outline walks it by keys.
+- A GitHub view (its item above Settings), in any folder, through the GitHub CLI
+  (`gh`): sign in from it, then two panes. Above: your account (avatar in a circle), its
+  contribution graph by year or month in green blocks, all your repositories, review requests, your pull requests, assigned issues and
+  notifications. Below: the repository picked above, its description and status, Actions
+  runs, pull requests and issues. Open, edit a title, check out, re-run, cancel or close,
+  each confirmed first.
 - The Search box and Find's fields: Ctrl+A or a double-click selects the whole text;
   Ctrl+C copies it, Ctrl+X cuts it, and typing or a paste replaces it.
 

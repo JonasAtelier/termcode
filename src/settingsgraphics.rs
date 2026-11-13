@@ -41,6 +41,11 @@ fn mode(get: impl Fn(&str) -> Option<String>) -> Mode {
 enum Graphic {
     Switch(bool, [Color; 3]),
     Palette([Color; 8]),
+    /// A round picture, by its pixels' size and a sample of them, the background around
+    /// it and its ring (what changes it).
+    Picture(u32, u32, Vec<u8>, [Color; 2]),
+    /// Pixels made by the caller, by a digest of what they show.
+    Raw(u64),
 }
 
 struct Cached {
@@ -54,7 +59,8 @@ pub struct Graphics {
     cell: (u16, u16),
     tmux: bool,
     // Switch states, focused/unfocused, and two palette cards. IDs survive resizing.
-    cache: [Option<Cached>; 6],
+    // Then the GitHub avatar, its year graph and its month graph.
+    cache: [Option<Cached>; 9],
 }
 
 fn cell_size() -> (u16, u16) {
@@ -86,6 +92,17 @@ impl Graphics {
 
     pub fn enabled(&self) -> bool {
         self.mode != Mode::Text
+    }
+
+    /// A cell's size in pixels.
+    pub fn cell(&self) -> (u16, u16) {
+        self.cell
+    }
+
+    /// `make(w, h)` (the area's pixels) drawn into `area` in slot `slot` (7, 8), made again
+    /// only when `key` (a digest of what it shows) or the size changes.
+    pub fn raw(&mut self, f: &mut Frame, area: Rect, slot: usize, key: u64, make: impl FnOnce(u32, u32) -> RgbaImage) {
+        self.draw_with(f, area, slot, Graphic::Raw(key), make);
     }
 
     pub fn pixel_controls(&self) -> bool {
@@ -137,7 +154,23 @@ impl Graphics {
         );
     }
 
+    /// `img` scaled into `area` as a circle with a `ring` round it, `bg` in the corners
+    /// (the GitHub account's picture); false where pictures do not show (text mode).
+    pub fn picture(&mut self, f: &mut Frame, area: Rect, img: &RgbaImage, bg: Color, ring: Color) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let key = Graphic::Picture(img.width(), img.height(), img.as_raw().iter().step_by(97).copied().collect(), [bg, ring]);
+        self.draw_with(f, area, 6, key, |w, h| round(img, w, h, pixel(bg), pixel(ring)));
+        true
+    }
+
     fn draw(&mut self, f: &mut Frame, area: Rect, slot: usize, graphic: Graphic) {
+        let g = graphic.clone();
+        self.draw_with(f, area, slot, graphic, |w, h| raster(&g, w, h));
+    }
+
+    fn draw_with(&mut self, f: &mut Frame, area: Rect, slot: usize, graphic: Graphic, pixels: impl FnOnce(u32, u32) -> RgbaImage) {
         if !self.enabled() || area.is_empty() {
             return;
         }
@@ -146,8 +179,7 @@ impl Graphics {
             .as_ref()
             .is_some_and(|c| c.size == size && c.graphic == graphic)
         {
-            let pixels = raster(
-                &graphic,
+            let pixels = pixels(
                 u32::from(area.width) * u32::from(self.cell.0),
                 u32::from(area.height) * u32::from(self.cell.1),
             );
@@ -174,7 +206,7 @@ impl Graphics {
     }
 }
 
-fn pixel(color: Color) -> Rgba<u8> {
+pub(crate) fn pixel(color: Color) -> Rgba<u8> {
     let (r, g, b) = match color {
         Color::Rgb(r, g, b) => (r, g, b),
         _ => (128, 128, 128),
@@ -182,8 +214,31 @@ fn pixel(color: Color) -> Rgba<u8> {
     Rgba([r, g, b, 255])
 }
 
+/// `img` in a `w` x `h` image: the largest centred circle, edged by a ring a sixteenth of
+/// its size (a pixel at least), `bg` outside it.
+pub fn round(img: &RgbaImage, w: u32, h: u32, bg: Rgba<u8>, ring: Rgba<u8>) -> RgbaImage {
+    let d = w.min(h).max(1);
+    let face = image::imageops::resize(img, d, d, image::imageops::FilterType::Triangle);
+    let (ox, oy) = ((w - d) / 2, (h - d) / 2);
+    let r = d as f32 / 2.0;
+    let edge = (d as f32 / 16.0).max(1.0);
+    RgbaImage::from_fn(w, h, |x, y| {
+        let (dx, dy) = (x as f32 + 0.5 - (ox as f32 + r), y as f32 + 0.5 - (oy as f32 + r));
+        let dist = (dx * dx + dy * dy).sqrt();
+        if dist > r {
+            bg
+        } else if dist > r - edge {
+            ring
+        } else {
+            *face.get_pixel(x - ox, y - oy)
+        }
+    })
+}
+
 fn raster(graphic: &Graphic, w: u32, h: u32) -> RgbaImage {
     match *graphic {
+        // Drawn from its own pixels (`picture`), never from here.
+        Graphic::Picture(..) | Graphic::Raw(_) => RgbaImage::new(w, h),
         Graphic::Switch(on, [bg, track, knob]) => RgbaImage::from_fn(w, h, |x, y| {
             let (x, y) = (x as f32 + 0.5, y as f32 + 0.5);
             let r = h as f32 * 0.42;
@@ -232,6 +287,17 @@ fn raster(graphic: &Graphic, w: u32, h: u32) -> RgbaImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picture_is_cut_round_with_a_ring() {
+        let (bg, ring, face) = (Rgba([1, 1, 1, 255]), Rgba([200, 200, 200, 255]), Rgba([255, 0, 0, 255]));
+        let out = round(&RgbaImage::from_pixel(8, 8, face), 32, 32, bg, ring);
+        assert_eq!((*out.get_pixel(0, 0), *out.get_pixel(31, 31)), (bg, bg), "the corners");
+        assert_eq!(*out.get_pixel(16, 0), ring, "the top of the circle");
+        assert_eq!(*out.get_pixel(16, 16), face, "the middle");
+        let wide = round(&RgbaImage::from_pixel(8, 8, face), 40, 32, bg, ring);
+        assert_eq!((*wide.get_pixel(2, 16), *wide.get_pixel(20, 16)), (bg, face), "centred in a wider area");
+    }
     use ratatui::{backend::CrosstermBackend, widgets::Block, TerminalOptions, Viewport};
 
     #[test]

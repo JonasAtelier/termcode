@@ -2179,7 +2179,7 @@ pub(crate) mod ui_tests {
         settle(&mut app);
         let s = screen(&mut app, &mut tm);
         assert!(s.contains("WORKING TREE") && s.contains("GRAPH") && s.contains("Add commit") && s.contains("first"), "{s}");
-        assert_eq!(app.ui.activity.len(), 3, "no separate History item");
+        assert_eq!(app.ui.activity.iter().filter(|(_, s)| *s != Side::GitHub).count(), 3, "no separate History item");
         assert!(!s.contains("HISTORY"));
         // CHANGES collapses and expands from its header.
         click(&mut app, at(&tm, "WORKING TREE"));

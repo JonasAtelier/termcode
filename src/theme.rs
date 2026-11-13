@@ -232,6 +232,9 @@ pub struct Pal {
     pub breadcrumb_focus: Color,
     /// Symbol icons, in `symbols::KINDS` order (symbolIcon.*Foreground).
     pub symbol: [Color; 10],
+    /// The GitHub view: open and passed (charts.green), running (charts.yellow).
+    pub gh_green: Color,
+    pub gh_yellow: Color,
 }
 
 /// Build the palette; also returns the keys that resolved nowhere (a test keeps it empty).
@@ -391,6 +394,8 @@ pub fn build_pal_checked(t: &Map<String, Value>) -> (Pal, Vec<&'static str>) {
             "symbolIcon.stringForeground",
         ]
         .map(|k| on(k, sidebar_bg)),
+        gh_green: on("charts.green", sidebar_bg),
+        gh_yellow: on("charts.yellow", sidebar_bg),
     };
     (pal, missing.into_inner())
 }
@@ -629,6 +634,10 @@ pub struct Icons {
     pub border: [&'static str; 6],
     /// The Outline's symbol icons, in `symbols::KINDS` order.
     pub symbols: [&'static str; 10],
+    /// The GitHub view: GitHub, pull request, draft, issue, passed, failed, running,
+    /// queued, skipped, edit, open, refresh, re-run, stop, repository, star, fork
+    /// (github.rs names them).
+    pub gh: [&'static str; 17],
 }
 
 /// Codepoints taken from VS Code's codicon registry (`codiconsLibrary`); the
@@ -676,6 +685,7 @@ const CODICONS: Icons = Icons {
     lane_cursor: "─",
     border: ["╭", "╮", "╰", "╯", "─", "│"],
     symbols: ["\u{ea8c}", "\u{ea91}", "\u{eb5b}", "\u{ea95}", "\u{eb61}", "\u{ea8b}", "\u{ea92}", "\u{eb5d}", "\u{ea88}", "\u{eb8d}"],
+    gh: ["\u{ea84}", "\u{ea64}", "\u{ebdb}", "\u{eb0c}", "\u{eba4}", "\u{ea87}", "\u{ea77}", "\u{ea77}", "\u{eabd}", "\u{ea73}", "\u{eb14}", "\u{eb37}", "\u{ebc0}", "\u{eba5}", "\u{ea62}", "\u{eb59}", "\u{ea63}"],
 };
 
 /// `termcode.icons: "unicode"`: standard Unicode symbols, no Nerd Font private-use
@@ -725,6 +735,7 @@ const SYMBOLS: Icons = Icons {
     lane_cursor: "─",
     border: ["╭", "╮", "╰", "╯", "─", "│"],
     symbols: ["ƒ", "◇", "◆", "∈", "◎", "§", "τ", "π", "χ", "#"],
+    gh: ["⊙", "⇄", "⇄", "○", "✓", "✗", "↻", "◌", "⊘", "✎", "↗", "↻", "↻", "■", "▤", "★", "Y"],
 };
 
 /// `termcode.icons: "ascii"` or TERMCODE_ICONS=0: ASCII and narrow Unicode
@@ -772,6 +783,7 @@ const PLAIN: Icons = Icons {
     lane_cursor: "-",
     border: ["+", "+", "+", "+", "-", "|"],
     symbols: ["f", "S", "C", "E", "I", "M", "T", "K", "V", "#"],
+    gh: ["G", "P", "p", "o", "+", "x", "~", ".", "-", "e", "^", "R", "R", "#", "#", "*", "Y"],
 };
 
 /// The icon set in use (`termcode.icons`, resolved).
@@ -952,7 +964,7 @@ mod tests {
                 set.discard, set.open_file, set.case, set.regex, set.word, set.up, set.down, set.replace, set.replace_all,
                 set.branch, set.lock, set.folder_dot, set.gutter_bar, set.gutter_del, set.ws_space, set.ws_tab, set.guide,
                 set.lane_left, set.lane_right, set.lane_cursor];
-            for g in all.into_iter().chain(set.border).chain(set.problem).chain(set.symbols) {
+            for g in all.into_iter().chain(set.border).chain(set.problem).chain(set.symbols).chain(set.gh) {
                 assert!(!g.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c)), "{name}: {g:?} needs a Nerd Font");
                 assert!(g.width() <= 1, "{name}: {g:?} is wider than a cell");
             }

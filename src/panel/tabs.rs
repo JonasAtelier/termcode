@@ -424,6 +424,7 @@ impl App {
                     self.msg = errs.join("; ");
                 }
             }
+            PAct::GitHub(a) => crate::github::run(self, a),
             PAct::QuitEndTerminal => {
                 self.term_quit_ok = true;
                 self.request_quit();

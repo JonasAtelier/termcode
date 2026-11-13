@@ -202,6 +202,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
 fn draw_frame(app: &mut App, f: &mut Frame) {
     app.ui = Hits::default();
     app.gitui.hits = Default::default();
+    app.gh.hits = Default::default();
     let lay = lay(app);
     let area = f.area();
     f.render_widget(Block::new().style(Style::new().bg(P.editor_bg).fg(P.editor_fg)), area);
@@ -461,9 +462,20 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     if r.width > 0 && r.height > 0 {
         item(f, siy, settings_open, app.hover.is_some_and(|p| bottom.contains(p)), ic.settings, r.bottom());
     }
+    // GitHub right above Settings (VS Code's Accounts place), where the views leave room.
+    let gh_r = Rect::new(r.x, bottom.y.saturating_sub(ih), r.width, ih);
+    let views_end = if gh_r.y >= r.y + ih * SIDES.len() as u16 && r.width > 0 {
+        let active = app.side == Side::GitHub && app.side_visible && !settings_open;
+        let hot = app.hover.is_some_and(|p| gh_r.contains(p));
+        // Lit like the views: its lower half on the blank row above Settings' icon.
+        item(f, gh_r.y + off, active, hot, ic.gh[0], siy);
+        gh_r.y
+    } else {
+        bottom.y
+    };
     for (i, s) in SIDES.iter().enumerate() {
         let y = r.y + i as u16 * ih;
-        if y + ih > bottom.y || r.width == 0 {
+        if y + ih > views_end || r.width == 0 {
             break;
         }
         let item_r = Rect::new(r.x, y, r.width, ih);
@@ -473,6 +485,7 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             Side::Explorer => ic.files,
             Side::Search => ic.search,
             Side::Scm => ic.scm,
+            Side::GitHub => continue, // above Settings
         };
         let iy = y + off;
         item(f, iy, active, hot, icon, bottom.y);
@@ -480,6 +493,10 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             activity_badge(f, r, item_r, (ix, iy), app.scm_files.len(), if active { active_bg } else { P.activity_bg });
         }
         app.ui.activity.push((item_r, *s));
+    }
+    // GitHub's after the views (hit-tested the same way).
+    if views_end < bottom.y {
+        app.ui.activity.push((gh_r, Side::GitHub));
     }
 }
 
@@ -580,11 +597,17 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         Side::Explorer => "EXPLORER",
         Side::Search => "SEARCH",
         Side::Scm => "SOURCE CONTROL",
+        Side::GitHub => "GITHUB",
     };
     let title_row = Rect::new(col.x, col.y, col.width, 1);
     let top = col.y + if st == BlockStyle::Cards { 0 } else { 1 + lay.s.section_gap };
     if app.side == Side::Scm {
         crate::scm::draw_scm(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
+        side_title(app, f, title_row, title, lay, bg);
+        return;
+    }
+    if app.side == Side::GitHub {
+        crate::github::draw(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
         side_title(app, f, title_row, title, lay, bg);
         return;
     }
@@ -650,6 +673,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             }
         }
         Side::Scm => {}
+        Side::GitHub => {}
     }
     let list = Rect::new(r.x, y, r.width, r.bottom().saturating_sub(y));
     app.ui.side_list = list;
@@ -697,6 +721,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => {}
+            Side::GitHub => {}
         }
     }
     sticky_rows(app, f, list, lay.pad, lay.s.list_gap, &[], &search_rows);
@@ -771,6 +796,7 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
             }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
+            Side::GitHub => {}
         }
     }
     // Share the last header's row rather than reserving an empty separator row.
@@ -928,7 +954,7 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> RowEx
 /// The in-place rename box: the name on the input colours with its selection, scrolled
 /// to keep the caret in view, and the terminal cursor there. A name already taken (or not
 /// a name) is in `errorForeground` while it is typed.
-fn rename_field(f: &mut Frame, r: Rect, rn: &crate::panel::Rename, conflict: bool) -> usize {
+pub(crate) fn rename_field(f: &mut Frame, r: Rect, rn: &crate::panel::Rename, conflict: bool) -> usize {
     if r.width < 2 {
         return 0;
     }

@@ -111,7 +111,7 @@ impl Rename {
     }
 
     /// Pasted text replaces the selection; a name is one line, so only the first counts.
-    fn paste(&mut self, text: &str) {
+    pub(crate) fn paste(&mut self, text: &str) {
         let line = text.lines().next().unwrap_or("").trim_end_matches('\r');
         self.take_selection();
         self.text.insert_str(self.cur, line);
@@ -141,7 +141,7 @@ impl Rename {
     }
 
     /// One key of the field; false for keys it does not use.
-    fn key(&mut self, k: KeyEvent) -> bool {
+    pub(crate) fn key(&mut self, k: KeyEvent) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         let prev = |s: &str, i: usize| s[..i].chars().next_back().map_or(i, |c| i - c.len_utf8());
@@ -207,6 +207,8 @@ pub enum Side {
     Explorer,
     Search,
     Scm,
+    /// Only for a repository on GitHub (github.rs).
+    GitHub,
 }
 /// Activity bar order (VS Code's).
 pub const SIDES: [Side; 3] = [Side::Explorer, Side::Search, Side::Scm];
@@ -321,6 +323,8 @@ pub enum PAct {
     QuitNoSave,
     /// Quit although a program runs in the terminal (it ends with the window).
     QuitEndTerminal,
+    /// A change on GitHub, confirmed.
+    GitHub(crate::github::Act),
     /// A document and the backup file chosen for it; the backup file to drop.
     RestoreBackup(String, PathBuf),
     DiscardBackup(PathBuf),
@@ -350,6 +354,8 @@ struct HoverKey {
     sash: Option<usize>,
     /// The Outline row under the pointer (its screen row).
     outline: Option<u16>,
+    /// The GitHub view's cell under the pointer (its rows and buttons light up).
+    gh: Option<(u16, u16)>,
     /// An activity bar item (its icon lights up).
     activity: Option<usize>,
     /// A commit-dialog button, a commit card's button, or (usize::MAX) Source Control's
@@ -517,6 +523,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Show Explorer", Cmd::ShowSide(Side::Explorer), "Alt+1, Ctrl+E"),
     ("View: Show Search", Cmd::ShowSide(Side::Search), "Alt+4, F4"),
     ("View: Show Source Control", Cmd::ShowSide(Side::Scm), "Alt+2, F2, Ctrl+G"),
+    ("View: Show GitHub", Cmd::ShowSide(Side::GitHub), ""),
     ("View: Open Next Editor", Cmd::Keys(KeyCode::PageDown, KeyModifiers::CONTROL), "Ctrl+PgDn"),
     ("View: Open Previous Editor", Cmd::Keys(KeyCode::PageUp, KeyModifiers::CONTROL), "Ctrl+PgUp"),
     ("View: Focus First Editor Group", Cmd::Keys(KeyCode::Char('1'), KeyModifiers::CONTROL), "Ctrl+1"),
@@ -647,6 +654,8 @@ pub enum Drag {
     TermMouse,
     /// The Outline's left border, its width's handle.
     OutlineSash,
+    /// The line between the GitHub view's panes.
+    GhSash,
     File { rel: String, from: Position, active: bool },
     /// Tab `i` of group `g` (VS Code's tab drag and drop); active once moved 2 cells.
     Tab { g: usize, i: usize, from: Position, active: bool },
@@ -852,6 +861,8 @@ pub struct App {
     /// its scroll, and the symbol it last followed the cursor to.
     /// Quit was confirmed over a program running in the terminal.
     pub term_quit_ok: bool,
+    /// The GitHub view and its status bar item.
+    pub gh: crate::github::GitHub,
     pub outline_open: bool,
     pub outline_w: Option<u16>,
     pub outline_off: usize,
@@ -889,8 +900,8 @@ pub struct App {
     gen: u64,
     tx: mpsc::SyncSender<(u64, Option<Hit>)>,
     rx: mpsc::Receiver<(u64, Option<Hit>)>,
-    pub sel: [usize; 3],
-    pub off: [usize; 3],
+    pub sel: [usize; 4],
+    pub off: [usize; 4],
     pub docs: HashMap<String, Doc>,
     pub groups: Vec<Group>,
     /// Active (focused) editor group.
@@ -1447,6 +1458,7 @@ impl App {
             .and_then(|p| fs::read(p).ok())
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        let gh_here = git_root.as_deref().and_then(crate::github::detect);
         let mut a = App {
             root,
             git_root,
@@ -1468,6 +1480,11 @@ impl App {
             term_open: false,
             term_h: saved["terminal_height"].as_u64().map(|h| h.clamp(3, 500) as u16),
             term_quit_ok: false,
+            gh: crate::github::GitHub::new(
+                gh_here,
+                saved["github_repo"].as_str().map(String::from),
+                saved["github_split"].as_u64().map(|h| h.clamp(1, 500) as u16),
+            ),
             outline_open: false,
             outline_w: saved["outline_width"].as_u64().map(|w| w.clamp(16, 500) as u16),
             outline_off: 0,
@@ -1495,8 +1512,8 @@ impl App {
             gen: 0,
             tx,
             rx,
-            sel: [0; 3],
-            off: [0; 3],
+            sel: [0; 4],
+            off: [0; 4],
             docs: HashMap::new(),
             groups: vec![Group::default()],
             ag: 0,

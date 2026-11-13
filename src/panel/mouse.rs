@@ -103,6 +103,7 @@ impl App {
             }).or_else(|| self.ui.term_sash.contains(p).then_some(usize::MAX - 1))
             .or_else(|| self.ui.outline_sash.contains(p).then_some(usize::MAX - 2)),
             outline: self.ui.outline.contains(p).then_some(p.y),
+            gh: self.gh.hits.area.contains(p).then_some((p.x, p.y)),
             activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.settings_btn.contains(p).then_some(SIDES.len())),
             button: match self.gitui.dlg.as_ref() {
                 Some(d) => d.hits.btns.iter().position(|(r, _)| r.contains(p)),
@@ -171,7 +172,7 @@ impl App {
             }
             return;
         }
-        if crate::scm::click(self, p, double) {
+        if crate::scm::click(self, p, double) || crate::github::click(self, p, double) {
             return;
         }
         if self.ui.close.contains(p) {
@@ -600,6 +601,7 @@ impl App {
             Drag::TermSash => self.term_h = Some((self.ui.term.bottom() + 1).saturating_sub(p.y).max(3)),
             // The panel's right edge stays; its left border follows the pointer.
             Drag::OutlineSash => self.outline_w = Some((self.ui.outline.right() + 1).saturating_sub(p.x).max(16)),
+            Drag::GhSash => crate::github::drag_to(self, p.y),
             Drag::File { from, active, .. } => {
                 if !*active && (from.x.abs_diff(p.x) + from.y.abs_diff(p.y)) >= 2 {
                     *active = true;
@@ -679,7 +681,7 @@ impl App {
             return;
         }
         match std::mem::replace(&mut self.drag, Drag::None) {
-            Drag::Divider | Drag::TermSash | Drag::OutlineSash => self.save_layout(),
+            Drag::Divider | Drag::TermSash | Drag::OutlineSash | Drag::GhSash => self.save_layout(),
             Drag::File { rel, active: true, .. } => {
                 if let Some((g, zone)) = self.drop.take() {
                     let target = match zone {
@@ -785,7 +787,7 @@ impl App {
             q.sel = (q.sel as isize + d).clamp(0, (q.items.len() as isize - 1).max(0)) as usize;
             return q.sel != old;
         }
-        if crate::scm::wheel(self, p, d) {
+        if crate::scm::wheel(self, p, d) || crate::github::wheel(self, p, d) {
             return true;
         }
         if self.ui.outline.contains(p) {

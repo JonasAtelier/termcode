@@ -14,6 +14,7 @@ mod git;
 mod minimap;
 mod icons;
 // Git backend (history, refs, stash, commit, remotes, hunks, blame, conflicts) and graph lanes.
+mod github;
 mod gitops;
 mod graph;
 mod nav;

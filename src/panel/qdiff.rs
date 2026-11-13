@@ -396,6 +396,7 @@ impl App {
         *dirty |= crate::session::tick(self);
         *dirty |= self.drain();
         *dirty |= self.term_pump();
+        *dirty |= crate::github::tick(self);
         if std::mem::take(dirty) {
             t.draw(|f| crate::ui::draw(self, f))?;
             self.last_draw = Some(Instant::now());
@@ -417,7 +418,8 @@ impl App {
             || self.nav.busy()
             || self.gitui.busy()
             || self.gitui.refs.busy()
-            || self.lints.busy();
+            || self.lints.busy()
+            || self.gh.busy();
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
         let upgrade_due = self.upgrade.next.filter(|_| self.upgrade.watch);

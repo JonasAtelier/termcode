@@ -622,7 +622,8 @@ fn activity_items_are_tall_with_the_active_one_marked_and_hover_lit() {
         let (ih, off) = if compact { (2, 0) } else { (2, 1) };
         let (items, b) = (app.ui.activity.clone(), t.backend().buffer().clone());
         assert!(items.iter().all(|(r, _)| r.height == ih), "{compact}: one {ih}-row cell per item");
-        assert!(items.windows(2).all(|w| w[1].0.y == w[0].0.bottom()), "stacked without gaps");
+        let views: Vec<_> = items.iter().filter(|(_, s)| *s != Side::GitHub).collect();
+        assert!(views.windows(2).all(|w| w[1].0.y == w[0].0.bottom()), "the views stacked without gaps");
         // The icon, a blank kept after it (its 2-cell slot).
         let (scm, _) = items[2];
         let iy = scm.y + off;
@@ -5829,4 +5830,314 @@ fn a_long_query_scrolls_and_leaves_the_caret_a_blank_cell_before_the_toggles() {
     let rest: String = (caret.x + 1..q.right()).map(|x| b[(x, caret.y)].symbol()).collect();
     assert!(!rest.contains(|c: char| c.is_ascii_alphanumeric() || c == '_'), "only toggles after the caret: {rest:?}");
     let _ = fs::remove_dir_all(&root);
+}
+
+/// A fake GitHub CLI in `dir`: signed out until `auth login` runs, then an account with
+/// two repositories (tester/proj and o/lib), one of each list, and for a repository (named
+/// by --repo) two pull requests, an issue and two runs; it logs every command to `dir/gh.log`.
+fn fake_gh(dir: &Path) -> PathBuf {
+    let bin = dir.join("gh");
+    let script = r#"#!/bin/sh
+d=$(dirname "$0")
+echo "$*" >> "$d/gh.log"
+case "$1 $2" in
+  "auth login") rm -f "$d/signed-out"; echo "Logged in as tester"; exit 0 ;;
+esac
+if [ -e "$d/signed-out" ]; then echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; fi
+repo=""; prev=""
+for a in "$@"; do [ "$prev" = "--repo" ] && repo="$a"; prev="$a"; done
+case "$1 $2" in
+  "api user") echo '{"login":"tester","avatar_url":"https://avatars.example/u/1?v=4"}' ;;
+  "api graphql") echo '{"data":{"viewer":{"followers":{"totalCount":4},"following":{"totalCount":2},"contributionsCollection":{"contributionCalendar":{"totalContributions":13,"weeks":[
+      {"contributionDays":[{"contributionCount":0,"contributionLevel":"NONE","date":"2026-11-01","weekday":0},{"contributionCount":3,"contributionLevel":"SECOND_QUARTILE","date":"2026-11-02","weekday":1}]},
+      {"contributionDays":[{"contributionCount":10,"contributionLevel":"FOURTH_QUARTILE","date":"2026-11-08","weekday":0}]}]}}}}}' ;;
+  "api https://avatars.example/u/1?v=4&s=64") echo 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGM4YWPzH4QZYAwAT6QI/d3jAgwAAAAASUVORK5CYII=' | base64 -d ;;
+  "api user/repos"*"page=2"*) echo '[]' ;;
+  "api user/repos"*) echo '[{"full_name":"tester/proj","description":"The project","private":true,"fork":false,"archived":false,"pushed_at":"2026-11-13T00:00:00Z","stargazers_count":7,"forks_count":2,"language":"Rust","default_branch":"main","open_issues_count":3,"html_url":"https://github.com/tester/proj"},
+                            {"full_name":"o/lib","description":"","private":false,"fork":true,"archived":false,"pushed_at":"2026-11-01T00:00:00Z","stargazers_count":0,"forks_count":0,"language":"C","default_branch":"master","open_issues_count":0,"html_url":"https://github.com/o/lib"}]' ;;
+  "search prs") case "$3" in
+      --review-requested) echo '[{"number":3,"title":"Review me","author":{"login":"dee"},"repository":{"name":"lib","nameWithOwner":"o/lib"},"isDraft":false,"updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/o/lib/pull/3"}]' ;;
+      *) echo '[]' ;;
+    esac ;;
+  "search issues") echo '[]' ;;
+  "api notifications") echo '[{"reason":"mention","updated_at":"2026-11-13T00:00:00Z","subject":{"title":"You were mentioned","type":"Issue","url":"https://api.github.com/repos/o/lib/issues/4"},"repository":{"full_name":"o/lib","html_url":"https://github.com/o/lib"}}]' ;;
+  "pr list") echo '[{"number":12,"title":"Fix the thing in '"$repo"'","author":{"login":"ann"},"isDraft":false,"headRefName":"fix","updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/'"$repo"'/pull/12","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]},
+                    {"number":13,"title":"Draft work","author":{"login":"bob"},"isDraft":true,"headRefName":"wip","updatedAt":"2026-11-12T00:00:00Z","url":"https://github.com/'"$repo"'/pull/13","statusCheckRollup":[]}]' ;;
+  "issue list") echo '[{"number":8,"title":"It breaks","author":{"login":"cy"},"updatedAt":"2026-11-10T00:00:00Z","url":"https://github.com/'"$repo"'/issues/8"}]' ;;
+  "run list") echo '[{"databaseId":71,"displayTitle":"Fix the thing","workflowName":"CI","headBranch":"fix","status":"completed","conclusion":"failure","updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/'"$repo"'/actions/runs/71"},
+                     {"databaseId":72,"displayTitle":"nightly","workflowName":"Nightly","headBranch":"main","status":"in_progress","conclusion":"","updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/'"$repo"'/actions/runs/72"}]' ;;
+  *) exit 0 ;;
+esac
+"#;
+    fs::write(&bin, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// Runs the GitHub view's background work until `done`.
+fn gh_settle(app: &mut App, done: &dyn Fn(&App) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done(app) {
+        assert!(Instant::now() < deadline, "github work never finished");
+        crate::github::tick(app);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn the_github_view_signs_in_first_then_lists_and_edits_a_title_only_once_confirmed() {
+    use crate::github::{Row, Sec, BOTTOM, TOP};
+    let root = repo("github");
+    Command::new("git").arg("-C").arg(&root).args(["remote", "add", "origin", "https://github.com/tester/proj.git"]).status().unwrap();
+    let fake = std::env::temp_dir().join(format!("termcode-fake-gh-{}", std::process::id()));
+    fs::create_dir_all(&fake).unwrap();
+    fs::write(fake.join("signed-out"), "").unwrap();
+    let bin = fake_gh(&fake);
+    let log = || fs::read_to_string(fake.join("gh.log")).unwrap_or_default();
+    let mut app = App::new(root.clone(), None);
+    assert_eq!((app.gh.here.as_deref(), app.gh.chosen.as_deref()), (Some("tester/proj"), Some("tester/proj")), "the folder's repository, first");
+    app.gh.bin = bin.clone();
+    app.side_w = Some(70); // whole titles in the rows
+    app.refresh();
+    wait(&mut app);
+    let mut t = Terminal::new(TestBackend::new(160, 60)).unwrap();
+    // Signed out: only the sign-in shows.
+    app.show_side(Side::GitHub, false);
+    crate::github::tick(&mut app);
+    gh_settle(&mut app, &|a| !a.gh.loading);
+    let s = screen(&mut app, &mut t);
+    assert_eq!(app.gh.state, crate::github::State::SignedOut);
+    assert!(s.contains("Sign in to GitHub") && s.contains("Sign in with GitHub") && !s.contains("REPOSITORIES"), "{s}");
+    // Signing in runs gh auth login in the terminal; the view then fills by itself.
+    let b = app.gh.hits.btns[0].0;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), b.x + 1, b.y);
+    assert!(app.gh.signing_in && app.term_open && app.focus == Focus::Term);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !log().contains("auth login --web") {
+        assert!(Instant::now() < deadline, "the terminal ran gh auth login: {}", log());
+        app.term_pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    crate::github::fetch(&mut app);
+    gh_settle(&mut app, &|a| a.gh.state == crate::github::State::Ready && a.gh.avatar_ready() && !a.gh.repo_loading);
+    app.hide_terminal();
+    app.term = None;
+    app.focus = Focus::Side;
+    let s = screen(&mut app, &mut t);
+    for want in ["tester", "2 repositories", "ACTIVITY · 13 in the past year", "‹  past year  ›", "2 repos · ", " 7 · 4 followers · 2 following", "REPOSITORIES", "proj", "o/lib", "REVIEW REQUESTS", "#3 Review me", "NOTIFICATIONS", "You were mentioned",
+                 "tester/proj", "The project", "private · main · Rust", "ACTIONS", "nightly", "PULL REQUESTS", "#12 Fix the thing in tester/proj", "ISSUES", "#8 It breaks"] {
+        assert!(s.contains(want), "{want}: {s}");
+    }
+    assert!(app.msg.contains("signed in to GitHub as tester"), "{}", app.msg);
+    // GitHub's graph: a green block a day, a row a weekday, the newest week at the right.
+    let cell = |app: &App, date: &str| app.gh.hits.act_cells.iter().find(|(_, d, _)| d == date).unwrap().0;
+    let (sun, mon, last) = (cell(&app, "2026-11-01"), cell(&app, "2026-11-02"), cell(&app, "2026-11-08"));
+    assert_eq!((mon.x, mon.y, last.x, last.y), (sun.x, sun.y + 1, sun.x + 2, sun.y), "Monday under Sunday; the next week two cells right");
+    // Centred: the two weeks (and the weekday names before them) in the middle of the pane.
+    let pane = app.gh.hits.lists[crate::github::TOP];
+    let (left, right) = (sun.x - 2 - pane.x, pane.right() - (last.x + 2));
+    assert!(left.abs_diff(right) <= 1, "{left} | {right}");
+    let b = t.backend().buffer();
+    assert_eq!((b[(last.x, last.y)].symbol(), b[(last.x, last.y)].fg), ("■", crate::theme::P.gh_green), "the busiest day: the full green");
+    assert_ne!(b[(sun.x, sun.y)].fg, b[(mon.x, mon.y)].fg, "none and some differ");
+    // The day under the pointer, in the header; a click on it opens its month.
+    app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: last.x, row: last.y, modifiers: KeyModifiers::NONE });
+    assert!(screen(&mut app, &mut t).contains("Nov 8: 10 contributions"));
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), last.x, last.y);
+    assert_eq!((app.gh.act_month, app.gh.act_ym), (true, (2026, 11)));
+    screen(&mut app, &mut t);
+    gh_settle(&mut app, &|a| !a.gh.busy());
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("ACTIVITY · 13 in Nov 2026") && s.contains("Less") && s.contains("More"), "{s}");
+    let (sun, mon) = (cell(&app, "2026-11-01"), cell(&app, "2026-11-02"));
+    assert_eq!((mon.x, mon.y), (sun.x + 2, sun.y), "a month: a row a week, a column a weekday, blocks as the year's");
+    // Centred in the pane: as much room left of Sunday as right of Saturday.
+    let pane = app.gh.hits.lists[crate::github::TOP];
+    let (left, right) = (sun.x - pane.x, pane.right() - (sun.x + 7 * 2));
+    assert!(left.abs_diff(right) <= 1, "{left} | {right}");
+    // Year again, then ‹ goes to this calendar year; the header folds it all.
+    let btn = |app: &App, b: crate::github::Btn| app.gh.hits.btns.iter().find(|(_, x)| *x == b).unwrap().0;
+    let year = btn(&app, crate::github::Btn::ActMode(false));
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), year.x + 1, year.y);
+    screen(&mut app, &mut t);
+    let back = btn(&app, crate::github::Btn::ActStep(-1));
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), back.x, back.y);
+    assert_eq!((app.gh.act_month, app.gh.act_year), (false, Some(crate::github::ymd(crate::scm::now()).0)));
+    let head = btn(&app, crate::github::Btn::Activity);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), head.x + 2, head.y);
+    let s = screen(&mut app, &mut t);
+    assert!(app.gh.activity_folded && !s.contains("Less") && s.contains("ACTIVITY"), "{s}");
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), head.x + 2, head.y);
+    // Edit a title in the bottom pane: e, type, Enter asks; Cancel goes back, Enter, confirm.
+    app.gh.pane = BOTTOM;
+    app.gh.sel[BOTTOM] = crate::github::rows(&app.gh, BOTTOM).iter().position(|r| *r == Row::Pr(Sec::RepoPrs, 0)).unwrap();
+    key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    typ(&mut app, "Fix it properly");
+    screen(&mut app, &mut t);
+    assert!(app.gh.hits.field.0.width > 0, "the title field shows in the row");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let text = app.prompt.as_ref().map(|p| p.text.join(" ")).unwrap_or_default();
+    assert!(text.contains("Change the title of pull request #12 in tester/proj?") && text.contains("becomes \"Fix it properly\""), "{text}");
+    assert!(!log().contains("pr edit"), "nothing changes before it is confirmed");
+    app.run_prompt(PAct::Cancel);
+    assert!(app.gh.edit.is_some(), "Cancel goes back to the field");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE); // the prompt's first button: Change Title
+    gh_settle(&mut app, &|a| a.gh.acting.is_none() && log().contains("pr edit 12 --repo tester/proj --title Fix it properly"));
+    assert!(app.gh.edit.is_none() && app.msg.contains("#12 is now \"Fix it properly\""), "{}", app.msg);
+    // The folder's repository: its pull requests check out (asked first; Esc leaves it).
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+    assert!(app.prompt.as_ref().is_some_and(|p| p.text[0] == "Check out pull request #12?"));
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.prompt.is_none() && !log().contains("pr checkout"));
+    // The failed run offers Re-run of its failed jobs.
+    app.gh.sel[BOTTOM] = crate::github::rows(&app.gh, BOTTOM).iter().position(|r| *r == Row::Run(0)).unwrap();
+    key(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
+    assert_eq!(app.prompt.as_ref().map(|p| p.text[1].as_str()), Some("Only its failed jobs run again."));
+    app.run_prompt(app.prompt.as_ref().unwrap().buttons[0].1.clone());
+    gh_settle(&mut app, &|a| a.gh.acting.is_none() && log().contains("run rerun 71 --repo tester/proj --failed"));
+    // Tab to the top pane; Enter on another repository shows it below (no checkout there).
+    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.gh.pane, TOP);
+    app.gh.sel[TOP] = crate::github::rows(&app.gh, TOP).iter().position(|r| *r == Row::Repo(1)).unwrap();
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    gh_settle(&mut app, &|a| !a.gh.repo_loading);
+    let s = screen(&mut app, &mut t);
+    assert_eq!(app.gh.chosen.as_deref(), Some("o/lib"));
+    assert!(log().contains("pr list --repo o/lib") && s.contains("#12 Fix the thing in o/lib") && s.contains("fork · master · C"), "{s}");
+    let pr = Row::Pr(Sec::RepoPrs, 0);
+    assert!(!crate::github::keys_of(&app.gh, pr).contains(&crate::github::Key::Checkout), "not the folder's repository");
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&fake).unwrap();
+}
+
+#[test]
+fn the_github_item_sits_above_settings_and_shows_the_account_in_any_repository() {
+    let root = repo("not-github");
+    let mut app = App::new(root.clone(), None);
+    assert_eq!((app.gh.here.as_deref(), app.gh.chosen.as_deref()), (None, None), "no GitHub remote, nothing chosen");
+    app.side_w = Some(70);
+    let mut t = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    screen(&mut app, &mut t);
+    let gh = app.ui.activity.iter().find(|(_, s)| *s == Side::GitHub).map(|(r, _)| *r).expect("always there");
+    assert_eq!(gh.bottom(), app.ui.settings_btn.y, "right above Settings");
+    assert!(app.ui.activity.iter().filter(|(_, s)| *s != Side::GitHub).all(|(r, _)| r.bottom() <= gh.y), "the views above it");
+    // Lit exactly as a view is: the same rows around its icon, in both spacings.
+    for compact in [false, true] {
+        app.settings.compact = compact;
+        let shape = |app: &mut App, t: &mut Terminal<TestBackend>, side: Side| {
+            app.show_side(side, false);
+            screen(app, t);
+            let r = app.ui.activity.iter().find(|(_, s)| *s == side).unwrap().0;
+            let icon = r.y + u16::from(!compact);
+            let b = t.backend().buffer();
+            (icon.saturating_sub(2)..icon + 3).map(|y| (b[(r.x + 2, y)].symbol().to_string(), b[(r.x + 2, y)].bg)).collect::<Vec<_>>()
+        };
+        let (explorer, github) = (shape(&mut app, &mut t, Side::Explorer), shape(&mut app, &mut t, Side::GitHub));
+        let lit = |v: &[(String, ratatui::style::Color)]| v.iter().map(|(s, bg)| (s.as_str() == "▄" || s.as_str() == "▀" || *bg != crate::theme::P.activity_bg) as u8).collect::<Vec<_>>();
+        // Comfortable: half a row above, the icon's, half below; compact: the icon's and below.
+        let rows = if compact { 2..4 } else { 1..4 };
+        assert_eq!(lit(&github)[rows.clone()], lit(&explorer)[rows], "compact {compact}: {github:?} vs {explorer:?}");
+    }
+    app.settings.compact = false;
+    // The account and all its repositories in a folder not on GitHub; the bottom pane waits
+    // for a choice, then shows the chosen one (by --repo, from here).
+    let fake = std::env::temp_dir().join(format!("termcode-fake-gh2-{}", std::process::id()));
+    fs::create_dir_all(&fake).unwrap();
+    app.gh.bin = fake_gh(&fake);
+    app.show_side(Side::GitHub, false);
+    crate::github::tick(&mut app);
+    gh_settle(&mut app, &|a| !a.gh.loading);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("REPOSITORIES") && s.contains("o/lib") && s.contains("Choose a repository above"), "{s}");
+    let log = || fs::read_to_string(fake.join("gh.log")).unwrap();
+    assert!(log().contains("api user/repos") && !log().contains("pr list"), "{}", log());
+    let row = app.gh.hits.rows.iter().find(|(_, pane, i)| *pane == crate::github::TOP && crate::github::rows(&app.gh, crate::github::TOP)[*i] == crate::github::Row::Repo(0)).unwrap().0;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), row.x + 4, row.y);
+    gh_settle(&mut app, &|a| !a.gh.repo_loading);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("The project") && s.contains("#12 Fix the thing in tester/proj") && log().contains("pr list --repo tester/proj"), "{s}");
+    // The choice and the panes' split are kept with the layout.
+    let file = std::env::temp_dir().join(format!("termcode-gh-layout-{}.json", std::process::id()));
+    app.layout_file = Some(file.clone());
+    app.save_layout();
+    let again = App::new(root.clone(), Some(file.clone()));
+    assert_eq!(again.gh.chosen.as_deref(), Some("tester/proj"));
+    let _ = fs::remove_file(file);
+    fs::remove_dir_all(&fake).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn every_page_of_repositories_is_read_until_one_comes_short() {
+    let dir = std::env::temp_dir().join(format!("termcode-fake-gh-pages-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let bin = dir.join("gh");
+    // Page 1 and 2 full (100 each), page 3 with 7: 207 repositories, three calls.
+    let script = r#"#!/bin/sh
+echo "$*" >> "$(dirname "$0")/gh.log"
+case "$*" in
+  "api user") echo '{"login":"t","avatar_url":""}' ;;
+  *"page=3") n=7 ;;
+  *"page="*) n=100 ;;
+  "api notifications"|"search "*) echo '[]' ;;
+esac
+if [ -n "$n" ]; then printf '['; i=0; while [ $i -lt $n ]; do [ $i -gt 0 ] && printf ','; printf '{"full_name":"t/r%s"}' "$i"; i=$((i+1)); done; echo ']'; fi
+"#;
+    fs::write(&bin, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let root = repo("gh-pages");
+    let mut app = App::new(root.clone(), None);
+    app.gh.bin = bin;
+    crate::github::fetch(&mut app);
+    gh_settle(&mut app, &|a| !a.gh.loading);
+    assert_eq!(app.gh.data.as_ref().map(|d| d.repos.len()), Some(207), "{:?}", app.gh.state);
+    let log = fs::read_to_string(dir.join("gh.log")).unwrap();
+    assert_eq!(log.matches("user/repos").count(), 3, "{log}");
+    fs::remove_dir_all(&dir).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn the_wheel_scrolls_the_github_panes_and_keys_bring_the_selection_back() {
+    let dir = std::env::temp_dir().join(format!("termcode-fake-gh-wheel-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let bin = dir.join("gh");
+    // 60 repositories: more than the top pane shows.
+    let script = r#"#!/bin/sh
+case "$*" in
+  "api user") echo '{"login":"t","avatar_url":""}' ;;
+  *"page=1") printf '['; i=0; while [ $i -lt 60 ]; do [ $i -gt 0 ] && printf ','; printf '{"full_name":"t/repo%s"}' "$i"; i=$((i+1)); done; echo ']' ;;
+  *) echo '[]' ;;
+esac
+"#;
+    fs::write(&bin, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let root = repo("gh-wheel");
+    let mut app = App::new(root.clone(), None);
+    app.gh.bin = bin;
+    app.show_side(Side::GitHub, false);
+    crate::github::fetch(&mut app);
+    gh_settle(&mut app, &|a| !a.gh.loading);
+    let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    screen(&mut app, &mut t);
+    let list = app.gh.hits.lists[crate::github::TOP];
+    let first = |t: &Terminal<TestBackend>| (list.x..list.right()).map(|x| t.backend().buffer()[(x, list.y)].symbol()).collect::<String>();
+    assert!(first(&t).contains("REPOSITORIES"));
+    for _ in 0..3 {
+        mouse(&mut app, MouseEventKind::ScrollDown, list.x + 3, list.y + 2);
+    }
+    screen(&mut app, &mut t);
+    assert!(first(&t).contains("repo8"), "scrolled 9 rows: {:?}", first(&t));
+    screen(&mut app, &mut t);
+    assert!(first(&t).contains("repo8"), "and stays there: {:?}", first(&t));
+    // A key brings the selection (moved from the header to repo0) back into view.
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    screen(&mut app, &mut t);
+    assert!(first(&t).contains("repo0 "), "{:?}", first(&t));
+    fs::remove_dir_all(&dir).unwrap();
+    fs::remove_dir_all(&root).unwrap();
 }

@@ -330,6 +330,20 @@ copies a selection, else interrupts. Programs that use the mouse (vim, htop) get
 Shift+drag still selects. Hiding it keeps the shell running; `exit` closes it. Quitting
 while something runs in it asks first.
 
+**GitHub:** the GitHub item above Settings (or F1 **View: Show GitHub**), in any folder.
+Its top pane is your account: your contribution graph as on your GitHub profile (Year or
+Month, ‹ › to go back; hover a day for its count, click one for its month), all your
+repositories, review requests, your pull requests,
+issues assigned to you and unread notifications. Pick a repository there (click or Enter)
+and the bottom pane shows it: description, visibility, default branch, language, stars,
+forks, last push, then its Actions runs, pull requests and issues. Tab moves between the
+panes; drag the line between them to resize. It needs the [GitHub CLI](https://cli.github.com)
+(`gh`): signed out, it offers **Sign in with GitHub**, which runs `gh auth login` in the
+terminal, so termcode never sees a password or token. On a row: Enter or `o` opens it in
+the browser, `e` edits its title, `c` checks a pull request out (into this folder's
+repository), `r` re-runs a run, `x` closes an issue or cancels a run, F5 refreshes. Every
+change asks first.
+
 **Outline:** the outline button beside it (or F1 **View: Toggle Outline**) lists the
 file's functions and types on the right, nested. The one the cursor is in is lit; click one
 to go there (double-click: and type there). Click a ▾ to fold. With the keys

@@ -140,5 +140,7 @@
   "symbolIcon.typeParameterForeground": "foreground",
   "symbolIcon.constantForeground": "foreground",
   "symbolIcon.variableForeground": "#75BEFF",
-  "symbolIcon.stringForeground": "foreground"
+  "symbolIcon.stringForeground": "foreground",
+  "charts.green": "#89D185",
+  "charts.yellow": "#CCA700"
 }

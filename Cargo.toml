@@ -21,7 +21,7 @@ depends = "git, ripgrep" # the binary is static (scripts/deb.sh): no libc to dep
 # wl-clipboard recommends a desktop's worth (150+ on a bare system) and clang pulls in
 # LLVM, so those two are only suggested.
 recommends = "xclip, shellcheck"
-suggests = "wl-clipboard, clang"
+suggests = "wl-clipboard, clang, gh"
 extended-description = """\
 A VS Code-style code editor and Git panel that runs inside the terminal, like vim, \
 or as a Code tab in a herdr workspace. To add the Code tab to herdr, run: \
@@ -46,7 +46,7 @@ libc = "0.2"
 ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 # Pixel controls in Settings, with Kitty graphics and a terminal-cell fallback.
 ratatui-image = { version = "8.0.2", default-features = false }
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 serde_json = "1"
 # Line alignment for the side-by-side diff editor.
 similar = "3"

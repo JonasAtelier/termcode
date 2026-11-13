@@ -330,6 +330,12 @@ impl App {
         if self.side == Side::Scm && crate::scm::key(self, k) {
             return;
         }
+        if self.side == Side::GitHub {
+            if !crate::github::key(self, k) && k.code == KeyCode::Esc {
+                self.focus = Focus::Editor;
+            }
+            return;
+        }
         let page = self.ui.side_rows.max(1) as isize;
         let s = self.side as usize;
         match k.code {
@@ -672,8 +678,11 @@ impl App {
                 }
                 self.find_refresh();
             }
-            // A paste while a list has focus is dropped, never redirected into a file.
-            Focus::Side => {}
+            // A paste while a list has focus is dropped, never redirected into a file (a
+            // GitHub title being edited takes it).
+            Focus::Side => {
+                crate::github::paste(self, text);
+            }
             Focus::Term => {
                 if let Some(t) = self.term.as_mut() {
                     t.paste(text);
