@@ -9,6 +9,11 @@ impl App {
         if self.settings_dlg.is_some() {
             return crate::settingsui::mouse(self, m);
         }
+        if self.prompt.is_none() && self.quick.is_none() {
+            if let Some(redraw) = self.term_mouse(m) {
+                return redraw;
+            }
+        }
         let p = Position::new(m.column, m.row);
         let shift = m.modifiers.contains(KeyModifiers::SHIFT);
         match m.kind {
@@ -220,10 +225,6 @@ impl App {
         }
         if self.ui.term_sash.contains(p) {
             self.drag = Drag::TermSash;
-            return;
-        }
-        if self.ui.term.contains(p) {
-            self.focus = Focus::Term;
             return;
         }
         if let Some(sb) = self.ui.scrollbars.iter().find(|s| s.track.contains(p)).copied() {
@@ -585,7 +586,8 @@ impl App {
             return;
         }
         match &mut self.drag {
-            Drag::None => {}
+            // The terminal's own (term_mouse) never get here.
+            Drag::None | Drag::TermSelect(_) | Drag::TermMouse => {}
             Drag::Close | Drag::ClosePending => self.hover = Some(p),
             Drag::Divider => {
                 let start = self.ui.sidebar.x;

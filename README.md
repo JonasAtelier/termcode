@@ -325,7 +325,10 @@ Rest the pointer on a function to see its docs.
 
 **Terminal:** Ctrl+` or the terminal button beside Split Editor opens your shell under the
 editors. Drag its top edge to resize it. While it has the keys, every key goes to the shell
-except Ctrl+`, F1 and Ctrl+Q. Hiding it keeps the shell running; `exit` closes it.
+except Ctrl+`, F1 and Ctrl+Q. Drag over text to copy it (double-click: a word); Ctrl+C
+copies a selection, else interrupts. Programs that use the mouse (vim, htop) get it;
+Shift+drag still selects. Hiding it keeps the shell running; `exit` closes it. Quitting
+while something runs in it asks first.
 
 **Outline:** the outline button beside it (or F1 **View: Toggle Outline**) lists the
 file's functions and types on the right, nested. The one the cursor is in is lit; click one

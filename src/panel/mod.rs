@@ -46,7 +46,7 @@ type Stamp = Option<(SystemTime, u64)>;
 const QDIFF_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const MAX_HITS: usize = 5_000;
 pub const MAX_GROUPS: usize = 3;
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Set for the process a reload execs: the session comes back whatever the settings say.
 const RELOAD_ENV: &str = "TERMCODE_RELOADED";
 /// Changes made outside the panel (an agent, a shell) show without a focus or view
@@ -303,6 +303,8 @@ pub enum PAct {
     Git(crate::scm::GitAct),
     SaveAllQuit,
     QuitNoSave,
+    /// Quit although a program runs in the terminal (it ends with the window).
+    QuitEndTerminal,
     /// A document and the backup file chosen for it; the backup file to drop.
     RestoreBackup(String, PathBuf),
     DiscardBackup(PathBuf),
@@ -621,6 +623,10 @@ pub enum Drag {
     Divider,
     /// The terminal panel's top border, its height's handle.
     TermSash,
+    /// Selecting in the terminal from this (row, column) of its screen.
+    TermSelect((u16, u16)),
+    /// A press the program in the terminal is getting (its drag and release go there too).
+    TermMouse,
     /// The Outline's left border, its width's handle.
     OutlineSash,
     File { rel: String, from: Position, active: bool },
@@ -823,6 +829,8 @@ pub struct App {
     pub term_h: Option<u16>,
     /// The Outline right of the editors: shown, its dragged width (None: 30 columns),
     /// its scroll, and the symbol it last followed the cursor to.
+    /// Quit was confirmed over a program running in the terminal.
+    pub term_quit_ok: bool,
     pub outline_open: bool,
     pub outline_w: Option<u16>,
     pub outline_off: usize,
@@ -869,7 +877,7 @@ pub struct App {
     files: Vec<String>,
     pub drag: Drag,
     pub drop: Option<(usize, Zone)>,
-    last_click: Option<(Instant, Position)>,
+    pub(crate) last_click: Option<(Instant, Position)>,
     pub tip: Option<Tip>,
     pub rename: Option<Rename>,
     /// Clicks in a row on one spot (2: a word, 3: a line, in a diff).
@@ -898,7 +906,7 @@ pub struct App {
     status_took: Duration,
     status_polled: bool,
     status_seen: Option<(String, Vec<u8>, String)>,
-    clip: String,
+    pub(crate) clip: String,
     load_tx: mpsc::Sender<(String, u64, Load)>,
     load_rx: mpsc::Receiver<(String, u64, Load)>,
     pub(crate) loading: HashMap<String, u64>,
@@ -1003,6 +1011,12 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     crate::session::restore(&mut app);
     (app.settings.restore_session, app.settings.restore_view_state) = wanted;
     app.upgrade.watch = true;
+    if std::env::var_os(RELOAD_TERM_ENV).is_some() {
+        std::env::remove_var(RELOAD_TERM_ENV); // not for the new shell
+        let focus = app.focus;
+        app.toggle_terminal();
+        app.focus = focus;
+    }
     app.poll_status = true;
     if reloaded {
         app.msg = "reloaded".into();
@@ -1058,6 +1072,9 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     leave(&mut app, token_file, SIGNALED.load(Ordering::SeqCst) || res.is_err());
     // A reload: this process becomes the installed binary, same arguments, same pane.
     if app.reload && matches!(res, Ok(Ok(()))) && !SIGNALED.load(Ordering::SeqCst) {
+        if app.term_open {
+            std::env::set_var(RELOAD_TERM_ENV, "1");
+        }
         return Err(format!("reload failed: {}", reexec()));
     }
     // Quitting just ends this process: herdr then closes the tab. Nothing here
@@ -1080,6 +1097,9 @@ fn reexec() -> io::Error {
     let arg0 = args.next().unwrap_or_else(|| exe.clone().into_os_string());
     Command::new(&exe).arg0(arg0).args(args).env(RELOAD_ENV, "1").exec()
 }
+
+/// Set across a reload when the terminal panel was open: it opens again (a new shell).
+const RELOAD_TERM_ENV: &str = "TERMCODE_RELOAD_TERMINAL";
 
 /// Every exit path (quit, HUP/TERM, an error, a panic) leaves the unsaved edits
 /// and the session on disk.
@@ -1423,6 +1443,7 @@ impl App {
             term: None,
             term_open: false,
             term_h: saved["terminal_height"].as_u64().map(|h| h.clamp(3, 500) as u16),
+            term_quit_ok: false,
             outline_open: false,
             outline_w: saved["outline_width"].as_u64().map(|w| w.clamp(16, 500) as u16),
             outline_off: 0,
@@ -1777,10 +1798,15 @@ impl App {
         }
         let busy = self.prompt.is_some() || self.quick.is_some() || self.settings_dlg.is_some() || self.gitui.dlg.is_some()
             || self.rename.is_some() || !matches!(self.drag, Drag::None) || self.gitui.writes() > 0;
-        if self.unsaved() == 0 && !busy {
+        // A program in the terminal would end with the reload: wait for it.
+        let running = self.term.as_ref().and_then(crate::term::Term::running);
+        if self.unsaved() == 0 && !busy && running.is_none() {
             (self.reload, self.quit) = (true, true);
         } else if !std::mem::replace(&mut self.upgrade.told, true) {
-            self.msg = "a new termcode is installed: it reloads once every file is saved".into();
+            self.msg = match running {
+                Some(p) if self.unsaved() == 0 => format!("a new termcode is installed: it reloads once {p} in the terminal ends"),
+                _ => "a new termcode is installed: it reloads once every file is saved".into(),
+            };
         }
     }
 

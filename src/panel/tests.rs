@@ -5573,3 +5573,133 @@ fn the_search_query_selects_whole_by_ctrl_a_or_double_click_to_copy_cut_or_repla
     assert_eq!(app.query, "qr");
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_drag_in_the_terminal_selects_and_copies_its_text_and_a_double_click_a_word() {
+    let root = repo("term-select");
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "src/main.rs", false);
+    wait(&mut app);
+    let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    screen(&mut app, &mut t);
+    app.toggle_terminal();
+    screen(&mut app, &mut t);
+    typ(&mut app, "clear; echo hello wide-world");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let row = loop {
+        app.term_pump();
+        let s = screen(&mut app, &mut t);
+        let tx = app.ui.term.x as usize;
+        if let Some(y) = s.lines().position(|l| l.chars().skip(tx).collect::<String>().starts_with("hello wide-world")) {
+            break y as u16;
+        }
+        assert!(Instant::now() < deadline, "no output: {s}");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let x = app.ui.term.x;
+    // Drag over "hello": copied on release, drawn selected.
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, row);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x + 4, row);
+    screen(&mut app, &mut t);
+    assert_eq!(t.backend().buffer()[(x + 2, row)].bg, crate::theme::P.selection);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x + 4, row);
+    assert_eq!((app.clip.as_str(), app.focus), ("hello", Focus::Term));
+    // A click (no drag) selects nothing; a double-click takes the word under it.
+    std::thread::sleep(DOUBLE_CLICK);
+    for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)].repeat(2) {
+        mouse(&mut app, kind, x + 9, row);
+    }
+    assert_eq!(app.clip, "wide-world");
+    // Ctrl+C with a selection copies it; without one it goes to the shell as ^C.
+    app.clip.clear();
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(app.clip, "wide-world");
+    assert!(app.term.as_ref().unwrap().selected().is_none(), "and the selection goes");
+    app.hide_terminal();
+    app.term = None;
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_program_that_asks_for_the_mouse_gets_the_terminals_clicks() {
+    let root = repo("term-mouse");
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "src/main.rs", false);
+    wait(&mut app);
+    let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    screen(&mut app, &mut t);
+    app.toggle_terminal();
+    screen(&mut app, &mut t);
+    // SGR mouse mode on, then cat: the terminal echoes what the click sends as ^[[<…
+    typ(&mut app, "printf '\\033[?1000h\\033[?1006h'; cat");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !app.term.as_ref().unwrap().wants_mouse() {
+        assert!(Instant::now() < deadline, "mouse mode never came on");
+        app.term_pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let a = app.ui.term;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), a.x + 9, a.y + 4);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), a.x + 9, a.y + 4);
+    while !screen(&mut app, &mut t).contains("^[[<0;10;5M^[[<0;10;5m") {
+        assert!(Instant::now() < deadline, "the press and release reach the program");
+        app.term_pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(app.term.as_ref().unwrap().selected().is_none(), "the program's click, not a selection");
+    app.hide_terminal();
+    app.term = None;
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn quitting_or_reloading_waits_on_a_program_running_in_the_terminal() {
+    let root = repo("term-busy");
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    screen(&mut app, &mut t);
+    app.toggle_terminal();
+    screen(&mut app, &mut t);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    // Busy: until the forked shell has become sleep.
+    let settle = |app: &mut App, busy: bool| {
+        while app.term.as_ref().unwrap().running().is_some_and(|p| p == "sleep") != busy || !busy && app.term.as_ref().unwrap().running().is_some() {
+            assert!(Instant::now() < deadline, "running: {busy}");
+            app.term_pump();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    typ(&mut app, "sleep 30");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    settle(&mut app, true);
+    while app.gitui.writes() > 0 {
+        assert!(Instant::now() < deadline, "startup's git writes finish");
+        app.drain();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Quit asks; Cancel keeps everything.
+    app.request_quit();
+    let text = app.prompt.as_ref().map(|p| p.text.join(" ")).unwrap_or_default();
+    assert!(text.contains("sleep is still running"), "{text}");
+    app.run_prompt(PAct::Cancel);
+    assert!(!app.quit && app.term.is_some());
+    // A new termcode installed meanwhile waits for it.
+    let exe = root.join("exe");
+    fs::write(&exe, "x").unwrap();
+    app.upgrade_tick(Some(exe.clone()));
+    app.upgrade_tick(Some(exe.clone()));
+    assert!(!app.reload && app.msg.contains("once sleep in the terminal ends"), "{}", app.msg);
+    // Interrupted: the shell idles, and both go ahead.
+    app.focus = Focus::Term;
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    settle(&mut app, false);
+    app.upgrade_tick(Some(exe.clone()));
+    assert!(app.reload && app.quit, "reloads once it ended");
+    (app.reload, app.quit) = (false, false);
+    app.request_quit();
+    assert!(app.quit && app.prompt.is_none(), "an idle shell: no question");
+    app.term = None;
+    fs::remove_dir_all(&root).unwrap();
+}

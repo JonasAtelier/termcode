@@ -3,7 +3,9 @@
 //! that screen cell by cell. The event loop waits on the PTY beside the keyboard
 //! (`fd`), so output shows as it comes, and reads it without blocking (`pump`).
 
-use crate::panel::{App, Focus};
+use crate::panel::{App, Drag, Focus};
+use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -37,6 +39,8 @@ pub struct Term {
     master: File,
     child: Option<Child>,
     parser: vt100::Parser,
+    /// Selected text: where the drag started and where it is, (row, column) on screen.
+    sel: Option<((u16, u16), (u16, u16))>,
 }
 
 impl Term {
@@ -80,7 +84,7 @@ impl Term {
         }
         let child = cmd.spawn()?;
         FD.with(|f| f.set(m));
-        Ok(Term { master, child: Some(child), parser: vt100::Parser::new(rows, cols, SCROLLBACK) })
+        Ok(Term { master, child: Some(child), parser: vt100::Parser::new(rows, cols, SCROLLBACK), sel: None })
     }
 
     /// Reads what the shell wrote (1 MB at most a turn: keys still come first). Returns
@@ -109,6 +113,7 @@ impl Term {
     /// full buffer; gives up after a second.
     pub fn send(&mut self, mut b: &[u8]) {
         self.parser.set_scrollback(0);
+        self.sel = None;
         let deadline = Instant::now() + Duration::from_secs(1);
         while !b.is_empty() && Instant::now() < deadline {
             match self.master.write(b) {
@@ -163,6 +168,68 @@ impl Term {
         self.parser.set_scrollback(if up { off + d.unsigned_abs() } else { off.saturating_sub(d.unsigned_abs()) });
     }
 
+    /// What runs in it besides the shell waiting at its prompt, by name: the foreground
+    /// job (the terminal's process group, as tmux names a pane), else a background child.
+    pub fn running(&self) -> Option<String> {
+        let pid = self.child.as_ref()?.id() as i32;
+        let name = |p: i32| std::fs::read_to_string(format!("/proc/{p}/comm")).map_or_else(|_| "a program".into(), |s| s.trim().to_string());
+        // SAFETY: an open PTY master.
+        let fg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        if fg > 0 && fg != pid {
+            return Some(name(fg));
+        }
+        let kids = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).ok()?;
+        kids.split_whitespace().next()?.parse().ok().map(name)
+    }
+
+    /// Whether the program in it asked for the mouse (vim's mouse=a, htop, less --mouse).
+    pub fn wants_mouse(&self) -> bool {
+        self.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+    }
+
+    /// A press (`button` 0 left, 1 middle, 2 right), its release (`press` false) or a drag
+    /// (`motion`), at `at` (row, column), reported as the program asked: X10, normal or SGR.
+    pub fn mouse(&mut self, button: u8, press: bool, motion: bool, mods: KeyModifiers, at: (u16, u16)) {
+        let s = self.parser.screen();
+        if let Some(ev) = mouse_bytes((s.mouse_protocol_mode(), s.mouse_protocol_encoding()), button, press, motion, mods, at) {
+            self.send(&ev);
+        }
+    }
+
+    /// Selects from `from` to `to`, (row, column) on screen, either way round.
+    pub fn select(&mut self, from: (u16, u16), to: (u16, u16)) {
+        self.sel = Some((from, to));
+    }
+
+    /// Selects the word (a run of non-blank cells) at `at`.
+    pub fn select_word(&mut self, at: (u16, u16)) {
+        let s = self.parser.screen();
+        let blank = |c: u16| s.cell(at.0, c).is_none_or(|c| c.contents().trim().is_empty());
+        if blank(at.1) {
+            return;
+        }
+        let cols = s.size().1;
+        let a = (0..=at.1).rev().take_while(|&c| !blank(c)).last().unwrap_or(at.1);
+        let b = (at.1..cols).take_while(|&c| !blank(c)).last().unwrap_or(at.1);
+        self.sel = Some(((at.0, a), (at.0, b)));
+    }
+
+    /// The selection in reading order, None when there is none.
+    fn sel_range(&self) -> Option<((u16, u16), (u16, u16))> {
+        let (a, b) = self.sel?;
+        Some(if a <= b { (a, b) } else { (b, a) })
+    }
+
+    /// The selected text, None when nothing is selected.
+    pub fn selected(&self) -> Option<String> {
+        let ((r0, c0), (r1, c1)) = self.sel_range()?;
+        Some(self.parser.screen().contents_between(r0, c0, r1, c1 + 1)).filter(|t| !t.is_empty())
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.sel = None;
+    }
+
     /// Fits the screen and the shell's idea of it to `rows` x `cols`.
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let (rows, cols) = (rows.max(2), cols.max(2));
@@ -175,10 +242,13 @@ impl Term {
         unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) };
     }
 
-    /// The screen into `area` of `buf`, its default colours `fg` on `bg`; the cursor as a
-    /// reversed cell when `focused` and the live screen (not the scrollback) shows.
-    pub fn draw(&self, buf: &mut Buffer, area: Rect, fg: Color, bg: Color, focused: bool) {
+    /// The screen into `area` of `buf`, its default colours `fg` on `bg`, the selection on
+    /// `sel_bg`; the cursor as a reversed cell when `focused` and the live screen (not the
+    /// scrollback) shows.
+    pub fn draw(&self, buf: &mut Buffer, area: Rect, (fg, bg, sel_bg): (Color, Color, Color), focused: bool) {
         let s = self.parser.screen();
+        let sel = self.sel_range();
+        let selected = |row: u16, col: u16| sel.is_some_and(|(a, b)| (row, col) >= a && (row, col) <= b);
         for row in 0..area.height {
             for col in 0..area.width {
                 let Some(c) = s.cell(row, col) else { continue };
@@ -186,6 +256,9 @@ impl Term {
                 let (mut f, mut b) = (color(c.fgcolor(), fg), color(c.bgcolor(), bg));
                 if c.inverse() {
                     (f, b) = (b, f);
+                }
+                if selected(row, col) {
+                    b = sel_bg;
                 }
                 let text = c.contents();
                 // A wide character's second cell is drawn over by its first.
@@ -223,6 +296,38 @@ impl Drop for Term {
             crate::nav::reap(c, None);
         }
     }
+}
+
+/// What xterm reports for a mouse press, release or drag (see `Term::mouse`) under the
+/// program's mode and encoding; None when its mode leaves this one out.
+pub fn mouse_bytes(
+    (mode, enc): (vt100::MouseProtocolMode, vt100::MouseProtocolEncoding),
+    button: u8,
+    press: bool,
+    motion: bool,
+    mods: KeyModifiers,
+    at: (u16, u16),
+) -> Option<Vec<u8>> {
+    use vt100::MouseProtocolMode as M;
+    let ok = match mode {
+        M::None => false,
+        M::Press => press && !motion,
+        M::PressRelease => !motion,
+        M::ButtonMotion | M::AnyMotion => true,
+    };
+    if !ok {
+        return None;
+    }
+    let m = u8::from(mods.contains(KeyModifiers::SHIFT)) * 4 + u8::from(mods.contains(KeyModifiers::ALT)) * 8 + u8::from(mods.contains(KeyModifiers::CONTROL)) * 16;
+    let code = button + m + if motion { 32 } else { 0 };
+    let (row, col) = (at.0 + 1, at.1 + 1);
+    Some(if enc == vt100::MouseProtocolEncoding::Sgr {
+        format!("\x1b[<{code};{col};{row}{}", if press { 'M' } else { 'm' }).into_bytes()
+    } else {
+        // Normal (X10) encoding: a release is button 3; positions past 223 are clipped.
+        let b = if press { code } else { 3 + m };
+        vec![0x1b, b'[', b'M', 32 + b, (32 + col).min(255) as u8, (32 + row).min(255) as u8]
+    })
 }
 
 /// Ctrl+` (a legacy terminal sends it as Ctrl+Space).
@@ -274,12 +379,95 @@ impl App {
         shown
     }
 
+    /// A mouse event on the terminal, or on from a drag that began there; None when it is
+    /// not the terminal's (the wheel goes through `wheel`). A program that asked for the
+    /// mouse gets it (Shift+drag still selects); otherwise a drag selects text, a
+    /// double-click a word, and letting go copies it. Some(redraw) when handled.
+    pub fn term_mouse(&mut self, m: MouseEvent) -> Option<bool> {
+        let area = self.ui.term;
+        let p = Position::new(m.column, m.row);
+        let ours = matches!(self.drag, Drag::TermSelect(_) | Drag::TermMouse);
+        if area.is_empty() || !(area.contains(p) || ours) || self.term.is_none() {
+            return None;
+        }
+        let at = (p.y.clamp(area.y, area.bottom() - 1) - area.y, p.x.clamp(area.x, area.right() - 1) - area.x);
+        let button = |b: MouseButton| match b {
+            MouseButton::Left => 0,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+        };
+        let shift = m.modifiers.contains(KeyModifiers::SHIFT);
+        let t = self.term.as_mut()?;
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            self.focus = Focus::Term;
+        }
+        // The program's own mouse: clicks, releases, drags (motion only while a button is down).
+        let forward = t.wants_mouse() && !shift && !matches!(self.drag, Drag::TermSelect(_));
+        if forward {
+            match m.kind {
+                MouseEventKind::Down(b) => {
+                    self.drag = Drag::TermMouse;
+                    t.mouse(button(b), true, false, m.modifiers, at);
+                }
+                MouseEventKind::Drag(b) => t.mouse(button(b), true, true, m.modifiers, at),
+                MouseEventKind::Up(b) => {
+                    self.drag = Drag::None;
+                    t.mouse(button(b), false, false, m.modifiers, at);
+                }
+                _ => return None,
+            }
+            return Some(true);
+        }
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let double = self.last_click.is_some_and(|(t, q)| t.elapsed() < crate::panel::DOUBLE_CLICK && q == p);
+                self.last_click = Some((std::time::Instant::now(), p));
+                t.clear_selection();
+                if double {
+                    t.select_word(at);
+                    self.copy_term_selection();
+                } else {
+                    self.drag = Drag::TermSelect(at);
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Drag::TermSelect(from) = self.drag {
+                    t.select(from, at);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.drag = Drag::None;
+                self.copy_term_selection();
+            }
+            MouseEventKind::Down(_) => {}
+            _ => return None,
+        }
+        Some(true)
+    }
+
+    /// The terminal's selection onto the clipboard (as a terminal copies on select).
+    fn copy_term_selection(&mut self) {
+        if let Some(text) = self.term.as_ref().and_then(Term::selected) {
+            self.msg = format!("copied via {}", crate::panel::clipboard_set(&text));
+            self.clip = text;
+        }
+    }
+
     /// A key while the terminal has the focus: Toggle Terminal, F1 and Ctrl+Q stay
     /// termcode's; everything else is the shell's.
     pub fn term_key(&mut self, k: KeyEvent) {
         let chord = crate::parse::chord(&k);
         let bound = self.settings.keybindings.iter().any(|(c, n)| *c == chord && n == "View: Toggle Terminal");
         let ctrl_q = k.modifiers == KeyModifiers::CONTROL && matches!(k.code, KeyCode::Char('q' | 'Q'));
+        // Ctrl+C with text selected copies it instead of interrupting.
+        let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('c' | 'C'));
+        if ctrl_c && self.term.as_ref().is_some_and(|t| t.selected().is_some()) {
+            self.copy_term_selection();
+            if let Some(t) = self.term.as_mut() {
+                t.clear_selection();
+            }
+            return;
+        }
         if bound || toggle_key(&k) {
             self.toggle_terminal();
         } else if k.code == KeyCode::F(1) {
@@ -378,6 +566,21 @@ mod tests {
     }
 
     #[test]
+    fn mouse_reports_follow_the_programs_mode_and_encoding() {
+        use vt100::{MouseProtocolEncoding as E, MouseProtocolMode as M};
+        let none = KeyModifiers::NONE;
+        let r = |mode, enc, b, press, motion, mods| mouse_bytes((mode, enc), b, press, motion, mods, (4, 9));
+        assert_eq!(r(M::PressRelease, E::Sgr, 0, true, false, none).unwrap(), b"\x1b[<0;10;5M");
+        assert_eq!(r(M::PressRelease, E::Sgr, 0, false, false, none).unwrap(), b"\x1b[<0;10;5m");
+        assert_eq!(r(M::ButtonMotion, E::Sgr, 0, true, true, KeyModifiers::CONTROL).unwrap(), b"\x1b[<48;10;5M", "drag + Ctrl");
+        assert_eq!(r(M::PressRelease, E::Default, 2, true, false, none).unwrap(), [0x1b, b'[', b'M', 34, 42, 37]);
+        assert_eq!(r(M::PressRelease, E::Default, 0, false, false, none).unwrap(), [0x1b, b'[', b'M', 35, 42, 37], "release: 3");
+        assert_eq!(r(M::Press, E::Sgr, 0, false, false, none), None, "X10 mode: presses only");
+        assert_eq!(r(M::PressRelease, E::Sgr, 0, true, true, none), None, "no motion");
+        assert_eq!(r(M::None, E::Sgr, 0, true, false, none), None);
+    }
+
+    #[test]
     fn a_shell_runs_on_the_pty_and_its_output_is_drawn() {
         let mut t = Term::spawn("/bin/sh", &std::env::temp_dir(), 5, 40).unwrap();
         assert_eq!(fd(), t.master.as_raw_fd());
@@ -398,7 +601,7 @@ mod tests {
         }
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 6));
         let area = buf.area;
-        t.draw(&mut buf, area, Color::White, Color::Black, true);
+        t.draw(&mut buf, area, (Color::White, Color::Black, Color::Blue), true);
         let text: String = buf.content.iter().map(|c| c.symbol()).collect();
         assert!(text.contains("6 30"));
         t.send(b"exit\r");

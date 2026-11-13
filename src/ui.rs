@@ -1226,7 +1226,7 @@ fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
     app.ui.term = inner;
     if let Some(t) = app.term.as_mut() {
         t.resize(inner.height, inner.width);
-        t.draw(f.buffer_mut(), inner, P.editor_fg, P.editor_bg, focused);
+        t.draw(f.buffer_mut(), inner, (P.editor_fg, P.editor_bg, P.selection), focused);
     }
 }
 

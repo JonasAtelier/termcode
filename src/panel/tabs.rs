@@ -345,6 +345,17 @@ impl App {
             });
             return;
         }
+        // A program in the terminal ends with the window: ask first.
+        if !self.term_quit_ok {
+            if let Some(p) = self.term.as_ref().and_then(crate::term::Term::running) {
+                self.prompt = Some(Prompt {
+                    text: vec![format!("{p} is still running in the terminal."), "Quitting ends it.".into()],
+                    buttons: vec![("Quit".into(), PAct::QuitEndTerminal), ("Cancel".into(), PAct::Cancel)],
+                    sel: 1,
+                });
+                return;
+            }
+        }
         let n = self.docs.values().filter(|d| matches!(d, Doc::Text(b) if b.dirty())).count();
         if n == 0 {
             self.quit = true;
@@ -412,6 +423,11 @@ impl App {
                 } else {
                     self.msg = errs.join("; ");
                 }
+            }
+            PAct::QuitEndTerminal => {
+                self.term_quit_ok = true;
+                self.request_quit();
+                self.term_quit_ok = self.quit; // asked again next time if Cancel follows
             }
             PAct::QuitNoSave => {
                 // An explicit Don't Save: drop the edits and their backups.
