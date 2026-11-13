@@ -14,6 +14,7 @@ impl App {
         if k.code == KeyCode::Esc && matches!(self.drag, Drag::Close | Drag::ClosePending | Drag::File { active: true, .. } | Drag::Tab { active: true, .. }) {
             self.drag = Drag::None;
             self.drop = None;
+            self.tree_drop = None;
             return;
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -335,6 +336,29 @@ impl App {
                 self.focus = Focus::Editor;
             }
             return;
+        }
+        // Delete: to the Trash; Shift+Delete: for good (each asked first).
+        if self.side == Side::Explorer && k.code == KeyCode::Delete {
+            return self.ask_delete(k.modifiers.contains(KeyModifiers::SHIFT));
+        }
+        // Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z): the Explorer's file operations taken back or redone.
+        if self.side == Side::Explorer && k.modifiers.contains(KeyModifiers::CONTROL) {
+            let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+            match k.code {
+                KeyCode::Char('z') if !shift => return self.undo_file_op(),
+                KeyCode::Char('y') | KeyCode::Char('Z') => return self.redo_file_op(),
+                KeyCode::Char('z') => return self.redo_file_op(),
+                _ => {}
+            }
+        }
+        // The Explorer's file clipboard: Ctrl+C, Ctrl+X, Ctrl+V.
+        if self.side == Side::Explorer && k.modifiers == KeyModifiers::CONTROL {
+            match k.code {
+                KeyCode::Char('c') => return self.tree_copy(false),
+                KeyCode::Char('x') => return self.tree_copy(true),
+                KeyCode::Char('v') => return self.tree_paste(),
+                _ => {}
+            }
         }
         let page = self.ui.side_rows.max(1) as isize;
         let s = self.side as usize;

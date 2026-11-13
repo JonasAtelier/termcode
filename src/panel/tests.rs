@@ -6187,3 +6187,193 @@ fn dragging_the_github_divider_follows_the_pointer_and_keeps_the_stats_header() 
     fs::remove_dir_all(&fake).unwrap();
     fs::remove_dir_all(&root).unwrap();
 }
+
+/// The screen row of Explorer item `path` (as drawn last).
+fn tree_row(app: &App, path: &str) -> u16 {
+    let i = app.tree.iter().position(|n| n.path == path).unwrap_or_else(|| panic!("{path} in the tree"));
+    app.ui.side_list.y + (i - app.off[0]) as u16 * (1 + app.ui.side_gap)
+}
+
+#[test]
+fn dragging_an_explorer_item_onto_a_folder_moves_it_once_confirmed() {
+    let root = repo("tree-move");
+    fs::create_dir_all(root.join("docs/old")).unwrap();
+    fs::write(root.join("docs/old/x.md"), "x").unwrap();
+    fs::write(root.join("notes.md"), "n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "notes.md", false);
+    wait(&mut app);
+    app.show_side(Side::Explorer, false);
+    let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    screen(&mut app, &mut t);
+    let x = app.ui.side_list.x + 4;
+    // notes.md over docs: docs lights up; let go: asked first.
+    let (from, to) = (tree_row(&app, "notes.md"), tree_row(&app, "docs"));
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, from);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, from - 1);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, to);
+    assert_eq!(app.tree_drop.as_deref(), Some("docs"));
+    screen(&mut app, &mut t);
+    assert_eq!(t.backend().buffer()[(x, to)].bg, crate::theme::P.drop_bg, "the target folder lights up");
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, to);
+    let text = app.prompt.as_ref().map(|p| p.text.join(" ")).unwrap_or_default();
+    assert!(text.contains("move 'notes.md' into 'docs'"), "{text}");
+    assert!(root.join("notes.md").exists(), "nothing moves before it is confirmed");
+    app.run_prompt(PAct::Move("notes.md".into(), "docs".into()));
+    assert!(root.join("docs/notes.md").exists() && !root.join("notes.md").exists());
+    assert!(app.groups[0].tabs.iter().any(|tb| tb.key == "file:docs/notes.md"), "the open editor follows");
+    assert_eq!(app.tree.get(app.sel[0]).map(|n| n.path.as_str()), Some("docs/notes.md"), "shown and selected");
+    // No target over its own folder, nor (a folder) inside itself.
+    screen(&mut app, &mut t);
+    let (from, own) = (tree_row(&app, "docs"), tree_row(&app, "docs/old"));
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, from);
+    screen(&mut app, &mut t); // the folder folds on the press: its rows move
+    let own = if app.tree.iter().any(|n| n.path == "docs/old") { tree_row(&app, "docs/old") } else { own };
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, from + 1);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, own);
+    assert_eq!(app.tree_drop, None, "{:?}", app.tree.iter().map(|n| &n.path).collect::<Vec<_>>());
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, own);
+    assert!(app.prompt.is_none());
+    // A name already there: said, not asked.
+    fs::write(root.join("README2.md"), "r").unwrap();
+    fs::write(root.join("docs/README2.md"), "taken").unwrap();
+    app.ask_move("README2.md".into(), "docs".into());
+    assert!(app.prompt.is_none() && app.msg.contains("already exists in docs"), "{}", app.msg);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn explorer_copy_cut_and_paste_number_the_copies() {
+    let root = repo("tree-copy");
+    fs::create_dir_all(root.join("lib/deep")).unwrap();
+    fs::write(root.join("lib/deep/a.txt"), "a").unwrap();
+    fs::write(root.join("a.tar.gz"), "z").unwrap();
+    fs::write(root.join(".env"), "e").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.show_side(Side::Explorer, false);
+    let ctrl = |app: &mut App, c: char| key(app, KeyCode::Char(c), KeyModifiers::CONTROL);
+    let select = |app: &mut App, path: &str| app.sel[0] = app.tree.iter().position(|n| n.path == path).unwrap();
+    // A file copied next to itself: (1), then (2), the extension kept last.
+    select(&mut app, "a.tar.gz");
+    ctrl(&mut app, 'c');
+    ctrl(&mut app, 'v');
+    ctrl(&mut app, 'v');
+    assert!(root.join("a.tar (1).gz").exists() && root.join("a.tar (2).gz").exists());
+    assert_eq!(app.tree.get(app.sel[0]).map(|n| n.path.as_str()), Some("a.tar (2).gz"), "the copy selected");
+    assert_eq!(app.free_name("", ".env"), ".env (1)", "a dotfile's dot is no extension");
+    // A folder with all in it, into a folder (a file selected: its folder).
+    select(&mut app, "lib");
+    ctrl(&mut app, 'c');
+    app.reveal_path("src/main.rs");
+    ctrl(&mut app, 'v');
+    assert_eq!(fs::read_to_string(root.join("src/lib/deep/a.txt")).unwrap(), "a");
+    // Not into itself.
+    select(&mut app, "lib");
+    ctrl(&mut app, 'v');
+    assert!(app.msg.contains("cannot go inside itself") && !root.join("lib/lib").exists(), "{}", app.msg);
+    // Cut and paste moves it, once.
+    select(&mut app, ".env");
+    ctrl(&mut app, 'x');
+    select(&mut app, "src");
+    ctrl(&mut app, 'v');
+    assert!(root.join("src/.env").exists() && !root.join(".env").exists() && app.tree_clip.is_none());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn delete_moves_to_the_trash_once_asked_and_shift_delete_removes_for_good() {
+    let root = repo("tree-delete");
+    let trash = std::env::temp_dir().join(format!("termcode-trash-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&trash);
+    fs::write(root.join("a b.txt"), "one").unwrap();
+    fs::write(root.join("kept.txt"), "two").unwrap();
+    fs::create_dir_all(root.join("old/inner")).unwrap();
+    fs::write(root.join("old/inner/x"), "x").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.trash = trash.clone();
+    app.open_file(0, "a b.txt", false);
+    app.open_file(0, "kept.txt", false);
+    wait(&mut app);
+    app.focus = Focus::Editor;
+    typ(&mut app, "edited "); // kept.txt has unsaved edits
+    app.show_side(Side::Explorer, false);
+    let select = |app: &mut App, path: &str| app.sel[0] = app.tree.iter().position(|n| n.path == path).unwrap();
+    // Delete: asked; Move to Trash: in the Trash with what restores it.
+    select(&mut app, "a b.txt");
+    key(&mut app, KeyCode::Delete, KeyModifiers::NONE);
+    let p = app.prompt.as_ref().unwrap();
+    assert_eq!((p.text[0].as_str(), p.buttons[0].0.as_str()), ("Are you sure you want to delete 'a b.txt'?", "Move to Trash"));
+    assert!(root.join("a b.txt").exists(), "nothing before it is confirmed");
+    app.run_prompt(p.buttons[0].1.clone());
+    assert!(!root.join("a b.txt").exists() && trash.join("files/a b.txt").exists());
+    let info = fs::read_to_string(trash.join("info/a b.txt.trashinfo")).unwrap();
+    let abs = root.canonicalize().unwrap().join("a%20b.txt");
+    assert!(info.starts_with("[Trash Info]\nPath=") && info.contains(&format!("Path={}", abs.display())) && info.contains("DeletionDate=20"), "{info}");
+    assert!(!app.groups[0].tabs.iter().any(|t| t.key == "file:a b.txt"), "its editor closed");
+    // A second one of the name: NAME.2.
+    fs::write(root.join("a b.txt"), "again").unwrap();
+    app.reload_all();
+    select(&mut app, "a b.txt");
+    app.delete_path("a b.txt", false);
+    assert_eq!(fs::read_to_string(trash.join("files/a b.txt.2")).unwrap(), "again");
+    // An editor with unsaved edits stays open.
+    select(&mut app, "kept.txt");
+    app.delete_path("kept.txt", false);
+    assert!(app.groups[0].tabs.iter().any(|t| t.key == "file:kept.txt"), "unsaved edits are kept");
+    // Shift+Delete: a folder and its contents, for good.
+    select(&mut app, "old");
+    key(&mut app, KeyCode::Delete, KeyModifiers::SHIFT);
+    let p = app.prompt.as_ref().unwrap();
+    assert_eq!(p.text[0], "Are you sure you want to permanently delete 'old' and its contents?");
+    app.run_prompt(p.buttons[0].1.clone());
+    assert!(!root.join("old").exists() && !trash.join("files/old").exists());
+    fs::remove_dir_all(&trash).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn ctrl_z_takes_back_explorer_moves_copies_and_deletes_and_ctrl_y_redoes_them() {
+    let root = repo("tree-undo");
+    let trash = std::env::temp_dir().join(format!("termcode-trash-undo-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&trash);
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(root.join("notes.md"), "n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.trash = trash.clone();
+    app.open_file(0, "notes.md", false);
+    wait(&mut app);
+    app.show_side(Side::Explorer, false);
+    app.focus = Focus::Side;
+    let ctrl = |app: &mut App, c: char, shift: bool| {
+        let m = if shift { KeyModifiers::CONTROL | KeyModifiers::SHIFT } else { KeyModifiers::CONTROL };
+        key(app, KeyCode::Char(c), m);
+    };
+    let at = |p: &str| root.join(p).exists();
+    // A move: back, then again; the open editor follows both ways.
+    app.move_into("notes.md", "docs");
+    ctrl(&mut app, 'z', false);
+    assert!(at("notes.md") && !at("docs/notes.md") && app.groups[0].tabs.iter().any(|t| t.key == "file:notes.md"), "{}", app.msg);
+    ctrl(&mut app, 'y', false);
+    assert!(at("docs/notes.md") && !at("notes.md") && app.groups[0].tabs.iter().any(|t| t.key == "file:docs/notes.md"), "{}", app.msg);
+    // A paste: the copy goes to the Trash; Ctrl+Shift+Z pastes it again.
+    app.sel[0] = app.tree.iter().position(|n| n.path == "docs").unwrap();
+    app.tree_clip = Some(("README.md".into(), false));
+    app.tree_paste();
+    assert!(at("docs/README.md"));
+    ctrl(&mut app, 'z', false);
+    assert!(!at("docs/README.md") && trash.join("files/README.md").exists(), "{}", app.msg);
+    ctrl(&mut app, 'z', true);
+    assert!(at("docs/README.md"), "{}", app.msg);
+    // A delete: restored from the Trash, with its info file gone.
+    app.delete_path("docs/README.md", false);
+    let name = match app.file_undo.last() { Some(crate::panel::rename::FileOp::Trashed { name, .. }) => name.clone(), op => panic!("{op:?}") };
+    ctrl(&mut app, 'z', false);
+    assert!(at("docs/README.md") && !trash.join("info").join(format!("{name}.trashinfo")).exists(), "{}", app.msg);
+    // Changed meanwhile (the moved file deleted elsewhere): said, nothing touched.
+    app.move_into("docs/notes.md", "");
+    fs::remove_file(root.join("notes.md")).unwrap();
+    ctrl(&mut app, 'z', false);
+    assert!(app.msg.contains("couldn't undo: it is no longer where it was"), "{}", app.msg);
+    fs::remove_dir_all(&trash).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}

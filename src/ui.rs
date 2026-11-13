@@ -698,7 +698,12 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             break;
         }
         let rr = Rect::new(list.x, list.y + k as u16 * step, list.width, 1);
-        let bg = if i == app.sel[s] && app.focus == Focus::Side {
+        // A drag's target folder lights up with what shows inside it (the root: all).
+        let dropping = app.side == Side::Explorer
+            && app.tree_drop.as_deref().is_some_and(|t| t.is_empty() || app.tree.get(i).is_some_and(|n| n.path == t || n.path.starts_with(&format!("{t}/"))));
+        let bg = if dropping {
+            P.drop_bg
+        } else if i == app.sel[s] && app.focus == Focus::Side {
             P.list_active_bg
         } else if i == app.sel[s] {
             P.list_inactive_bg

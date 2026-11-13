@@ -323,6 +323,10 @@ pub enum PAct {
     QuitNoSave,
     /// Quit although a program runs in the terminal (it ends with the window).
     QuitEndTerminal,
+    /// An Explorer item dropped on a folder ("" the root): move it there.
+    Move(String, String),
+    /// Delete an Explorer item: to the Trash, or (`true`) for good.
+    Delete(String, bool),
     /// A change on GitHub, confirmed.
     GitHub(crate::github::Act),
     /// A document and the backup file chosen for it; the backup file to drop.
@@ -656,7 +660,8 @@ pub enum Drag {
     OutlineSash,
     /// The line between the GitHub view's panes.
     GhSash,
-    File { rel: String, from: Position, active: bool },
+    /// An Explorer item (`dir`: a folder): onto an editor (a file), or into a folder.
+    File { rel: String, from: Position, active: bool, dir: bool },
     /// Tab `i` of group `g` (VS Code's tab drag and drop); active once moved 2 cells.
     Tab { g: usize, i: usize, from: Position, active: bool },
     Select(usize),
@@ -861,6 +866,15 @@ pub struct App {
     /// its scroll, and the symbol it last followed the cursor to.
     /// Quit was confirmed over a program running in the terminal.
     pub term_quit_ok: bool,
+    /// The folder an Explorer drag would drop into ("" the root), lit while it is over it;
+    /// the item Ctrl+C (or Ctrl+X: `true`) took for Ctrl+V.
+    pub tree_drop: Option<String>,
+    pub tree_clip: Option<(String, bool)>,
+    /// The Trash Delete moves to (freedesktop's: $XDG_DATA_HOME/Trash).
+    pub(crate) trash: PathBuf,
+    /// Explorer file operations Ctrl+Z can take back, and those it took back (Ctrl+Y).
+    pub file_undo: Vec<rename::FileOp>,
+    pub file_redo: Vec<rename::FileOp>,
     /// The GitHub view and its status bar item.
     pub gh: crate::github::GitHub,
     pub outline_open: bool,
@@ -1480,6 +1494,12 @@ impl App {
             term_open: false,
             term_h: saved["terminal_height"].as_u64().map(|h| h.clamp(3, 500) as u16),
             term_quit_ok: false,
+            tree_drop: None,
+            tree_clip: None,
+            // Tests never reach the user's Trash.
+            file_undo: Vec::new(),
+            file_redo: Vec::new(),
+            trash: if cfg!(test) { std::env::temp_dir().join(format!("termcode-test-trash-{}", std::process::id())) } else { crate::data_home().join("Trash") },
             gh: crate::github::GitHub::new(
                 gh_here,
                 saved["github_repo"].as_str().map(String::from),

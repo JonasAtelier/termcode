@@ -25,6 +25,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   picked above, its description and status, its stats (commit graph, languages,
   contributors), Actions runs, pull requests and issues. Open, edit a title, check out,
   re-run, cancel or close, each confirmed first.
+- The Explorer moves a file or folder dragged onto a folder (asked first), and copies,
+  cuts and pastes them with Ctrl+C, Ctrl+X and Ctrl+V; a copy whose name is taken
+  becomes `name (1)`, `name (2)` …. Open editors follow what moves. Delete moves an
+  item to the Trash and Shift+Delete deletes it for good, each asked first. Ctrl+Z
+  there takes back a move, rename, paste or delete; Ctrl+Y does it again.
 - The Search box and Find's fields: Ctrl+A or a double-click selects the whole text;
   Ctrl+C copies it, Ctrl+X cuts it, and typing or a paste replaces it.
 

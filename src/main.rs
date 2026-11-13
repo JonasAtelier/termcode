@@ -204,6 +204,16 @@ pub fn data_dir(state: bool) -> PathBuf {
     xdg_base(state, &|k| env::var(k).ok()).join("termcode")
 }
 
+/// `$XDG_DATA_HOME` (else ~/.local/share): where the Trash is.
+pub fn data_home() -> PathBuf {
+    let abs = |k: &str| env::var(k).ok().filter(|d| Path::new(d).is_absolute());
+    match (abs("XDG_DATA_HOME"), abs("HOME")) {
+        (Some(x), _) => PathBuf::from(x),
+        (None, Some(h)) => PathBuf::from(h).join(".local/share"),
+        (None, None) => env::temp_dir(),
+    }
+}
+
 /// The XDG base for config or state. Only absolute bases: an empty or relative XDG_* is
 /// unset (the XDG spec), so nothing lands under whatever folder the panel runs in.
 fn xdg_base(state: bool, var: &dyn Fn(&str) -> Option<String>) -> PathBuf {

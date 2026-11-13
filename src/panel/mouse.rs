@@ -283,8 +283,8 @@ impl App {
                 self.sel[s] = i;
                 self.focus = Focus::Side;
                 if self.side == Side::Explorer {
-                    if let Some(n) = self.tree.get(i).filter(|n| !n.dir) {
-                        self.drag = Drag::File { rel: n.path.clone(), from: p, active: false };
+                    if let Some(n) = self.tree.get(i) {
+                        self.drag = Drag::File { rel: n.path.clone(), from: p, active: false, dir: n.dir };
                     }
                 }
                 // Double-clicking a name edits it in place (the first click opened the file
@@ -602,12 +602,16 @@ impl App {
             // The panel's right edge stays; its left border follows the pointer.
             Drag::OutlineSash => self.outline_w = Some((self.ui.outline.right() + 1).saturating_sub(p.x).max(16)),
             Drag::GhSash => crate::github::drag_to(self, p.y),
-            Drag::File { from, active, .. } => {
+            Drag::File { rel, from, active, dir } => {
                 if !*active && (from.x.abs_diff(p.x) + from.y.abs_diff(p.y)) >= 2 {
                     *active = true;
                 }
                 if *active {
-                    self.drop = self.drop_target(p, false);
+                    // Over the Explorer: a folder to move into; over an editor: a file opens.
+                    let (rel, dir) = (rel.clone(), *dir);
+                    self.tree_drop = self.tree_target(p, &rel);
+                    let over_tree = self.ui.side_list.contains(p);
+                    self.drop = if over_tree || dir { None } else { self.drop_target(p, false) };
                 }
             }
             Drag::Tab { g, i, from, active } => {
@@ -683,7 +687,9 @@ impl App {
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Divider | Drag::TermSash | Drag::OutlineSash | Drag::GhSash => self.save_layout(),
             Drag::File { rel, active: true, .. } => {
-                if let Some((g, zone)) = self.drop.take() {
+                if let Some(into) = self.tree_drop.take() {
+                    self.ask_move(rel, into);
+                } else if let Some((g, zone)) = self.drop.take() {
                     let target = match zone {
                         Zone::Center | Zone::Tab(_) => g,
                         Zone::Left | Zone::Right => {
@@ -704,6 +710,7 @@ impl App {
             _ => {}
         }
         self.drop = None;
+        self.tree_drop = None;
     }
 
     /// Dropping tab `i` of group `g` on (`t`, `zone`) changes nothing: its own

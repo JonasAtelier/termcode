@@ -425,6 +425,8 @@ impl App {
                 }
             }
             PAct::GitHub(a) => crate::github::run(self, a),
+            PAct::Move(rel, into) => self.move_into(&rel, &into),
+            PAct::Delete(rel, forever) => self.delete_path(&rel, forever),
             PAct::QuitEndTerminal => {
                 self.term_quit_ok = true;
                 self.request_quit();
