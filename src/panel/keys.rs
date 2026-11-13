@@ -240,7 +240,34 @@ impl App {
     }
 
     pub(super) fn input_key(&mut self, k: KeyEvent, ctrl: bool, alt: bool) {
+        let all = std::mem::take(&mut self.query_all) && !self.query.is_empty();
+        // A selected query goes as the first change starts (typing, Backspace, Ctrl+X).
+        let take = |app: &mut App| {
+            if all {
+                app.query.clear();
+                app.search_on_type();
+            }
+            all
+        };
         match k.code {
+            KeyCode::Char('a') if ctrl => self.query_all = true,
+            // Nothing selected: Ctrl+C still takes the whole query (as a rename's name).
+            KeyCode::Char('c') if ctrl && !self.query.is_empty() => {
+                self.query_all = all;
+                self.msg = format!("copied via {}", clipboard_set(&self.query));
+                self.clip = self.query.clone();
+            }
+            KeyCode::Char('x') if ctrl && all => {
+                self.msg = format!("cut via {}", clipboard_set(&self.query));
+                self.clip = std::mem::take(&mut self.query);
+                self.search_on_type();
+            }
+            KeyCode::Char('v') if ctrl => {
+                self.query_all = all;
+                let text = clipboard_get().unwrap_or_else(|| self.clip.clone());
+                self.paste_text(&text);
+            }
+            KeyCode::Backspace | KeyCode::Delete if take(self) => {}
             KeyCode::Enter => {
                 self.search_due = None;
                 self.start_search();
@@ -259,6 +286,7 @@ impl App {
                 }
             }
             KeyCode::Char(c) if !ctrl && !alt => {
+                take(self);
                 self.query.push(c);
                 self.search_on_type();
             }
@@ -301,7 +329,7 @@ impl App {
                     self.toggle(i);
                 }
             }
-            KeyCode::Char('/') if self.side == Side::Search => self.focus = Focus::SearchInput,
+            KeyCode::Char('/') if self.side == Side::Search => (self.focus, self.query_all) = (Focus::SearchInput, false),
             // h: the file's history, in the TIMELINE under the tree.
             KeyCode::Char('h') if self.side == Side::Explorer => {
                 if let Some(n) = self.tree.get(self.sel[s]).filter(|n| !n.dir) {
@@ -600,6 +628,9 @@ impl App {
         }
         match self.focus {
             Focus::SearchInput => {
+                if std::mem::take(&mut self.query_all) {
+                    self.query.clear();
+                }
                 self.query.push_str(&text.replace(['\r', '\n'], " "));
                 self.search_on_type();
             }

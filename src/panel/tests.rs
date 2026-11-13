@@ -5529,3 +5529,47 @@ fn the_outline_button_lists_the_symbols_right_of_the_editors_and_a_click_jumps()
     assert_eq!(app.ui.editor_area, full);
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn the_search_query_selects_whole_by_ctrl_a_or_double_click_to_copy_cut_or_replace() {
+    let root = repo("search-sel");
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
+    app.show_side(Side::Search, true);
+    typ(&mut app, "needle");
+    // Ctrl+A, Ctrl+C: the whole query copied, shown selected, still there.
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!((app.clip.as_str(), app.query.as_str()), ("needle", "needle"));
+    screen(&mut app, &mut t);
+    let inp = app.ui.side_input;
+    assert_eq!(t.backend().buffer()[(inp.x + 2, inp.y)].bg, crate::theme::P.selection);
+    // Typing replaces it; then it is unselected and typing adds.
+    typ(&mut app, "pin");
+    typ(&mut app, "e");
+    assert_eq!(app.query, "pine");
+    // A double-click selects it all; Ctrl+X cuts it.
+    screen(&mut app, &mut t);
+    for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)].repeat(2) {
+        mouse(&mut app, kind, inp.x + 2, inp.y);
+    }
+    key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+    assert_eq!((app.clip.as_str(), app.query.as_str()), ("pine", ""));
+    // A paste replaces a selected query; Backspace clears one.
+    typ(&mut app, "abc");
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    app.on_paste("xyz");
+    assert_eq!(app.query, "xyz");
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+    assert_eq!(app.query, "");
+    // A single click leaves it unselected.
+    typ(&mut app, "q");
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    screen(&mut app, &mut t);
+    std::thread::sleep(DOUBLE_CLICK);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), inp.x + 3, inp.y);
+    typ(&mut app, "r");
+    assert_eq!(app.query, "qr");
+    let _ = fs::remove_dir_all(&root);
+}

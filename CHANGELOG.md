@@ -14,6 +14,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - An Outline right of the editors: the file's symbols, nested, each with VS Code's icon
   for its kind (function, struct, class, enum, …), the one under the cursor lit; a click
   goes there. The button beside the terminal's shows and hides it.
+- The Search box: Ctrl+A or a double-click selects the whole query; Ctrl+C copies it,
+  Ctrl+X cuts it, and typing or a paste replaces it.
 
 ### Fixed
 - GRAPH and TIMELINE follow git run outside termcode (in its terminal or anywhere

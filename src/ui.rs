@@ -621,6 +621,12 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             // A pill: its caps take the padding cells either end, so the text and the
             // toggles keep their columns; the card border and the caret show focus.
             input(f, text, &app.query, "Search", focused && crate::theme::ascii());
+            if focused && app.query_all {
+                let w = (app.query.width() as u16).min(text.width.saturating_sub(1));
+                for x in text.x + 1..text.x + 1 + w {
+                    f.buffer_mut()[(x, y)].set_bg(P.selection);
+                }
+            }
             round_ends(f, inp, P.input_bg, P.sidebar_bg);
             app.ui.side_input = inp;
             let (c, w, rx) = app.s_opts;

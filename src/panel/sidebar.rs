@@ -148,6 +148,7 @@ impl App {
             Side::Search if input => Focus::SearchInput,
             _ => Focus::Side,
         };
+        self.query_all = false;
         self.refresh();
         self.save_layout();
     }

@@ -250,7 +250,8 @@ impl App {
             return;
         }
         if self.ui.side_input.contains(p) {
-            self.focus = Focus::SearchInput;
+            // A double-click selects the whole query.
+            (self.focus, self.query_all) = (Focus::SearchInput, double && !self.query.is_empty());
             return;
         }
         if self.ui.commit_btn.contains(p) {

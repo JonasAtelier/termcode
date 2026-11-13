@@ -838,6 +838,9 @@ pub struct App {
     pub scm_folded: [bool; 3],
     pub tree: Vec<Node>,
     pub query: String,
+    /// The whole Search query is selected (Ctrl+A, a double-click): copied by Ctrl+C,
+    /// cut by Ctrl+X, replaced by typing or a paste.
+    pub query_all: bool,
     /// Search toggles (Match Case, Whole Word, Regex); all off like VS Code.
     pub s_opts: (bool, bool, bool),
     pub hits: Vec<Hit>,
@@ -1433,6 +1436,7 @@ impl App {
             scm_folded: [false; 3],
             tree: Vec::new(),
             query: String::new(),
+            query_all: false,
             s_opts: (false, false, false),
             hits: Vec::new(),
             search_closed: HashSet::new(),
