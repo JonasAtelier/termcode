@@ -59,8 +59,8 @@ pub struct Graphics {
     cell: (u16, u16),
     tmux: bool,
     // Switch states, focused/unfocused, and two palette cards. IDs survive resizing.
-    // Then the GitHub avatar, its year graph and its month graph.
-    cache: [Option<Cached>; 9],
+    // Then the GitHub avatar, its year and month graphs, and a repository's year graph.
+    cache: [Option<Cached>; 10],
 }
 
 fn cell_size() -> (u16, u16) {

@@ -48,12 +48,18 @@ const FORK: usize = 16;
 const EVERY: Duration = Duration::from_secs(60);
 /// While a sign-in runs in the terminal: how soon to look whether it is done.
 const SIGN_IN_EVERY: Duration = Duration::from_secs(3);
+/// While GitHub counts a repository's commits (202): how soon, and how often, to ask again.
+const STATS_AGAIN: Duration = Duration::from_secs(3);
+const STATS_TRIES: u8 = 5;
 /// A fetch with no answer by then is given up (its late answer is dropped).
 const GIVE_UP: Duration = Duration::from_secs(30);
 
 /// The panes: the account's, and the chosen repository's.
 pub const TOP: usize = 0;
 pub const BOTTOM: usize = 1;
+/// The graphs: the account's contributions, the repository's commits.
+const ACCOUNT: usize = 0;
+const REPO_GRAPH: usize = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Checks {
@@ -175,12 +181,17 @@ pub struct Data {
     pub notes: Vec<Note>,
 }
 
-/// The chosen repository's lists: the bottom pane.
+/// The chosen repository's lists and numbers: the bottom pane.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RepoData {
     pub prs: Vec<Pr>,
     pub issues: Vec<Issue>,
     pub runs: Vec<Run>,
+    /// Its commits a day over the past year; None while GitHub is still counting them.
+    pub commits: Option<Activity>,
+    /// Its languages by bytes, the most first; its top contributors by commits.
+    pub languages: Vec<(String, u64)>,
+    pub contributors: Vec<(String, u64)>,
 }
 
 /// What the view shows besides data.
@@ -292,6 +303,8 @@ pub enum Btn {
     Activity,
     /// The graph by month (true) or by year.
     ActMode(bool),
+    /// The repository's stats header: folds them.
+    Stats,
     /// An older (-1) or newer (+1) year or month.
     ActStep(i32),
 }
@@ -305,10 +318,12 @@ pub struct Hits {
     pub rows: Vec<(Rect, usize, usize)>,
     pub btns: Vec<(Rect, Btn)>,
     pub sash: Rect,
+    /// Each pane whole (the top one's top edge: where a drag measures its height from).
+    pub panes: [Rect; 2],
     pub field: (Rect, usize),
     /// The contribution graph's blocks (their date and count) and the year view's grid.
-    pub act_cells: Vec<(Rect, String, u64)>,
-    pub act_graph: Rect,
+    pub act_cells: Vec<(Rect, String, u64, usize)>,
+    pub act_graph: [Rect; 2],
 }
 
 pub struct GitHub {
@@ -344,14 +359,17 @@ pub struct GitHub {
     follow: [bool; 2],
     pub pane: usize,
     pub split: Option<u16>,
-    /// The contribution graph shows only its header.
+    /// The contribution graph shows only its header; so do the repository's stats.
     pub activity_folded: bool,
+    pub stats_folded: bool,
+    /// Times the repository was fetched again for its commits (GitHub counting them).
+    stats_tries: u8,
     /// The graph by month (else by year); the year shown (None: the last 12 months), the
     /// month shown, and how many weeks the year view is scrolled back.
     pub act_month: bool,
     pub act_year: Option<i32>,
     pub act_ym: (i32, u32),
-    pub act_scroll: usize,
+    pub act_scroll: [usize; 2],
     /// Calendar years fetched (a month or a year view), and the one being fetched.
     years: std::collections::HashMap<i32, Activity>,
     year_asked: Option<i32>,
@@ -394,13 +412,15 @@ impl GitHub {
             pane: TOP,
             split,
             activity_folded: false,
+            stats_folded: false,
+            stats_tries: 0,
             act_month: false,
             act_year: None,
             act_ym: {
                 let (y, m, _) = ymd(crate::scm::now());
                 (y, m)
             },
-            act_scroll: 0,
+            act_scroll: [0; 2],
             years: Default::default(),
             year_asked: None,
             edit: None,
@@ -617,8 +637,20 @@ fn load_repo(bin: &Path, root: &Path, name: &str) -> Result<RepoData, String> {
         let i = s.spawn(|| q(&["issue", "list", "--repo", name, "--limit", "30", "--json", "number,title,author,updatedAt,url"]));
         let r = s.spawn(|| q(&["run", "list", "--repo", name, "--limit", "20", "--json", "databaseId,displayTitle,workflowName,headBranch,status,conclusion,updatedAt,url"]));
         let join = |h: std::thread::ScopedJoinHandle<'_, Result<Value, String>>| h.join().unwrap_or_else(|_| Err("gh failed".into()));
+        // Its numbers: missing ones only leave their row out.
+        let commits = s.spawn(|| q(&["api", &format!("repos/{name}/stats/commit_activity")]));
+        let langs = s.spawn(|| q(&["api", &format!("repos/{name}/languages")]));
+        let people = s.spawn(|| q(&["api", &format!("repos/{name}/contributors?per_page=5")]));
         let (p, i, r) = (join(p), join(i), join(r));
-        Ok(RepoData { prs: prs(&p?, name), issues: issues(&i?, name), runs: runs(&r?) })
+        let (commits, langs, people) = (join(commits), join(langs), join(people));
+        Ok(RepoData {
+            prs: prs(&p?, name),
+            issues: issues(&i?, name),
+            runs: runs(&r?),
+            commits: commits.ok().and_then(|v| commits_of(&v)),
+            languages: langs.ok().map(|v| languages_of(&v)).unwrap_or_default(),
+            contributors: people.ok().map(|v| contributors_of(&v)).unwrap_or_default(),
+        })
     })
 }
 
@@ -657,6 +689,78 @@ pub fn activity_of(v: &Value) -> Option<Activity> {
         followers: viewer["followers"]["totalCount"].as_u64().unwrap_or(0),
         following: viewer["following"]["totalCount"].as_u64().unwrap_or(0),
     })
+}
+
+/// A repository's commits a day from its weekly commit activity (52 weeks of 7 days from
+/// Sunday); None while GitHub is still counting (it answers `{}` with 202 meanwhile).
+pub fn commits_of(v: &Value) -> Option<Activity> {
+    let weeks = v.as_array().filter(|a| !a.is_empty())?;
+    let counts = |w: &Value| w["days"].as_array().cloned().unwrap_or_default().iter().map(|d| d.as_u64().unwrap_or(0)).collect::<Vec<u64>>();
+    let max = weeks.iter().flat_map(counts).max().unwrap_or(0).max(1);
+    // Levels as GitHub's graph has them: four steps up to the busiest day.
+    let level = |c: u64| if c == 0 { 0 } else { (4 * c).div_ceil(max).clamp(1, 4) as u8 };
+    let weeks: Vec<Vec<Day>> = weeks
+        .iter()
+        .map(|w| {
+            let start = w["week"].as_i64().unwrap_or(0);
+            counts(w)
+                .into_iter()
+                .enumerate()
+                .map(|(i, count)| {
+                    let (y, m, d) = ymd(start + i as i64 * 86_400);
+                    Day { weekday: i as u8, date: format!("{y}-{m:02}-{d:02}"), count, level: level(count) }
+                })
+                .collect()
+        })
+        .collect();
+    let total = weeks.iter().flatten().map(|d| d.count).sum();
+    Some(Activity { total, weeks, ..Activity::default() })
+}
+
+/// A repository's languages by bytes, the most first.
+pub fn languages_of(v: &Value) -> Vec<(String, u64)> {
+    let mut l: Vec<(String, u64)> = v.as_object().into_iter().flatten().map(|(k, n)| (k.clone(), n.as_u64().unwrap_or(0))).collect();
+    l.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    l
+}
+
+pub fn contributors_of(v: &Value) -> Vec<(String, u64)> {
+    v.as_array().into_iter().flatten().map(|c| (str_of(c, "login"), c["contributions"].as_u64().unwrap_or(0))).collect()
+}
+
+/// A language's colour, as GitHub (linguist) draws it; others a colour of their name.
+fn lang_color(lang: &str) -> Color {
+    let hex = match lang {
+        "Rust" => 0xdea584,
+        "Shell" => 0x89e051,
+        "Python" => 0x3572a5,
+        "C" => 0x555555,
+        "C++" => 0xf34b7d,
+        "C#" => 0x178600,
+        "Go" => 0x00add8,
+        "JavaScript" => 0xf1e05a,
+        "TypeScript" => 0x3178c6,
+        "HTML" => 0xe34c26,
+        "CSS" => 0x563d7c,
+        "Java" => 0xb07219,
+        "Kotlin" => 0xa97bff,
+        "Ruby" => 0x701516,
+        "Swift" => 0xf05138,
+        "Lua" => 0x000080,
+        "Makefile" => 0x427819,
+        "CMake" => 0xda3434,
+        "Dockerfile" => 0x384d54,
+        "Assembly" => 0x6e4c13,
+        "Perl" => 0x0298c3,
+        "Nix" => 0x7e7eff,
+        "Vim Script" => 0x199f4b,
+        "Jupyter Notebook" => 0xda5b0b,
+        _ => {
+            const OTHERS: [u32; 6] = [0x4f9ddb, 0xc586c0, 0xd7ba7d, 0x4ec9b0, 0xce9178, 0x9cdcfe];
+            OTHERS[lang.bytes().map(usize::from).sum::<usize>() % OTHERS.len()]
+        }
+    };
+    Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
 /// The account's repositories from the REST API's JSON.
@@ -841,6 +945,7 @@ pub fn choose(app: &mut App, name: &str) {
     }
     let gh = &mut app.gh;
     (gh.chosen, gh.repo, gh.sel[BOTTOM], gh.off[BOTTOM]) = (Some(name.to_string()), None, 0, 0);
+    (gh.stats_tries, gh.act_scroll[REPO_GRAPH]) = (0, 0);
     gh.edit = None;
     fetch_repo(app);
     app.save_layout();
@@ -919,6 +1024,11 @@ pub fn tick(app: &mut App) -> bool {
             fetch(app);
             changed = true;
         } else if gh.state == State::Ready && !gh.repo_loading && gh.chosen.is_some() && gh.repo_fetched.is_none_or(|t| t.elapsed() >= every) {
+            fetch_repo(app);
+            changed = true;
+        } else if !gh.repo_loading && gh.stats_tries < STATS_TRIES && gh.lists().is_some_and(|r| r.commits.is_none()) && gh.repo_fetched.is_some_and(|t| t.elapsed() >= STATS_AGAIN) {
+            // GitHub was counting the commits: ask again shortly.
+            gh.stats_tries += 1;
             fetch_repo(app);
             changed = true;
         }
@@ -1276,7 +1386,7 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
         return true;
     }
     // A day of the year graph: its month.
-    if let Some(date) = app.gh.hits.act_cells.iter().find(|(c, ..)| c.contains(p)).map(|(_, d, _)| d.clone()).filter(|_| !app.gh.act_month) {
+    if let Some(date) = app.gh.hits.act_cells.iter().find(|(c, .., w)| *w == ACCOUNT && c.contains(p)).map(|(_, d, ..)| d.clone()).filter(|_| !app.gh.act_month) {
         let (y, m) = (date.get(..4).and_then(|y| y.parse().ok()), date.get(5..7).and_then(|m| m.parse().ok()));
         if let (Some(y), Some(m)) = (y, m) {
             (app.gh.act_month, app.gh.act_ym) = (true, (y, m));
@@ -1288,7 +1398,8 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
             Btn::SignIn => sign_in(app),
             Btn::Retry | Btn::Refresh => fetch(app),
             Btn::Activity => app.gh.activity_folded = !app.gh.activity_folded,
-            Btn::ActMode(month) => (app.gh.act_month, app.gh.act_scroll) = (month, 0),
+            Btn::Stats => app.gh.stats_folded = !app.gh.stats_folded,
+            Btn::ActMode(month) => (app.gh.act_month, app.gh.act_scroll[ACCOUNT]) = (month, 0),
             Btn::ActStep(d) => act_step(app, d),
             Btn::OpenRepo => {
                 if let Some(url) = app.gh.chosen_info().map(|r| r.url.clone()) {
@@ -1317,9 +1428,11 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
     true
 }
 
-/// The line between the panes, dragged to `y`: the top pane ends there.
+/// The line between the panes, dragged to `y`: the top pane ends there. Measured from the
+/// pane's own top edge, which stays put (its list moves as the graph above it comes and
+/// goes: measured from there, each frame would undo the last).
 pub fn drag_to(app: &mut App, y: u16) {
-    let top = app.gh.hits.lists[TOP].y;
+    let top = app.gh.hits.panes[TOP].y;
     app.gh.split = Some(y.saturating_sub(top).max(1));
 }
 
@@ -1328,8 +1441,8 @@ pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
         return false;
     }
     // Over the year graph: back (up) and forth in weeks.
-    if app.gh.hits.act_graph.contains(p) {
-        app.gh.act_scroll = app.gh.act_scroll.saturating_add_signed(-d); // the frame clamps it
+    if let Some(w) = (0..2).find(|&w| app.gh.hits.act_graph[w].contains(p)) {
+        app.gh.act_scroll[w] = app.gh.act_scroll[w].saturating_add_signed(-d); // the frame clamps it
         return true;
     }
     let Some(pane) = (0..2).find(|&k| app.gh.hits.lists[k].contains(p)) else { return false };
@@ -1449,12 +1562,13 @@ fn ready(app: &mut App, f: &mut Frame, area: Rect, focused: bool) {
     if body < 6 {
         return;
     }
-    // The account's pane takes three fifths by default: its graph needs the rows.
-    let top_h = app.gh.split.unwrap_or(body * 3 / 5).clamp(3, body - 4);
+    // Half each by default: both have a graph.
+    let top_h = app.gh.split.unwrap_or(body / 2).clamp(3, body - 4);
     let top = Rect::new(area.x, y0, area.width, top_h);
     let sash = Rect::new(area.x, y0 + top_h, area.width, 1);
     let bottom = Rect::new(area.x, sash.y + 1, area.width, area.bottom() - sash.y - 1);
     app.gh.hits.sash = sash;
+    app.gh.hits.panes = [top, bottom];
     let top = activity(app, f, top, &d);
     list(app, f, top, TOP, focused);
     // The line between: the chosen repository's name in it, lit while dragged or hovered.
@@ -1550,7 +1664,7 @@ fn act_step(app: &mut App, d: i32) {
     let (now_y, now_m, _) = ymd(crate::scm::now());
     let since = app.gh.data.as_ref().map_or(now_y, |x| x.since.min(now_y));
     let gh = &mut app.gh;
-    gh.act_scroll = 0;
+    gh.act_scroll[ACCOUNT] = 0;
     if gh.act_month {
         let (y, m) = gh.act_ym;
         let i = (y * 12 + m as i32 - 1 + d).clamp(since * 12, now_y * 12 + now_m as i32 - 1);
@@ -1596,11 +1710,13 @@ fn activity(app: &mut App, f: &mut Frame, r: Rect, d: &Data) -> Rect {
         (true, Some((cw, ch))) => (6 * u32::from(MONTH_PITCH * cw)).div_ceil(u32::from(ch)) as u16,
         (true, None) => 6,
     };
-    // Header and Year | Month, the labels and the grid, the legend, the numbers, a gap.
-    let used = if folded { 2 } else { 2 + 1 + grid + 3 };
-    if r.height < used + 3 || r.width < 18 {
+    // Header and Year | Month, the labels and the grid, the legend, the numbers, a gap. The
+    // list below keeps three rows; short of the whole graph, its header alone shows.
+    if r.height < 2 + 3 || r.width < 18 {
         return r;
     }
+    let folded = folded || r.height < 2 + 1 + grid + 3 + 3;
+    let used = if folded { 2 } else { 2 + 1 + grid + 3 };
     let cal = calendar(app);
     let (when, total) = match (month, app.gh.act_year, &cal) {
         (true, ..) => {
@@ -1616,9 +1732,9 @@ fn activity(app: &mut App, f: &mut Frame, r: Rect, d: &Data) -> Rect {
     let chev = if folded { icons().chev_right } else { icons().chev_down };
     let hr = Rect::new(r.x, r.y, r.width, 1);
     let header = |app: &App, f: &mut Frame| {
-        let hovered = app.hover.and_then(|p| app.gh.hits.act_cells.iter().find(|(c, ..)| c.contains(p)));
+        let hovered = app.hover.and_then(|p| app.gh.hits.act_cells.iter().find(|(c, .., w)| *w == ACCOUNT && c.contains(p)));
         let what = match hovered {
-            Some((_, date, n)) => format!("{}: {n} contribution{}", short_date(date), if *n == 1 { "" } else { "s" }),
+            Some((_, date, n, _)) => format!("{}: {n} contribution{}", short_date(date), if *n == 1 { "" } else { "s" }),
             None => format!("{total} in {when}"),
         };
         row(f, hr, P.section_bg, vec![Span::styled(fit(&format!("{chev} ACTIVITY · {what}"), r.width as usize), Style::new().fg(P.section_fg).bold())]);
@@ -1648,7 +1764,7 @@ fn activity(app: &mut App, f: &mut Frame, r: Rect, d: &Data) -> Rect {
             (r.x, r.right())
         }
         Some(c) if month => month_view(app, f, g, c, px),
-        Some(c) => year_view(app, f, g, c, px),
+        Some(c) => year_view(app, f, g, c, px, ACCOUNT),
     };
     header(app, f);
     // Less ■■■■■ More centred under the graph, then the account's numbers.
@@ -1707,12 +1823,12 @@ fn digest(days: &[(u32, u32, Color)], size: (u16, u16)) -> u64 {
 /// first; Mon, Wed and Fri named), newest week at the right; the wheel scrolls it back. A
 /// week takes YEAR_PITCH cells: with pixels (`px`) a square that wide, else a block.
 /// Returns the graph's left and right edges.
-fn year_view(app: &mut App, f: &mut Frame, g: Rect, c: &Activity, px: Option<(u16, u16)>) -> (u16, u16) {
+fn year_view(app: &mut App, f: &mut Frame, g: Rect, c: &Activity, px: Option<(u16, u16)>, which: usize) -> (u16, u16) {
     let cols = (g.width.saturating_sub(2) / YEAR_PITCH) as usize;
     let n = c.weeks.len();
     let shown = cols.min(n);
-    app.gh.act_scroll = app.gh.act_scroll.min(n - shown);
-    let start = n - shown - app.gh.act_scroll;
+    app.gh.act_scroll[which] = app.gh.act_scroll[which].min(n - shown);
+    let start = n - shown - app.gh.act_scroll[which];
     // Centred: the weekday names, then the weeks.
     let g = Rect { x: g.x + (g.width - (2 + shown as u16 * YEAR_PITCH)) / 2, ..g };
     let gx = g.x + 2;
@@ -1751,15 +1867,16 @@ fn year_view(app: &mut App, f: &mut Frame, g: Rect, c: &Activity, px: Option<(u1
             } else {
                 f.render_widget(block(day.level), Rect::new(x, cell.y, 1, 1));
             }
-            app.gh.hits.act_cells.push((cell, day.date.clone(), day.count));
+            app.gh.hits.act_cells.push((cell, day.date.clone(), day.count, which));
         }
     }
     let area = Rect::new(gx, g.y + 1, shown as u16 * YEAR_PITCH, g.height - 1);
     if let (Some((cw, _)), Some(gr)) = (px, app.gh.graphics.as_mut()) {
         let key = digest(&squares, (area.width, area.height));
-        gr.raw(f, area, 7, key, |w, h| grid_image(w, h, u32::from(YEAR_PITCH * cw), &squares, P.sidebar_bg));
+        // Slot 7 the account's, 9 the repository's.
+        gr.raw(f, area, 7 + 2 * which, key, |w, h| grid_image(w, h, u32::from(YEAR_PITCH * cw), &squares, P.sidebar_bg));
     }
-    app.gh.hits.act_graph = area;
+    app.gh.hits.act_graph[which] = area;
     (g.x, area.right())
 }
 
@@ -1805,14 +1922,14 @@ fn month_view(app: &mut App, f: &mut Frame, g: Rect, c: &Activity, px: Option<(u
         } else {
             f.render_widget(block(day.level), cell);
         }
-        app.gh.hits.act_cells.push((cell, day.date.clone(), day.count));
+        app.gh.hits.act_cells.push((cell, day.date.clone(), day.count, ACCOUNT));
     }
     if let (Some((cw, _)), Some(gr)) = (px, app.gh.graphics.as_mut()) {
         let area = Rect::new(gx, g.y + 1, width, g.height - 1);
         let key = digest(&squares, (area.width, area.height));
         gr.raw(f, area, 8, key, |w, h| grid_image(w, h, u32::from(MONTH_PITCH * cw), &squares, P.sidebar_bg));
     }
-    app.gh.hits.act_graph = Rect::default();
+    app.gh.hits.act_graph[ACCOUNT] = Rect::default();
     (gx, gx + width)
 }
 
@@ -1857,8 +1974,112 @@ fn repo_pane(app: &mut App, f: &mut Frame, r: Rect, focused: bool) {
             message(app, f, lists, lines, Some((" Try Again ", Btn::Retry)));
         }
         None => message(app, f, lists, vec![Line::styled("Loading…", dim)], None),
-        Some(Ok(_)) => list(app, f, lists, BOTTOM, focused),
+        Some(Ok(_)) => {
+            let lists = stats(app, f, lists);
+            list(app, f, lists, BOTTOM, focused)
+        }
     }
+}
+
+/// Rows the repository's lists keep under its stats (a header and three).
+pub const LIST_ROWS: u16 = 4;
+
+/// The repository's numbers above its lists: a header (which folds them) with its commits in
+/// the past year, or the day under the pointer; its commit graph, as the account's; its
+/// languages as a bar in their colours with their shares; its top contributors. Returns
+/// what is left for the lists (which keep a few rows, or the stats do not show).
+fn stats(app: &mut App, f: &mut Frame, r: Rect) -> Rect {
+    let Some(Ok(rd)) = app.gh.repo.clone() else { return r };
+    let folded = app.gh.stats_folded;
+    let px = pixels(app);
+    let grid = match px {
+        Some((cw, ch)) => (7 * u32::from(YEAR_PITCH * cw)).div_ceil(u32::from(ch)) as u16,
+        None => 7,
+    };
+    // The lists below keep LIST_ROWS rows. Of the rest: the header always, then by turns
+    // what fits: the graph, the language bar, the contributors, the key.
+    let mut room = r.height.saturating_sub(LIST_ROWS);
+    if room == 0 || r.width < 18 {
+        return r;
+    }
+    room -= 1;
+    let mut take = |want: bool, rows: u16| {
+        let fits = want && !folded && room >= rows;
+        if fits {
+            room -= rows;
+        }
+        fits
+    };
+    let show_graph = take(true, 1 + grid);
+    let show_bar = take(!rd.languages.is_empty(), 1);
+    let show_people = take(!rd.contributors.is_empty(), 1);
+    let show_key = take(show_bar, 1);
+    let used = if folded {
+        2
+    } else {
+        1 + if show_graph { 1 + grid } else { 0 } + u16::from(show_bar) + u16::from(show_people) + u16::from(show_key)
+    };
+    let dim = Style::new().fg(P.dim);
+    let g = Rect::new(r.x, r.y + 1, r.width, if show_graph { 1 + grid } else { 0 });
+    if show_graph {
+        match &rd.commits {
+            Some(c) => {
+                year_view(app, f, g, c, px, REPO_GRAPH);
+            }
+            None => {
+                let note = "GitHub is counting its commits…";
+                let x = g.x + g.width.saturating_sub(note.width() as u16) / 2;
+                f.render_widget(Span::styled(note, dim), Rect::new(x, g.y + 1 + grid / 2, g.right() - x, 1));
+            }
+        }
+    }
+    // The header last: it names the day under the pointer.
+    let hovered = app.hover.and_then(|p| app.gh.hits.act_cells.iter().find(|(c, .., w)| *w == REPO_GRAPH && c.contains(p)));
+    let what = match (hovered, &rd.commits) {
+        (Some((_, date, n, _)), _) => format!("{}: {n} commit{}", short_date(date), if *n == 1 { "" } else { "s" }),
+        (None, Some(c)) => format!("{} commits in the past year", c.total),
+        (None, None) => "counting…".to_string(),
+    };
+    let chev = if folded { icons().chev_right } else { icons().chev_down };
+    let hr = Rect::new(r.x, r.y, r.width, 1);
+    row(f, hr, P.section_bg, vec![Span::styled(fit(&format!("{chev} STATS · {what}"), r.width as usize), Style::new().fg(P.section_fg).bold())]);
+    app.gh.hits.btns.push((hr, Btn::Stats));
+    if folded {
+        return Rect::new(r.x, r.y + 2, r.width, r.height - 2);
+    }
+    let mut y = g.bottom();
+    if show_bar {
+        // The bar: a cell per share (at least one), the last language to the end.
+        let total: u64 = rd.languages.iter().map(|l| l.1).sum::<u64>().max(1);
+        let ascii = crate::theme::ascii();
+        let mut x = r.x;
+        for (i, (lang, bytes)) in rd.languages.iter().enumerate() {
+            if x >= r.right() {
+                break;
+            }
+            let cells = if i + 1 == rd.languages.len() { r.right() - x } else { ((bytes * u64::from(r.width) + total / 2) / total).max(1).min(u64::from(r.right() - x)) as u16 };
+            let glyph = if ascii { "#" } else { "█" };
+            f.render_widget(Span::styled(glyph.repeat(cells as usize), Style::new().fg(lang_color(lang))), Rect::new(x, y, cells, 1));
+            x += cells;
+        }
+        let dot = if ascii { "*" } else { "●" };
+        let mut key: Vec<Span> = Vec::new();
+        for (lang, bytes) in &rd.languages {
+            let share = *bytes as f64 * 100.0 / total as f64;
+            key.push(Span::styled(dot, Style::new().fg(lang_color(lang))));
+            key.push(Span::styled(format!(" {lang} {share:.1}%  "), dim));
+        }
+        if show_key {
+            f.render_widget(Line::from(key), Rect::new(r.x, y + 1, r.width, 1));
+            y += 1;
+        }
+        y += 1;
+    }
+    if show_people {
+        let who = rd.contributors.iter().map(|(n, c)| format!("{n} {c}")).collect::<Vec<_>>().join(" · ");
+        f.render_widget(Span::styled(fit(&format!("Contributors: {who}"), r.width as usize), dim), Rect::new(r.x, y, r.width, 1));
+    }
+    Rect::new(r.x, r.y + used, r.width, r.height - used)
 }
 
 /// A pane's list, scrolled to keep its selection in view.
@@ -2089,6 +2310,19 @@ mod tests {
     }
 
     #[test]
+    fn repository_stats_come_from_their_endpoints() {
+        assert_eq!(commits_of(&serde_json::json!({})), None, "GitHub still counting (202)");
+        let c = commits_of(&serde_json::json!([{"days": [0, 1, 0, 0, 0, 0, 8], "total": 9, "week": 1794096000}])).unwrap();
+        let days = &c.weeks[0];
+        assert_eq!((c.total, days[0].date.as_str(), days[6].date.as_str()), (9, "2026-11-08", "2026-11-14"));
+        assert_eq!((days[0].level, days[1].level, days[6].level), (0, 1, 4), "levels up to the busiest day");
+        let l = languages_of(&serde_json::json!({"Shell": 10, "Rust": 990}));
+        assert_eq!(l, [("Rust".to_string(), 990), ("Shell".to_string(), 10)]);
+        assert_eq!(contributors_of(&serde_json::json!([{"login": "a", "contributions": 3}])), [("a".to_string(), 3)]);
+        assert_eq!(lang_color("Rust"), Color::Rgb(0xde, 0xa5, 0x84));
+    }
+
+    #[test]
     fn unix_times_become_dates() {
         assert_eq!((ymd(0), ymd(1_794_539_045), ymd(951_782_400)), ((1970, 1, 1), (2026, 11, 13), (2000, 2, 29)));
         for t in [0, 86_399, 1_794_539_045, 4_102_444_800] {
@@ -2123,7 +2357,7 @@ mod tests {
         gh.data = Some(Data { repos, mine, ..Data::default() });
         assert_eq!(rows(&gh, TOP)[..2], [Row::Head(Sec::Repos), Row::Repo(0)]);
         assert!(rows(&gh, BOTTOM).is_empty());
-        gh.repo = Some(Ok(RepoData { prs: p, issues: Vec::new(), runs: r }));
+        gh.repo = Some(Ok(RepoData { prs: p, issues: Vec::new(), runs: r, ..RepoData::default() }));
         assert_eq!(rows(&gh, BOTTOM)[..2], [Row::Head(Sec::Runs), Row::Run(0)]);
         assert!(rows(&gh, BOTTOM).contains(&Row::Empty(Sec::RepoIssues)));
         assert_eq!(keys_of(&gh, Row::Pr(Sec::Mine, 0)), [Key::Edit, Key::Open], "another repository's: no checkout");

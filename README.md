@@ -336,7 +336,8 @@ Month, ‹ › to go back; hover a day for its count, click one for its month), 
 repositories, review requests, your pull requests,
 issues assigned to you and unread notifications. Pick a repository there (click or Enter)
 and the bottom pane shows it: description, visibility, default branch, language, stars,
-forks, last push, then its Actions runs, pull requests and issues. Tab moves between the
+forks, last push; its stats (a commit graph for the past year, its languages, its top
+contributors); then its Actions runs, pull requests and issues. Tab moves between the
 panes; drag the line between them to resize. It needs the [GitHub CLI](https://cli.github.com)
 (`gh`): signed out, it offers **Sign in with GitHub**, which runs `gh auth login` in the
 terminal, so termcode never sees a password or token. On a row: Enter or `o` opens it in

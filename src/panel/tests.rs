@@ -5866,6 +5866,9 @@ case "$1 $2" in
   "issue list") echo '[{"number":8,"title":"It breaks","author":{"login":"cy"},"updatedAt":"2026-11-10T00:00:00Z","url":"https://github.com/'"$repo"'/issues/8"}]' ;;
   "run list") echo '[{"databaseId":71,"displayTitle":"Fix the thing","workflowName":"CI","headBranch":"fix","status":"completed","conclusion":"failure","updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/'"$repo"'/actions/runs/71"},
                      {"databaseId":72,"displayTitle":"nightly","workflowName":"Nightly","headBranch":"main","status":"in_progress","conclusion":"","updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/'"$repo"'/actions/runs/72"}]' ;;
+  "api repos/"*"/stats/commit_activity") echo '[{"days":[0,2,0,0,0,0,0],"total":2,"week":1793491200},{"days":[1,0,0,0,0,0,0],"total":1,"week":1794096000}]' ;;
+  "api repos/"*"/languages") echo '{"Rust":900,"Shell":100}' ;;
+  "api repos/"*"/contributors"*) echo '[{"login":"ann","contributions":12}]' ;;
   *) exit 0 ;;
 esac
 "#;
@@ -5901,7 +5904,7 @@ fn the_github_view_signs_in_first_then_lists_and_edits_a_title_only_once_confirm
     app.side_w = Some(70); // whole titles in the rows
     app.refresh();
     wait(&mut app);
-    let mut t = Terminal::new(TestBackend::new(160, 60)).unwrap();
+    let mut t = Terminal::new(TestBackend::new(160, 76)).unwrap();
     // Signed out: only the sign-in shows.
     app.show_side(Side::GitHub, false);
     crate::github::tick(&mut app);
@@ -5930,8 +5933,15 @@ fn the_github_view_signs_in_first_then_lists_and_edits_a_title_only_once_confirm
         assert!(s.contains(want), "{want}: {s}");
     }
     assert!(app.msg.contains("signed in to GitHub as tester"), "{}", app.msg);
+    // The repository's stats above its lists: its commit graph, languages, contributors.
+    for want in ["STATS · 3 commits in the past year", "Rust 90.0%", "Shell 10.0%", "Contributors: ann 12"] {
+        assert!(s.contains(want), "{want}: {s}");
+    }
+    let repo_day = app.gh.hits.act_cells.iter().find(|(_, d, _, w)| d == "2026-11-02" && *w == 1).map(|c| c.0).expect("the repository's graph");
+    app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: repo_day.x, row: repo_day.y, modifiers: KeyModifiers::NONE });
+    assert!(screen(&mut app, &mut t).contains("STATS · Nov 2: 2 commits"));
     // GitHub's graph: a green block a day, a row a weekday, the newest week at the right.
-    let cell = |app: &App, date: &str| app.gh.hits.act_cells.iter().find(|(_, d, _)| d == date).unwrap().0;
+    let cell = |app: &App, date: &str| app.gh.hits.act_cells.iter().find(|(_, d, _, w)| d == date && *w == 0).unwrap().0;
     let (sun, mon, last) = (cell(&app, "2026-11-01"), cell(&app, "2026-11-02"), cell(&app, "2026-11-08"));
     assert_eq!((mon.x, mon.y, last.x, last.y), (sun.x, sun.y + 1, sun.x + 2, sun.y), "Monday under Sunday; the next week two cells right");
     // Centred: the two weeks (and the weekday names before them) in the middle of the pane.
@@ -6018,7 +6028,7 @@ fn the_github_item_sits_above_settings_and_shows_the_account_in_any_repository()
     let mut app = App::new(root.clone(), None);
     assert_eq!((app.gh.here.as_deref(), app.gh.chosen.as_deref()), (None, None), "no GitHub remote, nothing chosen");
     app.side_w = Some(70);
-    let mut t = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    let mut t = Terminal::new(TestBackend::new(160, 56)).unwrap();
     screen(&mut app, &mut t);
     let gh = app.ui.activity.iter().find(|(_, s)| *s == Side::GitHub).map(|(r, _)| *r).expect("always there");
     assert_eq!(gh.bottom(), app.ui.settings_btn.y, "right above Settings");
@@ -6139,5 +6149,41 @@ esac
     screen(&mut app, &mut t);
     assert!(first(&t).contains("repo0 "), "{:?}", first(&t));
     fs::remove_dir_all(&dir).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn dragging_the_github_divider_follows_the_pointer_and_keeps_the_stats_header() {
+    let root = repo("gh-short");
+    Command::new("git").arg("-C").arg(&root).args(["remote", "add", "origin", "https://github.com/tester/proj.git"]).status().unwrap();
+    let fake = std::env::temp_dir().join(format!("termcode-fake-gh-short-{}", std::process::id()));
+    fs::create_dir_all(&fake).unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.gh.bin = fake_gh(&fake);
+    app.side_w = Some(70);
+    app.show_side(Side::GitHub, false);
+    crate::github::fetch(&mut app);
+    gh_settle(&mut app, &|a| !a.gh.loading && !a.gh.repo_loading && !a.gh.busy());
+    let mut t = Terminal::new(TestBackend::new(160, 46)).unwrap();
+    screen(&mut app, &mut t);
+    // The line between the panes dragged down, row by row: wherever the bottom pane still
+    // has room for its facts and a header, the stats header shows.
+    // The line follows the pointer row for row, whatever comes and goes above it.
+    let sash = app.gh.hits.sash;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sash.x + 5, sash.y);
+    let mut s = String::new();
+    for y in sash.y + 1..app.gh.hits.area.bottom() - 6 {
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), sash.x + 5, y);
+        s = screen(&mut app, &mut t);
+        assert_eq!(app.gh.hits.sash.y, y, "the line is where the pointer is");
+        // Under the facts (3 rows): the header, and the lists' rows.
+        let room = app.gh.hits.panes[crate::github::BOTTOM].height.saturating_sub(3);
+        if room > crate::github::LIST_ROWS {
+            assert!(s.contains("STATS · 3 commits in the past year"), "the header shows while it fits (line at {y}): {s}");
+        }
+    }
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sash.x + 5, sash.y);
+    assert!(s.contains("Rust") || s.contains("Contributors") || s.contains("█") || s.contains("▪"), "and what fits under it: {s}");
+    fs::remove_dir_all(&fake).unwrap();
     fs::remove_dir_all(&root).unwrap();
 }
