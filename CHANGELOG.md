@@ -22,6 +22,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   else): a commit, checkout, branch, tag, fetch, push or stash shows within seconds.
 - The breadcrumbs (and the Outline) find the function around the cursor when its
   signature puts each parameter on its own line.
+- A commit's hover card shows its whole message, long lines wrapped, and scrolls with
+  the wheel (it showed 12 lines of it); its buttons stay in view.
 - The minimap's change marks light only the dot rows of the changed lines, not the
   whole cell (4 lines, or many more in a long file).
 

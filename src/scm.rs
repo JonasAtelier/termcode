@@ -89,6 +89,9 @@ pub struct Card {
     pub anchor: Rect,
     /// When the pointer left both: the card closes CARD_GRACE later unless it is back.
     left: Option<Instant>,
+    /// The message's first row shown (the wheel), and the last it can be (last frame).
+    scroll: usize,
+    max_scroll: usize,
 }
 
 /// How long a card outlives the pointer leaving it: time to cross the scrollbar, the
@@ -1017,7 +1020,7 @@ pub fn open_card(app: &mut App, hash: String, anchor: Rect) {
     // Cleared first: a timer left in the past would keep the event loop from sleeping.
     app.gitui.hover = None;
     let Some(root) = app.git_root.clone() else { return };
-    app.gitui.card = Some(Card { hash: hash.clone(), hover: None, anchor, left: None });
+    app.gitui.card = Some(Card { hash: hash.clone(), hover: None, anchor, left: None, scroll: 0, max_scroll: 0 });
     app.gitui.spawn(move || {
         let card = gitops::commit_hover(&root, &hash);
         Msg::Card(hash, card)
@@ -1218,6 +1221,10 @@ pub fn release(app: &mut App) -> bool {
 pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
     if app.gitui.dlg.is_some() {
         commitdlg::wheel(app, p, d);
+        return true;
+    }
+    if let Some(c) = app.gitui.card.as_mut().filter(|_| app.gitui.hits.card.contains(p)) {
+        c.scroll = c.scroll.saturating_add_signed(d).min(c.max_scroll);
         return true;
     }
     let which = if app.gitui.hits.graph.contains(p) {
@@ -1828,11 +1835,13 @@ pub fn draw_popups(app: &mut App, f: &mut Frame, area: Rect) {
     crate::gitcmds::draw_popups(app, f, area);
 }
 
-fn card_lines(c: &Card, pal: &Pal, w: usize) -> (Vec<Line<'static>>, Option<usize>) {
+/// The card's text: who and when, the whole message (wrapped when drawn), the stats; and
+/// whether its buttons go under it (once the commit is in).
+fn card_lines(c: &Card, pal: &Pal, w: usize) -> (Vec<Line<'static>>, bool) {
     let st = |c: Color| Style::new().fg(c);
     let h = match &c.hover {
-        None => return (vec![Line::styled("Loading…", st(P.dim))], None),
-        Some(Err(e)) => return (vec![Line::styled(fit(e, w), st(P.error_fg))], None),
+        None => return (vec![Line::styled("Loading…", st(P.dim))], false),
+        Some(Err(e)) => return (vec![Line::styled(e.clone(), st(P.error_fg))], false),
         Some(Ok(h)) => h,
     };
     let cm = &h.commit;
@@ -1843,17 +1852,11 @@ fn card_lines(c: &Card, pal: &Pal, w: usize) -> (Vec<Line<'static>>, Option<usiz
         ]),
         Line::styled(fit(&format!("{} ({})", ago(cm.author_time, now()), local_time(cm.author_time)), w), st(P.dim)),
         Line::raw(""),
-        Line::styled(fit(&cm.subject, w), st(P.widget_fg).bold()),
+        Line::styled(cm.subject.clone(), st(P.widget_fg).bold()),
     ];
     if !cm.body.is_empty() {
         v.push(Line::raw(""));
-        let body: Vec<&str> = cm.body.lines().collect();
-        for l in body.iter().take(12) {
-            v.push(Line::styled(fit(l, w), st(P.widget_fg)));
-        }
-        if body.len() > 12 {
-            v.push(Line::styled("…", st(P.dim)));
-        }
+        v.extend(cm.body.lines().map(|l| Line::styled(l.to_string(), st(P.widget_fg))));
     }
     v.push(Line::raw(""));
     let plural = |n: u64, one: &str| if n == 1 { one.to_string() } else { format!("{one}s") };
@@ -1864,14 +1867,18 @@ fn card_lines(c: &Card, pal: &Pal, w: usize) -> (Vec<Line<'static>>, Option<usiz
         Span::styled(format!("{} {}(-)", h.deletions, plural(h.deletions, "deletion")), st(pal.deleted)),
     ]));
     v.push(Line::raw(""));
-    let at = v.len();
-    v.push(Line::raw(""));
-    (v, Some(at))
+    (v, true)
+}
+
+/// The card's text as drawn `w` wide: lines wrap.
+fn card_text(lines: Vec<Line<'static>>) -> ratatui::widgets::Paragraph<'static> {
+    ratatui::widgets::Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false })
 }
 
 /// Where the card goes in `area` (beside the sidebar, by its row), with its lines and
-/// button row; None when there is no card or no room for one.
-fn card_layout(app: &App, area: Rect) -> Option<(Rect, Vec<Line<'static>>, Option<usize>)> {
+/// whether a button row ends it; None when there is no card or no room for one. As tall
+/// as its wrapped text and buttons, up to the area's height: the text scrolls in it.
+fn card_layout(app: &App, area: Rect) -> Option<(Rect, Vec<Line<'static>>, bool)> {
     let c = app.gitui.card.as_ref()?;
     let sb = app.ui.sidebar;
     let room_right = area.right().saturating_sub(sb.right() + 1);
@@ -1880,10 +1887,11 @@ fn card_layout(app: &App, area: Rect) -> Option<(Rect, Vec<Line<'static>>, Optio
     if w < 20 || area.height < 6 {
         return None;
     }
-    let (lines, btn_row) = card_lines(c, &pal(app), (w - 4) as usize);
-    let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let (lines, btns) = card_lines(c, &pal(app), (w - 4) as usize);
+    let rows = card_text(lines.clone()).line_count(w - 4) + usize::from(btns);
+    let h = (rows.min(u16::MAX as usize) as u16).saturating_add(2).min(area.height.saturating_sub(2));
     let y = c.anchor.y.min(area.bottom().saturating_sub(h + 1)).max(area.y + 1);
-    Some((Rect::new(x, y, w, h).intersection(area), lines, btn_row))
+    Some((Rect::new(x, y, w, h).intersection(area), lines, btns))
 }
 
 /// The card's rect this frame (once the sidebar is laid out): the editor puts no caret
@@ -1893,20 +1901,34 @@ pub fn card_rect(app: &App, area: Rect) -> Option<Rect> {
 }
 
 fn draw_card(app: &mut App, f: &mut Frame, area: Rect) {
-    let Some((r, lines, btn_row)) = card_layout(app, area) else { return };
-    let Some(c) = &app.gitui.card else { return };
+    let Some((r, lines, btns)) = card_layout(app, area) else { return };
     let pal = pal(app);
+    let Some(c) = app.gitui.card.as_mut() else { return };
     f.render_widget(Clear, r);
     let block = popup_block(P.widget_bg, P.widget_fg, (1, 0));
     let inner = block.inner(r);
     f.render_widget(block, r);
-    f.render_widget(ratatui::widgets::Paragraph::new(lines), inner);
+    // The text above the button row, scrolled; a thumb on the right edge when it is taller.
+    let text = Rect { height: inner.height.saturating_sub(u16::from(btns)), ..inner };
+    let p = card_text(lines);
+    let total = p.line_count(text.width);
+    c.max_scroll = total.saturating_sub(text.height as usize);
+    c.scroll = c.scroll.min(c.max_scroll);
+    f.render_widget(p.scroll((c.scroll.min(u16::MAX as usize) as u16, 0)), text);
+    if c.max_scroll > 0 && text.height > 0 {
+        let h = text.height as usize;
+        let len = (h * h / total).clamp(1, h);
+        let top = (c.scroll * (h - len)).div_ceil(c.max_scroll);
+        for y in text.y + top as u16..text.y + (top + len) as u16 {
+            f.buffer_mut()[(r.right() - 1, y)].set_symbol(if crate::theme::ascii() { "#" } else { "┃" }).set_fg(P.dim);
+        }
+    }
+    let c = app.gitui.card.as_ref().expect("drawn above");
     app.gitui.hits.card = r;
-    let Some(k) = btn_row else { return };
-    let by = inner.y + k as u16;
-    if by >= inner.bottom() {
+    if !btns || inner.height < 2 {
         return;
     }
+    let by = inner.bottom() - 1;
     let short = &c.hash[..c.hash.len().min(7)];
     let bp = sp(app.settings.spacing.button_padding.min(1));
     let mut x = inner.x;
@@ -2523,6 +2545,36 @@ pub(crate) mod ui_tests {
         assert_eq!(caret_on(&mut app, below.y - text.y), below, "one off the card stays");
         app.gitui.card = None;
         assert_eq!(caret_on(&mut app, under.y - text.y), under, "back once it closes");
+    }
+
+    #[test]
+    fn a_long_commit_message_scrolls_in_its_card_with_the_buttons_kept() {
+        let (t, r) = repo(
+            "card-long",
+            "echo a > a.txt; git add .; { echo 'long one'; echo; seq -f 'body line %g' 1 40; echo; printf 'w%.0s' $(seq 150); echo TAIL; } > .git/MSG; git commit -qF .git/MSG",
+        );
+        let mut app = app(&t, &r);
+        let mut tm = term();
+        app.show_side(Side::Scm, false);
+        settle(&mut app);
+        screen(&mut app, &mut tm);
+        let hash = app.gitui.graph.commits[0].hash.clone();
+        open_card(&mut app, hash, Rect::new(5, 5, 10, 1));
+        settle(&mut app);
+        let s = screen(&mut app, &mut tm);
+        assert!(s.contains("body line 12") && !s.contains("body line 40") && s.contains("Copy hash"), "{s}");
+        // The wheel over the card scrolls the message: all of it, its long line wrapped.
+        let card = app.gitui.hits.card;
+        for _ in 0..30 {
+            mouse(&mut app, MouseEventKind::ScrollDown, (card.x + 5, card.y + 3));
+        }
+        let s = screen(&mut app, &mut tm);
+        assert!(s.contains("body line 40") && s.contains("TAIL") && s.contains("1 file changed") && s.contains("Copy hash"), "{s}");
+        assert!(!s.contains("body line 12"), "scrolled past the top: {s}");
+        for _ in 0..30 {
+            mouse(&mut app, MouseEventKind::ScrollUp, (card.x + 5, card.y + 3));
+        }
+        assert!(screen(&mut app, &mut tm).contains("Tester"), "back at the top");
     }
 
     #[test]
