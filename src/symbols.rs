@@ -88,6 +88,21 @@ pub fn depths(syms: &[Symbol], lines: &[String], fold_ends: &[Option<usize>]) ->
         .collect()
 }
 
+/// Each symbol's place in the Outline tree: its path (its holders' names and its own,
+/// "/"-joined, which keeps a fold across edits) and whether symbols nest in it.
+pub fn tree(syms: &[Symbol], depths: &[usize]) -> Vec<(String, bool)> {
+    let mut stack: Vec<&str> = Vec::new();
+    syms.iter()
+        .zip(depths)
+        .enumerate()
+        .map(|(i, (s, &d))| {
+            stack.truncate(d);
+            stack.push(&s.name);
+            (stack.join("/"), depths.get(i + 1).is_some_and(|&n| n > d))
+        })
+        .collect()
+}
+
 /// The last line of the definition at `start`: its body's fold (the first head line that
 /// opens one with `{` or `:`), and the closing brace under it. A `;` first: no body.
 fn extent(start: usize, lines: &[String], fold_ends: &[Option<usize>]) -> usize {
@@ -383,6 +398,8 @@ mod tests {
         for (i, sym) in s.iter().enumerate() {
             assert_eq!(depths(&s, &l, &v.fold_ends)[i] + 1, path_at(&s, &l, &v.fold_ends, sym.line).len(), "{}", sym.name);
         }
+        let tree = tree(&s, &depths(&s, &l, &v.fold_ends));
+        assert_eq!(tree.iter().map(|(p, k)| (p.as_str(), *k)).collect::<Vec<_>>(), [("S", false), ("impl A", true), ("impl A/f", false), ("impl A/h", false), ("g", false)]);
         let md = lines("# Top\n## Sub\n### Deep\n## Next\n# Two\n");
         let h = symbols("README.md", &md);
         assert_eq!(depths(&h, &md, &[]), [0, 1, 2, 1, 0]);

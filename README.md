@@ -332,7 +332,9 @@ while something runs in it asks first.
 
 **Outline:** the outline button beside it (or F1 **View: Toggle Outline**) lists the
 file's functions and types on the right, nested. The one the cursor is in is lit; click one
-to go there. Drag its left edge to resize it.
+to go there (double-click: and type there). Click a ▾ to fold. With the keys
+(F1 **View: Focus Outline**): ↑ ↓ move, ← → fold and unfold, Enter goes there, Esc goes
+back. Drag its left edge to resize it.
 
 Some terminals (GNOME Terminal, Ptyxis) can't send Ctrl+Shift keys, Ctrl+Tab or
 Ctrl+1/2/3. Use F1 or the other key in the table instead, or bind your own.

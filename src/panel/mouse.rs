@@ -217,8 +217,8 @@ impl App {
             self.drag = Drag::OutlineSash;
             return;
         }
-        if let Some(&(_, to)) = self.ui.outline_rows.iter().find(|(r, _)| r.contains(p)) {
-            return self.jump_to(to);
+        if self.ui.outline.contains(p) {
+            return self.outline_click(p, double);
         }
         if self.ui.term_btns.iter().any(|r| r.contains(p)) {
             return if self.term_open { self.hide_terminal() } else { self.toggle_terminal() };

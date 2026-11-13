@@ -33,6 +33,7 @@ mod qdiff;
 mod gitfs;
 mod rename;
 mod search;
+mod outline;
 mod tabs;
 mod find;
 mod sidebar;
@@ -218,6 +219,19 @@ pub enum Focus {
     Find,
     /// The integrated terminal: keys go to its shell.
     Term,
+    /// The Outline's list.
+    Outline,
+}
+
+/// An Outline row as last drawn: where its symbol is, its tree path, its depth, whether
+/// symbols nest in it and whether they show.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlineItem {
+    pub to: editor::Pos,
+    pub path: String,
+    pub depth: usize,
+    pub kids: bool,
+    pub open: bool,
 }
 
 pub struct Node {
@@ -451,6 +465,7 @@ pub enum Cmd {
     ToggleBreadcrumbs,
     ToggleTerminal,
     ToggleOutline,
+    FocusOutline,
     /// Markdown: Open Preview; `true` to the side.
     MdPreview(bool),
     ReloadWindow,
@@ -482,6 +497,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Toggle Breadcrumbs", Cmd::ToggleBreadcrumbs, ""),
     ("View: Toggle Terminal", Cmd::ToggleTerminal, "Ctrl+`"),
     ("View: Toggle Outline", Cmd::ToggleOutline, ""),
+    ("View: Focus Outline", Cmd::FocusOutline, ""),
     ("Go to Next Change", Cmd::NextChange, "Alt+F5 / F7"),
     ("Go to Previous Change", Cmd::PrevChange, "Shift+Alt+F5 / Shift+F7"),
     ("Go to File...", Cmd::QuickOpen, "Ctrl+P"),
@@ -729,7 +745,10 @@ pub struct Hits {
     pub outline_btns: Vec<Rect>,
     pub outline_sash: Rect,
     pub outline: Rect,
-    pub outline_rows: Vec<(Rect, editor::Pos)>,
+    pub outline_rows: Vec<(Rect, usize)>,
+    /// Every row the Outline shows (scrolled out of view too), and each drawn chevron.
+    pub outline_items: Vec<OutlineItem>,
+    pub outline_chevs: Vec<(Rect, usize)>,
     /// Empty editor shortcuts: group and optional sidebar (None opens Quick Open).
     pub welcome: Vec<(Rect, usize, Option<Side>)>,
     pub quick: Rect,
@@ -837,6 +856,9 @@ pub struct App {
     pub outline_w: Option<u16>,
     pub outline_off: usize,
     pub outline_cur: Option<usize>,
+    /// The Outline's selected row (its tree path), and the folded ones ("key\npath").
+    pub outline_sel: Option<String>,
+    pub outline_folded: std::collections::HashSet<String>,
     pub(crate) layout_file: Option<PathBuf>,
     pub focus: Focus,
     pub status: Vec<StatusEntry>,
@@ -1450,6 +1472,8 @@ impl App {
             outline_w: saved["outline_width"].as_u64().map(|w| w.clamp(16, 500) as u16),
             outline_off: 0,
             outline_cur: None,
+            outline_sel: None,
+            outline_folded: Default::default(),
             layout_file,
             focus: Focus::Side,
             status: Vec::new(),
@@ -1734,7 +1758,13 @@ impl App {
                 self.save_layout();
             }
             Cmd::ToggleTerminal => self.toggle_terminal(),
-            Cmd::ToggleOutline => self.outline_open = !self.outline_open,
+            Cmd::ToggleOutline => {
+                self.outline_open = !self.outline_open;
+                if !self.outline_open && self.focus == Focus::Outline {
+                    self.focus = Focus::Editor;
+                }
+            }
+            Cmd::FocusOutline => (self.outline_open, self.focus) = (true, Focus::Outline),
             Cmd::ToggleMinimap => {
                 self.minimap_on = !self.minimap_on;
                 self.msg = format!("minimap {}", on_off(self.minimap_on));

@@ -5506,15 +5506,16 @@ fn the_outline_button_lists_the_symbols_right_of_the_editors_and_a_click_jumps()
     // Nested as the breadcrumbs nest them.
     let rows: Vec<String> = (0..5).map(|i| (0..out.width).map(|x| t.backend().buffer()[(out.x + x, out.y + i)].symbol()).collect::<String>().trim_end().to_string()).collect();
     let ic = crate::theme::icons().symbols; // function, struct, class (impl), …
-    assert_eq!(rows, [format!(" {} S", ic[1]), format!(" {} impl S", ic[2]), format!("   {} one", ic[0]), format!("   {} two", ic[0]), format!(" {} free", ic[0])]);
-    assert_eq!(t.backend().buffer()[(out.x + 3, out.y + 2)].fg, crate::theme::P.symbol[0], "a function's icon in symbolIcon.functionForeground");
+    let down = crate::theme::icons().chev_down;
+    assert_eq!(rows, [format!("   {} S", ic[1]), format!(" {down} {} impl S", ic[2]), format!("     {} one", ic[0]), format!("     {} two", ic[0]), format!("   {} free", ic[0])]);
+    assert_eq!(t.backend().buffer()[(out.x + 5, out.y + 2)].fg, crate::theme::P.symbol[0], "a function's icon in symbolIcon.functionForeground");
     // The symbol holding the cursor is lit; a click goes to another.
     let lit = |app: &App, t: &Terminal<TestBackend>, i: u16| t.backend().buffer()[(out.x + 2, out.y + i)].bg == crate::theme::P.list_inactive_bg && app.outline_cur == Some(i as usize);
     assert!(lit(&app, &t, 0), "the cursor is on line 1: struct S");
-    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), out.x + 4, out.y + 3);
-    assert_eq!((app.ed().unwrap().1.view.cursor, app.focus), (editor::Pos::new(5, 7), Focus::Editor), "fn two: its name");
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), out.x + 8, out.y + 3);
+    assert_eq!((app.ed().unwrap().1.view.cursor, app.focus), (editor::Pos::new(5, 7), Focus::Outline), "fn two: its name; the Outline keeps the keys");
     screen(&mut app, &mut t);
-    assert!(lit(&app, &t, 3));
+    assert_eq!((t.backend().buffer()[(out.x + 2, out.y + 3)].bg, app.outline_cur), (crate::theme::P.list_active_bg, Some(3)), "selected, focused");
     // Its left edge, dragged 6 columns left, makes it 6 wider.
     let (sash, w) = (app.ui.outline_sash, app.ui.outline.width + 2);
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sash.x, sash.y + 5);
@@ -5740,4 +5741,58 @@ fn the_find_fields_select_whole_by_ctrl_a_or_double_click_to_copy_cut_or_replace
     app.on_paste("xyz");
     assert_eq!(app.find.as_ref().unwrap().replace.as_deref(), Some("xyz"));
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_outline_folds_and_walks_by_keys_and_its_chevrons() {
+    let root = repo("outline-keys");
+    let src = "struct S;\nimpl S {\n    fn one(&self) {\n        let x = 1;\n    }\n    fn two(&self) {}\n}\nfn free() {}\n";
+    fs::write(root.join("src/lib.rs"), src).unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "src/lib.rs", false);
+    wait(&mut app);
+    let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    app.run_command(Cmd::FocusOutline);
+    screen(&mut app, &mut t);
+    let names = |app: &App| app.ui.outline_items.iter().map(|it| it.path.clone()).collect::<Vec<_>>();
+    let sel = |app: &App| app.outline_sel.clone().unwrap_or_default();
+    assert_eq!((app.focus, sel(&app)), (Focus::Outline, "S".into()), "starts on the cursor's symbol");
+    let k = |app: &mut App, t: &mut Terminal<TestBackend>, code| {
+        key(app, code, KeyModifiers::NONE);
+        screen(app, t);
+    };
+    k(&mut app, &mut t, KeyCode::Down);
+    assert_eq!(sel(&app), "impl S");
+    // ← folds it, → unfolds it, → again steps in, ← steps out.
+    k(&mut app, &mut t, KeyCode::Left);
+    assert_eq!(names(&app), ["S", "impl S", "free"]);
+    assert!(!app.ui.outline_items[1].open);
+    k(&mut app, &mut t, KeyCode::Right);
+    assert_eq!(names(&app).len(), 5);
+    k(&mut app, &mut t, KeyCode::Right);
+    assert_eq!(sel(&app), "impl S/one");
+    k(&mut app, &mut t, KeyCode::Left);
+    assert_eq!(sel(&app), "impl S");
+    // Space shows the symbol and keeps the keys; Enter goes there with them.
+    k(&mut app, &mut t, KeyCode::End);
+    k(&mut app, &mut t, KeyCode::Char(' '));
+    assert_eq!((app.ed().unwrap().1.view.cursor.line, app.focus), (7, Focus::Outline));
+    k(&mut app, &mut t, KeyCode::Up);
+    k(&mut app, &mut t, KeyCode::Enter);
+    assert_eq!((app.ed().unwrap().1.view.cursor.line, app.focus), (5, Focus::Editor));
+    // A click on a chevron folds; the cursor inside lights the row it is folded into.
+    let chev = app.ui.outline_chevs[0].0;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), chev.x, chev.y);
+    screen(&mut app, &mut t);
+    assert_eq!(names(&app), ["S", "impl S", "free"]);
+    app.focus = Focus::Editor;
+    screen(&mut app, &mut t);
+    assert_eq!((app.outline_cur, sel(&app)), (Some(1), "impl S".into()), "fn two is inside the folded impl");
+    // A double-click on a row gives the editor the keys.
+    let r = app.ui.outline_rows[2].0;
+    for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)].repeat(2) {
+        mouse(&mut app, kind, r.x + 8, r.y);
+    }
+    assert_eq!((app.ed().unwrap().1.view.cursor.line, app.focus), (7, Focus::Editor));
+    fs::remove_dir_all(&root).unwrap();
 }

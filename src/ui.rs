@@ -1148,10 +1148,11 @@ pub(crate) fn input_marked(f: &mut Frame, r: Rect, text: &str, placeholder: &str
 /// breadcrumbs nest them, the one holding the cursor highlighted and followed into view.
 /// Its left edge is the width's handle.
 fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
+    let focused = app.focus == Focus::Outline;
     let hot = matches!(app.drag, Drag::OutlineSash) || app.hover.is_some_and(|p| p.x == r.x && (r.y..r.bottom()).contains(&p.y));
     let block = Block::bordered()
         .border_set(crate::blocks::border_set())
-        .border_style(Style::new().fg(crate::blocks::border(false)).bg(P.editor_bg))
+        .border_style(Style::new().fg(crate::blocks::border(focused)).bg(P.editor_bg))
         .title(Span::styled(" Outline ", Style::new().fg(P.sidebar_title).bold()))
         .style(Style::new().bg(P.sidebar_bg).fg(P.sidebar_fg));
     let inner = block.inner(r);
@@ -1168,43 +1169,97 @@ fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
     };
     let grp = &app.groups[app.ag.min(app.groups.len().saturating_sub(1))];
     let Some(tab) = grp.tabs.get(grp.active) else { return note(f, " Open a file to see its outline.") };
-    let (cursor, folds) = (tab.view.cursor, tab.view.fold_ends.clone());
-    let Some(Doc::Text(b)) = app.docs.get_mut(&tab.key.clone()) else { return note(f, " No outline for this editor.") };
+    let (cursor, folds, key) = (tab.view.cursor, tab.view.fold_ends.clone(), tab.key.clone());
+    let Some(Doc::Text(b)) = app.docs.get_mut(&key) else { return note(f, " No outline for this editor.") };
     let syms = b.symbols().to_vec();
     if syms.is_empty() {
         return note(f, " No symbols found in this file.");
     }
     let depths = crate::symbols::depths(&syms, &b.lines, &folds);
+    let tree = crate::symbols::tree(&syms, &depths);
+    // The rows shown: a folded row hides the symbols nested in it.
+    let mut items: Vec<(usize, crate::panel::OutlineItem)> = Vec::new();
+    let mut hide: Option<usize> = None;
+    for (i, (s, (path, kids))) in syms.iter().zip(&tree).enumerate() {
+        let d = depths[i];
+        if hide.is_some_and(|h| d > h) {
+            continue;
+        }
+        let open = !(*kids && app.outline_folded.contains(&format!("{key}\n{path}")));
+        hide = (!open).then_some(d);
+        let col = b.lines[s.line].find(s.name.as_str()).unwrap_or(0);
+        items.push((i, crate::panel::OutlineItem { to: editor::Pos::new(s.line, col), path: path.clone(), depth: d, kids: *kids, open }));
+    }
+    // The cursor's symbol, or the row it is folded into.
     let line = b.clamp(cursor).line;
     let cur = crate::symbols::path_at(&syms, &b.lines, &folds, line).last().and_then(|s| syms.iter().position(|x| x.line == s.line));
+    let cur = cur.and_then(|c| {
+        let p = &tree[c].0;
+        items.iter().rposition(|(i, it)| *i <= c && (*p == it.path || p.starts_with(&format!("{}/", it.path))))
+    });
+    // Unfocused, the selection follows the cursor; focused, the keys move it.
+    if !focused {
+        app.outline_sel = cur.map(|k| items[k].1.path.clone());
+    }
+    let mut sel = app.outline_sel.as_ref().and_then(|p| items.iter().position(|(_, it)| it.path == *p));
+    if sel.is_none() && !items.is_empty() {
+        sel = cur.or(Some(0));
+        app.outline_sel = sel.map(|k| items[k].1.path.clone());
+    }
     let h = inner.height as usize;
-    // Follow the cursor into another symbol; the wheel scrolls freely meanwhile.
+    // Follow the cursor into another symbol, and the selection while it moves; the wheel
+    // scrolls freely meanwhile.
     if cur != app.outline_cur {
         app.outline_cur = cur;
-        if let Some(i) = cur.filter(|&i| i < app.outline_off || i >= app.outline_off + h) {
+        if let Some(i) = cur.filter(|&i| !focused && (i < app.outline_off || i >= app.outline_off + h)) {
             app.outline_off = i.saturating_sub(h / 2);
         }
     }
-    app.outline_off = app.outline_off.min(syms.len().saturating_sub(h));
+    if let Some(i) = sel.filter(|_| focused) {
+        if i < app.outline_off {
+            app.outline_off = i;
+        } else if i >= app.outline_off + h {
+            app.outline_off = i + 1 - h;
+        }
+    }
+    app.outline_off = app.outline_off.min(items.len().saturating_sub(h));
     let off = app.outline_off;
-    for (i, (s, d)) in syms.iter().zip(&depths).enumerate().skip(off).take(h) {
-        let rr = Rect::new(inner.x, inner.y + (i - off) as u16, inner.width, 1);
-        let bg = if Some(i) == cur {
+    let ic = icons();
+    for (k, (i, it)) in items.iter().enumerate().skip(off).take(h) {
+        let s = &syms[*i];
+        let rr = Rect::new(inner.x, inner.y + (k - off) as u16, inner.width, 1);
+        let bg = if focused && Some(k) == sel {
+            P.list_active_bg
+        } else if Some(k) == cur {
             P.list_inactive_bg
         } else if app.hover.is_some_and(|p| rr.contains(p)) {
             P.list_hover_bg
         } else {
             P.sidebar_bg
         };
-        // Indent, the kind's icon in its colour, the name.
-        let k = crate::symbols::kind_index(s.kind);
-        let lead = format!(" {}", "  ".repeat(*d));
-        let name = fit(&format!(" {}", s.name), (inner.width as usize).saturating_sub(lead.width() + 1));
-        let icon = Span::styled(icons().symbols[k], Style::new().fg(P.symbol[k]));
-        row(f, rr, bg, vec![Span::raw(lead), icon, Span::styled(name, Style::new().fg(P.sidebar_fg))]);
-        let col = b.lines[s.line].find(s.name.as_str()).unwrap_or(0);
-        app.ui.outline_rows.push((rr, editor::Pos::new(s.line, col)));
+        // Indent, the chevron of a row with symbols in it, the kind's icon, the name.
+        let kind = crate::symbols::kind_index(s.kind);
+        let lead = format!(" {}", "  ".repeat(it.depth));
+        let chev = match (it.kids, it.open) {
+            (false, _) => " ",
+            (true, true) => ic.chev_down,
+            (true, false) => ic.chev_right,
+        };
+        let used = lead.width() + 3;
+        let name = fit(&format!(" {}", s.name), (inner.width as usize).saturating_sub(used));
+        let spans = vec![
+            Span::raw(lead.clone()),
+            Span::styled(format!("{chev} "), Style::new().fg(P.icon_fg)),
+            Span::styled(ic.symbols[kind], Style::new().fg(P.symbol[kind])),
+            Span::styled(name, Style::new().fg(P.sidebar_fg)),
+        ];
+        row(f, rr, bg, spans);
+        if it.kids {
+            app.ui.outline_chevs.push((Rect::new(rr.x + lead.width() as u16, rr.y, 2, 1), k));
+        }
+        app.ui.outline_rows.push((rr, k));
     }
+    app.ui.outline_items = items.into_iter().map(|(_, it)| it).collect();
 }
 
 /// The integrated terminal in a frame titled Terminal: its top edge is the height's

@@ -159,6 +159,7 @@ impl App {
             Focus::Side => self.side_key(k),
             Focus::Editor => self.editor_key(k, ctrl, alt, shift),
             Focus::Term => {}
+            Focus::Outline => self.outline_key(k),
         }
     }
 
@@ -678,6 +679,7 @@ impl App {
                     t.paste(text);
                 }
             }
+            Focus::Outline => {}
             Focus::Editor => {
                 if let Some((b, tab)) = self.ed() {
                     b.at_cursors(&mut tab.view, editor::Kind::Other, |b, v| b.insert(v, text));
