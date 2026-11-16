@@ -74,7 +74,7 @@ impl App {
             }
         }
         let was = self.tip.as_ref().is_some_and(|t| t.shown);
-        self.tip = hit.map(|(rect, text, x, file)| Tip { rect, text, x, since: Instant::now(), shown: false, file, md5: None, md5_rx: None, stop: Arc::default() });
+        self.tip = hit.map(|(rect, text, x, file, link)| Tip { rect, text, x, since: Instant::now(), shown: false, file, link, link_to: None, md5: None, md5_rx: None, stop: Arc::default() });
         was
     }
 

@@ -112,7 +112,12 @@ impl App {
                     return None;
                 }
                 let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-                Some(Node { path, name, depth, dir: e.file_type().ok()?.is_dir(), open: false })
+                // A link to a folder is a folder (it opens); every link knows where it points.
+                let ft = e.file_type().ok()?;
+                let target = if ft.is_symlink() { fs::metadata(e.path()).ok() } else { None };
+                let link = ft.is_symlink().then(|| (fs::read_link(e.path()).map(|t| t.to_string_lossy().into_owned()).unwrap_or_default(), target.is_some()));
+                let dir = ft.is_dir() || target.is_some_and(|m| m.is_dir());
+                Some(Node { path, name, depth, dir, open: false, link })
             })
             .collect();
         v.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));

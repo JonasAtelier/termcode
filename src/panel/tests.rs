@@ -4860,7 +4860,7 @@ fn a_cut_explorer_name_shows_in_full_once_the_pointer_rests_on_it() {
     let mut app = App::new(root.clone(), None);
     let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
     assert!(!screen(&mut app, &mut t).contains(&long), "cut in the Explorer");
-    let (r, _, name_x, _) = app.ui.tips.iter().find(|(_, s, ..)| s.as_deref() == Some(long.as_str())).cloned().expect("its row offers the full name");
+    let (r, _, name_x, ..) = app.ui.tips.iter().find(|(_, s, ..)| s.as_deref() == Some(long.as_str())).cloned().expect("its row offers the full name");
     assert!(app.ui.tips.iter().all(|(_, s, ..)| s.is_none() || s.as_deref() == Some(long.as_str())), "only cut names offer one");
     app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
     assert!(app.tip.as_ref().is_some_and(|t| !t.shown), "not at once");
@@ -6600,9 +6600,9 @@ fn resting_on_an_explorer_file_shows_its_md5_with_a_copy_button() {
     let mut app = App::new(root.clone(), None);
     let mut t = Terminal::new(TestBackend::new(170, 20)).unwrap();
     screen(&mut app, &mut t);
-    let (r, _, _, file) = app.ui.tips.iter().find(|(_, _, _, f)| f.as_deref() == Some("fw.bin")).cloned().expect("a file's row has a tooltip");
+    let (r, _, _, file, _) = app.ui.tips.iter().find(|(_, _, _, f, _)| f.as_deref() == Some("fw.bin")).cloned().expect("a file's row has a tooltip");
     assert_eq!(file.as_deref(), Some("fw.bin"));
-    assert!(app.ui.tips.iter().all(|(_, _, _, f)| f.as_deref() != Some("src")), "not a folder's");
+    assert!(app.ui.tips.iter().all(|(_, _, _, f, _)| f.as_deref() != Some("src")), "not a folder's");
     app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
     app.tip.as_mut().unwrap().since -= TIP_DELAY;
     let mut dirty = false;
@@ -6751,6 +6751,47 @@ fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch(
     let _ = fs::remove_dir_all(&fake);
     fs::remove_dir_all(&root).unwrap();
 }
+
+
+#[test]
+fn symlinks_carry_an_arrow_and_their_tooltip_says_where_they_point() {
+    let root = repo("tree-links");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(root.join("libz.so.1.3"), "x\n").unwrap();
+    std::os::unix::fs::symlink("libz.so.1.3", root.join("libz.so.1")).unwrap();
+    std::os::unix::fs::symlink("docs", root.join("docs-link")).unwrap();
+    std::os::unix::fs::symlink("nowhere", root.join("broken")).unwrap();
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(170, 24)).unwrap();
+    let s = screen(&mut app, &mut t);
+    let node = |p: &str| app.tree.iter().find(|n| n.path == p).unwrap();
+    assert_eq!(node("libz.so.1").link, Some(("libz.so.1.3".to_string(), true)));
+    assert!(node("docs-link").dir && node("docs-link").link.is_some(), "a link to a folder opens as one");
+    assert_eq!(node("broken").link, Some(("nowhere".to_string(), false)));
+    assert!(node("libz.so.1.3").link.is_none());
+    let row = |s: &str, w: &str| s.lines().find(|l| l.contains(w)).unwrap().to_string();
+    assert!(row(&s, "libz.so.1 ").contains("↪") && !row(&s, "libz.so.1.3").contains("↪"), "{s}");
+    let (r, ..) = app.ui.tips.iter().find(|(_, _, _, _, l)| l.as_deref() == Some("broken")).cloned().unwrap();
+    let ax = s.lines().nth(r.y as usize).unwrap().chars().position(|c| c == '↪').unwrap() as u16;
+    assert_eq!(t.backend().buffer()[(ax, r.y)].fg, crate::theme::P.error_fg, "a broken link's arrow is red");
+    // Resting on the link: where it points, then its target's MD5.
+    let (r, ..) = app.ui.tips.iter().find(|(_, _, _, _, l)| l.as_deref() == Some("libz.so.1")).cloned().unwrap();
+    app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
+    app.tip.as_mut().unwrap().since -= TIP_DELAY;
+    let mut dirty = false;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !app.tip.as_ref().is_some_and(|t| t.md5.is_some()) {
+        assert!(Instant::now() < deadline, "no MD5");
+        app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let s = screen(&mut app, &mut t);
+    let link = s.lines().nth(r.y as usize + 1).unwrap();
+    assert!(link.contains("Link → libz.so.1.3 ") && !link.contains(&*root.to_string_lossy()), "as written, no absolute path: {s}");
+    assert!(s.lines().nth(r.y as usize + 2).unwrap().contains("MD5  401b30e3b8b5d629635a5c613cdb7919"), "{s}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
 
 #[test]
 fn a_binarys_banner_chooses_between_readelf_and_hexdump() {

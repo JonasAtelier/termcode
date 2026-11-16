@@ -96,6 +96,12 @@ impl Tip {
     /// stops it (`Drop`).
     fn show(&mut self, root: &Path) {
         self.shown = true;
+        // A link: where it points, as written (missing: said so).
+        if let Some(rel) = &self.link {
+            let p = root.join(rel);
+            let raw = fs::read_link(&p).map(|t| t.to_string_lossy().into_owned()).unwrap_or_default();
+            self.link_to = Some(if p.exists() { raw } else { format!("{raw}  (missing)") });
+        }
         let Some(path) = self.file.as_ref().map(|f| root.join(f)) else { return };
         let (tx, rx) = mpsc::channel();
         let stop = self.stop.clone();
@@ -226,6 +232,9 @@ pub struct Tip {
     pub shown: bool,
     /// The file's path, its MD5 (or why there is none) once `md5sum` gave it.
     pub file: Option<String>,
+    /// A symlink's path, and (once shown) where it points.
+    pub link: Option<String>,
+    pub link_to: Option<String>,
     pub md5: Option<Result<String, String>>,
     md5_rx: Option<mpsc::Receiver<Result<String, String>>>,
     /// Set when the tooltip goes: its MD5 stops.
@@ -275,12 +284,18 @@ pub struct OutlineItem {
     pub open: bool,
 }
 
+/// An Explorer row with a tooltip: its rect, a cut name's full name, the column the name
+/// starts at, a file's path, a symlink's path.
+pub type TipRow = (Rect, Option<String>, u16, Option<String>, Option<String>);
+
 pub struct Node {
     pub path: String,
     pub name: String,
     pub depth: usize,
     pub dir: bool,
     pub open: bool,
+    /// A symlink: where it points, as written, and whether that is there.
+    pub link: Option<(String, bool)>,
 }
 
 pub struct DiffDoc {
@@ -771,12 +786,13 @@ pub enum HRow {
 /// Screen areas from the last draw, for mouse hit-testing.
 #[derive(Default)]
 pub struct Hits {
-    /// Explorer rows with a tooltip: a cut name's full name, where the name starts, and a
-    /// file's path (its tooltip adds its MD5).
-    pub tips: Vec<(Rect, Option<String>, u16, Option<String>)>,
+    /// Explorer rows with a tooltip: a cut name's full name, where the name starts, a file's
+    /// path (its tooltip adds its MD5), a symlink's path (where it points).
+    pub tips: Vec<TipRow>,
     /// The hovered cut row grown to its whole name (part of that row for the mouse).
     pub tip_ext: Rect,
-    /// The hovered file's MD5 line under its row, and its Copy button.
+    /// The hovered row's lines under it (a link's target, a file's MD5), and the MD5's Copy
+    /// button.
     pub tip_md5: Rect,
     pub tip_copy: Rect,
     /// The read-only banner's way-to-show buttons: each one, and whether it is the hexdump.

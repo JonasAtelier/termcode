@@ -760,8 +760,8 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         match app.side {
             Side::Explorer => {
                 let (tip, field) = explorer_row(app, f, ir, bg, i);
-                if let Some((full, x, file)) = tip {
-                    app.ui.tips.push((ir, full, x, file));
+                if let Some((full, x, file, link)) = tip {
+                    app.ui.tips.push((ir, full, x, file, link));
                 }
                 if let Some(field) = field {
                     (app.ui.rename, app.ui.rename_field) = (ir, field);
@@ -835,8 +835,8 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
             Side::Explorer if cap == 1 => breadcrumb_row(app, f, ir, bg, i),
             Side::Explorer => {
                 let (tip, field) = explorer_row(app, f, ir, bg, i);
-                if let Some((full, x, file)) = tip {
-                    app.ui.tips.push((ir, full, x, file));
+                if let Some((full, x, file, link)) = tip {
+                    app.ui.tips.push((ir, full, x, file, link));
                 }
                 if let Some(field) = field {
                     (app.ui.rename, app.ui.rename_field) = (ir, field);
@@ -947,7 +947,7 @@ pub(crate) fn badge(n: usize, under: Color) -> Vec<Span<'static>> {
 
 /// An Explorer row's tooltip (a cut name's full name, the name's column, a file's path)
 /// and rename box (box, scrolled cols).
-type RowExtras = (Option<(Option<String>, u16, Option<String>)>, Option<(Rect, usize)>);
+type RowExtras = (Option<(Option<String>, u16, Option<String>, Option<String>)>, Option<(Rect, usize)>);
 
 /// One Explorer row; its tooltip when it has one (a cut name in full, a file's MD5) with
 /// the column the name starts at, and the rename box with how far it is scrolled when this
@@ -975,19 +975,19 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> RowEx
     let rw = width(&right_spans) as usize;
     // [indent][twistie][gap][icon][gap][name]: an icon is laid out as one cell.
     let lead = format!(" {indent}{chev}{gap}");
-    let name = fit(&n.name, (r.width as usize).saturating_sub(lead.width() + 1 + gap.len() + rw + 1));
+    // A symlink: an arrow after its name (red when what it points to is not there).
+    let arrow = n.link.as_ref().map(|(_, there)| Span::styled(if crate::theme::ascii() { " ->" } else { " ↪" }, Style::new().fg(if *there { P.dim } else { P.error_fg })));
+    let aw = arrow.as_ref().map_or(0, |a| a.width());
+    let name = fit(&n.name, (r.width as usize).saturating_sub(lead.width() + 1 + gap.len() + rw + 1 + aw));
     let name_x = r.x + (lead.width() + 1 + gap.len()) as u16;
-    row(
-        f,
-        r,
-        bg,
-        vec![
-            Span::styled(lead, Style::new().fg(P.icon_fg)),
-            Span::styled(glyph, Style::new().fg(gfg)),
-            Span::raw(gap),
-            Span::styled(name.clone(), Style::new().fg(fg)),
-        ],
-    );
+    let mut spans = vec![
+        Span::styled(lead, Style::new().fg(P.icon_fg)),
+        Span::styled(glyph, Style::new().fg(gfg)),
+        Span::raw(gap),
+        Span::styled(name.clone(), Style::new().fg(fg)),
+    ];
+    spans.extend(arrow);
+    row(f, r, bg, spans);
     if !right_spans.is_empty() {
         right(f, r, right_spans);
     }
@@ -999,7 +999,8 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> RowEx
     }
     let full = (name != n.name).then(|| n.name.clone());
     let file = (!n.dir).then(|| n.path.clone());
-    ((full.is_some() || file.is_some()).then_some((full, name_x, file)), None)
+    let link = n.link.as_ref().map(|_| n.path.clone());
+    ((full.is_some() || file.is_some() || link.is_some()).then_some((full, name_x, file, link)), None)
 }
 
 /// The in-place rename box: the name on the input colours with its selection, scrolled
@@ -1039,20 +1040,33 @@ fn explorer_overlay(app: &mut App, f: &mut Frame, area: Rect) {
     }
     let Some(t) = app.tip.as_ref().filter(|t| t.shown) else { return };
     let ext = t.ext(area.right());
-    // A file's MD5 on the line under its row (over the row above at the list's foot).
-    let md5 = t.file.as_ref().map(|_| {
-        let y = if t.rect.y + 1 < app.ui.side_list.bottom() { t.rect.y + 1 } else { t.rect.y.saturating_sub(1) };
-        let (sum, button) = match &t.md5 {
-            None => ("computing…".to_string(), false),
-            Some(Ok(s)) => (s.clone(), true),
-            Some(Err(e)) => (e.clone(), false),
-        };
-        let text = format!(" MD5  {sum} ");
-        let w = (text.width() as u16 + if button { 7 } else { 0 }).min(area.right().saturating_sub(t.x));
-        (Rect::new(t.x, y, w, 1), text, button)
-    });
-    let on = |p: Position| t.rect.contains(p) || ext.contains(p) || md5.as_ref().is_some_and(|(r, ..)| r.contains(p));
-    let shown = app.hover.is_some_and(on) && app.ui.tips.iter().any(|(r, s, _, file)| *r == t.rect && *s == t.text && *file == t.file);
+    // Lines under the row (over the rows above it at the list's foot): where a link points,
+    // a file's MD5 with its Copy button.
+    let mut info: Vec<(String, bool, bool)> = Vec::new(); // text, an error, a Copy button
+    if let Some(to) = &t.link_to {
+        info.push((format!(" Link {} {to} ", if crate::theme::ascii() { "->" } else { "→" }), to.ends_with("(missing)"), false));
+    }
+    if t.file.is_some() {
+        info.push(match &t.md5 {
+            None => (" MD5  computing… ".to_string(), false, false),
+            Some(Ok(s)) => (format!(" MD5  {s} "), false, true),
+            Some(Err(e)) => (format!(" MD5  {e} "), true, false),
+        });
+    }
+    let n = info.len() as u16;
+    let below = t.rect.y + n < app.ui.side_list.bottom();
+    let y0 = if below { t.rect.y + 1 } else { t.rect.y.saturating_sub(n) };
+    let lines: Vec<(Rect, String, bool, bool)> = info
+        .into_iter()
+        .enumerate()
+        .map(|(k, (text, err, button))| {
+            let w = (text.width() as u16 + if button { 7 } else { 0 }).min(area.right().saturating_sub(t.x));
+            (Rect::new(t.x, y0 + k as u16, w, 1), text, err, button)
+        })
+        .collect();
+    let block = lines.iter().fold(Rect::default(), |acc, (r, ..)| if acc.is_empty() { *r } else { acc.union(*r) });
+    let on = |p: Position| t.rect.contains(p) || ext.contains(p) || block.contains(p);
+    let shown = app.hover.is_some_and(on) && app.ui.tips.iter().any(|(r, s, _, file, _)| *r == t.rect && *s == t.text && *file == t.file);
     if !shown {
         return;
     }
@@ -1064,10 +1078,10 @@ fn explorer_overlay(app: &mut App, f: &mut Frame, area: Rect) {
         f.render_widget(Span::styled(format!("{text} "), look), ext);
         app.ui.tip_ext = ext;
     }
-    if let Some((r, text, button)) = md5 {
+    for (r, text, err, button) in lines {
         f.render_widget(Clear, r);
         fill(f, r, P.widget_bg);
-        let mut spans = vec![Span::styled(text.clone(), Style::new().fg(if button || t.md5.is_none() { P.widget_fg } else { P.error_fg }))];
+        let mut spans = vec![Span::styled(text.clone(), Style::new().fg(if err { P.error_fg } else { P.widget_fg }))];
         if button {
             let br = Rect::new(r.x + text.width() as u16, r.y, 6, 1).intersection(r);
             let hot = app.hover.is_some_and(|p| br.contains(p));
@@ -1075,8 +1089,8 @@ fn explorer_overlay(app: &mut App, f: &mut Frame, area: Rect) {
             app.ui.tip_copy = br;
         }
         f.render_widget(Line::from(spans), r);
-        app.ui.tip_md5 = r;
     }
+    app.ui.tip_md5 = block;
 }
 
 fn search_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow, i: usize) {

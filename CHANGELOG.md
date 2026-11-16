@@ -21,6 +21,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   versions it defines and needs, its build ID, the compiler), then readelf's parts, each a
   heading for the Outline. Buttons on its banner switch between readelf and hexdump (a
   binary file's: hexdump and text).
+- Symlinks in the Explorer carry an arrow (red when what they point to is missing); a link
+  to a folder opens as one. Resting the pointer on a link shows where it points, as the
+  link has it.
 
 ### Fixed
 - A commit message indented with tabs (a JSON example, say) no longer breaks its card:

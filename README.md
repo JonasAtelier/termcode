@@ -340,7 +340,8 @@ pointer on a file for its MD5 (**Copy** copies it). A binary file (or a `.bin`) 
 hexdump; F1 **View: Toggle Hexdump** shows it as text, or any file as a hexdump. An ELF
 file (`.so`, an executable, `.o`, `.ko`) opens as `readelf`'s report, its SONAME, needed
 libraries, symbol versions, build ID and compiler summed up first; the **readelf** and
-**hexdump** buttons on its banner switch between the two.
+**hexdump** buttons on its banner switch between the two. A symlink has an arrow
+after its name (red when broken); rest the pointer on it to see where it points.
 Rest the pointer on a function to see its docs.
 
 **Terminal:** Ctrl+` or the terminal button beside Split Editor opens your shell under the
