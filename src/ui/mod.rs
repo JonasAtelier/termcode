@@ -1505,9 +1505,13 @@ fn breadcrumbs(app: &mut App, f: &mut Frame, r: Rect, g: usize, key: &str) {
             v
         })
         .collect();
-    let grp = &app.groups[g];
-    let view = &grp.tabs[grp.active].view;
+    let grp = &mut app.groups[g];
+    let active = grp.active;
+    let view = &mut grp.tabs[active].view;
     if let Some(Doc::Text(b)) = app.docs.get_mut(key) {
+        // The folds (a symbol's extent) are worked out as the text is drawn, after this
+        // row: a tab's first frame needs them now.
+        b.clamp_view(view);
         let syms = b.symbols().to_vec();
         let line = b.clamp(view.cursor).line;
         for s in crate::symbols::path_at(&syms, &b.lines, &view.fold_ends, line) {

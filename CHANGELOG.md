@@ -6,6 +6,12 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
+## [Unreleased]
+
+### Fixed
+- The breadcrumbs show the symbols around the cursor from a file's first frame (they
+  could show only its path until the next redraw).
+
 ## [0.2.0] - 2026-11-16
 
 ### Added
