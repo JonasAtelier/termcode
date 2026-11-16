@@ -79,6 +79,22 @@ Show or hide the terminal: your
 under the editors. It takes every key but Ctrl+`, F1 and Ctrl+Q, and the terminal keys:
 Ctrl+Shift+` opens another shell (each gets a tab on the panel's border), Ctrl+PgUp and
 Ctrl+PgDn switch between them, and Ctrl+F at the shell's prompt finds text in the scrollback.
+.TP
+.B Explorer
+Ctrl+click, Shift+click or Shift+Up/Down select several items; a drag moves them (with
+Ctrl or Alt held as it ends: copies them), Ctrl+C, Ctrl+X and Ctrl+V copy and move them,
+Delete moves them to the Trash and Shift+Delete deletes them; Ctrl+Z takes back all but
+Shift+Delete. Esc stops a paste that is still copying. Resting the pointer on a file shows its
+MD5, with a button that copies it.
+.TP
+.B Binary files
+A file with a NUL byte near its start, or any
+.BR .bin ,
+opens as a read-only hexdump, as
+.B hexdump \-C
+prints it; F1
+.B View: Toggle Hexdump
+shows it as text instead, or any file as a hexdump.
 .PP
 Any F1 command can have a key of your own: see
 .B termcode.keybindings

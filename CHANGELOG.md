@@ -6,15 +6,29 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
-## [Unreleased]
+## [0.3.0] - 2026-11-16
 
 ### Added
 - A binary file (or any `.bin`) opens as a read-only hexdump, as `hexdump -C` prints it:
   offsets, bytes in hex, and the printable ones as text.
 - Resting the pointer on a file in the Explorer shows its MD5 on the line under it, with
-  a Copy button.
+  a Copy button. It is worked out by termcode itself and stops when the pointer leaves.
+- F1 View: Toggle Hexdump: a binary file as text, or any file as a hexdump.
+- A paste in the Explorer counts the files it has copied; Esc stops it, and the item it
+  was on goes rather than stays half copied.
+- The terminals go on across a reload (a new termcode installed): the shells, what runs
+  in them and what they showed. A reload no longer waits for a program in them.
+- A screenshot of the GitHub view in the README.
+
+### Changed
+- A hexdump has no line numbers: its offsets number it.
+- The release workflow uses actions/checkout and actions/upload-artifact v7 (Node 24).
 
 ### Fixed
+- A click on the MD5 line, off its Copy button, goes to the Explorer row under it.
+- Files a reload killed before its exec left (its session, a terminal's screen) are
+  removed at the next start.
+- Terminal tab names are looked up once a second, not on every frame.
 - The breadcrumbs show the symbols around the cursor from a file's first frame (they
   could show only its path until the next redraw).
 
