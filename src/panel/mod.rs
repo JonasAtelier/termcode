@@ -513,6 +513,7 @@ pub enum Cmd {
     GotoSymbol,
     ToggleComment,
     ToggleWrap,
+    ToggleHex,
     ToggleBreadcrumbs,
     ToggleTerminal,
     NewTerminal,
@@ -550,6 +551,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Toggle Minimap", Cmd::ToggleMinimap, ""),
     ("View: Toggle Rulers", Cmd::ToggleRulers, ""),
     ("View: Toggle Word Wrap", Cmd::ToggleWrap, "Alt+Z"),
+    ("View: Toggle Hexdump", Cmd::ToggleHex, ""),
     ("View: Toggle Breadcrumbs", Cmd::ToggleBreadcrumbs, ""),
     ("View: Toggle Terminal", Cmd::ToggleTerminal, "Ctrl+`"),
     ("Terminal: Create New Terminal", Cmd::NewTerminal, "Ctrl+Shift+`"),
@@ -1859,7 +1861,7 @@ impl App {
         self.focus = Focus::Editor;
     }
 
-    fn run_command(&mut self, c: Cmd) {
+    pub(crate) fn run_command(&mut self, c: Cmd) {
         let on_off = |b: bool| if b { "on" } else { "off" };
         match c {
             Cmd::ShowSide(side) => self.show_side(side, side == Side::Search),
@@ -1930,6 +1932,7 @@ impl App {
             Cmd::GotoLine => self.open_goto(":"),
             Cmd::GotoSymbol => self.open_goto("@"),
             Cmd::ToggleComment => self.toggle_comment(),
+            Cmd::ToggleHex => self.toggle_hex(),
             Cmd::ToggleWrap => {
                 let on = !self.active_tab_ref().is_some_and(|t| self.wraps(&t.key));
                 self.wrap_on = Some(on);
@@ -1956,6 +1959,20 @@ impl App {
                 }
             }
         }
+    }
+
+    /// View: Toggle Hexdump: the active file again, as a hexdump or as text.
+    fn toggle_hex(&mut self) {
+        let Some((b, tab)) = self.ed() else { return };
+        let Some(path) = b.path.clone() else { return };
+        if b.dirty() {
+            self.msg = "save it first: a hexdump cannot hold unsaved edits".into();
+            return;
+        }
+        let hex = !b.binary;
+        *b = Buffer::open_as(&path, Some(hex));
+        tab.view = View::default();
+        self.msg = if hex { "shown as a hexdump".into() } else { "shown as text".into() };
     }
 
     fn unsaved(&self) -> usize {

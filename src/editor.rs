@@ -293,7 +293,10 @@ pub struct Buffer {
     pub final_newline: bool,
     /// Why this buffer can never be saved (truncated, not UTF-8, binary, …).
     pub readonly: Option<String>,
+    /// Shown as a hexdump.
     pub binary: bool,
+    /// View: Toggle Hexdump's choice (None: a hexdump for binary files and .bin).
+    pub hex: Option<bool>,
     pub mtime: Option<SystemTime>,
     mode: Option<u32>,
     pub indent: String,
@@ -615,6 +618,7 @@ impl Buffer {
             final_newline: true,
             readonly: None,
             binary: false,
+            hex: None,
             mtime: None,
             mode: None,
             indent: " ".repeat(tab()),
@@ -668,7 +672,13 @@ impl Buffer {
     }
 
     pub fn open(path: &Path) -> Buffer {
+        Buffer::open_as(path, None)
+    }
+
+    /// `open`, as a hexdump (`hex` Some(true)) or as text (Some(false)) whatever the file.
+    pub fn open_as(path: &Path, hex: Option<bool>) -> Buffer {
         let mut b = Buffer::empty(Some(path.to_path_buf()));
+        b.hex = hex;
         match fs::metadata(path) {
             Ok(m) if m.is_file() => {
                 b.mtime = m.modified().ok();
@@ -689,7 +699,8 @@ impl Buffer {
             return b;
         }
         // A binary file (a NUL early on, or a .bin) is shown as `hexdump -C` shows it.
-        if buf[..buf.len().min(8192)].contains(&0) || path.extension().is_some_and(|e| e == "bin") {
+        let nul = buf[..buf.len().min(8192)].contains(&0);
+        if hex.unwrap_or(nul || path.extension().is_some_and(|e| e == "bin")) {
             let shown = buf.len().min(MAX_LINES * 16);
             b.binary = true;
             b.readonly = Some(if shown < buf.len() {
@@ -706,10 +717,14 @@ impl Buffer {
         }
         let capped = buf.len() as u64 > MAX_BYTES;
         buf.truncate(MAX_BYTES as usize);
+        if nul {
+            // Asked for as text: saving would corrupt it.
+            b.readonly = Some("binary file shown as text: cannot be edited".into());
+        }
         let text = match String::from_utf8(buf) {
             Ok(s) => s,
             Err(e) => {
-                if !capped {
+                if !capped && b.readonly.is_none() {
                     b.readonly = Some("not valid UTF-8: read-only so saving cannot corrupt it".into());
                 }
                 String::from_utf8_lossy(e.as_bytes()).into_owned()
@@ -1962,7 +1977,7 @@ impl Buffer {
             self.disk_changed = true;
             return Some(false);
         }
-        let fresh = Buffer::open(&path);
+        let fresh = Buffer::open_as(&path, self.hex);
         *self = fresh;
         Some(true)
     }

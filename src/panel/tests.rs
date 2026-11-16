@@ -6626,5 +6626,15 @@ fn resting_on_an_explorer_file_shows_its_md5_with_a_copy_button() {
     wait(&mut app);
     let s = screen(&mut app, &mut t);
     assert!(s.contains("00000000  78 0a") && s.contains("|x.|") && s.contains("Hex"), "{s}");
+    let gh = app.ui.groups[0].text;
+    let first = s.lines().nth(gh.y as usize).unwrap();
+    let at = first.find("00000000").unwrap();
+    assert!(!first[..at].trim_end().ends_with('1'), "no line numbers before the offsets: {first}");
+    // F1 View: Toggle Hexdump: the same file as text, and back.
+    app.run_command(Cmd::ToggleHex);
+    let s = screen(&mut app, &mut t);
+    assert!(!s.contains("00000000") && !s.contains("Hex") && app.msg == "shown as text", "{s}");
+    app.run_command(Cmd::ToggleHex);
+    assert!(screen(&mut app, &mut t).contains("00000000  78 0a"));
     fs::remove_dir_all(&root).unwrap();
 }

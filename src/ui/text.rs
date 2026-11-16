@@ -24,7 +24,8 @@ pub(super) fn text_editor(
         out.text = area;
     }
     let ic = icons();
-    let digits = b.lines.len().to_string().len().max(2) as u16;
+    // A hexdump's offsets number its lines already.
+    let digits = if b.binary { 0 } else { b.lines.len().to_string().len().max(2) as u16 };
     // Gutter: [pad][number][Git marker][fold button?]text [blank][scrollbar].
     // The chevron follows the Git lane directly; its trailing blank is clickable.
     let (pad, blank) = (d.gap, u16::from(d.comfy));
@@ -90,7 +91,9 @@ pub(super) fn text_editor(
         let cur_line = i == c.line && sel.is_none();
         let bg = if cur_line { P.cur_line } else { P.editor_bg };
         let nr_st = Style::new().fg(if i == c.line { P.line_nr_active } else { P.line_nr }).bg(P.editor_bg);
-        f.render_widget(Span::styled(format!("{}{:>w$}", sp(pad), i + 1, w = digits as usize), nr_st), Rect::new(gx, y, nums, 1));
+        if digits > 0 {
+            f.render_widget(Span::styled(format!("{}{:>w$}", sp(pad), i + 1, w = digits as usize), nr_st), Rect::new(gx, y, nums, 1));
+        }
         let (mark, mfg) = match d.marks.get(i).copied().flatten() {
             Some(Mark::Added) => (ic.gutter_bar, P.gutter_added),
             Some(Mark::Modified) => (ic.gutter_bar, P.gutter_modified),
