@@ -173,7 +173,7 @@ impl App {
             }
             return;
         }
-        if crate::scm::click(self, p, double) || crate::github::click(self, p, double) || crate::github::page::click(self, p, double) {
+        if crate::scm::click(self, p, double) || crate::github::click(self, p, double) || crate::github::page::click(self, p, double) || crate::stm32::click(self, p) {
             return;
         }
         if self.ui.close.contains(p) {
@@ -830,7 +830,7 @@ impl App {
             q.sel = (q.sel as isize + d).clamp(0, (q.items.len() as isize - 1).max(0)) as usize;
             return q.sel != old;
         }
-        if crate::scm::wheel(self, p, d) || crate::github::wheel(self, p, d) || crate::github::page::wheel(self, p, d) {
+        if crate::scm::wheel(self, p, d) || crate::github::wheel(self, p, d) || crate::github::page::wheel(self, p, d) || crate::stm32::wheel(self, p, d) {
             return true;
         }
         if self.ui.outline.contains(p) {

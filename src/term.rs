@@ -499,6 +499,7 @@ impl App {
         if self.terms.is_empty() {
             return self.new_terminal();
         }
+        self.stm32.log_shown = false;
         (self.term_open, self.focus) = (true, Focus::Term);
     }
 
@@ -512,6 +513,7 @@ impl App {
                 self.terms.push(t);
                 self.term_at = self.terms.len() - 1;
                 self.term_find = None;
+                self.stm32.log_shown = false;
                 (self.term_open, self.focus) = (true, Focus::Term);
             }
             Err(e) => self.msg = format!("terminal: {e}"),
@@ -547,6 +549,7 @@ impl App {
         if to < self.terms.len() {
             self.term_at = to;
             self.term_find = None;
+            self.stm32.log_shown = false;
             (self.term_open, self.focus) = (true, Focus::Term);
         }
     }
@@ -578,7 +581,8 @@ impl App {
                 self.term_at -= 1;
             }
         }
-        if self.terms.is_empty() && self.term_open {
+        // (The panel stays for the STM32 Programmer's log.)
+        if self.terms.is_empty() && self.term_open && !self.stm32.log_shown {
             self.term_find = None;
             self.hide_terminal();
         }
@@ -663,7 +667,7 @@ impl App {
         let area = self.ui.term;
         let p = Position::new(m.column, m.row);
         let ours = matches!(self.drag, Drag::TermSelect(_) | Drag::TermMouse);
-        if area.is_empty() || !(area.contains(p) || ours) || self.terms.is_empty() {
+        if area.is_empty() || !(area.contains(p) || ours) || self.terms.is_empty() || self.stm32.log_shown {
             return None;
         }
         let at = (p.y.clamp(area.y, area.bottom() - 1) - area.y, p.x.clamp(area.x, area.right() - 1) - area.x);

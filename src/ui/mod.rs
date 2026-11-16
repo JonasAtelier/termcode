@@ -239,6 +239,7 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     app.ui = Hits::default();
     app.gitui.hits = Default::default();
     app.gh.hits = Default::default();
+    app.stm32.clear_hits();
     let lay = lay(app);
     let area = f.area();
     f.render_widget(Block::new().style(Style::new().bg(P.editor_bg).fg(P.editor_fg)), area);
@@ -292,7 +293,7 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     // keep 30 columns. Drawn after them: a restored tab's document is read as it shows.
     let mut outline = None;
     // (A repository page has its own outline beside its tree.)
-    if app.outline_open && ed.width >= 50 && !crate::github::page::active(app) {
+    if app.outline_open && ed.width >= 50 && !crate::github::page::active(app) && !crate::stm32::active(app) {
         let w = app.outline_w.unwrap_or(30).clamp(16, ed.width - 30);
         ed.width -= w;
         outline = Some(Rect::new(ed.right(), ed.y, w, ed.height));
@@ -505,15 +506,23 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     }
     // GitHub right above Settings (VS Code's Accounts place), where the views leave room.
     let gh_r = Rect::new(r.x, bottom.y.saturating_sub(ih), r.width, ih);
-    let views_end = if gh_r.y >= r.y + ih * SIDES.len() as u16 && r.width > 0 {
+    // The STM32 Programmer right above GitHub.
+    let st_r = Rect::new(r.x, gh_r.y.saturating_sub(ih), r.width, ih);
+    let fits = |q: Rect| q.y >= r.y + ih * SIDES.len() as u16 && r.width > 0;
+    let mut views_end = bottom.y;
+    if fits(gh_r) {
         let active = app.side == Side::GitHub && app.side_visible && !settings_open;
         let hot = app.hover.is_some_and(|p| gh_r.contains(p));
         // Lit like the views: its lower half on the blank row above Settings' icon.
         item(f, gh_r.y + off, active, hot, ic.gh[0], siy);
-        gh_r.y
-    } else {
-        bottom.y
-    };
+        views_end = gh_r.y;
+        if fits(st_r) && st_r.y < gh_r.y {
+            let active = app.side == Side::Stm32 && app.side_visible && !settings_open;
+            let hot = app.hover.is_some_and(|p| st_r.contains(p));
+            item(f, st_r.y + off, active, hot, ic.stm32, gh_r.y + off);
+            views_end = st_r.y;
+        }
+    }
     for (i, s) in SIDES.iter().enumerate() {
         let y = r.y + i as u16 * ih;
         if y + ih > views_end || r.width == 0 {
@@ -526,7 +535,7 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             Side::Explorer => ic.files,
             Side::Search => ic.search,
             Side::Scm => ic.scm,
-            Side::GitHub => continue, // above Settings
+            Side::GitHub | Side::Stm32 => continue, // above Settings
         };
         let iy = y + off;
         item(f, iy, active, hot, icon, bottom.y);
@@ -538,6 +547,9 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     // GitHub's after the views (hit-tested the same way).
     if views_end < bottom.y {
         app.ui.activity.push((gh_r, Side::GitHub));
+    }
+    if views_end == st_r.y && views_end < gh_r.y {
+        app.ui.activity.push((st_r, Side::Stm32));
     }
 }
 
@@ -639,6 +651,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         Side::Search => "SEARCH",
         Side::Scm => "SOURCE CONTROL",
         Side::GitHub => "GITHUB",
+        Side::Stm32 => "PROGRAMMER",
     };
     let title_row = Rect::new(col.x, col.y, col.width, 1);
     let top = col.y + if st == BlockStyle::Cards { 0 } else { 1 + lay.s.section_gap };
@@ -649,6 +662,11 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
     }
     if app.side == Side::GitHub {
         crate::github::draw(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
+        side_title(app, f, title_row, title, lay, bg);
+        return;
+    }
+    if app.side == Side::Stm32 {
+        crate::stm32::draw_side(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
         side_title(app, f, title_row, title, lay, bg);
         return;
     }
@@ -714,7 +732,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             }
         }
         Side::Scm => {}
-        Side::GitHub => {}
+        Side::GitHub | Side::Stm32 => {}
     }
     let list = Rect::new(r.x, y, r.width, r.bottom().saturating_sub(y));
     app.ui.side_list = list;
@@ -769,7 +787,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => {}
-            Side::GitHub => {}
+            Side::GitHub | Side::Stm32 => {}
         }
     }
     sticky_rows(app, f, list, lay.pad, lay.s.list_gap, &[], &search_rows);
@@ -844,7 +862,7 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
             }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
-            Side::GitHub => {}
+            Side::GitHub | Side::Stm32 => {}
         }
     }
     // Share the last header's row rather than reserving an empty separator row.
@@ -1405,7 +1423,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     f.render_widget(Span::styled(ic.terminal, Style::new().fg(lit)), term_btn);
     app.ui.term_btns.push(term_btn);
     // Off on a repository page: it shows its own outline.
-    let page = app.groups[g].tabs.get(app.groups[g].active).is_some_and(|t| t.key.starts_with("repo:"));
+    let page = app.groups[g].tabs.get(app.groups[g].active).is_some_and(|t| t.key.starts_with("repo:") || t.key == crate::stm32::KEY);
     let lit = if page { P.dim } else if app.outline_open { P.tab_active_fg } else { P.icon_fg };
     f.render_widget(Span::styled(ic.outline, Style::new().fg(lit)), outline_btn);
     if !page {
@@ -1445,6 +1463,13 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     }
     // A repository page: its frame (header, tree, outline), then in the middle the README
     // or, while a file shows, that file as an editor (the tab's document).
+    // The Programmer's page: drawn whole by stm32.rs (it has no text of its own).
+    if key == crate::stm32::KEY {
+        gh.text = body;
+        crate::stm32::draw_page(app, f, body);
+        app.ui.groups.push(gh);
+        return;
+    }
     if let Some(repo) = key.strip_prefix("repo:") {
         body = crate::github::page::draw_frame(app, f, g, repo, body);
         if !app.docs.contains_key(&key) {

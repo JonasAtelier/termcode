@@ -622,7 +622,7 @@ fn activity_items_are_tall_with_the_active_one_marked_and_hover_lit() {
         let (ih, off) = if compact { (2, 0) } else { (2, 1) };
         let (items, b) = (app.ui.activity.clone(), t.backend().buffer().clone());
         assert!(items.iter().all(|(r, _)| r.height == ih), "{compact}: one {ih}-row cell per item");
-        let views: Vec<_> = items.iter().filter(|(_, s)| *s != Side::GitHub).collect();
+        let views: Vec<_> = items.iter().filter(|(_, s)| !matches!(s, Side::GitHub | Side::Stm32)).collect();
         assert!(views.windows(2).all(|w| w[1].0.y == w[0].0.bottom()), "the views stacked without gaps");
         // The icon, a blank kept after it (its 2-cell slot).
         let (scm, _) = items[2];

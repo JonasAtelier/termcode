@@ -597,6 +597,11 @@ pub struct Icons {
     /// A tab's close button: a heavier cross than `close`, drawn bold.
     pub tab_close: &'static str,
     pub settings: &'static str,
+    /// The Programmer's activity item: a chip.
+    pub stm32: &'static str,
+    /// The Programmer's buttons and rows: connect, disconnect, program, refresh, erase,
+    /// save, read, file, reset, option bytes, terminal, memory, folder, send.
+    pub prog: [&'static str; 14],
     pub dirty: &'static str,
     pub split: &'static str,
     /// Toggle Terminal, beside Split Editor, and Toggle Outline before it.
@@ -655,6 +660,8 @@ const CODICONS: Icons = Icons {
     close: "\u{ea76}",
     tab_close: "\u{f00d}",
     settings: "\u{eb51}",
+    stm32: "\u{ec19}",
+    prog: ["\u{eb2b}", "\u{ead0}", "\u{ea86}", "\u{eb37}", "\u{ea81}", "\u{eb4b}", "\u{ea70}", "\u{eae8}", "\u{ead2}", "\u{eb53}", "\u{ea85}", "\u{eace}", "\u{eaf7}", "\u{ebd1}"],
     dirty: "\u{ea71}",
     split: "\u{eb56}",
     terminal: "\u{ea85}",
@@ -705,6 +712,8 @@ const SYMBOLS: Icons = Icons {
     close: "×",
     tab_close: "×",
     settings: "⚙",
+    stm32: "▣",
+    prog: ["⇄", "⊘", "↯", "↻", "✗", "↓", "◉", "▢", "↺", "◈", "›", "▤", "▸", "➤"],
     dirty: "●",
     split: "◫",
     terminal: "❯",
@@ -753,6 +762,8 @@ const PLAIN: Icons = Icons {
     close: "x",
     tab_close: "x",
     settings: "*",
+    stm32: "M",
+    prog: ["+", "x", "!", "r", "x", "s", "o", "f", "r", "#", ">", "=", "/", ">"],
     dirty: "*",
     split: "|",
     terminal: ">",

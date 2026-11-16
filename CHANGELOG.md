@@ -24,6 +24,17 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - Symlinks in the Explorer carry an arrow (red when what they point to is missing); a link
   to a folder opens as one. Resting the pointer on a link shows where it points, as the
   link has it.
+- A Programmer view (the chip icon above GitHub) does for STM32 chips what
+  STM32CubeProgrammer does, through its `STM32_Programmer_CLI`: Device (connect and disconnect, read the
+  target, reset it), Memory (a grid of 8-, 16- or 32-bit values with ASCII, saved as a
+  `.bin`), Program (`.bin`, `.hex`, `.elf`, `.srec`, `.s19`, picked folder by folder;
+  verify, full erase, reset after), Erase (the chip or sectors, asked first), Option Bytes
+  (read only) and a Serial Console (the target's UART output through the ST-LINK's
+  virtual COM port; lines sent back). Each feature's page shows in the editor area; the
+  tool's output and progress, and the target's, in the panel's new Programmer and Serial
+  tabs. Pages are cards: the target at the top with Connect or Disconnect, a running
+  job's progress with its steps, fields typed in place (a bad value said in red), F5 for
+  each page's main action. Without the tool, an Install button.
 
 ### Changed
 - The Settings window looks as VS Code's: a search box over every setting (Ctrl+F), each

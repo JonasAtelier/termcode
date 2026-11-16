@@ -165,7 +165,7 @@ fn one_view_changes_over_graph_collapsible_and_split_persisted() {
     settle(&mut app);
     let s = screen(&mut app, &mut tm);
     assert!(s.contains("WORKING TREE") && s.contains("GRAPH") && s.contains("Add commit") && s.contains("first"), "{s}");
-    assert_eq!(app.ui.activity.iter().filter(|(_, s)| *s != Side::GitHub).count(), 3, "no separate History item");
+    assert_eq!(app.ui.activity.iter().filter(|(_, s)| !matches!(s, Side::GitHub | Side::Stm32)).count(), 3, "no separate History item");
     assert!(!s.contains("HISTORY"));
     // CHANGES collapses and expands from its header.
     click(&mut app, at(&tm, "WORKING TREE"));

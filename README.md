@@ -298,6 +298,7 @@ termcode --tab src          # the same, as a herdr tab
 | Explorer | Alt+1, Ctrl+E | Files. **Timeline** below shows the open file's commits |
 | Search | Alt+4, F4 | Search all files. **References** below shows where the symbol at the cursor is used |
 | Source Control | Alt+2, F2, Ctrl+G | Changes, commits and the commit graph |
+| Programmer | the chip icon above GitHub | Program, read and erase STM32 chips (below) |
 
 Click the active sidebar icon to hide the sidebar. Drag any divider to resize.
 
@@ -468,6 +469,31 @@ only when you commit, pull or push, as they do with git in a shell.
 Git runs in the background and never asks for a password inside the panel. If a command
 hangs, click the spinner in the status bar to cancel it. F1 **Git: Show Git Output** shows
 what ran.
+
+### Programmer (STM32)
+
+The chip icon (above GitHub) does what STM32CubeProgrammer does, through ST's
+`STM32_Programmer_CLI`: pick a feature on the left, its page opens in the editor area,
+and the tool's output with a progress bar shows in the panel below (its **Programmer**
+tab, beside **Terminal**). Every page starts with the target (its name, Connect or
+Disconnect); a running job shows its progress there too, programming step by step
+(Erase › Download › Verify › Run). **F5** runs the page's main action. Fields such as
+Address and Size are typed in place: Enter takes the value (in Memory, reads there), a
+bad one says why in red. Closing the page's tab goes back to the Explorer.
+
+| Feature | What it does |
+|---|---|
+| Device | Port (SWD, JTAG), mode (Normal, Under reset, Hot plug), speed, the ST-LINK probe; **Connect** reads the target (then **Disconnect**), **Reset Target** resets it |
+| Memory | Reads an address range into a grid as CubeProgrammer's: address, 8-, 16- or 32-bit values, ASCII; **Save As…** writes it to a `.bin` |
+| Program | Writes a `.bin` (at the address given), `.hex`, `.elf`, `.srec` or `.s19`; verify, full erase first, reset and run after. Click the file (or **Browse…**) to pick it folder by folder, from your home folder |
+| Erase | The full chip, or sectors (`0-3`, `0 1 2`); each asks first |
+| Option Bytes | Shows them, read only |
+| Serial Console | The target's UART output (its `printf`) through the ST-LINK's virtual COM port, in the panel's **Serial** tab; **Send…** writes a line to it |
+
+Without the tool, the view has an **Install** button: it runs ST's installer from
+`~/Downloads/en.stm32cubeprg-lin*.zip` in the terminal, or opens ST's download page (ST
+asks you to sign in to download it). termcode finds the tool on `PATH`, in
+`~/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin` or in STM32CubeIDE.
 
 ---
 

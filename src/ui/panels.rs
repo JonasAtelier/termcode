@@ -125,11 +125,15 @@ pub(super) fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
 pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
     let focused = app.focus == Focus::Term;
     let hot = matches!(app.drag, Drag::TermSash) || app.hover.is_some_and(|p| p.y == r.y && (r.x..r.right()).contains(&p.x));
-    let block = Block::bordered()
+    // With the STM32 Programmer's log, two tabs on the border instead of the title.
+    let tabs = app.stm32.has_log();
+    let mut block = Block::bordered()
         .border_set(crate::blocks::border_set())
         .border_style(Style::new().fg(crate::blocks::border(focused)).bg(P.editor_bg))
-        .title(Span::styled(" Terminal ", Style::new().fg(P.editor_fg).bold()))
         .style(Style::new().bg(P.editor_bg).fg(P.editor_fg));
+    if !tabs {
+        block = block.title(Span::styled(" Terminal ", Style::new().fg(P.editor_fg).bold()));
+    }
     let inner = block.inner(r);
     f.render_widget(block, r);
     if hot {
@@ -145,6 +149,12 @@ pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
     // On the top border after the title: a tab per terminal (more than one), then +; × at
     // the right end closes the one shown.
     let mut x = r.x + 2 + " Terminal ".len() as u16 + 1;
+    if tabs {
+        x = crate::stm32::panel_tabs(app, f, r);
+        if app.stm32.log_shown {
+            return crate::stm32::draw_log(app, f, inner);
+        }
+    }
     let n = app.terms.len();
     for i in 0..n {
         if n < 2 {

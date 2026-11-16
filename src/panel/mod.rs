@@ -257,6 +257,8 @@ pub enum Side {
     Scm,
     /// Only for a repository on GitHub (github.rs).
     GitHub,
+    /// STM32CubeProgrammer's features (stm32.rs).
+    Stm32,
 }
 /// Activity bar order (VS Code's).
 pub const SIDES: [Side; 3] = [Side::Explorer, Side::Search, Side::Scm];
@@ -385,6 +387,8 @@ pub enum PAct {
     Delete(Vec<String>, bool),
     /// A change on GitHub, confirmed.
     GitHub(crate::github::Act),
+    /// An STM32 erase, confirmed.
+    Stm32(crate::stm32::Op),
     /// A document and the backup file chosen for it; the backup file to drop.
     RestoreBackup(String, PathBuf),
     DiscardBackup(PathBuf),
@@ -505,6 +509,8 @@ pub struct Quick {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Cmd {
+    /// An STM32 Programmer job.
+    Stm32(crate::stm32::Op),
     Fold,
     Unfold,
     FoldAll,
@@ -596,6 +602,11 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Show Search", Cmd::ShowSide(Side::Search), "Alt+4, F4"),
     ("View: Show Source Control", Cmd::ShowSide(Side::Scm), "Alt+2, F2, Ctrl+G"),
     ("View: Show GitHub", Cmd::ShowSide(Side::GitHub), ""),
+    ("View: Show Programmer", Cmd::ShowSide(Side::Stm32), ""),
+    ("STM32: Connect", Cmd::Stm32(crate::stm32::Op::Connect), ""),
+    ("STM32: Start Programming", Cmd::Stm32(crate::stm32::Op::Program), ""),
+    ("STM32: Reset Target", Cmd::Stm32(crate::stm32::Op::Reset), ""),
+    ("STM32: Read Option Bytes", Cmd::Stm32(crate::stm32::Op::ReadOb), ""),
     ("View: Open Next Editor", Cmd::Keys(KeyCode::PageDown, KeyModifiers::CONTROL), "Ctrl+PgDn"),
     ("View: Open Previous Editor", Cmd::Keys(KeyCode::PageUp, KeyModifiers::CONTROL), "Ctrl+PgUp"),
     ("View: Focus First Editor Group", Cmd::Keys(KeyCode::Char('1'), KeyModifiers::CONTROL), "Ctrl+1"),
@@ -972,6 +983,8 @@ pub struct App {
     pub file_redo: Vec<Vec<rename::FileOp>>,
     /// The GitHub view and its status bar item.
     pub gh: crate::github::GitHub,
+    /// The STM32 Programmer view, its page and its log.
+    pub stm32: crate::stm32::Stm32,
     pub outline_open: bool,
     pub outline_w: Option<u16>,
     pub outline_off: usize,
@@ -1643,6 +1656,7 @@ impl App {
             file_undo: Vec::new(),
             file_redo: Vec::new(),
             trash: if cfg!(test) { std::env::temp_dir().join(format!("termcode-test-trash-{}", std::process::id())) } else { crate::data_home().join("Trash") },
+            stm32: Default::default(),
             gh: crate::github::GitHub::new(
                 gh_here,
                 saved["github_repo"].as_str().map(String::from),
@@ -1902,6 +1916,7 @@ impl App {
         let on_off = |b: bool| if b { "on" } else { "off" };
         match c {
             Cmd::ShowSide(side) => self.show_side(side, side == Side::Search),
+            Cmd::Stm32(op) => crate::stm32::command(self, op),
             Cmd::Quit => self.request_quit(),
             Cmd::Find(replace) => self.open_find(replace),
             Cmd::Keys(code, mods) => {

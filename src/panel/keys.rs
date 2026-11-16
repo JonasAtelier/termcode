@@ -166,7 +166,12 @@ impl App {
             Focus::Find => self.find_key(k, ctrl || alt, shift),
             Focus::SearchInput => self.input_key(k, ctrl, alt),
             Focus::Side => self.side_key(k),
-            Focus::Editor => self.editor_key(k, ctrl, alt, shift),
+            Focus::Editor => {
+                // The STM32 Programmer's page scrolls by keys too (it has no text).
+                if !crate::stm32::page_key(self, k) {
+                    self.editor_key(k, ctrl, alt, shift);
+                }
+            }
             Focus::Term => {}
             Focus::Outline => self.outline_key(k),
         }
@@ -337,6 +342,12 @@ impl App {
 
     pub(super) fn side_key(&mut self, k: KeyEvent) {
         if self.side == Side::Scm && crate::scm::key(self, k) {
+            return;
+        }
+        if self.side == Side::Stm32 {
+            if !crate::stm32::key(self, k) && k.code == KeyCode::Esc {
+                self.focus = Focus::Editor;
+            }
             return;
         }
         if self.side == Side::GitHub {
@@ -714,6 +725,9 @@ impl App {
         }
         if self.gitui.cmds.picker.is_some() {
             return crate::gitcmds::picker_paste(self, text);
+        }
+        if self.focus == Focus::Editor && crate::stm32::paste(self, text) {
+            return;
         }
         match self.focus {
             Focus::SearchInput => {

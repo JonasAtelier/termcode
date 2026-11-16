@@ -150,7 +150,7 @@ pub fn save_guarded(app: &mut App) {
 
 /// Keys of documents a session can reopen: files, working-tree and index diffs, commit diffs.
 fn restorable(key: &str) -> bool {
-    ["file:", "diff:staged:", "diff:changes:", "cdiff:", "repo:"].iter().any(|p| key.starts_with(p))
+    ["file:", "diff:staged:", "diff:changes:", "cdiff:", "repo:", "stm32:"].iter().any(|p| key.starts_with(p))
 }
 
 fn view_json(v: &View) -> Value {
@@ -169,6 +169,7 @@ fn side_name(s: Side) -> &'static str {
         Side::Search => "search",
         Side::Scm => "scm",
         Side::GitHub => "github",
+        Side::Stm32 => "stm32",
     }
 }
 
@@ -310,6 +311,7 @@ pub fn restore(app: &mut App) {
         Some("search") => Side::Search,
         Some("scm") => Side::Scm,
         Some("github") => Side::GitHub,
+        Some("stm32") => Side::Stm32,
         _ => Side::Explorer,
     };
     app.side_visible = v["sidebar_visible"].as_bool().unwrap_or(app.side_visible);

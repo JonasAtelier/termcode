@@ -138,8 +138,8 @@ impl App {
             Side::Explorer => self.tree.len(),
             Side::Search => self.search_rows().len(),
             Side::Scm => self.scm_rows().len(),
-            // Its own list (github.rs).
-            Side::GitHub => 0,
+            // Its own list (github.rs, stm32.rs).
+            Side::GitHub | Side::Stm32 => 0,
         }
     }
 
@@ -153,6 +153,9 @@ impl App {
         self.query_all = false;
         self.refresh();
         self.save_layout();
+        if s == Side::Stm32 {
+            crate::stm32::shown(self);
+        }
     }
 
     pub(crate) fn save_layout(&self) {
@@ -224,7 +227,7 @@ impl App {
                 Some(r) if Self::scm_group(r).is_some() => self.fold_scm(i, None),
                 _ => {}
             },
-            Side::GitHub => {}
+            Side::GitHub | Side::Stm32 => {}
         }
     }
 
@@ -283,7 +286,7 @@ impl App {
             Side::Explorer => decor::sticky(|i, k| self.tree_ancestor(i, k), off, cap, sep),
             Side::Search => decor::sticky(|i, k| decor::walk_back(|j| search.get(j).map(|r| matches!(r, HRow::Hit(_)) as usize), i, k), off, cap, sep),
             Side::Scm => decor::sticky(|i, k| decor::walk_back(|j| scm.get(j).map(|r| matches!(r, SRow::File(_)) as usize), i, k), off, cap, sep),
-            Side::GitHub => Vec::new(),
+            Side::GitHub | Side::Stm32 => Vec::new(),
         }
     }
 
@@ -305,7 +308,7 @@ impl App {
     /// `pinned` for key handling, which has no rows built.
     pub(super) fn pinned_now(&self, off: usize) -> Vec<usize> {
         let (search, scm) = match self.side {
-            Side::Explorer | Side::GitHub => (Vec::new(), Vec::new()),
+            Side::Explorer | Side::GitHub | Side::Stm32 => (Vec::new(), Vec::new()),
             Side::Search => (self.search_rows(), Vec::new()),
             Side::Scm => (Vec::new(), self.scm_rows()),
         };
@@ -319,7 +322,7 @@ impl App {
             Side::Explorer => self.tree.get(i).map_or(0, |n| n.depth),
             Side::Search => matches!(self.search_rows().get(i), Some(HRow::Hit(_))) as usize,
             Side::Scm => matches!(self.scm_rows().get(i), Some(SRow::File(_))) as usize,
-            Side::GitHub => 0,
+            Side::GitHub | Side::Stm32 => 0,
         };
         let pinned = depth.min(self.ui.sticky_cap);
         if pinned == 0 {
