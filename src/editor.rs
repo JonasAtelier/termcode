@@ -80,6 +80,34 @@ impl Drop for FrameBudget {
     }
 }
 
+/// `hexdump -C`'s lines for `bytes`: the offset, 16 bytes in two groups of 8, and those
+/// that are printable ASCII between bars (others as dots).
+pub fn hexdump(bytes: &[u8]) -> Vec<String> {
+    use std::fmt::Write as _;
+    bytes
+        .chunks(16)
+        .enumerate()
+        .map(|(i, c)| {
+            let mut s = format!("{:08x} ", i * 16);
+            for k in 0..16 {
+                if k == 8 {
+                    s.push(' ');
+                }
+                match c.get(k) {
+                    Some(b) => {
+                        let _ = write!(s, " {b:02x}");
+                    }
+                    None => s.push_str("   "),
+                }
+            }
+            s.push_str("  |");
+            s.extend(c.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }));
+            s.push('|');
+            s
+        })
+        .collect()
+}
+
 #[cfg(test)]
 thread_local! {
     /// Speculative passes built (a test counts rebuilds).
@@ -660,9 +688,20 @@ impl Buffer {
             b.readonly = Some(e.to_string());
             return b;
         }
-        if buf[..buf.len().min(8192)].contains(&0) {
+        // A binary file (a NUL early on, or a .bin) is shown as `hexdump -C` shows it.
+        if buf[..buf.len().min(8192)].contains(&0) || path.extension().is_some_and(|e| e == "bin") {
+            let shown = buf.len().min(MAX_LINES * 16);
             b.binary = true;
-            b.readonly = Some("binary file: not shown, cannot be edited".into());
+            b.readonly = Some(if shown < buf.len() {
+                format!("binary file: a hexdump of its first {} MB, cannot be edited", shown / 1_000_000)
+            } else {
+                "binary file: shown as a hexdump, cannot be edited".into()
+            });
+            if shown > 0 {
+                b.lines = hexdump(&buf[..shown]);
+                b.line_ids = fresh_line_ids(b.lines.len()).collect();
+            }
+            b.set_syntax(None);
             return b;
         }
         let capped = buf.len() as u64 > MAX_BYTES;
@@ -2814,6 +2853,28 @@ mod tests {
         fs::write(&p, "new\n").unwrap();
         assert_eq!(b.check_disk(), Some(true));
         assert_eq!(b.lines[0], "new");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_binary_file_or_a_bin_opens_as_a_hexdump() {
+        let d = tmpdir("hex");
+        let elf = d.join("prog");
+        fs::write(&elf, b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0Hi!\n").unwrap();
+        let b = Buffer::open(&elf);
+        assert!(b.binary && b.readonly.as_deref() == Some("binary file: shown as a hexdump, cannot be edited"));
+        assert_eq!(
+            b.lines,
+            [
+                "00000000  7f 45 4c 46 02 01 01 00  00 00 00 00 00 00 00 00  |.ELF............|",
+                "00000010  48 69 21 0a                                       |Hi!.|",
+            ]
+        );
+        // A .bin is one whatever its bytes; an empty one has one blank line.
+        fs::write(d.join("fw.bin"), "plain").unwrap();
+        assert_eq!(Buffer::open(&d.join("fw.bin")).lines, ["00000000  70 6c 61 69 6e                                    |plain|"]);
+        fs::write(d.join("empty.bin"), "").unwrap();
+        assert_eq!(Buffer::open(&d.join("empty.bin")).lines, [""]);
         fs::remove_dir_all(&d).unwrap();
     }
 

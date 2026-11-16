@@ -22,9 +22,6 @@ pub(super) fn text_editor(
         row(f, banner, P.widget_bg, vec![Span::styled(banner_text, Style::new().fg(P.git_modified))]);
         area = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
         out.text = area;
-        if b.binary {
-            return out;
-        }
     }
     let ic = icons();
     let digits = b.lines.len().to_string().len().max(2) as u16;
@@ -146,7 +143,9 @@ pub(super) fn text_editor(
         }
         // Display columns of what is drawn over the text: blanks shown, coloured brackets.
         let selected = sel.filter(|(a, e)| a.line <= i && i <= e.line).map(|(a, e)| (if a.line == i { a.col } else { 0 }, if e.line == i { e.col } else { line.len() }));
-        let mut blanks = editor::whitespace_marks(line, d.whitespace, selected).into_iter().peekable();
+        // A hexdump's columns are spaces, not whitespace to show.
+        let ws_mode = if b.binary { editor::Whitespace::None } else { d.whitespace };
+        let mut blanks = editor::whitespace_marks(line, ws_mode, selected).into_iter().peekable();
         let (mut ws, mut paint) = (Vec::new(), Vec::new());
         let mut depth = depths.as_ref().map_or(0, |dp| dp[i]);
         let mut col = 0;

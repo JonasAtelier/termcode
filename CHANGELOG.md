@@ -8,6 +8,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 
 ## [Unreleased]
 
+### Added
+- A binary file (or any `.bin`) opens as a read-only hexdump, as `hexdump -C` prints it:
+  offsets, bytes in hex, and the printable ones as text.
+
 ### Fixed
 - The breadcrumbs show the symbols around the cursor from a file's first frame (they
   could show only its path until the next redraw).

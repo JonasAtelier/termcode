@@ -333,7 +333,8 @@ selected folder; a name already there becomes `name (1)`, `name (2)` …, and a 
 copies in the background. Delete moves the selection to the Trash (your file manager
 restores it from there; on another disk, that disk's own Trash), Shift+Delete deletes it for
 good; each asks first. In the Explorer, Ctrl+Z takes back the last move, rename, paste or
-delete (not Shift+Delete), and Ctrl+Y does it again; both survive a reload.
+delete (not Shift+Delete), and Ctrl+Y does it again; both survive a reload. A binary
+file (or a `.bin`) opens as a hexdump.
 Rest the pointer on a function to see its docs.
 
 **Terminal:** Ctrl+` or the terminal button beside Split Editor opens your shell under the

@@ -387,7 +387,9 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
             s.push_str(&format!(" ({} selected)", sel.chars().count()));
         }
         let indent = if b.indent == "\t" { format!("Tab Size: {}", editor::tab()) } else { format!("Spaces: {}", b.indent.len()) };
-        let enc = if b.readonly.is_some() && !b.binary {
+        let enc = if b.binary {
+            "Hex".into()
+        } else if b.readonly.is_some() {
             format!("{}{}Read-only", icons().lock, sp(lay.s.icon_gap))
         } else {
             "UTF-8".into()
