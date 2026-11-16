@@ -6638,3 +6638,29 @@ fn resting_on_an_explorer_file_shows_its_md5_with_a_copy_button() {
     assert!(screen(&mut app, &mut t).contains("00000000  78 0a"));
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn esc_stops_a_paste_and_takes_out_what_it_half_copied() {
+    let root = repo("paste-stop");
+    let big = root.join("big");
+    fs::create_dir_all(&big).unwrap();
+    for i in 0..2000 {
+        fs::write(big.join(format!("f{i}")), "data").unwrap();
+    }
+    let mut app = App::new(root.clone(), None);
+    app.show_side(Side::Explorer, false);
+    app.focus = Focus::Side;
+    app.sel[0] = app.tree.iter().position(|n| n.path == "src").unwrap();
+    app.tree_clip = Some((vec!["big".into()], false));
+    app.tree_paste();
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE); // 2000 files take longer than this
+    file_settle(&mut app);
+    assert_eq!(app.msg, "paste stopped");
+    assert!(!root.join("src/big").exists(), "the half copy is gone");
+    assert!(app.file_undo.is_empty(), "nothing to take back");
+    // Unstopped, it reports its files as it goes, then the item.
+    app.tree_paste();
+    file_settle(&mut app);
+    assert_eq!((app.msg.as_str(), fs::read_dir(root.join("src/big")).unwrap().count()), ("pasted big", 2000));
+    fs::remove_dir_all(&root).unwrap();
+}

@@ -383,6 +383,10 @@ impl App {
                     self.tree_marks = self.tree.iter().map(|n| n.path.clone()).collect();
                     return;
                 }
+                KeyCode::Esc if self.file_job.is_some() => {
+                    self.stop_paste();
+                    return;
+                }
                 KeyCode::Esc if !self.tree_marks.is_empty() => return self.tree_marks.clear(),
                 KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => self.tree_marks.clear(),
                 _ => {}

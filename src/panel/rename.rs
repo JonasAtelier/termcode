@@ -367,17 +367,37 @@ impl App {
             [(from, _)] => format!("pasting {}…", base(from)),
             _ => format!("pasting {} items…", pairs.len()),
         };
+        let total = pairs.len();
+        let (files, stop) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+        let p = Progress { files: files.clone(), stop: stop.clone() };
         std::thread::spawn(move || {
-            let done = pairs
-                .into_iter()
-                .map(|(from, to)| {
-                    let r = copy_path(&root.join(&from), &root.join(&to)).map_err(|e| e.to_string());
-                    (FileOp::Copied { from, to }, r)
-                })
-                .collect();
+            let mut done = Vec::new();
+            for (from, to) in pairs {
+                if p.stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let (src, dst) = (root.join(&from), root.join(&to));
+                let r = copy_path(&src, &dst, &p).map_err(|e| {
+                    // Stopped (Esc) or failed half way: the part copied goes, it was ours (not
+                    // when the name turned out taken: that is someone else's).
+                    let _ = if e.kind() == io::ErrorKind::AlreadyExists {
+                        Ok(())
+                    } else if fs::symlink_metadata(&dst).is_ok_and(|m| m.is_dir()) { fs::remove_dir_all(&dst) } else { fs::remove_file(&dst) };
+                    if p.stop.load(Ordering::Relaxed) { "stopped".to_string() } else { e.to_string() }
+                });
+                done.push((FileOp::Copied { from, to }, r));
+            }
             let _ = tx.send(done);
         });
-        self.file_job = Some(FileJob { rx, redo });
+        self.file_job = Some(FileJob { rx, redo, files, stop, shown: 0, total });
+    }
+
+    /// Esc while a paste runs: it stops after the file it is on (that item is taken out).
+    pub(super) fn stop_paste(&mut self) -> bool {
+        let Some(job) = &self.file_job else { return false };
+        job.stop.store(true, Ordering::Relaxed);
+        self.msg = "stopping the paste…".into();
+        true
     }
 
     /// A finished paste: the copies shown and kept for Ctrl+Z, a failure said. True when one ended.
@@ -385,11 +405,22 @@ impl App {
         let Some(job) = &self.file_job else { return false };
         let done: Vec<(FileOp, Result<(), String>)> = match job.rx.try_recv() {
             Ok(d) => d,
-            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Empty) => {
+                // Still copying: how many files so far.
+                let n = job.files.load(Ordering::Relaxed);
+                if n == job.shown || job.stop.load(Ordering::Relaxed) {
+                    return false;
+                }
+                self.msg = format!("pasting… {n} file{} copied (Esc stops)", if n == 1 { "" } else { "s" });
+                if let Some(j) = self.file_job.as_mut() {
+                    j.shown = n;
+                }
+                return true;
+            }
             Err(mpsc::TryRecvError::Disconnected) => vec![],
         };
-        let redo = self.file_job.take().is_some_and(|j| j.redo);
-        let n = done.len();
+        let job = self.file_job.take().expect("looked at above");
+        let (redo, n, stopped) = (job.redo, job.total, job.stop.load(Ordering::Relaxed));
         let err = done.iter().find_map(|(_, r)| r.clone().err());
         let ok: Vec<FileOp> = done.into_iter().filter(|(_, r)| r.is_ok()).map(|(op, _)| op).collect();
         self.reload_all();
@@ -398,6 +429,8 @@ impl App {
             self.reveal_path(&to);
         }
         self.msg = match (&err, ok.as_slice()) {
+            _ if stopped && ok.is_empty() => "paste stopped".into(),
+            _ if stopped => format!("pasted {} of {n} items, then stopped", ok.len()),
             (Some(e), []) => format!("paste failed: {e}"),
             (Some(e), _) => format!("pasted {} of {n} items; {e}", ok.len()),
             (None, [FileOp::Copied { to, .. }]) => format!("pasted {}", base(to)),
@@ -646,6 +679,12 @@ pub struct FileJob {
     rx: mpsc::Receiver<Vec<(FileOp, Result<(), String>)>>,
     /// Ctrl+Y's: kept on the undo stack, the redo stack left as is.
     redo: bool,
+    /// Files copied so far (the last count said), and Esc's stop.
+    files: Arc<AtomicUsize>,
+    shown: usize,
+    stop: Arc<AtomicBool>,
+    /// Items asked for.
+    total: usize,
 }
 
 /// File operations kept for Ctrl+Z (each a group: one drag, paste or delete).
@@ -798,7 +837,17 @@ fn join_rel(dir: &str, name: &str) -> String {
 }
 
 /// Copies `from` to `to`: a file, a symlink as a symlink, a folder with all in it.
-fn copy_path(from: &Path, to: &Path) -> io::Result<()> {
+/// A running paste's count of files copied, and its stop.
+struct Progress {
+    files: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+}
+
+fn copy_path(from: &Path, to: &Path, p: &Progress) -> io::Result<()> {
+    if p.stop.load(Ordering::Relaxed) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "stopped"));
+    }
+    p.files.fetch_add(1, Ordering::Relaxed);
     let meta = fs::symlink_metadata(from)?;
     if meta.file_type().is_symlink() {
         std::os::unix::fs::symlink(fs::read_link(from)?, to)
@@ -806,7 +855,7 @@ fn copy_path(from: &Path, to: &Path) -> io::Result<()> {
         fs::create_dir(to)?;
         for e in fs::read_dir(from)? {
             let e = e?;
-            copy_path(&e.path(), &to.join(e.file_name()))?;
+            copy_path(&e.path(), &to.join(e.file_name()), p)?;
         }
         Ok(())
     } else {
