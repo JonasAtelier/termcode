@@ -32,6 +32,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   there takes back a move, rename, paste or delete; Ctrl+Y does it again.
 - The Search box and Find's fields: Ctrl+A or a double-click selects the whole text;
   Ctrl+C copies it, Ctrl+X cuts it, and typing or a paste replaces it.
+- The commit dialog's message: a drag selects (a double-click, a word), and Ctrl+C,
+  Ctrl+X and Ctrl+V copy, cut and paste. Its diff and a commit's card select the same way,
+  and Ctrl+C copies.
 
 ### Fixed
 - GRAPH and TIMELINE follow git run outside termcode (in its terminal or anywhere

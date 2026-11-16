@@ -453,14 +453,8 @@ impl App {
     /// area): rows clamp to the diff, columns to the side's text, so a drag past its
     /// edge (or onto the other side) stays on its own side.
     pub(super) fn diff_pos(&mut self, p: Position, texts: [Rect; 2], side: u8) -> Option<Pos> {
-        let r = texts[side as usize];
         let (d, v) = self.diff_tab()?;
-        let last = d.rows.len().checked_sub(1)?;
-        let row = (v.scroll + p.y.saturating_sub(r.y) as usize).min(last);
-        let x = v.hscroll + p.x.clamp(r.x, r.right().max(r.x + 1) - 1).saturating_sub(r.x) as usize;
-        let past = p.x >= r.right();
-        let col = diff_cell(d, row, side).map_or(0, |t| if past { t.len() } else { editor::byte_at_display(t, x) });
-        Some(Pos::new(row, col))
+        diff_pos_in(d, v, p, texts, side)
     }
 
     /// A click in a diff, as in VS Code's diff editor: the side under it takes the
@@ -866,4 +860,17 @@ impl App {
                 key.and_then(|k| self.diff_minis.get(k)).is_some_and(|e| e.1.hl_pending())
             })
     }
+}
+
+/// The diff row and byte column on `side` under `p` in diff `d` shown with view `v`
+/// (`texts`: each side's text area): rows clamp to the diff, columns to the side's text,
+/// so a drag past its edge (or onto the other side) stays on its own side.
+pub(crate) fn diff_pos_in(d: &DiffDoc, v: &View, p: Position, texts: [Rect; 2], side: u8) -> Option<Pos> {
+    let r = texts[side as usize];
+    let last = d.rows.len().checked_sub(1)?;
+    let row = (v.scroll + p.y.saturating_sub(r.y) as usize).min(last);
+    let x = v.hscroll + p.x.clamp(r.x, r.right().max(r.x + 1) - 1).saturating_sub(r.x) as usize;
+    let past = p.x >= r.right();
+    let col = diff_cell(d, row, side).map_or(0, |t| if past { t.len() } else { editor::byte_at_display(t, x) });
+    Some(Pos::new(row, col))
 }

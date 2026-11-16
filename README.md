@@ -418,9 +418,12 @@ Turn error checking off with `"termcode.errorChecking": false`.
 
 - **Changes:** `+` stages a file, `−` unstages it, `↶` discards (always asks).
 - **Commit:** click **Add commit**. Stage files, write a message, then **Commit** or
-  **Commit & Push**. Your draft is kept if you cancel.
+  **Commit & Push**. Your draft is kept if you cancel. In the message, a drag selects (a
+  double-click, a word), and Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste.
+  In its diff, a drag selects one side's text (a double-click, a word) and Ctrl+C copies it.
 - **Graph:** click a commit to see its files, click a file to see its diff. Rest the pointer
-  on a commit (or press `i`) for a card with **Copy hash** and **Open changes**.
+  on a commit (or press `i`) for a card with **Copy hash** and **Open changes**; drag over
+  its message to select it, Ctrl+C copies.
 - **Status bar:** click the branch to switch or create one; click `↓1 ↑2` to pull and push;
   click `Ln, Col` to go to a line. Every item lights up under the pointer.
 - **More Git:** F1, then type `Git:` for pull, push, fetch, stash, merge, rebase and more.

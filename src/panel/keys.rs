@@ -36,6 +36,14 @@ impl App {
         if self.gitui.cmds.picker.is_some() {
             return crate::gitcmds::picker_key(self, k);
         }
+        // Ctrl+C with text selected in a commit card copies it.
+        if k.modifiers == KeyModifiers::CONTROL && k.code == KeyCode::Char('c') {
+            if let Some(text) = self.gitui.card.as_ref().and_then(crate::scm::Card::selected_text) {
+                self.msg = format!("copied via {}", clipboard_set(&text));
+                self.clip = text;
+                return;
+            }
+        }
         if k.code == KeyCode::Esc && (self.gitui.card.take().is_some() || self.gitui.cmds.toast.take().is_some()) {
             return;
         }

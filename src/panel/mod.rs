@@ -40,6 +40,7 @@ mod sidebar;
 mod quick;
 mod keys;
 mod mouse;
+pub(crate) use mouse::diff_pos_in;
 
 /// A file's (mtime, length), or None when it does not exist.
 type Stamp = Option<(SystemTime, u64)>;
@@ -1386,7 +1387,17 @@ pub(crate) fn clipboard_set(text: &str) -> &'static str {
 
 /// System clipboard text via wl-paste or xclip, each given 500 ms.
 pub(crate) fn clipboard_get() -> Option<String> {
-    for argv in [&["wl-paste", "-n"][..], &["xclip", "-o", "-selection", "clipboard"][..]] {
+    // Tests never read the user's clipboard either (`App::clip` stands in).
+    if cfg!(test) {
+        return None;
+    }
+    // The tool that worked last time first: a missing or hung first one is not waited for
+    // on every paste.
+    static LAST: AtomicUsize = AtomicUsize::new(0);
+    let tools = [&["wl-paste", "-n"][..], &["xclip", "-o", "-selection", "clipboard"][..]];
+    let first = LAST.load(Ordering::Relaxed);
+    for k in [first, 1 - first] {
+        let argv = tools[k];
         let Ok(mut c) = Command::new(argv[0])
             .args(&argv[1..])
             .stdin(Stdio::null())
@@ -1402,6 +1413,7 @@ pub(crate) fn clipboard_get() -> Option<String> {
                 Ok(Some(st)) => {
                     let mut s = String::new();
                     if st.success() && c.stdout.take().is_some_and(|mut o| o.read_to_string(&mut s).is_ok()) {
+                        LAST.store(k, Ordering::Relaxed);
                         return Some(s);
                     }
                     break;

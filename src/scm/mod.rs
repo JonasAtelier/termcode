@@ -92,6 +92,27 @@ pub struct Card {
     /// The message's first row shown (the wheel), and the last it can be (last frame).
     scroll: usize,
     max_scroll: usize,
+    /// A mouse selection in its text: (row, column) where it started and where it is, rows
+    /// counted in the wrapped text; `selecting` while the button is held.
+    pub sel: Option<((usize, u16), (usize, u16))>,
+    pub selecting: bool,
+    /// The wrapped text's rows as last drawn, for a selection's text.
+    rows: Vec<String>,
+}
+
+impl Card {
+    /// The selected text: whole rows between its ends, cut at its columns.
+    pub fn selected_text(&self) -> Option<String> {
+        let (a, b) = self.sel?;
+        let (a, b) = if a <= b { (a, b) } else { (b, a) };
+        let rows = (a.0..=b.0).filter_map(|i| {
+            let row = self.rows.get(i)?;
+            let s = if i == a.0 { crate::editor::byte_at_display(row, a.1 as usize) } else { 0 };
+            let e = if i == b.0 { crate::editor::byte_at_display(row, b.1 as usize) } else { row.len() };
+            Some(row[s..e.max(s)].trim_end())
+        });
+        Some(rows.collect::<Vec<_>>().join("\n")).filter(|t| !t.is_empty())
+    }
 }
 
 /// How long a card outlives the pointer leaving it: time to cross the scrollbar, the
@@ -133,6 +154,8 @@ pub struct Hits {
     pub timeline: Rect,
     pub refs: Rect,
     pub card: Rect,
+    /// The card's text (no buttons, no border).
+    pub card_text: Rect,
     /// `gitcmds`: status bar items, picker rows, notification, conflict actions.
     pub cmds: Vec<(Rect, crate::gitcmds::Hit)>,
     pub picker: Rect,
@@ -1020,7 +1043,7 @@ pub fn open_card(app: &mut App, hash: String, anchor: Rect) {
     // Cleared first: a timer left in the past would keep the event loop from sleeping.
     app.gitui.hover = None;
     let Some(root) = app.git_root.clone() else { return };
-    app.gitui.card = Some(Card { hash: hash.clone(), hover: None, anchor, left: None, scroll: 0, max_scroll: 0 });
+    app.gitui.card = Some(Card { hash: hash.clone(), hover: None, anchor, left: None, scroll: 0, max_scroll: 0, sel: None, selecting: false, rows: Vec::new() });
     app.gitui.spawn(move || {
         let card = gitops::commit_hover(&root, &hash);
         Msg::Card(hash, card)
@@ -1077,6 +1100,18 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
         return true;
     }
     if crate::gitcmds::click(app, p) {
+        return true;
+    }
+    // A press in the card's text: a selection starts (a double-click: the word).
+    let t = app.gitui.hits.card_text;
+    if let Some(c) = app.gitui.card.as_mut().filter(|_| t.contains(p)) {
+        let at = (c.scroll + (p.y - t.y) as usize, p.x - t.x);
+        let word = c.rows.get(at.0).filter(|_| double).and_then(|row| {
+            let (s, e) = crate::editor::word_at(row, crate::editor::byte_at_display(row, at.1 as usize))?;
+            Some(((at.0, crate::editor::display_col(row, s) as u16), (at.0, crate::editor::display_col(row, e) as u16)))
+        });
+        c.sel = Some(word.unwrap_or((at, at)));
+        c.selecting = word.is_none();
         return true;
     }
     let hit = app.gitui.hits.areas.iter().rev().find(|(r, _)| r.contains(p)).map(|(_, h)| *h);
@@ -1183,6 +1218,21 @@ pub fn drag(app: &mut App, p: Position) -> bool {
     if commitdlg::drag(app, p) {
         return true;
     }
+    let t = app.gitui.hits.card_text;
+    if let Some(c) = app.gitui.card.as_mut().filter(|c| c.selecting) {
+        // Past the top or bottom edge it scrolls.
+        if p.y < t.y {
+            c.scroll = c.scroll.saturating_sub(1);
+        } else if p.y >= t.bottom() {
+            c.scroll = (c.scroll + 1).min(c.max_scroll);
+        }
+        let y = p.y.clamp(t.y, t.bottom().saturating_sub(1)) - t.y;
+        let x = p.x.clamp(t.x, t.right()) - t.x;
+        if let Some(s) = c.sel.as_mut() {
+            s.1 = (c.scroll + y as usize, x);
+        }
+        return true;
+    }
     if let Some((y, h)) = app.gitui.timeline_drag {
         if app.side == Side::Explorer && app.side_visible && app.gitui.timeline.open {
             app.gitui.timeline_height = Some((i32::from(h) + i32::from(y) - i32::from(p.y)).clamp(4, 500) as u16);
@@ -1203,6 +1253,9 @@ pub fn drag(app: &mut App, p: Position) -> bool {
 /// Releasing the GRAPH header: a click (no drag) collapses or expands it.
 pub fn release(app: &mut App) -> bool {
     if commitdlg::release(app) {
+        return true;
+    }
+    if app.gitui.card.as_mut().is_some_and(|c| std::mem::take(&mut c.selecting)) {
         return true;
     }
     if app.gitui.timeline_drag.take().is_some() {
@@ -1911,10 +1964,26 @@ fn draw_card(app: &mut App, f: &mut Frame, area: Rect) {
     // The text above the button row, scrolled; a thumb on the right edge when it is taller.
     let text = Rect { height: inner.height.saturating_sub(u16::from(btns)), ..inner };
     let p = card_text(lines);
-    let total = p.line_count(text.width);
+    let total = p.line_count(text.width).min(u16::MAX as usize);
     c.max_scroll = total.saturating_sub(text.height as usize);
     c.scroll = c.scroll.min(c.max_scroll);
-    f.render_widget(p.scroll((c.scroll.min(u16::MAX as usize) as u16, 0)), text);
+    // Wrapped once in full off screen: the rows shown come from it, and a selection's text.
+    let mut bg = ratatui::buffer::Cell::default();
+    bg.set_bg(P.widget_bg);
+    let mut all = ratatui::buffer::Buffer::filled(Rect::new(0, 0, text.width, total as u16), bg);
+    ratatui::widgets::Widget::render(p, all.area, &mut all);
+    c.rows = (0..total as u16).map(|y| buf_row(&all, y)).collect();
+    let sel = c.sel.map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
+    for y in 0..text.height.min((total - c.scroll) as u16) {
+        let src = (c.scroll + y as usize) as u16;
+        for x in 0..text.width {
+            let mut cell = all[(x, src)].clone();
+            if sel.is_some_and(|(a, b)| (a.0, a.1) <= (src as usize, x) && (src as usize, x) < (b.0, b.1)) {
+                cell.set_bg(P.selection);
+            }
+            f.buffer_mut()[(text.x + x, text.y + y)] = cell;
+        }
+    }
     if c.max_scroll > 0 && text.height > 0 {
         let h = text.height as usize;
         let len = (h * h / total).clamp(1, h);
@@ -1924,7 +1993,7 @@ fn draw_card(app: &mut App, f: &mut Frame, area: Rect) {
         }
     }
     let c = app.gitui.card.as_ref().expect("drawn above");
-    app.gitui.hits.card = r;
+    (app.gitui.hits.card, app.gitui.hits.card_text) = (r, text);
     if !btns || inner.height < 2 {
         return;
     }
@@ -1954,6 +2023,17 @@ fn draw_card(app: &mut App, f: &mut Frame, area: Rect) {
         }
         f.render_widget(Line::from(b), Rect::new(x.min(inner.right()), by, room, 1));
     }
+}
+
+/// Row `y` of `b` as text: each cell's symbol, a wide character's second cell skipped.
+fn buf_row(b: &ratatui::buffer::Buffer, y: u16) -> String {
+    let (mut s, mut x) = (String::new(), 0);
+    while x < b.area.width {
+        let sym = b[(x, y)].symbol();
+        s.push_str(sym);
+        x += (sym.width() as u16).max(1);
+    }
+    s
 }
 
 #[cfg(test)]

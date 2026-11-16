@@ -564,6 +564,38 @@ fn a_long_commit_message_scrolls_in_its_card_with_the_buttons_kept() {
 }
 
 #[test]
+fn a_cards_text_selects_by_drag_and_double_click_and_ctrl_c_copies_it() {
+    let (t, r) = repo("card-sel", "echo a > a.txt; git add .; git commit -qm 'add a' -m 'the body line'");
+    let mut app = app(&t, &r);
+    let mut tm = term();
+    app.show_side(Side::Scm, false);
+    settle(&mut app);
+    screen(&mut app, &mut tm);
+    let hash = app.gitui.graph.commits[0].hash.clone();
+    open_card(&mut app, hash, Rect::new(5, 5, 10, 1));
+    settle(&mut app);
+    screen(&mut app, &mut tm);
+    let text = app.gitui.hits.card_text;
+    let c = app.gitui.card.as_ref().unwrap();
+    let row = c.rows.iter().position(|r| r.starts_with("the body line")).unwrap();
+    let y = text.y + (row - c.scroll) as u16;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), (text.x, y));
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), (text.x + 8, y));
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), (text.x + 8, y));
+    screen(&mut app, &mut tm);
+    assert_eq!(tm.backend().buffer()[(text.x + 2, y)].bg, P.selection, "lit");
+    assert_ne!(tm.backend().buffer()[(text.x + 9, y)].bg, P.selection);
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(app.clip, "the body");
+    app.last_click = None;
+    click(&mut app, (text.x + 10, y));
+    click(&mut app, (text.x + 10, y));
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(app.clip, "line", "a double-click takes the word");
+    assert!(app.gitui.card.is_some(), "the card stays up");
+}
+
+#[test]
 fn hover_card_after_a_rest_and_with_i_and_the_info_button() {
     let (t, r) = repo("card", "echo a > a.txt; git add .; git commit -qm 'add a' -m 'the body line'; echo b > b.txt; git add .; git commit -qm second");
     let mut app = app(&t, &r);

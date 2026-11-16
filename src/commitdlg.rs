@@ -156,6 +156,8 @@ pub struct DlgHits {
     pub lists: [Rect; 2],
     pub msg: Rect,
     pub diff: Rect,
+    /// Each side's text area in the diff.
+    pub diff_text: Option<[Rect; 2]>,
     /// The dialog inside its border, and its splitters (`SASHES` order).
     pub inner: Rect,
     pub sashes: [Rect; 3],
@@ -198,6 +200,10 @@ pub struct CommitDlg {
     /// The splitter being dragged.
     pub drag: Option<Sash>,
     pub hdrag: Option<(crate::panel::ScrollHit, u16)>,
+    /// A mouse selection in the message is being dragged.
+    pub msg_drag: bool,
+    /// A mouse selection in the diff is being dragged.
+    pub diff_drag: bool,
 }
 
 fn editable(text: &str) -> (Buffer, View) {
@@ -255,6 +261,8 @@ pub fn open(app: &mut App) {
         hits: DlgHits::default(),
         drag: None,
         hdrag: None,
+        msg_drag: false,
+        diff_drag: false,
     });
     relist(app);
     if let Some(d) = app.gitui.dlg.as_mut() {
@@ -573,6 +581,25 @@ pub fn key(app: &mut App, k: KeyEvent) {
     if d.focus != Pane::Message {
         let l = usize::from(d.focus == Pane::Staged);
         let n = d.lists[l].len();
+        // Ctrl+C copies what is selected in the diff; Ctrl+A selects its side.
+        match k.code {
+            KeyCode::Char('c' | 'C') if ctrl => {
+                let Some(text) = d.diff.as_ref().and_then(|doc| crate::panel::diff_selected_text(doc, &d.diff_view)).filter(|t| !t.is_empty()) else { return };
+                app.msg = format!("copied via {}", crate::panel::clipboard_set(&text));
+                app.clip = text;
+                return;
+            }
+            KeyCode::Char('a' | 'A') if ctrl => {
+                if let Some(doc) = &d.diff {
+                    if let Some(last) = doc.rows.len().checked_sub(1) {
+                        let end = crate::panel::diff_cell(doc, last, d.diff_view.side).map_or(0, str::len);
+                        (d.diff_view.anchor, d.diff_view.cursor) = (Some(Pos::new(0, 0)), Pos::new(last, end));
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
         match k.code {
             KeyCode::Up => d.sel[l] = d.sel[l].saturating_sub(1),
             KeyCode::Down => d.sel[l] = (d.sel[l] + 1).min(n.saturating_sub(1)),
@@ -583,6 +610,11 @@ pub fn key(app: &mut App, k: KeyEvent) {
         }
         d.side = l;
         return show_diff(app);
+    }
+    if let KeyCode::Char(c @ ('c' | 'x' | 'v' | 'C' | 'X' | 'V')) = k.code {
+        if ctrl {
+            return clip_key(app, c.to_ascii_lowercase());
+        }
     }
     let (b, v) = (&mut d.msg, &mut d.view);
     let before = b.version();
@@ -614,6 +646,34 @@ pub fn key(app: &mut App, k: KeyEvent) {
         let t = b.text();
         set_draft(app, &t);
     }
+}
+
+/// Ctrl+C / Ctrl+X the message's selection; Ctrl+V the clipboard into it.
+fn clip_key(app: &mut App, c: char) {
+    if c == 'v' {
+        let t = crate::panel::clipboard_get().unwrap_or_else(|| app.clip.clone());
+        return paste(app, &t);
+    }
+    let Some(d) = app.gitui.dlg.as_mut() else { return };
+    let Some(text) = d.msg.selected_text(&d.view).filter(|t| !t.is_empty()) else { return };
+    if c == 'x' {
+        d.msg.backspace(&mut d.view);
+        if !d.amend {
+            let t = d.msg.text();
+            set_draft(app, &t);
+        }
+    }
+    app.msg = format!("{} via {}", if c == 'x' { "cut" } else { "copied" }, crate::panel::clipboard_set(&text));
+    app.clip = text;
+}
+
+/// The message position under `p`; past an edge, the line beyond it (a drag scrolls).
+fn msg_pos(d: &CommitDlg, p: Position) -> Pos {
+    let m = d.hits.msg;
+    let y = if p.y < m.y { d.view.scroll.saturating_sub(1) } else { d.view.scroll + (p.y - m.y).min(m.height) as usize };
+    let line = y.min(d.msg.lines.len() - 1);
+    let x = d.view.hscroll + p.x.saturating_sub(m.x + 1) as usize;
+    Pos::new(line, editor::byte_at_display(&d.msg.lines[line], x))
 }
 
 pub fn paste(app: &mut App, text: &str) {
@@ -668,14 +728,33 @@ pub fn click(app: &mut App, p: Position, double: bool) {
             return;
         }
     }
+    if let Some(texts) = d.hits.diff_text.filter(|_| d.hits.diff.contains(p)) {
+        // A press in the diff: the cursor on the side under it (a double-click: the word);
+        // a drag selects on that side. The keys go to the file list.
+        let side = u8::from(p.x >= texts[0].right());
+        let Some(doc) = d.diff.as_ref() else { return };
+        let Some(at) = crate::panel::diff_pos_in(doc, &d.diff_view, p, texts, side) else { return };
+        let v = &mut d.diff_view;
+        let word = crate::panel::diff_cell(doc, at.line, side).and_then(|t| editor::word_at(t, at.col)).filter(|_| double);
+        let (a, c) = word.unwrap_or((at.col, at.col));
+        (v.side, v.anchor, v.cursor) = (side, (a != c).then_some(Pos::new(at.line, a)), Pos::new(at.line, c));
+        d.diff_drag = !double;
+        if d.focus == Pane::Message {
+            d.focus = if d.side == 0 { Pane::Unstaged } else { Pane::Staged };
+        }
+        return;
+    }
     let m = d.hits.msg;
     if m.contains(p) {
         d.focus = Pane::Message;
-        let line = (d.view.scroll + (p.y - m.y) as usize).min(d.msg.lines.len() - 1);
-        let x = d.view.hscroll + p.x.saturating_sub(m.x + 1) as usize;
-        d.view.cursor = Pos::new(line, editor::byte_at_display(&d.msg.lines[line], x));
-        d.view.anchor = None;
+        let at = msg_pos(d, p);
         d.view.want_x = None;
+        if double {
+            d.msg.select_word(&mut d.view, at);
+        } else {
+            d.msg.move_to(&mut d.view, at, false);
+            d.msg_drag = true;
+        }
     }
 }
 
@@ -684,6 +763,27 @@ pub fn drag(app: &mut App, p: Position) -> bool {
     let Some(d) = app.gitui.dlg.as_mut() else { return false };
     if let Some((sb, grab)) = d.hdrag {
         d.diff_view.hscroll = crate::decor::drag_offset(p.x as i32 - sb.track.x as i32, grab, sb.track.width, sb.slider.1, sb.max_off);
+        return true;
+    }
+    if d.msg_drag {
+        let at = msg_pos(d, p);
+        d.msg.move_to(&mut d.view, at, true);
+        return true;
+    }
+    if let (true, Some(texts), Some(doc)) = (d.diff_drag, d.hits.diff_text, d.diff.as_ref()) {
+        // Past the top or bottom edge it scrolls.
+        let r = d.hits.diff;
+        let v = &mut d.diff_view;
+        if p.y < r.y {
+            v.scroll = v.scroll.saturating_sub(1);
+        } else if p.y >= r.bottom() {
+            v.scroll = (v.scroll + 1).min(doc.rows.len().saturating_sub(1));
+        }
+        let q = Position::new(p.x, p.y.clamp(r.y, r.bottom().saturating_sub(1)));
+        if let Some(at) = crate::panel::diff_pos_in(doc, v, q, texts, v.side) {
+            v.anchor.get_or_insert(v.cursor);
+            v.cursor = at;
+        }
         return true;
     }
     let Some(s) = d.drag else { return false };
@@ -695,6 +795,9 @@ pub fn drag(app: &mut App, p: Position) -> bool {
 /// Releasing a splitter keeps its position in layout.json.
 pub fn release(app: &mut App) -> bool {
     if app.gitui.dlg.as_mut().and_then(|d| d.hdrag.take()).is_some() { return true; }
+    if app.gitui.dlg.as_mut().is_some_and(|d| std::mem::take(&mut d.msg_drag) | std::mem::take(&mut d.diff_drag)) {
+        return true;
+    }
     if app.gitui.dlg.as_mut().and_then(|d| d.drag.take()).is_none() {
         return false;
     }
@@ -835,8 +938,8 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         d.hits.diff = body;
         fill(f, body, P.editor_bg);
         if let Some(doc) = &d.diff {
-            let (_, _, _, hsb) = diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), gap, &[], None, true, &mut d.diff_syntax, None, false);
-            d.hits.hscroll = hsb;
+            let (_, _, texts, hsb) = diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), gap, &[], None, true, &mut d.diff_syntax, None, false);
+            (d.hits.hscroll, d.hits.diff_text) = (hsb, texts);
             if let Some(sb) = hsb {
                 let color = if d.hdrag.is_some() { P.slider_active } else if hover.is_some_and(|p| sb.track.contains(p)) { P.slider_hover } else { P.slider };
                 crate::ui::paint_slider(f, sb.track, sb.slider, color);
@@ -930,6 +1033,64 @@ mod tests {
     use crate::theme::P;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    #[test]
+    fn message_drag_and_double_click_select_then_copy_cut_and_paste() {
+        use crate::scm::ui_tests::{key, typ};
+        let (t, r) = repo("msgclip", "echo a > a.txt; git add .; git commit -qm base; echo b > a.txt");
+        let mut app = app(&t, &r);
+        let mut tm = Terminal::new(TestBackend::new(150, 40)).unwrap();
+        app.commit();
+        settle(&mut app);
+        screen(&mut app, &mut tm);
+        typ(&mut app, "fix the bug");
+        screen(&mut app, &mut tm);
+        let m = app.gitui.dlg.as_ref().unwrap().hits.msg;
+        let ctrl = |app: &mut App, c| key(app, KeyCode::Char(c), KeyModifiers::CONTROL);
+        let text = |app: &App| app.gitui.dlg.as_ref().unwrap().msg.text();
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), (m.x + 1, m.y));
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), (m.x + 8, m.y));
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), (m.x + 8, m.y));
+        assert!(!app.gitui.dlg.as_ref().unwrap().msg_drag, "the drag ends on release");
+        ctrl(&mut app, 'c');
+        assert_eq!((app.clip.as_str(), text(&app).as_str()), ("fix the", "fix the bug"), "a drag selects; Ctrl+C copies");
+        screen(&mut app, &mut tm);
+        click(&mut app, (m.x + 10, m.y));
+        click(&mut app, (m.x + 10, m.y));
+        ctrl(&mut app, 'x');
+        assert_eq!((app.clip.as_str(), text(&app).as_str()), ("bug", "fix the "), "a double-click takes the word; Ctrl+X cuts it");
+        ctrl(&mut app, 'v');
+        ctrl(&mut app, 'v');
+        assert_eq!(text(&app), "fix the bugbug", "Ctrl+V pastes at the caret");
+    }
+
+    #[test]
+    fn the_diff_selects_by_drag_and_double_click_and_ctrl_c_copies_one_side() {
+        use crate::scm::ui_tests::key;
+        let (t, r) = repo("dlgdiffsel", "echo 'old words here' > a.txt; git add .; git commit -qm base; echo 'new words there' > a.txt");
+        let mut app = app(&t, &r);
+        let mut tm = Terminal::new(TestBackend::new(150, 40)).unwrap();
+        app.commit();
+        settle(&mut app);
+        screen(&mut app, &mut tm);
+        let texts = app.gitui.dlg.as_ref().unwrap().hits.diff_text.unwrap();
+        // The right side's row with "new words there".
+        let buf = tm.backend().buffer().clone();
+        let y = (texts[1].y..texts[1].bottom()).find(|&y| (texts[1].x..texts[1].right()).map(|x| buf[(x, y)].symbol()).collect::<String>().contains("new words")).unwrap();
+        let x0 = (texts[1].x..texts[1].right()).find(|&x| buf[(x, y)].symbol() == "n").unwrap();
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), (x0, y));
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), (x0 + 9, y));
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), (x0 + 9, y));
+        assert_ne!(app.gitui.dlg.as_ref().unwrap().focus, Pane::Message, "the keys leave the message");
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.clip, "new words");
+        app.last_click = None;
+        click(&mut app, (x0 + 11, y));
+        click(&mut app, (x0 + 11, y));
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.clip, "there", "a double-click takes the word");
+        assert_eq!(app.gitui.dlg.as_ref().unwrap().msg.text(), "", "the message untouched");
+    }
 
     #[test]
     fn horizontal_scrollbar_and_wheel_scroll_both_diff_sides_without_changing_the_message() {
