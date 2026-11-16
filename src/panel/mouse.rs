@@ -64,17 +64,17 @@ impl App {
     /// Start the tooltip timer on a cut Explorer name, keep it while the pointer stays on
     /// that row; true when a shown tooltip goes.
     pub(super) fn track_tip(&mut self, p: Position) -> bool {
-        if self.tip.as_ref().is_some_and(|t| t.shown) && self.ui.tip_ext.contains(p) {
-            return false; // along the grown name: still that row
+        if self.tip.as_ref().is_some_and(|t| t.shown) && (self.ui.tip_ext.contains(p) || self.ui.tip_md5.contains(p)) {
+            return false; // along the grown name or on the MD5 line: still that row
         }
-        let hit = self.ui.tips.iter().rev().find(|(r, _, _)| r.contains(p)).cloned();
-        if let (Some(t), Some((r, _, _))) = (&self.tip, &hit) {
+        let hit = self.ui.tips.iter().rev().find(|(r, ..)| r.contains(p)).cloned();
+        if let (Some(t), Some((r, ..))) = (&self.tip, &hit) {
             if t.rect == *r {
                 return false;
             }
         }
         let was = self.tip.as_ref().is_some_and(|t| t.shown);
-        self.tip = hit.map(|(rect, text, x)| Tip { rect, text, x, since: Instant::now(), shown: false });
+        self.tip = hit.map(|(rect, text, x, file)| Tip { rect, text, x, since: Instant::now(), shown: false, file, md5: None, md5_rx: None });
         was
     }
 

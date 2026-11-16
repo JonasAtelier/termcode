@@ -4860,8 +4860,8 @@ fn a_cut_explorer_name_shows_in_full_once_the_pointer_rests_on_it() {
     let mut app = App::new(root.clone(), None);
     let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
     assert!(!screen(&mut app, &mut t).contains(&long), "cut in the Explorer");
-    let (r, _, name_x) = app.ui.tips.iter().find(|(_, s, _)| *s == long).cloned().expect("its row offers the full name");
-    assert!(app.ui.tips.iter().all(|(_, s, _)| *s == long), "only cut names do");
+    let (r, _, name_x, _) = app.ui.tips.iter().find(|(_, s, ..)| s.as_deref() == Some(long.as_str())).cloned().expect("its row offers the full name");
+    assert!(app.ui.tips.iter().all(|(_, s, ..)| s.is_none() || s.as_deref() == Some(long.as_str())), "only cut names offer one");
     app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
     assert!(app.tip.as_ref().is_some_and(|t| !t.shown), "not at once");
     app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 6, row: r.y, modifiers: KeyModifiers::NONE });
@@ -6579,5 +6579,45 @@ fn terminals_open_as_tabs_switch_close_and_find_in_the_scrollback() {
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x.x + 1, x.y);
     assert_eq!((app.terms.len(), app.term_at, app.term_open), (1, 0, true));
     app.terms.clear();
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn resting_on_an_explorer_file_shows_its_md5_with_a_copy_button() {
+    let root = repo("tip-md5");
+    fs::write(root.join("fw.bin"), "x\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(170, 20)).unwrap();
+    screen(&mut app, &mut t);
+    let (r, _, _, file) = app.ui.tips.iter().find(|(_, _, _, f)| f.as_deref() == Some("fw.bin")).cloned().expect("a file's row has a tooltip");
+    assert_eq!(file.as_deref(), Some("fw.bin"));
+    assert!(app.ui.tips.iter().all(|(_, _, _, f)| f.as_deref() != Some("src")), "not a folder's");
+    app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
+    app.tip.as_mut().unwrap().since -= TIP_DELAY;
+    let mut dirty = false;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !app.tip.as_ref().is_some_and(|t| t.md5.is_some()) {
+        assert!(Instant::now() < deadline, "no MD5");
+        app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("MD5  401b30e3b8b5d629635a5c613cdb7919") && s.contains("Copy"), "{s}");
+    assert_eq!(app.ui.tip_md5.y, r.y + 1, "on the line under the row");
+    // Onto the line it stays; Copy copies the sum.
+    let c = app.ui.tip_copy;
+    app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: c.x + 2, row: c.y, modifiers: KeyModifiers::NONE });
+    assert!(app.tip.as_ref().is_some_and(|t| t.shown));
+    app.handle_event(Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: c.x + 2, row: c.y, modifiers: KeyModifiers::NONE }));
+    app.handle_event(Event::Mouse(MouseEvent { kind: MouseEventKind::Up(MouseButton::Left), column: c.x + 2, row: c.y, modifiers: KeyModifiers::NONE }));
+    assert_eq!(app.clip, "401b30e3b8b5d629635a5c613cdb7919");
+    assert!(app.msg.starts_with("copied the MD5 of fw.bin"), "{}", app.msg);
+    // Off it, it goes; opened, a .bin is its hexdump.
+    app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: 0, row: 0, modifiers: KeyModifiers::NONE });
+    assert!(app.tip.is_none());
+    app.open_file(0, "fw.bin", false);
+    wait(&mut app);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("00000000  78 0a") && s.contains("|x.|") && s.contains("Hex"), "{s}");
     fs::remove_dir_all(&root).unwrap();
 }

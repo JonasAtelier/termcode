@@ -85,10 +85,35 @@ const TIP_DELAY: Duration = Duration::from_millis(500);
 
 impl Tip {
     /// The row grown to show the whole name: from the name's column, one blank after it,
-    /// up to `right` (the screen's edge).
+    /// up to `right` (the screen's edge); nothing when the name was not cut.
     pub fn ext(&self, right: u16) -> Rect {
-        let w = (unicode_width::UnicodeWidthStr::width(self.text.as_str()) as u16 + 1).min(right.saturating_sub(self.x));
+        let Some(text) = &self.text else { return Rect::default() };
+        let w = (unicode_width::UnicodeWidthStr::width(text.as_str()) as u16 + 1).min(right.saturating_sub(self.x));
         Rect::new(self.x, self.rect.y, w, 1)
+    }
+
+    /// Shown now: a file's MD5 starts on a thread (`md5sum`), `tick` takes it in.
+    fn show(&mut self, root: &Path) {
+        self.shown = true;
+        let Some(path) = self.file.as_ref().map(|f| root.join(f)) else { return };
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let out = Command::new("md5sum").arg("--").arg(&path).stdin(Stdio::null()).stderr(Stdio::null()).output();
+            let _ = tx.send(match out {
+                // A name with a backslash or newline puts a backslash before the sum.
+                Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).split_whitespace().next().unwrap_or("").trim_start_matches('\\').to_string()),
+                Ok(_) => Err("unreadable".to_string()),
+                Err(_) => Err("md5sum not found".to_string()),
+            });
+        });
+        self.md5_rx = Some(rx);
+    }
+
+    /// The MD5 once it came; true when it just did.
+    fn tick(&mut self) -> bool {
+        let Some(got) = self.md5_rx.as_ref().and_then(|rx| rx.try_recv().ok()) else { return false };
+        (self.md5, self.md5_rx) = (Some(got), None);
+        true
     }
 }
 
@@ -192,14 +217,19 @@ impl Rename {
     }
 }
 
-/// The tooltip of the cut name under the pointer: its row, the full name, since when.
+/// The tooltip of the Explorer row under the pointer: its row, a cut name's full name,
+/// since when; a file's MD5 (with a Copy button) on the line under it.
 pub struct Tip {
     pub rect: Rect,
-    pub text: String,
-    /// The column the cut name starts at: the full one is drawn from there.
+    pub text: Option<String>,
+    /// The column the name starts at: a cut one is drawn in full from there.
     pub x: u16,
     since: Instant,
     pub shown: bool,
+    /// The file's path, its MD5 (or why there is none) once `md5sum` gave it.
+    pub file: Option<String>,
+    pub md5: Option<Result<String, String>>,
+    md5_rx: Option<mpsc::Receiver<Result<String, String>>>,
 }
 /// /proc/<pid>/comm of a running panel (herdr-code: its name before termcode): its
 /// backups are its own.
@@ -733,10 +763,14 @@ pub enum HRow {
 /// Screen areas from the last draw, for mouse hit-testing.
 #[derive(Default)]
 pub struct Hits {
-    /// Explorer rows whose names were cut, with the full name and where it starts.
-    pub tips: Vec<(Rect, String, u16)>,
+    /// Explorer rows with a tooltip: a cut name's full name, where the name starts, and a
+    /// file's path (its tooltip adds its MD5).
+    pub tips: Vec<(Rect, Option<String>, u16, Option<String>)>,
     /// The hovered cut row grown to its whole name (part of that row for the mouse).
     pub tip_ext: Rect,
+    /// The hovered file's MD5 line under its row, and its Copy button.
+    pub tip_md5: Rect,
+    pub tip_copy: Rect,
     /// The Explorer row being renamed, its box and the display columns scrolled off it.
     pub rename: Rect,
     pub rename_field: (Rect, usize),

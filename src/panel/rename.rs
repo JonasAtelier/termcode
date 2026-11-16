@@ -214,6 +214,13 @@ impl App {
         (!inside && !stays && !rels.is_empty()).then_some(into)
     }
 
+    /// The Copy button of a file's tooltip: its MD5 onto the clipboard.
+    pub(super) fn copy_md5(&mut self) {
+        let Some((Some(Ok(sum)), file)) = self.tip.as_ref().map(|t| (t.md5.clone(), t.file.clone().unwrap_or_default())) else { return };
+        self.msg = format!("copied the MD5 of {} via {}", base(&file), clipboard_set(&sum));
+        self.clip = sum;
+    }
+
     /// The name of folder `into` as messages say it (the root: the folder's name).
     fn folder_name(&self, into: &str) -> String {
         if into.is_empty() { self.repo.clone() } else { base(into).to_string() }

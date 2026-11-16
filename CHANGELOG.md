@@ -11,6 +11,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ### Added
 - A binary file (or any `.bin`) opens as a read-only hexdump, as `hexdump -C` prints it:
   offsets, bytes in hex, and the printable ones as text.
+- Resting the pointer on a file in the Explorer shows its MD5 on the line under it, with
+  a Copy button.
 
 ### Fixed
 - The breadcrumbs show the symbols around the cursor from a file's first frame (they

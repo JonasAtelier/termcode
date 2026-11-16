@@ -384,9 +384,10 @@ impl App {
             *dirty |= self.upgrade.told != told;
         }
         if let Some(t) = self.tip.as_mut().filter(|t| !t.shown && t.since.elapsed() >= TIP_DELAY) {
-            t.shown = true;
+            t.show(&self.root);
             *dirty = true;
         }
+        *dirty |= self.tip.as_mut().is_some_and(Tip::tick);
         if JOB_PANICKED.swap(false, Ordering::SeqCst) {
             self.msg = "A background task failed. Please report it: F1 Help: Report Issue copies the details.".into();
             *dirty = true;
@@ -429,7 +430,8 @@ impl App {
             || self.gitui.refs.busy()
             || self.lints.busy()
             || self.gh.busy()
-            || self.file_job.is_some();
+            || self.file_job.is_some()
+            || self.tip.as_ref().is_some_and(|t| t.md5_rx.is_some());
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
         let upgrade_due = self.upgrade.next.filter(|_| self.upgrade.watch);
@@ -497,7 +499,15 @@ impl App {
                 if m.kind != MouseEventKind::Moved {
                     crate::session::touch(self); // clicks, drags, wheel: tabs, cursors, scroll
                     let button = matches!(m.kind, MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left));
-                    match self.tip.as_ref().filter(|t| t.shown && button && self.ui.tip_ext.contains(Position::new(m.column, m.row))) {
+                    let p = Position::new(m.column, m.row);
+                    // The MD5 line is the tooltip's own: its Copy button copies, the rest is inert.
+                    if button && self.tip.as_ref().is_some_and(|t| t.shown) && self.ui.tip_md5.contains(p) {
+                        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) && self.ui.tip_copy.contains(p) {
+                            self.copy_md5();
+                        }
+                        return true;
+                    }
+                    match self.tip.as_ref().filter(|t| t.shown && button && self.ui.tip_ext.contains(p)) {
                         // The grown name is its row: a click there selects, opens or renames it.
                         Some(t) => (m.column, m.row) = (t.x, t.rect.y),
                         None => tip = self.tip.take().is_some_and(|t| t.shown),

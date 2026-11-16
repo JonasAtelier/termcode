@@ -728,8 +728,8 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         match app.side {
             Side::Explorer => {
                 let (tip, field) = explorer_row(app, f, ir, bg, i);
-                if let Some((full, x)) = tip {
-                    app.ui.tips.push((ir, full, x));
+                if let Some((full, x, file)) = tip {
+                    app.ui.tips.push((ir, full, x, file));
                 }
                 if let Some(field) = field {
                     (app.ui.rename, app.ui.rename_field) = (ir, field);
@@ -803,8 +803,8 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
             Side::Explorer if cap == 1 => breadcrumb_row(app, f, ir, bg, i),
             Side::Explorer => {
                 let (tip, field) = explorer_row(app, f, ir, bg, i);
-                if let Some((full, x)) = tip {
-                    app.ui.tips.push((ir, full, x));
+                if let Some((full, x, file)) = tip {
+                    app.ui.tips.push((ir, full, x, file));
                 }
                 if let Some(field) = field {
                     (app.ui.rename, app.ui.rename_field) = (ir, field);
@@ -913,12 +913,13 @@ pub(crate) fn badge(n: usize, under: Color) -> Vec<Span<'static>> {
     pill(n.to_string(), Style::new().fg(P.badge_fg).bg(P.badge_bg), under)
 }
 
-/// An Explorer row's tooltip (full name, its column) and rename box (box, scrolled cols).
-type RowExtras = (Option<(String, u16)>, Option<(Rect, usize)>);
+/// An Explorer row's tooltip (a cut name's full name, the name's column, a file's path)
+/// and rename box (box, scrolled cols).
+type RowExtras = (Option<(Option<String>, u16, Option<String>)>, Option<(Rect, usize)>);
 
-/// One Explorer row; the full name when it had to be cut and the column the name starts
-/// at (for its tooltip), and the rename box with how far it is scrolled when this row is
-/// being renamed (for the mouse).
+/// One Explorer row; its tooltip when it has one (a cut name in full, a file's MD5) with
+/// the column the name starts at, and the rename box with how far it is scrolled when this
+/// row is being renamed (for the mouse).
 fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> RowExtras {
     let n = &app.tree[i];
     let ic = icons();
@@ -964,7 +965,9 @@ fn explorer_row(app: &App, f: &mut Frame, r: Rect, bg: Color, i: usize) -> RowEx
         let skip = rename_field(f, field, rn, app.rename_conflict());
         return (None, Some((field, skip)));
     }
-    ((name != n.name).then(|| (n.name.clone(), name_x)), None)
+    let full = (name != n.name).then(|| n.name.clone());
+    let file = (!n.dir).then(|| n.path.clone());
+    ((full.is_some() || file.is_some()).then_some((full, name_x, file)), None)
 }
 
 /// The in-place rename box: the name on the input colours with its selection, scrolled
@@ -1004,16 +1007,44 @@ fn explorer_overlay(app: &mut App, f: &mut Frame, area: Rect) {
     }
     let Some(t) = app.tip.as_ref().filter(|t| t.shown) else { return };
     let ext = t.ext(area.right());
-    let shown = app.hover.is_some_and(|p| t.rect.contains(p) || ext.contains(p)) && app.ui.tips.iter().any(|(r, s, _)| *r == t.rect && *s == t.text);
+    // A file's MD5 on the line under its row (over the row above at the list's foot).
+    let md5 = t.file.as_ref().map(|_| {
+        let y = if t.rect.y + 1 < app.ui.side_list.bottom() { t.rect.y + 1 } else { t.rect.y.saturating_sub(1) };
+        let (sum, button) = match &t.md5 {
+            None => ("computing…".to_string(), false),
+            Some(Ok(s)) => (s.clone(), true),
+            Some(Err(e)) => (e.clone(), false),
+        };
+        let text = format!(" MD5  {sum} ");
+        let w = (text.width() as u16 + if button { 7 } else { 0 }).min(area.right().saturating_sub(t.x));
+        (Rect::new(t.x, y, w, 1), text, button)
+    });
+    let on = |p: Position| t.rect.contains(p) || ext.contains(p) || md5.as_ref().is_some_and(|(r, ..)| r.contains(p));
+    let shown = app.hover.is_some_and(on) && app.ui.tips.iter().any(|(r, s, _, file)| *r == t.rect && *s == t.text && *file == t.file);
     if !shown {
         return;
     }
-    // The row's own look (hover or selection background, git colour), carried on.
-    let look = f.buffer_mut()[(t.x, t.rect.y)].style();
-    f.render_widget(Clear, ext);
-    fill(f, ext, look.bg.unwrap_or(P.sidebar_bg));
-    f.render_widget(Span::styled(format!("{} ", t.text), look), ext);
-    app.ui.tip_ext = ext;
+    if let Some(text) = &t.text {
+        // The row's own look (hover or selection background, git colour), carried on.
+        let look = f.buffer_mut()[(t.x, t.rect.y)].style();
+        f.render_widget(Clear, ext);
+        fill(f, ext, look.bg.unwrap_or(P.sidebar_bg));
+        f.render_widget(Span::styled(format!("{text} "), look), ext);
+        app.ui.tip_ext = ext;
+    }
+    if let Some((r, text, button)) = md5 {
+        f.render_widget(Clear, r);
+        fill(f, r, P.widget_bg);
+        let mut spans = vec![Span::styled(text.clone(), Style::new().fg(if button || t.md5.is_none() { P.widget_fg } else { P.error_fg }))];
+        if button {
+            let br = Rect::new(r.x + text.width() as u16, r.y, 6, 1).intersection(r);
+            let hot = app.hover.is_some_and(|p| br.contains(p));
+            spans.push(Span::styled(" Copy ", button_style(false, hot)));
+            app.ui.tip_copy = br;
+        }
+        f.render_widget(Line::from(spans), r);
+        app.ui.tip_md5 = r;
+    }
 }
 
 fn search_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow, i: usize) {
