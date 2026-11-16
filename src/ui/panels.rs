@@ -142,9 +142,66 @@ pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
     }
     app.ui.term_sash = Rect::new(r.x, r.y, r.width, 1);
     app.ui.term = inner;
-    if let Some(t) = app.term.as_mut() {
+    // On the top border after the title: a tab per terminal (more than one), then +; × at
+    // the right end closes the one shown.
+    let mut x = r.x + 2 + " Terminal ".len() as u16 + 1;
+    let n = app.terms.len();
+    for i in 0..n {
+        if n < 2 {
+            break;
+        }
+        let label = format!(" {}: {} ", i + 1, app.terms[i].name());
+        let w = (label.width() as u16).min(r.right().saturating_sub(x + 8));
+        if w < 4 {
+            break;
+        }
+        let st = if i == app.term_at { Style::new().fg(P.editor_fg).bg(P.list_active_bg).bold() } else { Style::new().fg(P.dim).bg(P.editor_bg) };
+        let tr = Rect::new(x, r.y, w, 1);
+        f.render_widget(Span::styled(fit(&label, w as usize), st), tr);
+        app.ui.term_tabs.push((tr, i));
+        x += w + 1;
+    }
+    let ascii = crate::theme::ascii();
+    let hot = |q: Rect| app.hover.is_some_and(|p| q.contains(p));
+    let btn = |q: Rect| Style::new().fg(if hot(q) { P.editor_fg } else { P.icon_fg }).bg(if hot(q) { P.list_hover_bg } else { P.editor_bg });
+    if x + 3 < r.right().saturating_sub(4) {
+        let nr = Rect::new(x, r.y, 3, 1);
+        f.render_widget(Span::styled(" + ", btn(nr)), nr);
+        app.ui.term_new = nr;
+    }
+    if r.width > 20 && n > 0 {
+        let kr = Rect::new(r.right() - 5, r.y, 3, 1);
+        f.render_widget(Span::styled(if ascii { " x " } else { " × " }, btn(kr)), kr);
+        app.ui.term_kill = kr;
+    }
+    if let Some(t) = app.terms.get_mut(app.term_at) {
         t.resize(inner.height, inner.width);
-        t.draw(f.buffer_mut(), inner, (P.editor_fg, P.editor_bg, P.selection), focused);
+        t.draw(f.buffer_mut(), inner, (P.editor_fg, P.editor_bg, P.selection), focused && app.term_find.is_none());
+    }
+    // The find box, over the screen's top right corner.
+    if let Some(fd) = &app.term_find {
+        let count = match fd.count {
+            (_, 0) if fd.query.is_empty() => String::new(),
+            (_, 0) => "No results".to_string(),
+            (k, all) => format!("{k} of {all}"),
+        };
+        let w = 44.min(inner.width);
+        let fr = Rect::new(inner.right() - w, inner.y, w, 1);
+        let tail = format!("  {count}  ↑↓ Esc ");
+        let room = (w as usize).saturating_sub(tail.width() + 3);
+        let q: String = {
+            let skip = fd.query.width().saturating_sub(room);
+            fd.query.chars().scan(0, |acc, c| { *acc += c.to_string().width(); Some((*acc, c)) }).filter(|(acc, _)| *acc > skip).map(|(_, c)| c).collect()
+        };
+        let line = Line::from(vec![
+            Span::styled(" ⌕ ", Style::new().fg(P.icon_fg)),
+            Span::styled(fit(&q, room), Style::new().fg(P.input_fg).bg(P.input_bg)),
+            Span::styled(tail, Style::new().fg(if fd.count.1 == 0 && !fd.query.is_empty() { P.error_fg } else { P.dim })),
+        ]);
+        f.render_widget(Paragraph::new(line).style(Style::new().bg(P.widget_bg)), fr);
+        if focused {
+            f.set_cursor_position((fr.x + 3 + (q.width() as u16).min(room as u16), fr.y));
+        }
     }
 }
 

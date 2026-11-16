@@ -3,14 +3,14 @@
 //! that screen cell by cell. The event loop waits on the PTY beside the keyboard
 //! (`fd`), so output shows as it comes, and reads it without blocking (`pump`).
 
-use crate::panel::{App, Drag, Focus};
+use crate::panel::{App, Drag, Focus, PAct, Prompt};
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 const SCROLLBACK: usize = 5000;
 
 thread_local! {
-    /// The open terminal's PTY, for the event loop (on this thread) to wait on; -1: none.
-    static FD: Cell<i32> = const { Cell::new(-1) };
+    /// The open terminals' PTYs, for the event loop (on this thread) to wait on.
+    static FDS: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The user's shell: `$SHELL`, else /bin/sh.
@@ -31,8 +31,8 @@ pub fn shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into())
 }
 
-pub fn fd() -> i32 {
-    FD.with(|f| f.get())
+pub fn fds() -> Vec<i32> {
+    FDS.with(|f| f.borrow().clone())
 }
 
 pub struct Term {
@@ -83,7 +83,7 @@ impl Term {
             });
         }
         let child = cmd.spawn()?;
-        FD.with(|f| f.set(m));
+        FDS.with(|f| f.borrow_mut().push(m));
         Ok(Term { master, child: Some(child), parser: vt100::Parser::new(rows, cols, SCROLLBACK), sel: None })
     }
 
@@ -277,6 +277,47 @@ impl Term {
         }
     }
 
+    /// Every row: the scrollback's, oldest first, then the screen's.
+    pub fn lines(&mut self) -> Vec<String> {
+        let keep = self.parser.screen().scrollback();
+        let cols = self.parser.screen().size().1;
+        self.parser.set_scrollback(usize::MAX);
+        let n = self.parser.screen().scrollback();
+        let mut v: Vec<String> = self.parser.screen().rows(0, cols).take(n).collect();
+        self.parser.set_scrollback(0);
+        v.extend(self.parser.screen().rows(0, cols));
+        self.parser.set_scrollback(keep);
+        v
+    }
+
+    /// Scrolls row `abs` of `lines` into the middle of the view and selects its columns
+    /// `cols` (start, end exclusive).
+    pub fn show(&mut self, abs: usize, cols: (u16, u16)) {
+        self.parser.set_scrollback(usize::MAX);
+        let n = self.parser.screen().scrollback();
+        let rows = self.parser.screen().size().0 as usize;
+        let top = abs.saturating_sub(rows / 2).min(n);
+        self.parser.set_scrollback(n - top);
+        let row = (abs - top) as u16;
+        self.sel = Some(((row, cols.0), (row, cols.1.saturating_sub(1).max(cols.0))));
+    }
+
+    /// Back to the live screen, nothing selected.
+    pub fn scroll_to_bottom(&mut self) {
+        self.parser.set_scrollback(0);
+        self.sel = None;
+    }
+
+    /// Whether a full-screen program (vim, less, htop) has the screen.
+    pub fn full_screen(&self) -> bool {
+        self.parser.screen().alternate_screen()
+    }
+
+    /// Its tab's name: what runs in it, else the shell's name.
+    pub fn name(&self) -> String {
+        self.running().unwrap_or_else(|| Path::new(&shell()).file_name().map_or_else(|| "sh".into(), |n| n.to_string_lossy().into_owned()))
+    }
+
     #[cfg(test)]
     pub fn contents(&self) -> String {
         self.parser.screen().contents()
@@ -287,11 +328,8 @@ impl Drop for Term {
     /// The master closes after this, which hangs the shell up as closing a terminal
     /// window does; it is reaped in the background (no zombie, no signal sent).
     fn drop(&mut self) {
-        FD.with(|f| {
-            if f.get() == self.master.as_raw_fd() {
-                f.set(-1);
-            }
-        });
+        let fd = self.master.as_raw_fd();
+        FDS.with(|f| f.borrow_mut().retain(|&x| x != fd));
         if let Some(c) = self.child.take() {
             crate::nav::reap(c, None);
         }
@@ -335,29 +373,106 @@ pub fn toggle_key(k: &KeyEvent) -> bool {
     k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('`' | ' '))
 }
 
+/// Find in a terminal's scrollback (Ctrl+F while the shell, not a full-screen program,
+/// has the screen): the text sought and the match shown, (row, start, end) in `lines`.
+#[derive(Default)]
+pub struct TermFind {
+    pub query: String,
+    pub at: Option<(usize, usize, usize)>,
+    /// The match shown's place among them all, and how many there are.
+    pub count: (usize, usize),
+}
+
+/// Each case-insensitive match of `q` in `lines`: (row, start, end), in display columns.
+fn matches(lines: &[String], q: &str) -> Vec<(usize, usize, usize)> {
+    let q = q.to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let mut v = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        let low = l.to_lowercase();
+        // Lowercasing keeps byte offsets for ASCII; other text is matched as is.
+        let hay = if low.len() == l.len() { low.as_str() } else { l.as_str() };
+        let mut from = 0;
+        while let Some(k) = hay[from..].find(&q) {
+            let s = from + k;
+            let e = s + q.len();
+            v.push((i, crate::editor::display_col(l, s), crate::editor::display_col(l, e)));
+            from = e;
+        }
+    }
+    v
+}
+
 impl App {
+    /// The terminal the panel shows.
+    pub fn term(&self) -> Option<&Term> {
+        self.terms.get(self.term_at)
+    }
+
     /// View: Toggle Terminal, as VS Code's: a focused terminal hides, any other shows and
-    /// takes the keys (its shell started in the workspace root if none runs).
+    /// takes the keys (a shell started in the workspace root if none runs).
     pub fn toggle_terminal(&mut self) {
         if self.term_open && self.focus == Focus::Term {
             return self.hide_terminal();
         }
-        if self.term.is_none() {
-            // The panel's size is known at its first frame; until then, a fair guess.
-            let ed = self.ui.editor_area;
-            let rows = self.term_h.unwrap_or(ed.height / 3).saturating_sub(2);
-            match Term::spawn(&shell(), &self.root, rows, ed.width.saturating_sub(2).max(20)) {
-                Ok(t) => self.term = Some(t),
-                Err(e) => {
-                    self.msg = format!("terminal: {e}");
-                    return;
-                }
-            }
+        if self.terms.is_empty() {
+            return self.new_terminal();
         }
         (self.term_open, self.focus) = (true, Focus::Term);
     }
 
-    /// Hides the panel; the shell goes on running.
+    /// Terminal: Create New Terminal (Ctrl+Shift+`, the panel's +): another shell, shown.
+    pub fn new_terminal(&mut self) {
+        // The panel's size is known at its first frame; until then, a fair guess.
+        let (ed, term) = (self.ui.editor_area, self.ui.term);
+        let (rows, cols) = if term.is_empty() { (self.term_h.unwrap_or(ed.height / 3).saturating_sub(2), ed.width.saturating_sub(2).max(20)) } else { (term.height, term.width) };
+        match Term::spawn(&shell(), &self.root, rows, cols) {
+            Ok(t) => {
+                self.terms.push(t);
+                self.term_at = self.terms.len() - 1;
+                self.term_find = None;
+                (self.term_open, self.focus) = (true, Focus::Term);
+            }
+            Err(e) => self.msg = format!("terminal: {e}"),
+        }
+    }
+
+    /// Terminal: Kill the Active Terminal Instance (the panel's ×): terminal `i` closed,
+    /// asked first while a program runs in it.
+    pub fn kill_terminal(&mut self, i: usize, ask: bool) {
+        let Some(t) = self.terms.get(i) else { return };
+        if ask {
+            if let Some(p) = t.running() {
+                self.prompt = Some(Prompt {
+                    text: vec![format!("{p} is still running in terminal {}.", i + 1), "Closing the terminal ends it.".into()],
+                    buttons: vec![("Kill".into(), PAct::KillTerminal(i)), ("Cancel".into(), PAct::Cancel)],
+                    sel: 1,
+                });
+                return;
+            }
+        }
+        self.terms.remove(i); // its drop hangs the shell up
+        self.term_find = None;
+        if self.term_at >= i && self.term_at > 0 {
+            self.term_at -= 1;
+        }
+        if self.terms.is_empty() {
+            self.hide_terminal();
+        }
+    }
+
+    /// Terminal: Focus Next / Previous Terminal (Ctrl+PgDn / Ctrl+PgUp in it, a tab's click).
+    pub fn switch_terminal(&mut self, to: usize) {
+        if to < self.terms.len() {
+            self.term_at = to;
+            self.term_find = None;
+            (self.term_open, self.focus) = (true, Focus::Term);
+        }
+    }
+
+    /// Hides the panel; the shells go on running.
     pub fn hide_terminal(&mut self) {
         self.term_open = false;
         if self.focus == Focus::Term {
@@ -365,18 +480,100 @@ impl App {
         }
     }
 
-    /// The shell's output since the last look; true when the frame changes. A shell that
-    /// exited takes its panel with it.
+    /// Every shell's output since the last look (one hidden or in the background too: it
+    /// must not stall on a full PTY); true when the frame changes. A shell that exited
+    /// takes its tab with it, and the last one the panel.
     pub fn term_pump(&mut self) -> bool {
-        let Some(t) = self.term.as_mut() else { return false };
-        let (got, alive) = t.pump();
-        if alive {
-            return got && self.term_open;
+        let mut changed = false;
+        let mut i = 0;
+        while i < self.terms.len() {
+            let (got, alive) = self.terms[i].pump();
+            if alive {
+                changed |= got && self.term_open && i == self.term_at;
+                i += 1;
+                continue;
+            }
+            changed |= self.term_open;
+            self.terms.remove(i);
+            if self.term_at >= i && self.term_at > 0 {
+                self.term_at -= 1;
+            }
         }
-        self.term = None;
-        let shown = self.term_open;
-        self.hide_terminal();
-        shown
+        if self.terms.is_empty() && self.term_open {
+            self.term_find = None;
+            self.hide_terminal();
+        }
+        changed
+    }
+
+    /// Terminal: Find (Ctrl+F in the shell): the find box over the panel.
+    pub fn term_find_open(&mut self) {
+        if self.term().is_some_and(|t| !t.full_screen()) {
+            self.term_find = Some(TermFind::default());
+            (self.term_open, self.focus) = (true, Focus::Term);
+        }
+    }
+
+    /// The next match of the find box's text, older (`up`, as Enter goes) or newer
+    /// (Shift+Enter); from the newest when none is shown. Wraps around.
+    fn term_find_step(&mut self, up: bool) {
+        let at = self.term_at;
+        let (Some(f), Some(t)) = (self.term_find.as_mut(), self.terms.get_mut(at)) else { return };
+        let lines = t.lines();
+        let all = matches(&lines, &f.query);
+        if all.is_empty() {
+            (f.at, f.count) = (None, (0, 0));
+            t.scroll_to_bottom();
+            return;
+        }
+        let k = match f.at {
+            None => all.len() - 1,
+            Some(cur) if up => all.iter().rposition(|m| *m < cur).unwrap_or(all.len() - 1),
+            Some(cur) => all.iter().position(|m| *m > cur).unwrap_or(0),
+        };
+        let m = all[k];
+        (f.at, f.count) = (Some(m), (k + 1, all.len()));
+        t.show(m.0, (m.1 as u16, m.2 as u16));
+    }
+
+    /// A key while the find box is open: text, Enter / Shift+Enter (older, newer), Esc.
+    fn term_find_key(&mut self, k: KeyEvent) {
+        let Some(f) = self.term_find.as_mut() else { return };
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        match k.code {
+            KeyCode::Esc => {
+                self.term_find = None;
+                if let Some(t) = self.terms.get_mut(self.term_at) {
+                    t.scroll_to_bottom();
+                }
+            }
+            KeyCode::Enter => self.term_find_step(!k.modifiers.contains(KeyModifiers::SHIFT)),
+            KeyCode::Up => self.term_find_step(true),
+            KeyCode::Down => self.term_find_step(false),
+            KeyCode::Backspace => {
+                f.query.pop();
+                f.at = None;
+                self.term_find_step(true);
+            }
+            KeyCode::Char('v' | 'V') if ctrl => {
+                let t = crate::panel::clipboard_get().unwrap_or_else(|| self.clip.clone());
+                self.term_find_paste(&t);
+            }
+            KeyCode::Char(c) if !ctrl => {
+                f.query.push(c);
+                f.at = None;
+                self.term_find_step(true);
+            }
+            _ => {}
+        }
+    }
+
+    /// A paste into the find box (its first line).
+    pub fn term_find_paste(&mut self, s: &str) {
+        let Some(f) = self.term_find.as_mut() else { return };
+        f.query.push_str(s.lines().next().unwrap_or(""));
+        f.at = None;
+        self.term_find_step(true);
     }
 
     /// A mouse event on the terminal, or on from a drag that began there; None when it is
@@ -387,7 +584,7 @@ impl App {
         let area = self.ui.term;
         let p = Position::new(m.column, m.row);
         let ours = matches!(self.drag, Drag::TermSelect(_) | Drag::TermMouse);
-        if area.is_empty() || !(area.contains(p) || ours) || self.term.is_none() {
+        if area.is_empty() || !(area.contains(p) || ours) || self.terms.is_empty() {
             return None;
         }
         let at = (p.y.clamp(area.y, area.bottom() - 1) - area.y, p.x.clamp(area.x, area.right() - 1) - area.x);
@@ -397,7 +594,7 @@ impl App {
             MouseButton::Right => 2,
         };
         let shift = m.modifiers.contains(KeyModifiers::SHIFT);
-        let t = self.term.as_mut()?;
+        let t = self.terms.get_mut(self.term_at)?;
         if matches!(m.kind, MouseEventKind::Down(_)) {
             self.focus = Focus::Term;
         }
@@ -447,34 +644,47 @@ impl App {
 
     /// The terminal's selection onto the clipboard (as a terminal copies on select).
     fn copy_term_selection(&mut self) {
-        if let Some(text) = self.term.as_ref().and_then(Term::selected) {
+        if let Some(text) = self.term().and_then(Term::selected) {
             self.msg = format!("copied via {}", crate::panel::clipboard_set(&text));
             self.clip = text;
         }
     }
 
     /// A key while the terminal has the focus: Toggle Terminal, F1 and Ctrl+Q stay
-    /// termcode's; everything else is the shell's.
+    /// termcode's, and VS Code's terminal keys (Ctrl+Shift+` a new one, Ctrl+PgUp/PgDn the
+    /// others, Ctrl+F find while the shell has the screen); everything else is the shell's.
     pub fn term_key(&mut self, k: KeyEvent) {
+        if self.term_find.is_some() {
+            return self.term_find_key(k);
+        }
         let chord = crate::parse::chord(&k);
         let bound = self.settings.keybindings.iter().any(|(c, n)| *c == chord && n == "View: Toggle Terminal");
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let ctrl_q = k.modifiers == KeyModifiers::CONTROL && matches!(k.code, KeyCode::Char('q' | 'Q'));
         // Ctrl+C with text selected copies it instead of interrupting.
-        let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('c' | 'C'));
-        if ctrl_c && self.term.as_ref().is_some_and(|t| t.selected().is_some()) {
+        let ctrl_c = ctrl && matches!(k.code, KeyCode::Char('c' | 'C'));
+        if ctrl_c && self.term().is_some_and(|t| t.selected().is_some()) {
             self.copy_term_selection();
-            if let Some(t) = self.term.as_mut() {
+            if let Some(t) = self.terms.get_mut(self.term_at) {
                 t.clear_selection();
             }
             return;
         }
-        if bound || toggle_key(&k) {
+        let n = self.terms.len();
+        if ctrl && k.modifiers.contains(KeyModifiers::SHIFT) && matches!(k.code, KeyCode::Char('`' | '~')) {
+            self.new_terminal();
+        } else if bound || toggle_key(&k) {
             self.toggle_terminal();
         } else if k.code == KeyCode::F(1) {
             self.open_palette();
         } else if ctrl_q {
             self.request_quit();
-        } else if let Some(t) = self.term.as_mut() {
+        } else if k.modifiers == KeyModifiers::CONTROL && matches!(k.code, KeyCode::PageDown | KeyCode::PageUp) && n > 1 {
+            let d = if k.code == KeyCode::PageDown { 1 } else { n - 1 };
+            self.switch_terminal((self.term_at + d) % n);
+        } else if k.modifiers == KeyModifiers::CONTROL && matches!(k.code, KeyCode::Char('f')) && self.term().is_some_and(|t| !t.full_screen()) {
+            self.term_find_open();
+        } else if let Some(t) = self.terms.get_mut(self.term_at) {
             t.key(k);
         }
     }
@@ -583,7 +793,7 @@ mod tests {
     #[test]
     fn a_shell_runs_on_the_pty_and_its_output_is_drawn() {
         let mut t = Term::spawn("/bin/sh", &std::env::temp_dir(), 5, 40).unwrap();
-        assert_eq!(fd(), t.master.as_raw_fd());
+        assert!(fds().contains(&t.master.as_raw_fd()));
         t.send(b"stty size; echo hi-$((40+2))\r");
         let deadline = Instant::now() + Duration::from_secs(5);
         while !t.contents().contains("hi-42") {
@@ -610,6 +820,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         drop(t);
-        assert_eq!(fd(), -1);
+        assert!(fds().is_empty());
     }
 }

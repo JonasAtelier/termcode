@@ -347,7 +347,7 @@ impl App {
         }
         // A program in the terminal ends with the window: ask first.
         if !self.term_quit_ok {
-            if let Some(p) = self.term.as_ref().and_then(crate::term::Term::running) {
+            if let Some(p) = self.terms.iter().find_map(crate::term::Term::running) {
                 self.prompt = Some(Prompt {
                     text: vec![format!("{p} is still running in the terminal."), "Quitting ends it.".into()],
                     buttons: vec![("Quit".into(), PAct::QuitEndTerminal), ("Cancel".into(), PAct::Cancel)],
@@ -427,6 +427,7 @@ impl App {
             PAct::GitHub(a) => crate::github::run(self, a),
             PAct::Move(rels, into) => self.move_into(&rels, &into),
             PAct::Delete(rels, forever) => self.delete_paths(&rels, forever),
+            PAct::KillTerminal(i) => self.kill_terminal(i, false),
             PAct::QuitEndTerminal => {
                 self.term_quit_ok = true;
                 self.request_quit();

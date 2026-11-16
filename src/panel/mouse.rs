@@ -225,6 +225,15 @@ impl App {
         if self.ui.term_btns.iter().any(|r| r.contains(p)) {
             return if self.term_open { self.hide_terminal() } else { self.toggle_terminal() };
         }
+        if self.ui.term_new.contains(p) {
+            return self.new_terminal();
+        }
+        if self.ui.term_kill.contains(p) {
+            return self.kill_terminal(self.term_at, true);
+        }
+        if let Some(&(_, i)) = self.ui.term_tabs.iter().find(|(r, _)| r.contains(p)) {
+            return self.switch_terminal(i);
+        }
         if self.ui.term_sash.contains(p) {
             self.drag = Drag::TermSash;
             return;
@@ -826,7 +835,7 @@ impl App {
             self.outline_off = self.outline_off.saturating_add_signed(d); // the frame clamps it
             return self.outline_off != old;
         }
-        if let Some(t) = self.term.as_mut().filter(|_| self.ui.term.contains(p)) {
+        if let Some(t) = self.terms.get_mut(self.term_at).filter(|_| self.ui.term.contains(p)) {
             t.wheel(d, (p.x - self.ui.term.x, p.y - self.ui.term.y));
             return true;
         }

@@ -735,8 +735,9 @@ impl App {
             Focus::Side => {
                 crate::github::paste(self, text);
             }
+            Focus::Term if self.term_find.is_some() => self.term_find_paste(text),
             Focus::Term => {
-                if let Some(t) = self.term.as_mut() {
+                if let Some(t) = self.terms.get_mut(self.term_at) {
                     t.paste(text);
                 }
             }

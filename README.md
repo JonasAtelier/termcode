@@ -337,7 +337,11 @@ editors. Drag its top edge to resize it. While it has the keys, every key goes t
 except Ctrl+`, F1 and Ctrl+Q. Drag over text to copy it (double-click: a word); Ctrl+C
 copies a selection, else interrupts. Programs that use the mouse (vim, htop) get it;
 Shift+drag still selects. Hiding it keeps the shell running; `exit` closes it. Quitting
-while something runs in it asks first.
+while something runs in it asks first. More shells: Ctrl+Shift+` or the `+` on its border
+opens another, each with a tab there; click a tab or press Ctrl+PgUp / Ctrl+PgDn to switch,
+and `×` closes the one shown (asked while a program runs). Ctrl+F (at the shell's prompt,
+not in vim or less) finds text in its scrollback: Enter goes to older matches, Shift+Enter
+newer, Esc back to the bottom.
 
 **GitHub:** the GitHub item above Settings (or F1 **View: Show GitHub**), in any folder.
 Its top pane is your account: your contribution graph as on your GitHub profile (Year or

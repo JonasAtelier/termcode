@@ -326,6 +326,8 @@ pub enum PAct {
     QuitNoSave,
     /// Quit although a program runs in the terminal (it ends with the window).
     QuitEndTerminal,
+    /// Close terminal N although a program runs in it.
+    KillTerminal(usize),
     /// An Explorer item dropped on a folder ("" the root): move it there.
     Move(Vec<String>, String),
     /// Delete an Explorer item: to the Trash, or (`true`) for good.
@@ -477,6 +479,11 @@ pub enum Cmd {
     ToggleWrap,
     ToggleBreadcrumbs,
     ToggleTerminal,
+    NewTerminal,
+    KillTerminal,
+    /// Terminal: Focus Next (true) / Previous Terminal.
+    NextTerminal(bool),
+    TermFind,
     ToggleOutline,
     FocusOutline,
     /// Markdown: Open Preview; `true` to the side.
@@ -509,6 +516,11 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Toggle Word Wrap", Cmd::ToggleWrap, "Alt+Z"),
     ("View: Toggle Breadcrumbs", Cmd::ToggleBreadcrumbs, ""),
     ("View: Toggle Terminal", Cmd::ToggleTerminal, "Ctrl+`"),
+    ("Terminal: Create New Terminal", Cmd::NewTerminal, "Ctrl+Shift+`"),
+    ("Terminal: Kill the Active Terminal Instance", Cmd::KillTerminal, ""),
+    ("Terminal: Focus Next Terminal", Cmd::NextTerminal(true), "Ctrl+PgDn"),
+    ("Terminal: Focus Previous Terminal", Cmd::NextTerminal(false), "Ctrl+PgUp"),
+    ("Terminal: Find", Cmd::TermFind, "Ctrl+F"),
     ("View: Toggle Outline", Cmd::ToggleOutline, ""),
     ("View: Focus Outline", Cmd::FocusOutline, ""),
     ("Go to Next Change", Cmd::NextChange, "Alt+F5 / F7"),
@@ -757,6 +769,10 @@ pub struct Hits {
     pub term_btns: Vec<Rect>,
     pub term_sash: Rect,
     pub term: Rect,
+    /// The panel's border: a tab per terminal (when more than one), + and ×.
+    pub term_tabs: Vec<(Rect, usize)>,
+    pub term_new: Rect,
+    pub term_kill: Rect,
     /// The Outline: its toggle button per group, its left border (the width handle), its
     /// list, and each drawn row with where it goes.
     pub outline_btns: Vec<Rect>,
@@ -860,9 +876,13 @@ pub struct App {
     pub side_w: Option<u16>,
     /// `side_w` came from a layout.json before version 2: a content width, not an outer one.
     pub side_w_legacy: bool,
-    /// The integrated terminal's shell (kept while its panel is hidden), whether the panel
-    /// shows, and its dragged height (None: a third of the editor area).
-    pub term: Option<crate::term::Term>,
+    /// The integrated terminals (their shells kept while the panel is hidden), the one
+    /// shown, whether the panel shows, and its dragged height (None: a third of the editor
+    /// area).
+    pub terms: Vec<crate::term::Term>,
+    pub term_at: usize,
+    /// Find in the shown terminal's scrollback.
+    pub term_find: Option<crate::term::TermFind>,
     pub term_open: bool,
     pub term_h: Option<u16>,
     /// The Outline right of the editors: shown, its dragged width (None: 30 columns),
@@ -1075,9 +1095,12 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     (app.settings.restore_session, app.settings.restore_view_state) = wanted;
     app.upgrade.watch = true;
     if std::env::var_os(RELOAD_TERM_ENV).is_some() {
-        std::env::remove_var(RELOAD_TERM_ENV); // not for the new shell
+        let n = std::env::var(RELOAD_TERM_ENV).ok().and_then(|n| n.parse().ok()).unwrap_or(1usize);
+        std::env::remove_var(RELOAD_TERM_ENV); // not for the new shells
         let focus = app.focus;
-        app.toggle_terminal();
+        for _ in 0..n.clamp(1, 16) {
+            app.new_terminal();
+        }
         app.focus = focus;
     }
     app.poll_status = true;
@@ -1136,7 +1159,7 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     // A reload: this process becomes the installed binary, same arguments, same pane.
     if app.reload && matches!(res, Ok(Ok(()))) && !SIGNALED.load(Ordering::SeqCst) {
         if app.term_open {
-            std::env::set_var(RELOAD_TERM_ENV, "1");
+            std::env::set_var(RELOAD_TERM_ENV, app.terms.len().to_string());
         }
         let own = crate::session::save_for_reload(&app);
         let e = reexec();
@@ -1321,17 +1344,18 @@ enum Input {
 /// Wait up to `wait` for input on `fd`, or for the integrated terminal's shell. A signal
 /// ends the wait early, as `Idle`.
 fn wait_input(fd: libc::c_int, wait: Duration) -> Input {
-    // poll skips the second entry while no terminal is open (fd -1).
-    let mut polls = [fd, crate::term::fd()].map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 });
+    // The input, then every terminal's PTY.
+    let mut polls: Vec<libc::pollfd> = std::iter::once(fd).chain(crate::term::fds()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
     let ms = wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
-    // SAFETY: two valid pollfds.
-    if unsafe { libc::poll(polls.as_mut_ptr(), 2, ms) } <= 0 {
+    // SAFETY: valid pollfds, as many as given.
+    if unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, ms) } <= 0 {
         return Input::Idle;
     }
-    match (polls[0].revents, polls[1].revents) {
-        (r, _) if r & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 => Input::Gone,
-        (0, 0) => Input::Idle,
-        (0, _) => Input::Shell,
+    let shell = polls[1..].iter().any(|p| p.revents != 0);
+    match polls[0].revents {
+        r if r & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 => Input::Gone,
+        0 if shell => Input::Shell,
+        0 => Input::Idle,
         _ => Input::Ready,
     }
 }
@@ -1520,7 +1544,9 @@ impl App {
                 .map(|w| w.clamp(12, 200) as u16),
             // Before layout_version 2 the width was the content's: a card adds its frame.
             side_w_legacy: saved["layout_version"].as_u64().unwrap_or(1) < 2,
-            term: None,
+            terms: Vec::new(),
+            term_at: 0,
+            term_find: None,
             term_open: false,
             term_h: saved["terminal_height"].as_u64().map(|h| h.clamp(3, 500) as u16),
             term_quit_ok: false,
@@ -1830,6 +1856,13 @@ impl App {
                 self.save_layout();
             }
             Cmd::ToggleTerminal => self.toggle_terminal(),
+            Cmd::NewTerminal => self.new_terminal(),
+            Cmd::KillTerminal => self.kill_terminal(self.term_at, true),
+            Cmd::NextTerminal(next) => {
+                let n = self.terms.len().max(1);
+                self.switch_terminal((self.term_at + if next { 1 } else { n - 1 }) % n);
+            }
+            Cmd::TermFind => self.term_find_open(),
             Cmd::ToggleOutline => {
                 self.outline_open = !self.outline_open;
                 if !self.outline_open && self.focus == Focus::Outline {
@@ -1903,7 +1936,7 @@ impl App {
         let busy = self.prompt.is_some() || self.quick.is_some() || self.settings_dlg.is_some() || self.gitui.dlg.is_some()
             || self.rename.is_some() || !matches!(self.drag, Drag::None) || self.gitui.writes() > 0 || self.file_job.is_some();
         // A program in the terminal would end with the reload: wait for it.
-        let running = self.term.as_ref().and_then(crate::term::Term::running);
+        let running = self.terms.iter().find_map(crate::term::Term::running);
         if self.unsaved() == 0 && !busy && running.is_none() {
             (self.reload, self.quit) = (true, true);
         } else if !std::mem::replace(&mut self.upgrade.told, true) {

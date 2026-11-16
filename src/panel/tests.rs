@@ -5422,7 +5422,7 @@ fn the_terminal_button_opens_a_shell_under_the_editors_and_its_top_edge_resizes_
 
     // Ctrl+` hides it with the shell still running; the button shows it again.
     key(&mut app, KeyCode::Char('`'), KeyModifiers::CONTROL);
-    assert!(!app.term_open && app.term.is_some() && app.focus == Focus::Editor);
+    assert!(!app.term_open && !app.terms.is_empty() && app.focus == Focus::Editor);
     assert!(!screen(&mut app, &mut t).contains(" Terminal "));
     assert_eq!(app.ui.editor_area, full);
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), btn.x, btn.y);
@@ -5431,7 +5431,7 @@ fn the_terminal_button_opens_a_shell_under_the_editors_and_its_top_edge_resizes_
     // The shell exiting closes the panel.
     typ(&mut app, "exit");
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    while app.term.is_some() {
+    while !app.terms.is_empty() {
         assert!(Instant::now() < deadline, "the shell exited");
         app.term_pump();
         std::thread::sleep(Duration::from_millis(10));
@@ -5617,9 +5617,9 @@ fn a_drag_in_the_terminal_selects_and_copies_its_text_and_a_double_click_a_word(
     app.clip.clear();
     key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
     assert_eq!(app.clip, "wide-world");
-    assert!(app.term.as_ref().unwrap().selected().is_none(), "and the selection goes");
+    assert!(app.term().unwrap().selected().is_none(), "and the selection goes");
     app.hide_terminal();
-    app.term = None;
+    app.terms.clear();
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -5637,7 +5637,7 @@ fn a_program_that_asks_for_the_mouse_gets_the_terminals_clicks() {
     typ(&mut app, "printf '\\033[?1000h\\033[?1006h'; cat");
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !app.term.as_ref().unwrap().wants_mouse() {
+    while !app.term().unwrap().wants_mouse() {
         assert!(Instant::now() < deadline, "mouse mode never came on");
         app.term_pump();
         std::thread::sleep(Duration::from_millis(10));
@@ -5650,9 +5650,9 @@ fn a_program_that_asks_for_the_mouse_gets_the_terminals_clicks() {
         app.term_pump();
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(app.term.as_ref().unwrap().selected().is_none(), "the program's click, not a selection");
+    assert!(app.term().unwrap().selected().is_none(), "the program's click, not a selection");
     app.hide_terminal();
-    app.term = None;
+    app.terms.clear();
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -5667,7 +5667,7 @@ fn quitting_or_reloading_waits_on_a_program_running_in_the_terminal() {
     let deadline = Instant::now() + Duration::from_secs(10);
     // Busy: until the forked shell has become sleep.
     let settle = |app: &mut App, busy: bool| {
-        while app.term.as_ref().unwrap().running().is_some_and(|p| p == "sleep") != busy || !busy && app.term.as_ref().unwrap().running().is_some() {
+        while app.term().unwrap().running().is_some_and(|p| p == "sleep") != busy || !busy && app.term().unwrap().running().is_some() {
             assert!(Instant::now() < deadline, "running: {busy}");
             app.term_pump();
             std::thread::sleep(Duration::from_millis(20));
@@ -5686,7 +5686,7 @@ fn quitting_or_reloading_waits_on_a_program_running_in_the_terminal() {
     let text = app.prompt.as_ref().map(|p| p.text.join(" ")).unwrap_or_default();
     assert!(text.contains("sleep is still running"), "{text}");
     app.run_prompt(PAct::Cancel);
-    assert!(!app.quit && app.term.is_some());
+    assert!(!app.quit && !app.terms.is_empty());
     // A new termcode installed meanwhile waits for it.
     let exe = root.join("exe");
     fs::write(&exe, "x").unwrap();
@@ -5702,7 +5702,7 @@ fn quitting_or_reloading_waits_on_a_program_running_in_the_terminal() {
     (app.reload, app.quit) = (false, false);
     app.request_quit();
     assert!(app.quit && app.prompt.is_none(), "an idle shell: no question");
-    app.term = None;
+    app.terms.clear();
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -5925,7 +5925,7 @@ fn the_github_view_signs_in_first_then_lists_and_edits_a_title_only_once_confirm
     crate::github::fetch(&mut app);
     gh_settle(&mut app, &|a| a.gh.state == crate::github::State::Ready && a.gh.avatar_ready() && !a.gh.repo_loading);
     app.hide_terminal();
-    app.term = None;
+    app.terms.clear();
     app.focus = Focus::Side;
     let s = screen(&mut app, &mut t);
     for want in ["tester", "2 repositories", "ACTIVITY · 13 in the past year", "‹  past year  ›", "2 repos · ", " 7 · 4 followers · 2 following", "REPOSITORIES", "proj", "o/lib", "REVIEW REQUESTS", "#3 Review me", "NOTIFICATIONS", "You were mentioned",
@@ -6520,3 +6520,64 @@ fn explorer_multi_select_moves_copies_and_deletes_together_and_ctrl_z_takes_all_
     fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn terminals_open_as_tabs_switch_close_and_find_in_the_scrollback() {
+    let root = repo("term-tabs");
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    screen(&mut app, &mut t);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let until = |app: &mut App, t: &mut Terminal<TestBackend>, what: &str| {
+        while !screen(app, t).contains(what) {
+            assert!(Instant::now() < deadline, "no {what}");
+            app.term_pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    app.toggle_terminal();
+    screen(&mut app, &mut t);
+    // Many lines: most scroll into the scrollback, with a marker far up.
+    // (printf: the command line itself never holds the word sought.)
+    typ(&mut app, "printf 'ne%sle-1\\n' ed; seq 1 300; printf 'ne%sle-2\\n' ed; echo done-$((6*7))");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    until(&mut app, &mut t, "done-42");
+    // The + on the border: a second shell, shown; both get a tab.
+    let plus = app.ui.term_new;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), plus.x + 1, plus.y);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), plus.x + 1, plus.y);
+    assert_eq!((app.terms.len(), app.term_at), (2, 1));
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains(" 1: ") && s.contains(" 2: ") && !s.contains("done-42"), "{s}");
+    // Ctrl+PgUp: back to the first; a click on tab 2 and back again.
+    key(&mut app, KeyCode::PageUp, KeyModifiers::CONTROL);
+    assert_eq!(app.term_at, 0);
+    screen(&mut app, &mut t);
+    let tab2 = app.ui.term_tabs[1].0;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), tab2.x + 1, tab2.y);
+    assert_eq!(app.term_at, 1);
+    key(&mut app, KeyCode::PageDown, KeyModifiers::CONTROL);
+    assert_eq!(app.term_at, 0);
+    // Ctrl+F: find, from the newest match up (Enter), wrapping round.
+    key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert!(app.term_find.is_some());
+    typ(&mut app, "needle");
+    let f = app.term_find.as_ref().unwrap();
+    assert_eq!(f.count, (2, 2), "the newest of the two");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.term_find.as_ref().unwrap().count.0, 1);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("needle-1") && s.contains("1 of 2") && !s.contains("done-42"), "scrolled back to it: {s}");
+    assert_eq!(app.term().unwrap().selected().as_deref(), Some("needle"));
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.term_find.as_ref().unwrap().count.0, 2, "wraps round");
+    typ(&mut app, "zzz");
+    assert!(screen(&mut app, &mut t).contains("No results"));
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.term_find.is_none() && screen(&mut app, &mut t).contains("done-42"), "back at the bottom");
+    // × closes the shown one; the other stays.
+    let x = app.ui.term_kill;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x.x + 1, x.y);
+    assert_eq!((app.terms.len(), app.term_at, app.term_open), (1, 0, true));
+    app.terms.clear();
+    fs::remove_dir_all(&root).unwrap();
+}

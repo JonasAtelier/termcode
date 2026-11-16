@@ -1053,11 +1053,11 @@ fn want_avatar(app: &mut App) {
 /// Sign in: `gh auth login --web` in the terminal (it shows a code to enter in the
 /// browser); the view looks every few seconds whether it is done.
 pub fn sign_in(app: &mut App) {
-    if app.term.is_none() || !app.term_open {
+    if app.terms.is_empty() || !app.term_open {
         app.toggle_terminal();
     }
     let cmd = format!("{} auth login --web\r", app.gh.bin.display());
-    if let Some(t) = app.term.as_mut() {
+    if let Some(t) = app.terms.get_mut(app.term_at) {
         t.send(cmd.as_bytes());
         app.focus = Focus::Term;
         app.gh.signing_in = true;

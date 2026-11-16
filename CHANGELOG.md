@@ -35,6 +35,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - The commit dialog's message: a drag selects (a double-click, a word), and Ctrl+C,
   Ctrl+X and Ctrl+V copy, cut and paste. Its diff and a commit's card select the same way,
   and Ctrl+C copies.
+- More than one terminal: Ctrl+Shift+` or the panel's `+` opens another shell, each with a
+  tab on the border; Ctrl+PgUp / Ctrl+PgDn or a click switch, `×` closes one. Ctrl+F at the
+  shell's prompt finds text in its scrollback.
 - The Explorer selects several items (Ctrl+click, Shift+click, Shift+↑↓, Ctrl+A) and moves,
   copies and deletes them together; Ctrl+Z takes such a step back at once. Ctrl (or Alt)
   as a drag ends copies instead of moving, and resting on a closed folder opens it.
