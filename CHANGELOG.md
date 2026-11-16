@@ -6,7 +6,7 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-16
 
 ### Added
 - A terminal under the editors: Ctrl+` or the button beside Split Editor shows and hides

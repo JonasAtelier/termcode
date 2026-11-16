@@ -9,6 +9,10 @@ What you get: a file Explorer, Search, Source Control with a commit graph, tabs 
 editors, side-by-side diffs, a minimap, Go to Definition, error checking for shell and
 C/C++, and VS Code themes.
 
+![The editor with the Explorer, the Outline and a terminal running cargo test](doc/screenshots/editor.png)
+
+![Source Control: changes, the commit graph and a side-by-side diff](doc/screenshots/git.png)
+
 ### Is it for you?
 
 termcode is for working on code where your terminal already is: on a server over SSH, in
@@ -161,7 +165,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # zsh: ~/.zshrc
 Open a new terminal and check:
 
 ```sh
-termcode --version          # termcode 0.1.0
+termcode --version          # termcode 0.2.0
 ```
 
 **Low on memory?** Add `-j2` to the `cargo install` line to build with 2 jobs.

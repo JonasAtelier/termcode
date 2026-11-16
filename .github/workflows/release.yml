@@ -107,13 +107,15 @@ jobs:
             --repo JonasAtelier/termcode-releases \
             --title "termcode ${GITHUB_REF_NAME#v}" \
             --notes-file target-notes.md
-          # The front page follows this release's README.
+          # The front page follows this release's README, with its screenshots.
           git clone -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/JonasAtelier/termcode-releases.git" releases-page
           scripts/user-readme.sh --releases > releases-page/README.md
+          rm -rf releases-page/doc/screenshots && mkdir -p releases-page/doc && cp -r doc/screenshots releases-page/doc/
           cd releases-page
           git config user.name JonasAtelier
           git config user.email 98136255+JonasAtelier@users.noreply.github.com
-          git diff --quiet || { git commit -qam "README for termcode ${GITHUB_REF_NAME#v}" && git push -q; }
+          git add -A
+          git diff --cached --quiet || { git commit -qm "README for termcode ${GITHUB_REF_NAME#v}" && git push -q; }
 
       - name: Update the apt repository
         if: steps.ready.outputs.publish == 'yes'
