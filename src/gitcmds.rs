@@ -205,6 +205,8 @@ pub enum Pick {
     BranchFrom,
     /// Confirm (text, button) before the op.
     Confirm(Vec<String>, String, Op),
+    /// A GitHub repository page's branch: (repository, branch) to show.
+    GitHubBranch(String, String),
 }
 
 /// What Enter does with the typed text in an input box.
@@ -516,7 +518,7 @@ pub fn run_cmd(app: &mut App, c: GitCmd) {
     }
 }
 
-fn open_picker(app: &mut App, title: &str, items: Vec<Item>, input: Option<Input>) {
+pub(crate) fn open_picker(app: &mut App, title: &str, items: Vec<Item>, input: Option<Input>) {
     app.gitui.card = None;
     app.gitui.cmds.picker = Some(Picker { title: title.into(), query: String::new(), items, sel: 0, off: 0, input });
 }
@@ -692,6 +694,7 @@ fn pick(app: &mut App, i: usize) {
         Pick::NewBranch(from) => ask(app, &format!("Branch name{}", from.as_ref().map_or(String::new(), |f| format!(" (from {f})"))), Input::Branch(from)),
         Pick::BranchFrom => run_cmd(app, GitCmd::CreateBranchFrom),
         Pick::Confirm(text, button, op) => confirm(app, text, &button, op, true),
+        Pick::GitHubBranch(repo, branch) => crate::github::page::switch_branch(app, &repo, &branch),
     }
 }
 

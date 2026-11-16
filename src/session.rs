@@ -150,7 +150,7 @@ pub fn save_guarded(app: &mut App) {
 
 /// Keys of documents a session can reopen: files, working-tree and index diffs, commit diffs.
 fn restorable(key: &str) -> bool {
-    ["file:", "diff:staged:", "diff:changes:", "cdiff:"].iter().any(|p| key.starts_with(p))
+    ["file:", "diff:staged:", "diff:changes:", "cdiff:", "repo:"].iter().any(|p| key.starts_with(p))
 }
 
 fn view_json(v: &View) -> Value {

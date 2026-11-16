@@ -8,6 +8,15 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 
 ## [Unreleased]
 
+### Added
+- Picking a repository in the GitHub view shows it in the editor area as github.com does.
+  Its main page lists the files and folders with each one's last commit, then insights
+  (pull requests and issues by state, languages, the year's commits as a heat map,
+  commits by weekday and hour, lines added and removed a week, top contributors) and the
+  README. On the right: a button back to the main page and the files as a tree. A file
+  clicked shows its code in the middle (read-only, with its last commit) and its outline
+  under the tree. The branch at the top switches the branch.
+
 ### Fixed
 - A commit message indented with tabs (a JSON example, say) no longer breaks its card:
   tabs show as spaces to the next tab stop. No control character in text from outside

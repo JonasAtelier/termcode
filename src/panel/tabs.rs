@@ -140,6 +140,9 @@ impl App {
             Some(Doc::Diff(d)) => d.title.clone(),
             _ => match key.split_once(':') {
                 Some(("preview", rel)) => format!("Preview {}", base(rel)),
+                // A repository's page; a file of one (its path after the repository).
+                Some(("repo", repo)) => repo.to_string(),
+                Some(("ghfile", rest)) => base(rest.split_once(':').map_or(rest, |(_, p)| p)).to_string(),
                 Some(("diff" | "cdiff", rest)) => base(rest.split_once(':').map_or(rest, |(_, p)| p)).to_string(),
                 Some((_, rel)) => base(rel).to_string(),
                 None => key.to_string(),
@@ -157,7 +160,7 @@ impl App {
         }
     }
 
-    pub(super) fn active_tab(&mut self) -> Option<&mut Tab> {
+    pub(crate) fn active_tab(&mut self) -> Option<&mut Tab> {
         let grp = self.groups.get_mut(self.ag)?;
         grp.tabs.get_mut(grp.active)
     }

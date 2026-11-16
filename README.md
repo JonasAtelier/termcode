@@ -359,7 +359,14 @@ repositories, review requests, your pull requests,
 issues assigned to you and unread notifications. Pick a repository there (click or Enter)
 and the bottom pane shows it: description, visibility, default branch, language, stars,
 forks, last push; its stats (a commit graph for the past year, its languages, its top
-contributors); then its Actions runs, pull requests and issues. Tab moves between the
+contributors); then its Actions runs, pull requests and issues. The editor area shows the
+repository too, as github.com does. Its main page: the latest commit, the files and
+folders each with its last commit, insights (pull requests and issues open, merged and
+closed; languages; the year's commits as a heat map; commits by weekday and hour; lines
+added and removed a week; top contributors), then the README. On the right, a button back
+to the main page and the files as a tree. Click a file for its code in the middle
+(read-only; it scrolls, selects, finds and copies as any editor), its outline under the
+tree. Click the branch at the top right to switch the branch. Tab moves between the
 panes; drag the line between them to resize. It needs the [GitHub CLI](https://cli.github.com)
 (`gh`): signed out, it offers **Sign in with GitHub**, which runs `gh auth login` in the
 terminal, so termcode never sees a password or token. On a row: Enter or `o` opens it in

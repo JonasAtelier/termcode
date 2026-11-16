@@ -226,6 +226,14 @@ enum Msg {
     Year(i32, Option<Activity>),
     /// An action finished: what to say.
     Done(Result<String, String>),
+    /// A repository page's folder: the repository, the revision, the folder, what came.
+    Dir(String, String, String, Result<page::Dir, String>),
+    /// A file of a repository page: the repository, the revision, its path, its lines.
+    Blob(String, String, String, Result<Vec<String>, String>),
+    /// A repository's branches, for the page's branch pick.
+    Branches(String, Result<Vec<String>, String>),
+    /// A repository page's insights.
+    Stats(String, Result<page::Stats, String>),
 }
 
 /// A change on GitHub, run once confirmed.
@@ -320,6 +328,9 @@ pub struct Hits {
     /// The contribution graph's blocks (their date and count) and the year view's grid.
     pub act_cells: Vec<(Rect, String, u64, usize)>,
     pub act_graph: [Rect; 2],
+    /// A repository page's clickable rows, and its tree (for the wheel).
+    pub page: Vec<(Rect, page::Target)>,
+    pub page_tree: Rect,
 }
 
 pub struct GitHub {
@@ -376,6 +387,8 @@ pub struct GitHub {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     pub hits: Hits,
+    /// Repository pages, by "owner/name".
+    pub pages: std::collections::HashMap<String, page::Page>,
 }
 
 impl GitHub {
@@ -426,6 +439,7 @@ impl GitHub {
             tx,
             rx,
             hits: Hits::default(),
+            pages: Default::default(),
         }
     }
 
@@ -990,6 +1004,10 @@ pub fn tick(app: &mut App) -> bool {
                 // A year that did not come shows as empty (a click on ‹ › asks again).
                 gh.years.insert(y, a.unwrap_or_default());
             }
+            Msg::Dir(repo, rev, path, d) => page::dir_came(app, repo, rev, path, d),
+            Msg::Blob(repo, rev, path, text) => page::blob_came(app, repo, rev, path, text),
+            Msg::Branches(repo, b) => page::branches_came(app, repo, b),
+            Msg::Stats(repo, st) => page::stats_came(app, repo, st),
             Msg::Done(res) => {
                 app.gh.acting = None;
                 app.msg = res.unwrap_or_else(|e| format!("GitHub: {e}"));
@@ -1350,6 +1368,8 @@ fn enter(app: &mut App, row: Row) {
         Row::Repo(i) => {
             if let Some(name) = app.gh.data.as_ref().map(|d| d.repos[i].name.clone()) {
                 choose(app, &name);
+                // Its page in the editor area too, as a preview tab (a double-click keeps it).
+                page::open(app, &name, false);
             }
         }
         r => act(app, r, Key::Open),
@@ -1414,6 +1434,11 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
     if let Some(&(_, pane, i)) = app.gh.hits.rows.iter().find(|(r, ..)| r.contains(p)) {
         (app.gh.pane, app.gh.sel[pane]) = (pane, i);
         match rows(&app.gh, pane).get(i).copied() {
+            Some(Row::Repo(i)) if double => {
+                if let Some(name) = app.gh.data.as_ref().map(|d| d.repos[i].name.clone()) {
+                    page::open(app, &name, true);
+                }
+            }
             Some(r @ (Row::Head(_) | Row::Repo(_))) => enter(app, r),
             Some(r) if double => enter(app, r),
             _ => {}
@@ -1447,6 +1472,7 @@ pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
 }
 
 mod draw;
+pub mod page;
 pub use draw::*;
 
 #[cfg(test)]

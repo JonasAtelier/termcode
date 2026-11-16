@@ -291,7 +291,8 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     // The Outline right of the editors (and the terminal), its width dragged; the editors
     // keep 30 columns. Drawn after them: a restored tab's document is read as it shows.
     let mut outline = None;
-    if app.outline_open && ed.width >= 50 {
+    // (A repository page has its own outline beside its tree.)
+    if app.outline_open && ed.width >= 50 && !crate::github::page::active(app) {
         let w = app.outline_w.unwrap_or(30).clamp(16, ed.width - 30);
         ed.width -= w;
         outline = Some(Rect::new(ed.right(), ed.y, w, ed.height));
@@ -1387,9 +1388,13 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     let lit = if app.term_open { P.tab_active_fg } else { P.icon_fg };
     f.render_widget(Span::styled(ic.terminal, Style::new().fg(lit)), term_btn);
     app.ui.term_btns.push(term_btn);
-    let lit = if app.outline_open { P.tab_active_fg } else { P.icon_fg };
+    // Off on a repository page: it shows its own outline.
+    let page = app.groups[g].tabs.get(app.groups[g].active).is_some_and(|t| t.key.starts_with("repo:"));
+    let lit = if page { P.dim } else if app.outline_open { P.tab_active_fg } else { P.icon_fg };
     f.render_widget(Span::styled(ic.outline, Style::new().fg(lit)), outline_btn);
-    app.ui.outline_btns.push(outline_btn);
+    if !page {
+        app.ui.outline_btns.push(outline_btn);
+    }
     let top = 1;
     let mut body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
     let active = app.groups[g].active;
@@ -1421,6 +1426,17 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         markdown_preview(app, f, g, rel, body, &mut gh);
         app.ui.groups.push(gh);
         return;
+    }
+    // A repository page: its frame (header, tree, outline), then in the middle the README
+    // or, while a file shows, that file as an editor (the tab's document).
+    if let Some(repo) = key.strip_prefix("repo:") {
+        body = crate::github::page::draw_frame(app, f, g, repo, body);
+        if !app.docs.contains_key(&key) {
+            gh.text = body;
+            gh.preview_rows = crate::github::page::draw_main(app, f, g, repo, body);
+            app.ui.groups.push(gh);
+            return;
+        }
     }
     let wrap = app.wraps(&key);
     let editor_focus = focused_group && app.focus == Focus::Editor;

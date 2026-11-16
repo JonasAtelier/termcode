@@ -5845,6 +5845,16 @@ esac
 if [ -e "$d/signed-out" ]; then echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; fi
 repo=""; prev=""
 for a in "$@"; do [ "$prev" = "--repo" ] && repo="$a"; prev="$a"; done
+# A repository page: a folder (its entries, then their last commits and the README), a file.
+case "$*" in
+  *isBinary*) printf '%s\n' '{"data":{"repository":{"object":{"text":"fn main() {}\n","isBinary":false,"byteSize":13}}}}'; exit 0 ;;
+  *'history('*) printf '%s\n' '{"data":{"repository":{"object":{"e0":{"nodes":[{"messageHeadline":"Add the sources","committedDate":"2026-11-10T00:00:00Z"}]},"e1":{"nodes":[{"messageHeadline":"Say hello","committedDate":"2026-11-12T00:00:00Z"}]}},"readme":{"text":"Proj\n====\n\nHello **world** from the README.\n"}}}}'; exit 0 ;;
+  *stargazerCount*) printf '%s\n' '{"data":{"repository":{"stargazerCount":7,"forkCount":2,"watchers":{"totalCount":3},"open":{"totalCount":2},"merged":{"totalCount":30},"closed":{"totalCount":5},"openIssues":{"totalCount":1},"closedIssues":{"totalCount":9},"languages":{"edges":[{"size":900,"node":{"name":"Rust","color":"\u0023dea584"}},{"size":100,"node":{"name":"Shell","color":"\u002389e051"}}]}}}}'; exit 0 ;;
+  *'refs('*) echo '{"data":{"repository":{"refs":{"nodes":[{"name":"main"},{"name":"dev"}]}}}}'; exit 0 ;;
+  *'"dev:"'*) echo '{"data":{"repository":{"defaultBranchRef":{"name":"main"},"head":{"oid":"abcdef1234567","messageHeadline":"Say hello","committedDate":"2026-11-12T00:00:00Z","author":{"name":"Ann","user":{"login":"ann"}}},"object":{"entries":[{"name":"src","type":"tree","path":"src"},{"name":"DEV.md","type":"blob","path":"DEV.md"}]}}}}'; exit 0 ;;
+  *'"HEAD:src"'*) echo '{"data":{"repository":{"defaultBranchRef":{"name":"main"},"head":{"oid":"abcdef1234567","messageHeadline":"Say hello","committedDate":"2026-11-12T00:00:00Z","author":{"name":"Ann","user":{"login":"ann"}}},"object":{"entries":[{"name":"main.rs","type":"blob","path":"src/main.rs"}]}}}}'; exit 0 ;;
+  *'"HEAD:"'*) echo '{"data":{"repository":{"defaultBranchRef":{"name":"main"},"head":{"oid":"abcdef1234567","messageHeadline":"Say hello","committedDate":"2026-11-12T00:00:00Z","author":{"name":"Ann","user":{"login":"ann"}}},"object":{"entries":[{"name":"README.md","type":"blob","path":"README.md"},{"name":"src","type":"tree","path":"src"}]}}}}'; exit 0 ;;
+esac
 case "$1 $2" in
   "api user") echo '{"login":"tester","avatar_url":"https://avatars.example/u/1?v=4"}' ;;
   "api graphql") echo '{"data":{"viewer":{"followers":{"totalCount":4},"following":{"totalCount":2},"contributionsCollection":{"contributionCalendar":{"totalContributions":13,"weeks":[
@@ -5866,6 +5876,8 @@ case "$1 $2" in
   "run list") echo '[{"databaseId":71,"displayTitle":"Fix the thing","workflowName":"CI","headBranch":"fix","status":"completed","conclusion":"failure","updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/'"$repo"'/actions/runs/71"},
                      {"databaseId":72,"displayTitle":"nightly","workflowName":"Nightly","headBranch":"main","status":"in_progress","conclusion":"","updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/'"$repo"'/actions/runs/72"}]' ;;
   "api repos/"*"/stats/commit_activity") echo '[{"days":[0,2,0,0,0,0,0],"total":2,"week":1793491200},{"days":[1,0,0,0,0,0,0],"total":1,"week":1794096000}]' ;;
+  "api repos/"*"/stats/punch_card") echo '[[1,9,4],[1,10,2],[3,14,7]]' ;;
+  "api repos/"*"/stats/code_frequency") echo '[[1793491200,120,-30],[1794096000,40,-80]]' ;;
   "api repos/"*"/languages") echo '{"Rust":900,"Shell":100}' ;;
   "api repos/"*"/contributors"*) echo '[{"login":"ann","contributions":12}]' ;;
   *) exit 0 ;;
@@ -6661,5 +6673,81 @@ fn esc_stops_a_paste_and_takes_out_what_it_half_copied() {
     app.tree_paste();
     file_settle(&mut app);
     assert_eq!((app.msg.as_str(), fs::read_dir(root.join("src/big")).unwrap().count()), ("pasted big", 2000));
+    fs::remove_dir_all(&root).unwrap();
+}
+
+
+#[test]
+fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch() {
+    use crate::github::page::Target;
+    use crate::github::{Row, TOP};
+    let root = repo("gh-page");
+    let fake = std::env::temp_dir().join(format!("termcode-fake-gh-page-{}", std::process::id()));
+    fs::create_dir_all(&fake).unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.gh.bin = fake_gh(&fake);
+    app.side_w = Some(50);
+    app.outline_open = true;
+    let mut t = Terminal::new(TestBackend::new(170, 90)).unwrap();
+    app.show_side(Side::GitHub, false);
+    crate::github::tick(&mut app);
+    gh_settle(&mut app, &|a| a.gh.data.is_some());
+    // Enter on a repository: its page opens beside, as a preview tab, on its main page.
+    app.gh.sel[TOP] = crate::github::rows(&app.gh, TOP).iter().position(|r| matches!(r, Row::Repo(_))).unwrap();
+    app.focus = Focus::Side;
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let tab = &app.groups[0].tabs[app.groups[0].active];
+    assert!(tab.key == "repo:tester/proj" && tab.preview, "{}", tab.key);
+    gh_settle(&mut app, &|a| a.gh.pages.get("tester/proj").is_some_and(|p| p.dirs.contains_key("")));
+    let s = screen(&mut app, &mut t);
+    for want in ["tester/proj", " main ", "ann", "Say hello", "abcdef1", "FILES", "src", "Add the sources", "README.md", "Hello world from the README."] {
+        assert!(s.contains(want), "{want}: {s}");
+    }
+    assert!(app.ui.outline.is_empty() && app.ui.outline_btns.is_empty(), "the page has its own outline");
+    let hit = |app: &App, want: &Target| app.gh.hits.page.iter().rev().find(|(_, t)| t == want).map(|(r, _)| *r).unwrap_or_else(|| panic!("{want:?}"));
+    let press = |app: &mut App, r: Rect| mouse(app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    let text = app.ui.groups[0].text;
+    let (list_src, tree_src) = (hit(&app, &Target::Into("src".into())), hit(&app, &Target::Folder("src".into())));
+    assert!(list_src.x < text.right() && tree_src.x > text.right(), "the list in the middle, the tree on the right");
+    // Under the files, the insights: counts, the year's commits, when they land, churn.
+    gh_settle(&mut app, &|a| a.gh.pages["tester/proj"].stats.is_some());
+    let s = screen(&mut app, &mut t);
+    for want in ["INSIGHTS", "7 stars", "2 open · 30 merged · 5 closed", "1 open · 9 closed", "Rust 90%", "Commits", "When", "Code changes", "+160 / -110", "Contributors"] {
+        assert!(s.contains(want), "{want}: {s}");
+    }
+    // The list's src: listed in the middle (with ..), and opened in the tree.
+    press(&mut app, list_src);
+    gh_settle(&mut app, &|a| a.gh.pages["tester/proj"].dirs.contains_key("src"));
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("tester/proj / src") && s.contains(" ..") && app.gh.pages["tester/proj"].open.contains("src"), "{s}");
+    // main.rs: its code in the middle, an editor's (it copies), its outline on the right.
+    let r = hit(&app, &Target::File("src/main.rs".into()));
+    press(&mut app, r);
+    gh_settle(&mut app, &|a| a.docs.contains_key("repo:tester/proj"));
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("fn main() {}") && s.contains("tester/proj / src / main.rs") && s.contains("OUTLINE"), "{s}");
+    app.focus = Focus::Editor;
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(app.clip, "fn main() {}");
+    let r = hit(&app, &Target::Symbol(0));
+    press(&mut app, r);
+    assert_eq!(app.groups[0].tabs[app.groups[0].active].view.cursor, Pos::new(0, 0));
+    // The button over FILES: the main page again.
+    let button = app.gh.hits.page.iter().find(|(r, t)| *t == Target::Main && r.x > text.right()).map(|(r, _)| *r).expect("the main page button");
+    press(&mut app, button);
+    assert!(!app.docs.contains_key("repo:tester/proj") && screen(&mut app, &mut t).contains("Hello world from the README."));
+    // The branch: a pick of the branches; dev shows its own files.
+    let r = hit(&app, &Target::Branches);
+    press(&mut app, r);
+    gh_settle(&mut app, &|a| a.gitui.cmds.picker.is_some());
+    let labels: Vec<String> = app.gitui.cmds.picker.as_ref().unwrap().items.iter().map(|i| i.label.clone()).collect();
+    assert_eq!(labels, ["main", "dev"], "the shown one first");
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    gh_settle(&mut app, &|a| a.gh.pages["tester/proj"].dirs.contains_key(""));
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("DEV.md") && s.contains(" dev ") && app.gh.pages["tester/proj"].branch.as_deref() == Some("dev"), "{s}");
+    let _ = fs::remove_dir_all(&fake);
     fs::remove_dir_all(&root).unwrap();
 }
