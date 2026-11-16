@@ -11,7 +11,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 use std::cell::RefCell;
-use std::fs::File;
+use std::fs::{self, File};
+use std::os::unix::fs::OpenOptionsExt;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::CommandExt;
@@ -37,10 +38,15 @@ pub fn fds() -> Vec<i32> {
 
 pub struct Term {
     master: File,
+    /// The shell: started here (`child`), or (None) taken over across a reload; `pid`
+    /// either way.
     child: Option<Child>,
+    pid: i32,
     parser: vt100::Parser,
     /// Selected text: where the drag started and where it is, (row, column) on screen.
     sel: Option<((u16, u16), (u16, u16))>,
+    /// Its tab's name and when it was worked out (looked up again after a second).
+    name: RefCell<Option<(Instant, String)>>,
 }
 
 impl Term {
@@ -84,7 +90,61 @@ impl Term {
         }
         let child = cmd.spawn()?;
         FDS.with(|f| f.borrow_mut().push(m));
-        Ok(Term { master, child: Some(child), parser: vt100::Parser::new(rows, cols, SCROLLBACK), sel: None })
+        let pid = child.id() as i32;
+        Ok(Term { master, child: Some(child), pid, parser: vt100::Parser::new(rows, cols, SCROLLBACK), sel: None, name: RefCell::new(None) })
+    }
+
+    /// For a reload's exec: the PTY stays open across it (no close-on-exec), and what the
+    /// terminal shows (its scrollback as plain text, its screen as it is) goes to a file
+    /// in `dir`. Returns "fd,pid,rows,cols" for `adopt`.
+    pub fn hand_over(&mut self, dir: &Path) -> io::Result<String> {
+        let file = screen_file(dir, self.master.as_raw_fd());
+        let (rows, cols) = self.parser.screen().size();
+        let mut out = Vec::new();
+        if self.parser.screen().alternate_screen() {
+            // A full-screen program's screen; the shell's under it is not kept.
+            out.extend_from_slice(b"\x1b[?1049h");
+        } else {
+            let lines = self.lines();
+            let back = lines.len().saturating_sub(rows as usize);
+            for l in &lines[..back] {
+                out.extend_from_slice(l.trim_end().as_bytes());
+                out.extend_from_slice(b"\r\n");
+            }
+            // Pushed up into the scrollback, under the screen drawn next.
+            out.extend(std::iter::repeat_n(b'\n', rows as usize));
+        }
+        out.extend(self.parser.screen().state_formatted());
+        out.extend(self.parser.screen().cursor_state_formatted());
+        fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&file)?.write_all(&out)?;
+        let fd = self.master.as_raw_fd();
+        // SAFETY: an open descriptor; only its close-on-exec flag changes.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
+        Ok(format!("{fd},{},{rows},{cols}", self.pid))
+    }
+
+    /// After a reload: the terminal `hand_over` described, its shell still running on the
+    /// same PTY (this process's child still: the pid survived the exec), its screen back
+    /// from its file in `dir` (removed).
+    pub fn adopt(spec: &str, dir: &Path) -> Option<Term> {
+        let n: Vec<i32> = spec.split(',').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+        let [fd, pid, rows, cols] = n[..] else { return None };
+        let file = screen_file(dir, fd);
+        // SAFETY: fcntl on a descriptor number only reads its flags; -1 if not open.
+        if fd < 0 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+            return None;
+        }
+        // SAFETY: this process opened it before the exec and nothing else owns it.
+        let master = unsafe { File::from_raw_fd(fd) };
+        // SAFETY: an open descriptor.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        let mut parser = vt100::Parser::new(rows as u16, cols as u16, SCROLLBACK);
+        if let Ok(screen) = fs::read(&file) {
+            parser.process(&screen);
+        }
+        let _ = fs::remove_file(&file);
+        FDS.with(|f| f.borrow_mut().push(fd));
+        Some(Term { master, child: None, pid, parser, sel: None, name: RefCell::new(None) })
     }
 
     /// Reads what the shell wrote (1 MB at most a turn: keys still come first). Returns
@@ -171,7 +231,7 @@ impl Term {
     /// What runs in it besides the shell waiting at its prompt, by name: the foreground
     /// job (the terminal's process group, as tmux names a pane), else a background child.
     pub fn running(&self) -> Option<String> {
-        let pid = self.child.as_ref()?.id() as i32;
+        let pid = self.pid;
         let name = |p: i32| std::fs::read_to_string(format!("/proc/{p}/comm")).map_or_else(|_| "a program".into(), |s| s.trim().to_string());
         // SAFETY: an open PTY master.
         let fg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
@@ -313,9 +373,16 @@ impl Term {
         self.parser.screen().alternate_screen()
     }
 
-    /// Its tab's name: what runs in it, else the shell's name.
+    /// Its tab's name: what runs in it, else the shell's name; looked up once a second
+    /// (it reads /proc), not every frame.
     pub fn name(&self) -> String {
-        self.running().unwrap_or_else(|| Path::new(&shell()).file_name().map_or_else(|| "sh".into(), |n| n.to_string_lossy().into_owned()))
+        let mut cache = self.name.borrow_mut();
+        if let Some((_, n)) = cache.as_ref().filter(|(at, _)| at.elapsed() < Duration::from_secs(1)) {
+            return n.clone();
+        }
+        let n = self.running().unwrap_or_else(|| Path::new(&shell()).file_name().map_or_else(|| "sh".into(), |n| n.to_string_lossy().into_owned()));
+        *cache = Some((Instant::now(), n.clone()));
+        n
     }
 
     #[cfg(test)]
@@ -330,8 +397,14 @@ impl Drop for Term {
     fn drop(&mut self) {
         let fd = self.master.as_raw_fd();
         FDS.with(|f| f.borrow_mut().retain(|&x| x != fd));
-        if let Some(c) = self.child.take() {
-            crate::nav::reap(c, None);
+        match self.child.take() {
+            Some(c) => drop(crate::nav::reap(c, None)),
+            // Taken over across a reload: still this process's child, reaped by pid.
+            None => {
+                let pid = self.pid;
+                // SAFETY: waitpid on our own child; it blocks this thread only.
+                std::thread::spawn(move || unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) });
+            }
         }
     }
 }
@@ -366,6 +439,12 @@ pub fn mouse_bytes(
         let b = if press { code } else { 3 + m };
         vec![0x1b, b'[', b'M', 32 + b, (32 + col).min(255) as u8, (32 + row).min(255) as u8]
     })
+}
+
+/// Where a reload keeps terminal `fd`'s screen: named by this process (the pid outlives
+/// the exec) and the descriptor.
+pub fn screen_file(dir: &Path, fd: i32) -> std::path::PathBuf {
+    dir.join(format!("{}-{fd}", std::process::id()))
 }
 
 /// Ctrl+` (a legacy terminal sends it as Ctrl+Space).
@@ -755,6 +834,37 @@ pub fn key_bytes(k: KeyEvent, app_cursor: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_handed_over_terminal_is_adopted_with_its_screen_and_its_shell_still_running() {
+        let dir = std::env::temp_dir().join(format!("termcode-handover-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut t = Term::spawn("/bin/sh", &dir, 6, 40).unwrap();
+        let until = |t: &mut Term, what: &str| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !t.lines().iter().any(|l| l.contains(what)) {
+                assert!(Instant::now() < deadline, "no {what}: {:?}", t.lines());
+                t.pump();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        t.send(b"seq 1 20; echo before-$((1+1))\r");
+        until(&mut t, "before-2");
+        let spec = t.hand_over(&dir).unwrap();
+        // The exec, played here: the old one is never dropped (that would close the PTY).
+        let fd = t.master.as_raw_fd();
+        std::mem::forget(t);
+        // SAFETY: fd was just handed over and is open.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC, 0, "open across an exec");
+        let mut back = Term::adopt(&spec, &dir).expect("adopted");
+        let lines = back.lines();
+        assert!(lines.iter().any(|l| l.trim_end() == "3") && lines.iter().any(|l| l.contains("before-2")), "scrollback and screen back: {lines:?}");
+        assert!(!screen_file(&dir, fd).exists(), "its screen file read and gone");
+        back.send(b"echo after-$((2+2))\r");
+        until(&mut back, "after-4");
+        drop(back);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn keys_are_sent_as_xterm_sends_them() {

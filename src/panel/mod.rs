@@ -1136,9 +1136,20 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
         (app.settings.restore_session, app.settings.restore_view_state) = (true, true);
     }
     crate::session::restore(&mut app);
+    crate::session::clean_stale(&state);
     (app.settings.restore_session, app.settings.restore_view_state) = wanted;
     app.upgrade.watch = true;
-    if std::env::var_os(RELOAD_TERM_ENV).is_some() {
+    if let Ok(v) = std::env::var(RELOAD_TERMS_ENV) {
+        std::env::remove_var(RELOAD_TERMS_ENV); // not for the shells started later
+        let dir = crate::data_dir(true).join("terminals");
+        let mut parts = v.splitn(3, '|');
+        let open = parts.next() == Some("1");
+        let at = parts.next().and_then(|a| a.parse().ok()).unwrap_or(0usize);
+        app.terms = parts.next().unwrap_or("").split(';').filter_map(|s| crate::term::Term::adopt(s, &dir)).collect();
+        app.term_at = at.min(app.terms.len().saturating_sub(1));
+        app.term_open = open && !app.terms.is_empty();
+    } else if std::env::var_os(RELOAD_TERM_ENV).is_some() {
+        // From a termcode before 0.3: new shells, as many.
         let n = std::env::var(RELOAD_TERM_ENV).ok().and_then(|n| n.parse().ok()).unwrap_or(1usize);
         std::env::remove_var(RELOAD_TERM_ENV); // not for the new shells
         let focus = app.focus;
@@ -1202,8 +1213,12 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     leave(&mut app, token_file, SIGNALED.load(Ordering::SeqCst) || res.is_err());
     // A reload: this process becomes the installed binary, same arguments, same pane.
     if app.reload && matches!(res, Ok(Ok(()))) && !SIGNALED.load(Ordering::SeqCst) {
-        if app.term_open {
-            std::env::set_var(RELOAD_TERM_ENV, app.terms.len().to_string());
+        // The shells go on running: their PTYs cross the exec, their screens a file each.
+        if !app.terms.is_empty() {
+            let dir = crate::data_dir(true).join("terminals");
+            let _ = std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o700).create(&dir);
+            let specs: Vec<String> = app.terms.iter_mut().filter_map(|t| t.hand_over(&dir).ok()).collect();
+            std::env::set_var(RELOAD_TERMS_ENV, format!("{}|{}|{}", u8::from(app.term_open), app.term_at, specs.join(";")));
         }
         let own = crate::session::save_for_reload(&app);
         let e = reexec();
@@ -1233,8 +1248,12 @@ fn reexec() -> io::Error {
     Command::new(&exe).arg0(arg0).args(args).env(RELOAD_ENV, "1").exec()
 }
 
-/// Set across a reload when the terminal panel was open: it opens again (a new shell).
+/// Set across a reload by a termcode before 0.3 when its terminal showed: it opens again
+/// (new shells).
 const RELOAD_TERM_ENV: &str = "TERMCODE_RELOAD_TERMINAL";
+/// Set across a reload: whether the panel showed, the one shown, and each terminal kept
+/// ("fd,pid,rows,cols;…", see `Term::hand_over`).
+const RELOAD_TERMS_ENV: &str = "TERMCODE_RELOAD_TERMINALS";
 
 /// Every exit path (quit, HUP/TERM, an error, a panic) leaves the unsaved edits
 /// and the session on disk.
@@ -1995,15 +2014,11 @@ impl App {
         }
         let busy = self.prompt.is_some() || self.quick.is_some() || self.settings_dlg.is_some() || self.gitui.dlg.is_some()
             || self.rename.is_some() || !matches!(self.drag, Drag::None) || self.gitui.writes() > 0 || self.file_job.is_some();
-        // A program in the terminal would end with the reload: wait for it.
-        let running = self.terms.iter().find_map(crate::term::Term::running);
-        if self.unsaved() == 0 && !busy && running.is_none() {
+        // The terminals' programs go on across it (`Term::hand_over`).
+        if self.unsaved() == 0 && !busy {
             (self.reload, self.quit) = (true, true);
         } else if !std::mem::replace(&mut self.upgrade.told, true) {
-            self.msg = match running {
-                Some(p) if self.unsaved() == 0 => format!("a new termcode is installed: it reloads once {p} in the terminal ends"),
-                _ => "a new termcode is installed: it reloads once every file is saved".into(),
-            };
+            self.msg = "a new termcode is installed: it reloads once every file is saved".into();
         }
     }
 

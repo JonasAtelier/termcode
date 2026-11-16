@@ -5657,7 +5657,7 @@ fn a_program_that_asks_for_the_mouse_gets_the_terminals_clicks() {
 }
 
 #[test]
-fn quitting_or_reloading_waits_on_a_program_running_in_the_terminal() {
+fn quitting_waits_on_a_program_in_the_terminal_and_a_reload_keeps_it_running() {
     let root = repo("term-busy");
     let mut app = App::new(root.clone(), None);
     let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
@@ -5687,19 +5687,18 @@ fn quitting_or_reloading_waits_on_a_program_running_in_the_terminal() {
     assert!(text.contains("sleep is still running"), "{text}");
     app.run_prompt(PAct::Cancel);
     assert!(!app.quit && !app.terms.is_empty());
-    // A new termcode installed meanwhile waits for it.
+    // A new termcode installed meanwhile does not wait: the program goes on across the
+    // reload (its terminal is handed over).
     let exe = root.join("exe");
     fs::write(&exe, "x").unwrap();
     app.upgrade_tick(Some(exe.clone()));
     app.upgrade_tick(Some(exe.clone()));
-    assert!(!app.reload && app.msg.contains("once sleep in the terminal ends"), "{}", app.msg);
-    // Interrupted: the shell idles, and both go ahead.
+    assert!(app.reload && app.quit, "{}", app.msg);
+    (app.reload, app.quit) = (false, false);
+    // Interrupted: the shell idles.
     app.focus = Focus::Term;
     key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
     settle(&mut app, false);
-    app.upgrade_tick(Some(exe.clone()));
-    assert!(app.reload && app.quit, "reloads once it ended");
-    (app.reload, app.quit) = (false, false);
     app.request_quit();
     assert!(app.quit && app.prompt.is_none(), "an idle shell: no question");
     app.terms.clear();

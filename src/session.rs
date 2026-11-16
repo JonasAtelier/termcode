@@ -60,6 +60,23 @@ pub fn reload_file(file: &Path) -> PathBuf {
     file.with_extension(format!("reload-{}.json", std::process::id()))
 }
 
+/// What a reload killed before its exec left behind: reload sessions and terminal screens
+/// named for a process that is gone.
+pub fn clean_stale(state_dir: &Path) {
+    let gone = |pid: &str| pid.parse::<u32>().is_ok_and(|p| p != std::process::id() && !Path::new(&format!("/proc/{p}")).exists());
+    let names = |dir: PathBuf| std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| (e.path(), e.file_name().to_string_lossy().into_owned()));
+    for (path, name) in names(state_dir.join("sessions")) {
+        if name.strip_suffix(".json").and_then(|n| n.rsplit_once(".reload-")).is_some_and(|(_, pid)| gone(pid)) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    for (path, name) in names(state_dir.join("terminals")) {
+        if name.split_once('-').is_some_and(|(pid, _)| gone(pid)) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Before a reload: the session and the Explorer's undo history in `reload_file`.
 pub fn save_for_reload(app: &App) -> Option<PathBuf> {
     let file = reload_file(app.session.file.as_ref()?);
@@ -456,6 +473,23 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn stale_reload_files_of_gone_processes_are_removed_and_live_ones_kept() {
+        let (t, _r) = setup("sess-stale");
+        let state = t.0.join("state");
+        let (s, term) = (state.join("sessions"), state.join("terminals"));
+        fs::create_dir_all(&s).unwrap();
+        fs::create_dir_all(&term).unwrap();
+        let me = std::process::id();
+        for f in [s.join("k.reload-999999999.json"), s.join(format!("k.reload-{me}.json")), s.join("k.json"), term.join("999999999-7"), term.join(format!("{me}-7"))] {
+            fs::write(f, "x").unwrap();
+        }
+        clean_stale(&state);
+        let left = |d: &Path| { let mut v: Vec<String> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect(); v.sort(); v };
+        assert_eq!(left(&s), ["k.json".to_string(), format!("k.reload-{me}.json")]);
+        assert_eq!(left(&term), [format!("{me}-7")]);
     }
 
     #[test]
