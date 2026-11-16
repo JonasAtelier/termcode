@@ -92,19 +92,17 @@ impl Tip {
         Rect::new(self.x, self.rect.y, w, 1)
     }
 
-    /// Shown now: a file's MD5 starts on a thread (`md5sum`), `tick` takes it in.
+    /// Shown now: a file's MD5 starts on a thread, `tick` takes it in; the tooltip going
+    /// stops it (`Drop`).
     fn show(&mut self, root: &Path) {
         self.shown = true;
         let Some(path) = self.file.as_ref().map(|f| root.join(f)) else { return };
         let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let out = Command::new("md5sum").arg("--").arg(&path).stdin(Stdio::null()).stderr(Stdio::null()).output();
-            let _ = tx.send(match out {
-                // A name with a backslash or newline puts a backslash before the sum.
-                Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).split_whitespace().next().unwrap_or("").trim_start_matches('\\').to_string()),
-                Ok(_) => Err("unreadable".to_string()),
-                Err(_) => Err("md5sum not found".to_string()),
-            });
+        let stop = self.stop.clone();
+        std::thread::spawn(move || match crate::md5::file(&path, &stop) {
+            Ok(Some(sum)) => drop(tx.send(Ok(sum))),
+            Ok(None) => {} // nobody waits for it any more
+            Err(e) => drop(tx.send(Err(format!("unreadable: {e}")))),
         });
         self.md5_rx = Some(rx);
     }
@@ -230,6 +228,14 @@ pub struct Tip {
     pub file: Option<String>,
     pub md5: Option<Result<String, String>>,
     md5_rx: Option<mpsc::Receiver<Result<String, String>>>,
+    /// Set when the tooltip goes: its MD5 stops.
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for Tip {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 /// /proc/<pid>/comm of a running panel (herdr-code: its name before termcode): its
 /// backups are its own.

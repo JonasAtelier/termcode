@@ -500,9 +500,10 @@ impl App {
                     crate::session::touch(self); // clicks, drags, wheel: tabs, cursors, scroll
                     let button = matches!(m.kind, MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left));
                     let p = Position::new(m.column, m.row);
-                    // The MD5 line is the tooltip's own: its Copy button copies, the rest is inert.
-                    if button && self.tip.as_ref().is_some_and(|t| t.shown) && self.ui.tip_md5.contains(p) {
-                        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) && self.ui.tip_copy.contains(p) {
+                    // The MD5 line's Copy button copies; elsewhere a click goes to the row under
+                    // the line (the tooltip closes), as if it were not there.
+                    if button && self.tip.as_ref().is_some_and(|t| t.shown) && self.ui.tip_copy.contains(p) {
+                        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
                             self.copy_md5();
                         }
                         return true;

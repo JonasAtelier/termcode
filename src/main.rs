@@ -31,6 +31,7 @@ mod settingsui;
 mod settingsgraphics;
 mod symbols;
 mod term;
+mod md5;
 mod mdpreview;
 mod theme;
 mod ui;

@@ -6612,6 +6612,13 @@ fn resting_on_an_explorer_file_shows_its_md5_with_a_copy_button() {
     app.handle_event(Event::Mouse(MouseEvent { kind: MouseEventKind::Up(MouseButton::Left), column: c.x + 2, row: c.y, modifiers: KeyModifiers::NONE }));
     assert_eq!(app.clip, "401b30e3b8b5d629635a5c613cdb7919");
     assert!(app.msg.starts_with("copied the MD5 of fw.bin"), "{}", app.msg);
+    // Elsewhere on the line, a click is the row under it's: the tooltip closes.
+    let m = app.ui.tip_md5;
+    let below = app.tree.iter().position(|n| n.path == "README.md").unwrap();
+    assert_eq!(app.ui.side_item(m.y, app.off[0]), Some(below), "the line lies over README.md's row");
+    app.handle_event(Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: m.x + 2, row: m.y, modifiers: KeyModifiers::NONE }));
+    app.handle_event(Event::Mouse(MouseEvent { kind: MouseEventKind::Up(MouseButton::Left), column: m.x + 2, row: m.y, modifiers: KeyModifiers::NONE }));
+    assert!(app.tip.is_none() && app.sel[0] == below, "{}", app.sel[0]);
     // Off it, it goes; opened, a .bin is its hexdump.
     app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: 0, row: 0, modifiers: KeyModifiers::NONE });
     assert!(app.tip.is_none());
