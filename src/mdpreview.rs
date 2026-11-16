@@ -2,8 +2,7 @@
 //! file) rendered as terminal lines: headings, paragraphs and list items reflowed to the
 //! pane with hanging indents, quotes, fenced code highlighted like the editor, aligned
 //! tables, rules. Text only: HTML is never interpreted, links are never followed.
-//! ponytail: rendered again on every frame it is drawn (code blocks re-highlighted); a
-//! cache keyed by the buffer version if long documents get slow.
+//! ui.rs keeps the lines until the source, the width or the colours change.
 
 use crate::editor::Buffer;
 use crate::theme::{self, P};

@@ -895,6 +895,8 @@ pub struct App {
     pub tree_clip: Option<(Vec<String>, bool)>,
     /// The Explorer's selected items beyond the cursor's (Ctrl+click, Shift+click, Shift+↑↓).
     pub tree_marks: Vec<String>,
+    /// Markdown previews as last rendered, by file: (what they were rendered from, lines).
+    pub(crate) md_cache: HashMap<String, (u64, Vec<ratatui::text::Line<'static>>)>,
     /// Where a Shift+click or Shift+↑↓ range starts.
     pub tree_anchor: Option<String>,
     /// A dragged item resting on this closed folder opens it at this time.
@@ -1553,6 +1555,7 @@ impl App {
             tree_drop: None,
             tree_clip: None,
             tree_marks: Vec::new(),
+            md_cache: HashMap::new(),
             tree_anchor: None,
             tree_spring: None,
             file_job: None,

@@ -49,6 +49,7 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   background.
 - Two windows on one folder reloading together (a new termcode installed) each come back
   with their own tabs, and the Explorer's Ctrl+Z history survives the reload.
+- Markdown previews are rendered once per change, not on every frame.
 - GRAPH and TIMELINE follow git run outside termcode (in its terminal or anywhere
   else): a commit, checkout, branch, tag, fetch, push or stash shows within seconds.
 - The breadcrumbs (and the Outline) find the function around the cursor when its

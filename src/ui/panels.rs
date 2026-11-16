@@ -207,18 +207,39 @@ pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
 
 /// A `preview:` tab: the Markdown file rendered, scrolled by its view.
 pub(super) fn markdown_preview(app: &mut App, f: &mut Frame, g: usize, rel: &str, body: Rect, gh: &mut GroupHit) {
-    let src: Vec<String> = match app.docs.get(&format!("file:{rel}")) {
-        Some(Doc::Text(b)) => b.lines.clone(),
-        _ => match std::fs::read_to_string(app.root.join(rel)) {
-            Ok(t) => t.lines().map(str::to_string).collect(),
-            Err(e) => vec![format!("Cannot read {rel}: {e}")],
-        },
-    };
+    use std::hash::{Hash, Hasher};
     let empty = serde_json::Map::new();
     let colors = app.settings.theme.json["colors"].as_object().unwrap_or(&empty);
     let link = crate::theme::lookup(colors, "textLink.foreground").map_or(P.focus_border, |c| c.over(P.editor_bg));
     let text = Rect::new(body.x + 2, body.y, body.width.saturating_sub(5), body.height);
-    let lines = crate::mdpreview::render(&src, text.width as usize, link);
+    // Rendered again only when the source, the width or the colours change: the open
+    // buffer's text, else the file's size and time (not read every frame).
+    let open = match app.docs.get(&format!("file:{rel}")) {
+        Some(Doc::Text(b)) => Some(&b.lines),
+        _ => None,
+    };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match open {
+        Some(lines) => lines.hash(&mut h),
+        None => std::fs::metadata(app.root.join(rel)).ok().map(|m| (m.len(), m.modified().ok())).hash(&mut h),
+    }
+    (text.width, link, P.editor_fg, P.widget_bg).hash(&mut h);
+    let key = h.finish();
+    if app.md_cache.get(rel).is_none_or(|(k, _)| *k != key) {
+        let src: Vec<String> = match open {
+            Some(lines) => lines.clone(),
+            None => match std::fs::read_to_string(app.root.join(rel)) {
+                Ok(t) => t.lines().map(str::to_string).collect(),
+                Err(e) => vec![format!("Cannot read {rel}: {e}")],
+            },
+        };
+        let lines = crate::mdpreview::render(&src, text.width as usize, link);
+        if app.md_cache.len() >= 8 {
+            app.md_cache.clear();
+        }
+        app.md_cache.insert(rel.to_string(), (key, lines));
+    }
+    let lines = &app.md_cache[rel].1;
     let h = text.height as usize;
     let max = lines.len().saturating_sub(h);
     let grp = &mut app.groups[g];
@@ -229,8 +250,9 @@ pub(super) fn markdown_preview(app: &mut App, f: &mut Frame, g: usize, rel: &str
     f.render_widget(Paragraph::new(shown).style(Style::new().fg(P.editor_fg).bg(P.editor_bg)), text);
     gh.text = text;
     gh.preview_rows = lines.len();
-    if lines.len() > h {
+    let n = lines.len();
+    if n > h {
         let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
-        scrollbar(app, f, track, ScrollTarget::Editor(g), lines.len(), h, off, max);
+        scrollbar(app, f, track, ScrollTarget::Editor(g), n, h, off, max);
     }
 }
