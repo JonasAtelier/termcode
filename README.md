@@ -337,7 +337,10 @@ restores it from there; on another disk, that disk's own Trash), Shift+Delete de
 good; each asks first. In the Explorer, Ctrl+Z takes back the last move, rename, paste or
 delete (not Shift+Delete), and Ctrl+Y does it again; both survive a reload. Rest the
 pointer on a file for its MD5 (**Copy** copies it). A binary file (or a `.bin`) opens as a
-hexdump; F1 **View: Toggle Hexdump** shows it as text, or any file as a hexdump.
+hexdump; F1 **View: Toggle Hexdump** shows it as text, or any file as a hexdump. An ELF
+file (`.so`, an executable, `.o`, `.ko`) opens as `readelf`'s report, its SONAME, needed
+libraries, symbol versions, build ID and compiler summed up first; the **readelf** and
+**hexdump** buttons on its banner switch between the two.
 Rest the pointer on a function to see its docs.
 
 **Terminal:** Ctrl+` or the terminal button beside Split Editor opens your shell under the

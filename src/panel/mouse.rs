@@ -225,6 +225,9 @@ impl App {
         if self.ui.term_btns.iter().any(|r| r.contains(p)) {
             return if self.term_open { self.hide_terminal() } else { self.toggle_terminal() };
         }
+        if let Some(&(_, hex)) = self.ui.view_btns.iter().find(|(r, _)| r.contains(p)) {
+            return self.show_hex(hex);
+        }
         if self.ui.term_new.contains(p) {
             return self.new_terminal();
         }

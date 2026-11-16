@@ -146,8 +146,8 @@ pub(super) fn text_editor(
         }
         // Display columns of what is drawn over the text: blanks shown, coloured brackets.
         let selected = sel.filter(|(a, e)| a.line <= i && i <= e.line).map(|(a, e)| (if a.line == i { a.col } else { 0 }, if e.line == i { e.col } else { line.len() }));
-        // A hexdump's columns are spaces, not whitespace to show.
-        let ws_mode = if b.binary { editor::Whitespace::None } else { d.whitespace };
+        // A hexdump's or readelf's columns are spaces, not whitespace to show.
+        let ws_mode = if b.binary || b.elf { editor::Whitespace::None } else { d.whitespace };
         let mut blanks = editor::whitespace_marks(line, ws_mode, selected).into_iter().peekable();
         let (mut ws, mut paint) = (Vec::new(), Vec::new());
         let mut depth = depths.as_ref().map_or(0, |dp| dp[i]);

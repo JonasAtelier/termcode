@@ -16,6 +16,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   README. On the right: a button back to the main page and the files as a tree. A file
   clicked shows its code in the middle (read-only, with its last commit) and its outline
   under the tree. The branch at the top switches the branch.
+- An ELF file (a `.so`, an executable, a `.o`, a `.ko`) opens as what `readelf` says about
+  it: a summary first (type and machine, SONAME, the libraries it needs, the symbol
+  versions it defines and needs, its build ID, the compiler), then readelf's parts, each a
+  heading for the Outline. Buttons on its banner switch between readelf and hexdump (a
+  binary file's: hexdump and text).
 
 ### Fixed
 - A commit message indented with tabs (a JSON example, say) no longer breaks its card:

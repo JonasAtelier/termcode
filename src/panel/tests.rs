@@ -6751,3 +6751,28 @@ fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch(
     let _ = fs::remove_dir_all(&fake);
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn a_binarys_banner_chooses_between_readelf_and_hexdump() {
+    if Command::new("readelf").arg("--version").output().is_err() || !Path::new("/bin/true").exists() {
+        return; // no binutils here
+    }
+    let root = repo("elf-view");
+    fs::copy("/bin/true", root.join("t.so")).unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "t.so", false);
+    wait(&mut app);
+    let mut t = Terminal::new(TestBackend::new(170, 30)).unwrap();
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("# t.so: ELF") && s.contains(" readelf ") && s.contains(" hexdump ") && s.contains("ELF"), "{s}");
+    let btn = |app: &App, hex: bool| app.ui.view_btns.iter().find(|(_, h)| *h == hex).map(|(r, _)| *r).unwrap();
+    let elf = |app: &App| match app.docs.get("file:t.so") { Some(Doc::Text(b)) => (b.elf, b.binary), _ => panic!() };
+    let r = btn(&app, true);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    assert_eq!(elf(&app), (false, true), "its bytes");
+    assert!(screen(&mut app, &mut t).contains("00000000  7f 45 4c 46"));
+    let r = btn(&app, false);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    assert_eq!(elf(&app), (true, false), "readelf's report again");
+    fs::remove_dir_all(&root).unwrap();
+}

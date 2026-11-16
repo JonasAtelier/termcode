@@ -779,6 +779,8 @@ pub struct Hits {
     /// The hovered file's MD5 line under its row, and its Copy button.
     pub tip_md5: Rect,
     pub tip_copy: Rect,
+    /// The read-only banner's way-to-show buttons: each one, and whether it is the hexdump.
+    pub view_btns: Vec<(Rect, bool)>,
     /// The Explorer row being renamed, its box and the display columns scrolled off it.
     pub rename: Rect,
     pub rename_field: (Rect, usize),
@@ -1982,16 +1984,31 @@ impl App {
 
     /// View: Toggle Hexdump: the active file again, as a hexdump or as text.
     fn toggle_hex(&mut self) {
+        let Some(hex) = self.ed().map(|(b, _)| !b.binary) else { return };
+        self.show_hex(hex);
+    }
+
+    /// The active file again as a hexdump (`hex`), or else as text (an ELF file: readelf's
+    /// report). The banner's buttons and View: Toggle Hexdump.
+    pub(crate) fn show_hex(&mut self, hex: bool) {
         let Some((b, tab)) = self.ed() else { return };
         let Some(path) = b.path.clone() else { return };
+        if b.binary == hex {
+            return;
+        }
         if b.dirty() {
             self.msg = "save it first: a hexdump cannot hold unsaved edits".into();
             return;
         }
-        let hex = !b.binary;
         *b = Buffer::open_as(&path, Some(hex));
         tab.view = View::default();
-        self.msg = if hex { "shown as a hexdump".into() } else { "shown as text".into() };
+        self.msg = if hex {
+            "shown as a hexdump".into()
+        } else if b.elf {
+            "shown as readelf's report".into()
+        } else {
+            "shown as text".into()
+        };
     }
 
     fn unsaved(&self) -> usize {

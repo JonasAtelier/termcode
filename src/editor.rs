@@ -297,6 +297,9 @@ pub struct Buffer {
     pub binary: bool,
     /// View: Toggle Hexdump's choice (None: a hexdump for binary files and .bin).
     pub hex: Option<bool>,
+    /// An ELF file shown as readelf's report; the file is an ELF one (whichever way shown).
+    pub elf: bool,
+    pub elf_file: bool,
     pub mtime: Option<SystemTime>,
     mode: Option<u32>,
     pub indent: String,
@@ -619,6 +622,8 @@ impl Buffer {
             readonly: None,
             binary: false,
             hex: None,
+            elf: false,
+            elf_file: false,
             mtime: None,
             mode: None,
             indent: " ".repeat(tab()),
@@ -697,6 +702,21 @@ impl Buffer {
         if let Err(e) = fs::File::open(path).and_then(|f| f.take(MAX_BYTES + 1).read_to_end(&mut buf)) {
             b.readonly = Some(e.to_string());
             return b;
+        }
+        // An ELF file: what readelf says about it (its bytes: View: Toggle Hexdump).
+        b.elf_file = crate::elf::is_elf(&buf);
+        if b.elf_file && hex != Some(true) {
+            if let Some(report) = crate::elf::report(path) {
+                let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                let mut lines = crate::elf::view(&name, &report);
+                lines.truncate(MAX_LINES);
+                b.lines = lines;
+                b.line_ids = fresh_line_ids(b.lines.len()).collect();
+                b.elf = true;
+                b.readonly = Some("ELF file: what readelf says about it".into());
+                b.set_syntax(syntaxes().find_syntax_by_name("Markdown"));
+                return b;
+            }
         }
         // A binary file (a NUL early on, or a .bin) is shown as `hexdump -C` shows it.
         let nul = buf[..buf.len().min(8192)].contains(&0);
@@ -819,7 +839,8 @@ impl Buffer {
     /// Go to Symbol's and the breadcrumbs' symbols, for this version.
     pub fn symbols(&mut self) -> &[crate::symbols::Symbol] {
         if self.derived.symbols.as_ref().is_none_or(|(v, _)| *v != self.version) {
-            let path = self.path.as_deref().and_then(Path::to_str).unwrap_or("");
+            // readelf's report is Markdown: its parts are the outline.
+            let path = if self.elf { "readelf.md" } else { self.path.as_deref().and_then(Path::to_str).unwrap_or("") };
             self.derived.symbols = Some((self.version, crate::symbols::symbols(path, &self.lines)));
         }
         &self.derived.symbols.as_ref().unwrap().1
@@ -2891,6 +2912,19 @@ mod tests {
         fs::write(d.join("empty.bin"), "").unwrap();
         assert_eq!(Buffer::open(&d.join("empty.bin")).lines, [""]);
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn an_elf_file_opens_as_readelfs_report_and_toggles_to_its_bytes() {
+        if std::process::Command::new("readelf").arg("--version").output().is_err() {
+            return; // no binutils here
+        }
+        let exe = std::env::current_exe().unwrap();
+        let b = Buffer::open(&exe);
+        assert!(b.elf && !b.binary && b.readonly.is_some() && b.lines[0].starts_with("# ") && b.syntax_name() == "Markdown", "{:?}", &b.lines[..2]);
+        let hex = Buffer::open_as(&exe, Some(true));
+        assert!(hex.binary && !hex.elf && hex.lines[0].starts_with("00000000  7f 45 4c 46"));
+        assert!(Buffer::open_as(&exe, Some(false)).elf, "back to the report");
     }
 
     #[test]

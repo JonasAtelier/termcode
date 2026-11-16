@@ -10,6 +10,7 @@ mod colors;
 mod decor;
 mod diff;
 mod editor;
+mod elf;
 mod git;
 mod minimap;
 mod icons;

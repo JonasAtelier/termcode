@@ -419,6 +419,8 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         let indent = if b.indent == "\t" { format!("Tab Size: {}", editor::tab()) } else { format!("Spaces: {}", b.indent.len()) };
         let enc = if b.binary {
             "Hex".into()
+        } else if b.elf {
+            "ELF".into()
         } else if b.readonly.is_some() {
             format!("{}{}Read-only", icons().lock, sp(lay.s.icon_gap))
         } else {
@@ -1525,6 +1527,19 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 problems: &problems,
             };
             let out = text_editor(f, b, view, body, focused_group, editor_focus, &deco);
+            // A binary (or an ELF) file: how to show it, on the banner's right.
+            if b.readonly.is_some() && (b.binary || b.elf_file || b.hex.is_some()) {
+                let other = if b.elf_file { "readelf" } else { "text" };
+                let mut x = body.right().saturating_sub(2);
+                for (label, hex) in [("hexdump", true), (other, false)] {
+                    let t = format!(" {label} ");
+                    x = x.saturating_sub(t.width() as u16 + 1);
+                    let r = Rect::new(x, body.y, t.width() as u16, 1);
+                    let hot = app.hover.is_some_and(|p| r.contains(p));
+                    f.render_widget(Span::styled(t, button_style(b.binary == hex, hot)), r);
+                    app.ui.view_btns.push((r, hex));
+                }
+            }
             if let Some(p) = out.caret.filter(|p| !card.is_some_and(|r| r.contains(*p))) {
                 f.set_cursor_position(p);
             }
