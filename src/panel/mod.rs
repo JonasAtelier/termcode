@@ -51,6 +51,8 @@ pub const MAX_GROUPS: usize = 3;
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Set for the process a reload execs: the session comes back whatever the settings say.
 const RELOAD_ENV: &str = "TERMCODE_RELOADED";
+/// How long a dragged item rests on a closed folder before it opens.
+const SPRING: Duration = Duration::from_millis(700);
 /// Changes made outside the panel (an agent, a shell) show without a focus or view
 /// switch: `git status` reruns this often, or ten times as long as it last took.
 const STATUS_POLL: Duration = Duration::from_secs(2);
@@ -325,9 +327,9 @@ pub enum PAct {
     /// Quit although a program runs in the terminal (it ends with the window).
     QuitEndTerminal,
     /// An Explorer item dropped on a folder ("" the root): move it there.
-    Move(String, String),
+    Move(Vec<String>, String),
     /// Delete an Explorer item: to the Trash, or (`true`) for good.
-    Delete(String, bool),
+    Delete(Vec<String>, bool),
     /// A change on GitHub, confirmed.
     GitHub(crate::github::Act),
     /// A document and the backup file chosen for it; the backup file to drop.
@@ -662,7 +664,7 @@ pub enum Drag {
     /// The line between the GitHub view's panes.
     GhSash,
     /// An Explorer item (`dir`: a folder): onto an editor (a file), or into a folder.
-    File { rel: String, from: Position, active: bool, dir: bool },
+    File { rel: String, from: Position, active: bool, dir: bool, keep: bool },
     /// Tab `i` of group `g` (VS Code's tab drag and drop); active once moved 2 cells.
     Tab { g: usize, i: usize, from: Position, active: bool },
     Select(usize),
@@ -870,12 +872,22 @@ pub struct App {
     /// The folder an Explorer drag would drop into ("" the root), lit while it is over it;
     /// the item Ctrl+C (or Ctrl+X: `true`) took for Ctrl+V.
     pub tree_drop: Option<String>,
-    pub tree_clip: Option<(String, bool)>,
+    pub tree_clip: Option<(Vec<String>, bool)>,
+    /// The Explorer's selected items beyond the cursor's (Ctrl+click, Shift+click, Shift+↑↓).
+    pub tree_marks: Vec<String>,
+    /// Where a Shift+click or Shift+↑↓ range starts.
+    pub tree_anchor: Option<String>,
+    /// A dragged item resting on this closed folder opens it at this time.
+    pub tree_spring: Option<(String, Instant)>,
+    /// A paste running on its thread.
+    pub file_job: Option<rename::FileJob>,
+    /// The last mouse event's modifiers (Ctrl+click, a Ctrl+drag's copy).
+    pub mouse_mods: KeyModifiers,
     /// The Trash Delete moves to (freedesktop's: $XDG_DATA_HOME/Trash).
     pub(crate) trash: PathBuf,
     /// Explorer file operations Ctrl+Z can take back, and those it took back (Ctrl+Y).
-    pub file_undo: Vec<rename::FileOp>,
-    pub file_redo: Vec<rename::FileOp>,
+    pub file_undo: Vec<Vec<rename::FileOp>>,
+    pub file_redo: Vec<Vec<rename::FileOp>>,
     /// The GitHub view and its status bar item.
     pub gh: crate::github::GitHub,
     pub outline_open: bool,
@@ -1508,6 +1520,11 @@ impl App {
             term_quit_ok: false,
             tree_drop: None,
             tree_clip: None,
+            tree_marks: Vec::new(),
+            tree_anchor: None,
+            tree_spring: None,
+            file_job: None,
+            mouse_mods: KeyModifiers::NONE,
             // Tests never reach the user's Trash.
             file_undo: Vec::new(),
             file_redo: Vec::new(),
@@ -1878,7 +1895,7 @@ impl App {
             return;
         }
         let busy = self.prompt.is_some() || self.quick.is_some() || self.settings_dlg.is_some() || self.gitui.dlg.is_some()
-            || self.rename.is_some() || !matches!(self.drag, Drag::None) || self.gitui.writes() > 0;
+            || self.rename.is_some() || !matches!(self.drag, Drag::None) || self.gitui.writes() > 0 || self.file_job.is_some();
         // A program in the terminal would end with the reload: wait for it.
         let running = self.term.as_ref().and_then(crate::term::Term::running);
         if self.unsaved() == 0 && !busy && running.is_none() {

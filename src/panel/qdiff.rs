@@ -397,6 +397,15 @@ impl App {
         *dirty |= self.drain();
         *dirty |= self.term_pump();
         *dirty |= crate::github::tick(self);
+        *dirty |= self.file_job_tick();
+        if let Some((path, _)) = self.tree_spring.take_if(|(_, t)| Instant::now() >= *t) {
+            if matches!(self.drag, Drag::File { active: true, .. }) {
+                if let Some(i) = self.tree.iter().position(|n| n.path == path && n.dir && !n.open) {
+                    self.toggle(i);
+                    *dirty = true;
+                }
+            }
+        }
         if std::mem::take(dirty) {
             t.draw(|f| crate::ui::draw(self, f))?;
             self.last_draw = Some(Instant::now());
@@ -419,12 +428,13 @@ impl App {
             || self.gitui.busy()
             || self.gitui.refs.busy()
             || self.lints.busy()
-            || self.gh.busy();
+            || self.gh.busy()
+            || self.file_job.is_some();
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
         let upgrade_due = self.upgrade.next.filter(|_| self.upgrade.watch);
         let poll_due = self.status_poll_due.filter(|_| self.poll_status);
-        for t in [self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due, self.search_due, poll_due, self.lints.due()].into_iter().flatten() {
+        for t in [self.tree_spring.as_ref().map(|s| s.1), self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due, self.search_due, poll_due, self.lints.due()].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
         // A far jump's first highlighting catches up one budgeted slice per frame

@@ -708,11 +708,13 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         // A drag's target folder lights up with what shows inside it (the root: all).
         let dropping = app.side == Side::Explorer
             && app.tree_drop.as_deref().is_some_and(|t| t.is_empty() || app.tree.get(i).is_some_and(|n| n.path == t || n.path.starts_with(&format!("{t}/"))));
+        // Ctrl+click / Shift+click selections light up as the cursor's row does.
+        let marked = app.side == Side::Explorer && app.tree.get(i).is_some_and(|n| app.tree_marks.contains(&n.path));
         let bg = if dropping {
             P.drop_bg
-        } else if i == app.sel[s] && app.focus == Focus::Side {
+        } else if (i == app.sel[s] || marked) && app.focus == Focus::Side {
             P.list_active_bg
-        } else if i == app.sel[s] {
+        } else if i == app.sel[s] || marked {
             P.list_inactive_bg
         } else if hover_row == Some(i) {
             P.list_hover_bg

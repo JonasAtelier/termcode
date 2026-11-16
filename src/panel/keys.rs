@@ -368,6 +368,26 @@ impl App {
                 _ => {}
             }
         }
+        if self.side == Side::Explorer {
+            let e = Side::Explorer as usize;
+            match k.code {
+                // Shift+↑↓: the selection grows from the anchor.
+                KeyCode::Up | KeyCode::Down if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                    if self.tree_marks.is_empty() {
+                        self.tree_anchor = self.tree.get(self.sel[e]).map(|n| n.path.clone());
+                    }
+                    self.move_side(if k.code == KeyCode::Up { -1 } else { 1 });
+                    return self.tree_mark(self.sel[e], true);
+                }
+                KeyCode::Char('a') if k.modifiers == KeyModifiers::CONTROL => {
+                    self.tree_marks = self.tree.iter().map(|n| n.path.clone()).collect();
+                    return;
+                }
+                KeyCode::Esc if !self.tree_marks.is_empty() => return self.tree_marks.clear(),
+                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => self.tree_marks.clear(),
+                _ => {}
+            }
+        }
         let page = self.ui.side_rows.max(1) as isize;
         let s = self.side as usize;
         match k.code {

@@ -321,12 +321,15 @@ Click the active sidebar icon to hide the sidebar. Drag any divider to resize.
 
 **Mouse:** click a file to preview it (italic tab), double-click its tab to keep it open.
 Double-click a name in the Explorer to rename it. Drag a file to an editor edge to split,
-or a file or folder onto a folder in the Explorer to move it there (asked first). Ctrl+C /
-Ctrl+X then Ctrl+V in the Explorer copy or move the selected item into the selected folder;
-a name already there becomes `name (1)`, `name (2)` …. Delete moves the selected item to the
-Trash (your file manager restores it from there), Shift+Delete deletes it for good; each
-asks first. In the Explorer, Ctrl+Z takes back the last move, rename, paste or delete
-(not Shift+Delete), and Ctrl+Y does it again.
+or a file or folder onto a folder in the Explorer to move it there (asked first); hold Ctrl
+(or Alt) as you let go to copy it instead, and rest on a closed folder to open it. Ctrl+click
+adds items to the selection, Shift+click or Shift+↑↓ selects a range, Ctrl+A all; a drag,
+Ctrl+C / Ctrl+X / Ctrl+V and Delete then take them all. Ctrl+V copies or moves into the
+selected folder; a name already there becomes `name (1)`, `name (2)` …, and a big folder
+copies in the background. Delete moves the selection to the Trash (your file manager
+restores it from there; on another disk, that disk's own Trash), Shift+Delete deletes it for
+good; each asks first. In the Explorer, Ctrl+Z takes back the last move, rename, paste or
+delete (not Shift+Delete), and Ctrl+Y does it again.
 Rest the pointer on a function to see its docs.
 
 **Terminal:** Ctrl+` or the terminal button beside Split Editor opens your shell under the

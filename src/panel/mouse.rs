@@ -16,6 +16,7 @@ impl App {
         }
         let p = Position::new(m.column, m.row);
         let shift = m.modifiers.contains(KeyModifiers::SHIFT);
+        self.mouse_mods = m.modifiers;
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let double = self.last_click.is_some_and(|(t, q)| t.elapsed() < DOUBLE_CLICK && q == p);
@@ -280,13 +281,22 @@ impl App {
             // A blank row between items selects nothing.
             let Some(i) = self.ui.side_item(p.y, self.off[s]) else { return };
             if i < self.side_count() {
-                self.sel[s] = i;
                 self.focus = Focus::Side;
                 if self.side == Side::Explorer {
-                    if let Some(n) = self.tree.get(i) {
-                        self.drag = Drag::File { rel: n.path.clone(), from: p, active: false, dir: n.dir };
+                    let Some(n) = self.tree.get(i) else { return };
+                    let keep = shift || self.mouse_mods.contains(KeyModifiers::CONTROL);
+                    self.drag = Drag::File { rel: n.path.clone(), from: p, active: false, dir: n.dir, keep };
+                    // Ctrl+click: in or out of the selection; Shift+click: a range. Neither opens.
+                    if keep {
+                        return self.tree_mark(i, shift);
+                    }
+                    // A plain click on a selected item keeps the selection for a drag; the
+                    // release without one leaves the item alone selected.
+                    if !self.tree_marks.contains(&n.path) {
+                        self.tree_unmark(i);
                     }
                 }
+                self.sel[s] = i;
                 // Double-clicking a name edits it in place (the first click opened the file
                 // or folded the folder).
                 if double && self.side == Side::Explorer && i < self.tree.len() {
@@ -596,16 +606,29 @@ impl App {
             // The panel's right edge stays; its left border follows the pointer.
             Drag::OutlineSash => self.outline_w = Some((self.ui.outline.right() + 1).saturating_sub(p.x).max(16)),
             Drag::GhSash => crate::github::drag_to(self, p.y),
-            Drag::File { rel, from, active, dir } => {
+            Drag::File { rel, from, active, dir, .. } => {
                 if !*active && (from.x.abs_diff(p.x) + from.y.abs_diff(p.y)) >= 2 {
                     *active = true;
                 }
                 if *active {
-                    // Over the Explorer: a folder to move into; over an editor: a file opens.
+                    // Over the Explorer: a folder to move (Ctrl, Alt: copy) into; over an
+                    // editor: a file opens.
                     let (rel, dir) = (rel.clone(), *dir);
-                    self.tree_drop = self.tree_target(p, &rel);
+                    let rels = self.dragged(&rel);
+                    let copy = self.mouse_mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+                    self.tree_drop = self.tree_target(p, &rels, copy);
                     let over_tree = self.ui.side_list.contains(p);
-                    self.drop = if over_tree || dir { None } else { self.drop_target(p, false) };
+                    self.drop = if over_tree || dir || rels.len() > 1 { None } else { self.drop_target(p, false) };
+                    // Resting on a closed folder opens it (VS Code's spring-loaded folders).
+                    let closed = over_tree
+                        .then(|| self.ui.side_item(p.y, self.off[Side::Explorer as usize]))
+                        .flatten()
+                        .and_then(|i| self.tree.get(i))
+                        .filter(|n| n.dir && !n.open)
+                        .map(|n| n.path.clone());
+                    if closed.as_ref() != self.tree_spring.as_ref().map(|s| &s.0) {
+                        self.tree_spring = closed.map(|c| (c, Instant::now() + SPRING));
+                    }
                 }
             }
             Drag::Tab { g, i, from, active } => {
@@ -680,9 +703,16 @@ impl App {
         }
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Divider | Drag::TermSash | Drag::OutlineSash | Drag::GhSash => self.save_layout(),
+            Drag::File { active: false, keep: false, .. } => self.tree_unmark(self.sel[Side::Explorer as usize]),
             Drag::File { rel, active: true, .. } => {
+                self.tree_spring = None;
                 if let Some(into) = self.tree_drop.take() {
-                    self.ask_move(rel, into);
+                    let rels = self.dragged(&rel);
+                    if self.mouse_mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                        self.copy_into(&rels, &into);
+                    } else {
+                        self.ask_move(rels, into);
+                    }
                 } else if let Some((g, zone)) = self.drop.take() {
                     let target = match zone {
                         Zone::Center | Zone::Tab(_) => g,

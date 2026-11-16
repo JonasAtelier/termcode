@@ -35,8 +35,15 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - The commit dialog's message: a drag selects (a double-click, a word), and Ctrl+C,
   Ctrl+X and Ctrl+V copy, cut and paste. Its diff and a commit's card select the same way,
   and Ctrl+C copies.
+- The Explorer selects several items (Ctrl+click, Shift+click, Shift+↑↓, Ctrl+A) and moves,
+  copies and deletes them together; Ctrl+Z takes such a step back at once. Ctrl (or Alt)
+  as a drag ends copies instead of moving, and resting on a closed folder opens it.
 
 ### Fixed
+- Delete in the Explorer on another disk than your home folder: the item goes to that
+  disk's own Trash, as file managers do, instead of only offering to delete it for good.
+- Pasting a big folder in the Explorer no longer freezes the window: it copies in the
+  background.
 - GRAPH and TIMELINE follow git run outside termcode (in its terminal or anywhere
   else): a commit, checkout, branch, tag, fetch, push or stash shows within seconds.
 - The breadcrumbs (and the Outline) find the function around the cursor when its

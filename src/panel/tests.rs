@@ -6219,7 +6219,7 @@ fn dragging_an_explorer_item_onto_a_folder_moves_it_once_confirmed() {
     let text = app.prompt.as_ref().map(|p| p.text.join(" ")).unwrap_or_default();
     assert!(text.contains("move 'notes.md' into 'docs'"), "{text}");
     assert!(root.join("notes.md").exists(), "nothing moves before it is confirmed");
-    app.run_prompt(PAct::Move("notes.md".into(), "docs".into()));
+    app.run_prompt(PAct::Move(vec!["notes.md".into()], "docs".into()));
     assert!(root.join("docs/notes.md").exists() && !root.join("notes.md").exists());
     assert!(app.groups[0].tabs.iter().any(|tb| tb.key == "file:docs/notes.md"), "the open editor follows");
     assert_eq!(app.tree.get(app.sel[0]).map(|n| n.path.as_str()), Some("docs/notes.md"), "shown and selected");
@@ -6237,7 +6237,7 @@ fn dragging_an_explorer_item_onto_a_folder_moves_it_once_confirmed() {
     // A name already there: said, not asked.
     fs::write(root.join("README2.md"), "r").unwrap();
     fs::write(root.join("docs/README2.md"), "taken").unwrap();
-    app.ask_move("README2.md".into(), "docs".into());
+    app.ask_move(vec!["README2.md".into()], "docs".into());
     assert!(app.prompt.is_none() && app.msg.contains("already exists in docs"), "{}", app.msg);
     fs::remove_dir_all(&root).unwrap();
 }
@@ -6257,15 +6257,18 @@ fn explorer_copy_cut_and_paste_number_the_copies() {
     select(&mut app, "a.tar.gz");
     ctrl(&mut app, 'c');
     ctrl(&mut app, 'v');
+    file_settle(&mut app);
     ctrl(&mut app, 'v');
+    file_settle(&mut app);
     assert!(root.join("a.tar (1).gz").exists() && root.join("a.tar (2).gz").exists());
     assert_eq!(app.tree.get(app.sel[0]).map(|n| n.path.as_str()), Some("a.tar (2).gz"), "the copy selected");
-    assert_eq!(app.free_name("", ".env"), ".env (1)", "a dotfile's dot is no extension");
+    assert_eq!(app.free_name("", ".env", &[]), ".env (1)", "a dotfile's dot is no extension");
     // A folder with all in it, into a folder (a file selected: its folder).
     select(&mut app, "lib");
     ctrl(&mut app, 'c');
     app.reveal_path("src/main.rs");
     ctrl(&mut app, 'v');
+    file_settle(&mut app);
     assert_eq!(fs::read_to_string(root.join("src/lib/deep/a.txt")).unwrap(), "a");
     // Not into itself.
     select(&mut app, "lib");
@@ -6314,11 +6317,11 @@ fn delete_moves_to_the_trash_once_asked_and_shift_delete_removes_for_good() {
     fs::write(root.join("a b.txt"), "again").unwrap();
     app.reload_all();
     select(&mut app, "a b.txt");
-    app.delete_path("a b.txt", false);
+    app.delete_paths(&["a b.txt".into()], false);
     assert_eq!(fs::read_to_string(trash.join("files/a b.txt.2")).unwrap(), "again");
     // An editor with unsaved edits stays open.
     select(&mut app, "kept.txt");
-    app.delete_path("kept.txt", false);
+    app.delete_paths(&["kept.txt".into()], false);
     assert!(app.groups[0].tabs.iter().any(|t| t.key == "file:kept.txt"), "unsaved edits are kept");
     // Shift+Delete: a folder and its contents, for good.
     select(&mut app, "old");
@@ -6350,30 +6353,170 @@ fn ctrl_z_takes_back_explorer_moves_copies_and_deletes_and_ctrl_y_redoes_them() 
     };
     let at = |p: &str| root.join(p).exists();
     // A move: back, then again; the open editor follows both ways.
-    app.move_into("notes.md", "docs");
+    app.move_into(&["notes.md".into()], "docs");
     ctrl(&mut app, 'z', false);
     assert!(at("notes.md") && !at("docs/notes.md") && app.groups[0].tabs.iter().any(|t| t.key == "file:notes.md"), "{}", app.msg);
     ctrl(&mut app, 'y', false);
     assert!(at("docs/notes.md") && !at("notes.md") && app.groups[0].tabs.iter().any(|t| t.key == "file:docs/notes.md"), "{}", app.msg);
     // A paste: the copy goes to the Trash; Ctrl+Shift+Z pastes it again.
     app.sel[0] = app.tree.iter().position(|n| n.path == "docs").unwrap();
-    app.tree_clip = Some(("README.md".into(), false));
+    app.tree_clip = Some((vec!["README.md".into()], false));
     app.tree_paste();
+    file_settle(&mut app);
     assert!(at("docs/README.md"));
     ctrl(&mut app, 'z', false);
     assert!(!at("docs/README.md") && trash.join("files/README.md").exists(), "{}", app.msg);
     ctrl(&mut app, 'z', true);
+    file_settle(&mut app);
     assert!(at("docs/README.md"), "{}", app.msg);
     // A delete: restored from the Trash, with its info file gone.
-    app.delete_path("docs/README.md", false);
-    let name = match app.file_undo.last() { Some(crate::panel::rename::FileOp::Trashed { name, .. }) => name.clone(), op => panic!("{op:?}") };
+    app.delete_paths(&["docs/README.md".into()], false);
+    let name = match app.file_undo.last().map(Vec::as_slice) { Some([crate::panel::rename::FileOp::Trashed { name, .. }]) => name.clone(), op => panic!("{op:?}") };
     ctrl(&mut app, 'z', false);
     assert!(at("docs/README.md") && !trash.join("info").join(format!("{name}.trashinfo")).exists(), "{}", app.msg);
     // Changed meanwhile (the moved file deleted elsewhere): said, nothing touched.
-    app.move_into("docs/notes.md", "");
+    app.move_into(&["docs/notes.md".into()], "");
     fs::remove_file(root.join("notes.md")).unwrap();
     ctrl(&mut app, 'z', false);
     assert!(app.msg.contains("couldn't undo: it is no longer where it was"), "{}", app.msg);
     fs::remove_dir_all(&trash).unwrap();
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn delete_on_another_disk_goes_to_that_disks_trash_and_ctrl_z_brings_it_back() {
+    use std::os::unix::fs::MetadataExt;
+    let shm = Path::new("/dev/shm");
+    let dev = |p: &Path| fs::metadata(p).map(|m| m.dev()).ok();
+    if dev(shm).is_none() || dev(shm) == dev(&std::env::temp_dir()) {
+        return; // no second disk to try it on
+    }
+    let root = shm.join(format!("termcode-test-disk-{}", std::process::id()));
+    let disk_trash = shm.join(format!(".Trash-test-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("a.txt"), "a").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.trash = std::env::temp_dir().join(format!("termcode-trash-disk-{}", std::process::id()));
+    app.delete_paths(&["a.txt".into()], false);
+    assert!(app.prompt.is_none(), "not asked to delete it for good");
+    assert!(!root.join("a.txt").exists() && disk_trash.join("files/a.txt").exists(), "{}", app.msg);
+    assert!(fs::read_to_string(disk_trash.join("info/a.txt.trashinfo")).unwrap().contains("/a.txt"));
+    assert_eq!(fs::metadata(&disk_trash).unwrap().mode() & 0o777, 0o700);
+    app.focus = Focus::Side;
+    app.show_side(Side::Explorer, false);
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!(root.join("a.txt").exists() && !disk_trash.join("files/a.txt").exists(), "{}", app.msg);
+    let _ = fs::remove_dir_all(&disk_trash);
+    let _ = fs::remove_dir_all(&app.trash);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// Waits for an Explorer paste on its thread to finish, and folds it in.
+fn file_settle(app: &mut App) {
+    let t = Instant::now();
+    while app.file_job.is_some() {
+        app.file_job_tick();
+        assert!(t.elapsed() < Duration::from_secs(10), "the paste never finished");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn explorer_multi_select_moves_copies_and_deletes_together_and_ctrl_z_takes_all_back() {
+    let root = repo("tree-multi");
+    let trash = std::env::temp_dir().join(format!("termcode-trash-multi-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&trash);
+    fs::create_dir_all(root.join("docs/deep")).unwrap();
+    fs::create_dir_all(root.join("box")).unwrap();
+    for f in ["a.txt", "b.txt", "c.txt", "docs/deep/x.md"] {
+        fs::write(root.join(f), f).unwrap();
+    }
+    let mut app = App::new(root.clone(), None);
+    app.trash = trash.clone();
+    app.show_side(Side::Explorer, false);
+    let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    screen(&mut app, &mut t);
+    let x = app.ui.side_list.x + 4;
+    let press = |app: &mut App, kind, y, m| app.on_mouse(MouseEvent { kind, column: x, row: y, modifiers: m });
+    let click = |app: &mut App, path: &str, m| {
+        let y = tree_row(app, path);
+        press(app, MouseEventKind::Down(MouseButton::Left), y, m);
+        press(app, MouseEventKind::Up(MouseButton::Left), y, m);
+    };
+    let at = |p: &str| root.join(p).exists();
+    // Ctrl+click: a.txt, then c.txt; both lit, nothing opened.
+    click(&mut app, "a.txt", KeyModifiers::NONE);
+    click(&mut app, "c.txt", KeyModifiers::CONTROL);
+    assert_eq!(app.tree_selected(), ["a.txt", "c.txt"]);
+    screen(&mut app, &mut t);
+    let lit = |app: &App, t: &Terminal<TestBackend>, p: &str| t.backend().buffer()[(x, tree_row(app, p))].bg == crate::theme::P.list_active_bg;
+    assert!(lit(&app, &t, "a.txt") && lit(&app, &t, "c.txt") && !lit(&app, &t, "b.txt"));
+    // Dragged together onto box: asked once, both move; Ctrl+Z brings both back.
+    let to = tree_row(&app, "box");
+    let y = tree_row(&app, "a.txt");
+    press(&mut app, MouseEventKind::Down(MouseButton::Left), y, KeyModifiers::NONE);
+    press(&mut app, MouseEventKind::Drag(MouseButton::Left), to - 1, KeyModifiers::NONE);
+    press(&mut app, MouseEventKind::Drag(MouseButton::Left), to, KeyModifiers::NONE);
+    press(&mut app, MouseEventKind::Up(MouseButton::Left), to, KeyModifiers::NONE);
+    let p = app.prompt.as_ref().unwrap();
+    assert!(p.text[0].contains("move the following 2 items into 'box'") && p.text[1] == "a.txt, c.txt", "{:?}", p.text);
+    app.run_prompt(p.buttons[0].1.clone());
+    assert!(at("box/a.txt") && at("box/c.txt") && !at("a.txt") && !at("c.txt"), "{}", app.msg);
+    app.focus = Focus::Side;
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!(at("a.txt") && at("c.txt") && !at("box/a.txt"), "{}", app.msg);
+    // Shift+↓ from b.txt: b.txt and c.txt; Ctrl+drag onto box copies them, unasked.
+    screen(&mut app, &mut t);
+    app.sel[0] = app.tree.iter().position(|n| n.path == "b.txt").unwrap();
+    app.tree_unmark(app.sel[0]);
+    key(&mut app, KeyCode::Down, KeyModifiers::SHIFT);
+    assert_eq!(app.tree_selected(), ["b.txt", "c.txt"]);
+    let to = tree_row(&app, "box");
+    let y = tree_row(&app, "b.txt");
+    press(&mut app, MouseEventKind::Down(MouseButton::Left), y, KeyModifiers::NONE);
+    press(&mut app, MouseEventKind::Drag(MouseButton::Left), to + 1, KeyModifiers::CONTROL);
+    press(&mut app, MouseEventKind::Drag(MouseButton::Left), to, KeyModifiers::CONTROL);
+    press(&mut app, MouseEventKind::Up(MouseButton::Left), to, KeyModifiers::CONTROL);
+    assert!(app.prompt.is_none());
+    file_settle(&mut app);
+    assert!(at("box/b.txt") && at("box/c.txt") && at("b.txt") && at("c.txt"), "{}", app.msg);
+    assert_eq!(app.msg, "pasted 2 items");
+    // Both copies selected again with Ctrl+click, then deleted at once: one question.
+    screen(&mut app, &mut t);
+    click(&mut app, "box/b.txt", KeyModifiers::NONE);
+    click(&mut app, "box/c.txt", KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Delete, KeyModifiers::NONE);
+    let p = app.prompt.as_ref().unwrap();
+    assert_eq!(p.text[0], "Are you sure you want to delete the following 2 items?");
+    app.run_prompt(p.buttons[0].1.clone());
+    assert!(!at("box/b.txt") && !at("box/c.txt") && trash.join("files/b.txt").exists(), "{}", app.msg);
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!(at("box/b.txt") && at("box/c.txt"), "{}", app.msg);
+    assert_eq!(app.msg, "took back 2 file operations");
+    // A plain click leaves one item selected; Esc drops a selection.
+    click(&mut app, "box/b.txt", KeyModifiers::CONTROL);
+    click(&mut app, "a.txt", KeyModifiers::NONE);
+    assert_eq!(app.tree_selected(), ["a.txt"]);
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert!(app.tree_selected().len() > 3);
+    app.focus = Focus::Side;
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.tree_marks.is_empty());
+    // A dragged item resting on a closed folder opens it.
+    screen(&mut app, &mut t);
+    let docs = tree_row(&app, "docs");
+    app.last_click = None; // not a double-click on a.txt
+    let y = tree_row(&app, "a.txt");
+    press(&mut app, MouseEventKind::Down(MouseButton::Left), y, KeyModifiers::NONE);
+    press(&mut app, MouseEventKind::Drag(MouseButton::Left), docs + 1, KeyModifiers::NONE);
+    press(&mut app, MouseEventKind::Drag(MouseButton::Left), docs, KeyModifiers::NONE);
+    assert_eq!(app.tree_spring.as_ref().map(|s| s.0.as_str()), Some("docs"), "{} {:?}", matches!(app.drag, Drag::File { active: true, .. }), app.tree.iter().map(|n| (&n.path, n.open)).collect::<Vec<_>>());
+    app.tree_spring.as_mut().unwrap().1 = Instant::now();
+    let mut dirty = false;
+    let _ = app.step(&mut t, &mut dirty, |_| Ok(None));
+    assert!(app.tree.iter().any(|n| n.path == "docs/deep"), "docs opened");
+    press(&mut app, MouseEventKind::Up(MouseButton::Left), docs, KeyModifiers::NONE);
+    let _ = fs::remove_dir_all(&trash);
+    fs::remove_dir_all(&root).unwrap();
+}
+
