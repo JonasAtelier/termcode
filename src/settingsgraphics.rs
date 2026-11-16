@@ -203,7 +203,19 @@ impl Graphics {
             Image::new(&self.cache[slot].as_ref().unwrap().protocol),
             area,
         );
+        DRAWN.with(|d| d.borrow_mut().push(area));
     }
+}
+
+thread_local! {
+    /// Where this frame drew pictures: their cells carry the graphics protocol's escape
+    /// sequences, which the frame's last pass (ui::draw) must leave alone.
+    static DRAWN: std::cell::RefCell<Vec<Rect>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The areas pictures were drawn in since the last call.
+pub fn take_drawn() -> Vec<Rect> {
+    DRAWN.with(|d| std::mem::take(&mut *d.borrow_mut()))
 }
 
 pub(crate) fn pixel(color: Color) -> Rgba<u8> {

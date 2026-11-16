@@ -1905,11 +1905,11 @@ fn card_lines(c: &Card, pal: &Pal, w: usize) -> (Vec<Line<'static>>, bool) {
         ]),
         Line::styled(fit(&format!("{} ({})", ago(cm.author_time, now()), local_time(cm.author_time)), w), st(P.dim)),
         Line::raw(""),
-        Line::styled(cm.subject.clone(), st(P.widget_fg).bold()),
+        Line::styled(untab(&cm.subject), st(P.widget_fg).bold()),
     ];
     if !cm.body.is_empty() {
         v.push(Line::raw(""));
-        v.extend(cm.body.lines().map(|l| Line::styled(l.to_string(), st(P.widget_fg))));
+        v.extend(cm.body.lines().map(|l| Line::styled(untab(l), st(P.widget_fg))));
     }
     v.push(Line::raw(""));
     let plural = |n: u64, one: &str| if n == 1 { one.to_string() } else { format!("{one}s") };
@@ -2023,6 +2023,25 @@ fn draw_card(app: &mut App, f: &mut Frame, area: Rect) {
         }
         f.render_widget(Line::from(b), Rect::new(x.min(inner.right()), by, room, 1));
     }
+}
+
+/// A commit message's line with its tabs as spaces to the next tab stop (a message
+/// indented with tabs keeps its shape; a raw tab would move the terminal's cursor).
+fn untab(l: &str) -> String {
+    let tab = crate::editor::tab().max(1);
+    let mut s = String::with_capacity(l.len());
+    let mut col = 0;
+    for c in l.chars() {
+        if c == '\t' {
+            let n = tab - col % tab;
+            s.extend(std::iter::repeat_n(' ', n));
+            col += n;
+        } else {
+            s.push(c);
+            col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        }
+    }
+    s
 }
 
 /// Row `y` of `b` as text: each cell's symbol, a wide character's second cell skipped.

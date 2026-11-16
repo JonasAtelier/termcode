@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
+## [Unreleased]
+
+### Fixed
+- A commit message indented with tabs (a JSON example, say) no longer breaks its card:
+  tabs show as spaces to the next tab stop. No control character in text from outside
+  (commit messages, titles, file names) reaches the terminal any more; pictures (the
+  avatar, the contribution graph) keep theirs.
+
 ## [0.3.0] - 2026-11-16
 
 ### Added

@@ -564,6 +564,30 @@ fn a_long_commit_message_scrolls_in_its_card_with_the_buttons_kept() {
 }
 
 #[test]
+fn a_message_with_tabs_and_escapes_keeps_its_card_whole() {
+    let (t, r) = repo("card-tabs", r#"echo a > a.txt; git add .; printf 'json in it\n\n[\n\t{\n\t\tkey: 1\n\t}\n]\n\033[31mred\n' > .git/MSG; git commit -qF .git/MSG"#);
+    let mut app = app(&t, &r);
+    let mut tm = term();
+    app.show_side(Side::Scm, false);
+    settle(&mut app);
+    screen(&mut app, &mut tm);
+    let hash = app.gitui.graph.commits[0].hash.clone();
+    open_card(&mut app, hash, Rect::new(5, 5, 10, 1));
+    settle(&mut app);
+    let s = screen(&mut app, &mut tm);
+    let tab = crate::editor::tab();
+    let line = |w: &str| s.lines().find(|l| l.contains(w)).unwrap_or_else(|| panic!("{w}: {s}")).to_string();
+    let (outer, inner) = (line("{"), line("key: 1"));
+    let col = |l: &str, w: &str| l[..l.find(w).unwrap()].chars().count();
+    assert_eq!(col(&inner, "key") - col(&outer, "{"), tab, "a tab is spaces to the next stop");
+    let card = app.gitui.hits.card;
+    let right = |l: &str| l.chars().nth(card.right() as usize - 1);
+    assert_eq!((right(&outer), right(&inner)), (right(&line("json in it")), right(&line("json in it"))), "the border stays put");
+    assert!(tm.backend().buffer().content.iter().all(|c| !c.symbol().chars().any(char::is_control)), "no control character reaches the terminal");
+    assert!(s.contains("[31mred"), "an escape's text shows, not its effect");
+}
+
+#[test]
 fn a_cards_text_selects_by_drag_and_double_click_and_ctrl_c_copies_it() {
     let (t, r) = repo("card-sel", "echo a > a.txt; git add .; git commit -qm 'add a' -m 'the body line'");
     let mut app = app(&t, &r);

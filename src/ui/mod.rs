@@ -23,6 +23,19 @@ use unicode_width::UnicodeWidthStr;
 
 #[cfg(test)]
 mod visual_tests {
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn control_characters_go_but_a_pictures_escapes_stay() {
+        let mut b = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 6, 2));
+        b[(1, 0)].set_symbol("\t");
+        b[(2, 0)].set_symbol("\x1b[31m");
+        b[(4, 1)].set_symbol("\x1b_Gq=2;\x1b\\");
+        super::scrub(&mut b, &[Rect::new(3, 1, 3, 1)]);
+        assert_eq!((b[(1, 0)].symbol(), b[(2, 0)].symbol()), (" ", " "));
+        assert_eq!(b[(4, 1)].symbol(), "\x1b_Gq=2;\x1b\\", "a picture's cell is left as it is");
+    }
+
     #[test]
     fn word_span_is_bounded_and_utf8_safe() {
         let (old, new) = super::diff_word_spans("same old 中 end", "same new 文 end");
@@ -202,8 +215,24 @@ pub fn lang_id(name: &str) -> String {
 
 pub fn draw(app: &mut App, f: &mut Frame) {
     draw_frame(app, f);
+    scrub(f.buffer_mut(), &crate::settingsgraphics::take_drawn());
     // A terminal without 24-bit colour gets the nearest it has (`colors`).
     crate::colors::fit(f.buffer_mut());
+}
+
+/// Text from outside (commit messages, titles, file names) never reaches the terminal with
+/// a control character in it: a tab would move its cursor, an escape would be a command to
+/// it. Cells in `pictures` are escape sequences on purpose (a graphics protocol's) and stay.
+pub(crate) fn scrub(buf: &mut ratatui::buffer::Buffer, pictures: &[Rect]) {
+    let (area, width) = (buf.area, buf.area.width.max(1) as usize);
+    for (i, cell) in buf.content.iter_mut().enumerate() {
+        if cell.symbol().chars().any(char::is_control) {
+            let p = Position::new(area.x + (i % width) as u16, area.y + (i / width) as u16);
+            if !pictures.iter().any(|r| r.contains(p)) {
+                cell.set_symbol(" ");
+            }
+        }
+    }
 }
 
 fn draw_frame(app: &mut App, f: &mut Frame) {
