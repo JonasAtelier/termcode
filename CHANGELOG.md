@@ -25,6 +25,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   to a folder opens as one. Resting the pointer on a link shows where it points, as the
   link has it.
 
+### Changed
+- The Settings window looks as VS Code's: a search box over every setting (Ctrl+F), each
+  category with its count, each setting with a line on what it does, real checkboxes,
+  sliders, dropdowns and text boxes, a bar beside settings set in your file, a scrollbar.
+
 ### Fixed
 - A commit message indented with tabs (a JSON example, say) no longer breaks its card:
   tabs show as spaces to the next tab stop. No control character in text from outside

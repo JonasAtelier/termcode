@@ -3,11 +3,12 @@
 use crate::panel::{App, Doc, Drag};
 use crate::settings::{self, Settings};
 use crate::theme::{icons, P};
-use crate::ui::popup_block;
+use crate::ui::{fill, popup_block};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
 use ratatui::widgets::{Clear, Paragraph};
 use serde_json::{Map, Value};
+use unicode_width::UnicodeWidthStr;
 
 const CATEGORIES: &[&str] =
     &["Appearance", "Layout", "Editor", "Minimap", "Indent Rainbow", "Files & Session", "Source Control"];
@@ -208,8 +209,83 @@ const FIELDS: &[Field] = &[
     Field { category: 6, label: "Confirm sync", key: "git.confirmSync", kind: Check(true) },
 ];
 
+/// What a setting does, under its name (and what the search box also finds).
+fn describe(key: &str) -> &'static str {
+    match key {
+        "workbench.colorTheme" => "The color theme: a VS Code theme's name, or a path to its JSON file.",
+        "termcode.followVSCode" => "Use the theme VS Code is set to, read from its settings.",
+        "workbench.density" => "Comfortable spacing, or compact for small terminals.",
+        "termcode.blocks.style" => "How panels are framed: cards, lines between them, or nothing.",
+        "termcode.icons" => "Icon glyphs: Nerd Font, plain Unicode or ASCII (auto picks by the fonts found).",
+        "termcode.colors" => "Colour depth sent to the terminal (auto reads it from the environment).",
+        "workbench.colorCustomizations" => "Workbench colour overrides, as VS Code's setting of that name.",
+        "editor.tokenColorCustomizations" => "Syntax colour overrides, as VS Code's setting of that name.",
+        "termcode.fileIcons" => "File and folder icons by name or extension, over the built-in ones.",
+        "termcode.spacing/sidebarWidth" => "The sidebar's width, in columns.",
+        "termcode.spacing/sidebarPadding" => "Blank columns inside the sidebar's edges.",
+        "termcode.spacing/sectionGap" => "Blank rows between the sidebar's sections.",
+        "termcode.spacing/editorPadding" => "Blank columns left of the editor's text.",
+        "termcode.spacing/tabPadding" => "Blank columns on each side of a tab's name.",
+        "termcode.spacing/statusBarGap" => "Columns between the status bar's items.",
+        "termcode.spacing/activityBarWidth" => "The activity bar's width, in columns.",
+        "termcode.spacing/listItemGap" => "A blank row between list items (1) or none (0).",
+        "termcode.spacing/popupPadding" => "Columns and rows inside popups, as [x, y].",
+        "termcode.spacing/iconGap" => "Columns between an icon and its text.",
+        "termcode.spacing/treeIndent" => "Columns each Explorer level is indented by.",
+        "termcode.spacing/titleBarPadding" => "Blank columns at the title bar's ends.",
+        "termcode.spacing/buttonPadding" => "Blank columns inside a button.",
+        "termcode.spacing/findWidgetPadding" => "Blank columns inside the Find widget.",
+        "termcode.spacing/statusBarPadding" => "Blank columns at the status bar's ends.",
+        "editor.tabSize" => "Columns a tab takes, and an indent when the file does not say.",
+        "editor.renderWhitespace" => "Show spaces and tabs: none, between words (boundary), selected, or all.",
+        "editor.occurrencesHighlight" => "Light up the other places of the word under the cursor.",
+        "editor.matchBrackets" => "Light up the bracket that matches the one at the cursor.",
+        "editor.bracketPairColorization.enabled" => "Colour nested brackets by depth.",
+        "editor.wordWrap" => "Wrap long lines at the editor's edge.",
+        "breadcrumbs.enabled" => "The file's path and the symbols around the cursor, over the text.",
+        "termcode.errorChecking" => "Underline problems shellcheck and the C/C++ compiler find.",
+        "termcode.keybindings" => "Your own keys for F1 commands: \"ctrl+alt+p\": \"Git: Pull\".",
+        "editor.autoClosingBrackets" => "Type the closing bracket with the opening one.",
+        "editor.autoClosingQuotes" => "Type the closing quote with the opening one.",
+        "editor.guides.indentation" => "Thin lines at each indentation level.",
+        "editor.rulers" => "Vertical lines at these columns, as [80, 120].",
+        "editor.gotoLocation.multipleDefinitions" => "Go to Definition with more than one: peek them, or go to the first.",
+        "editor.minimap.enabled" => "The code overview at the editor's side.",
+        "editor.minimap.maxColumn" => "The widest a line is drawn in the minimap.",
+        "editor.minimap.renderCharacters" => "Draw the text's shapes, or plain blocks.",
+        "editor.minimap.showSlider" => "When the visible part shows on the minimap.",
+        "editor.minimap.side" => "Which side of the editor the minimap is on.",
+        "editor.minimap.size" => "How the minimap fits the file: proportional, fill or fit.",
+        "termcode.minimap.minEditorWidth" => "Hide the minimap when the editor is narrower than this.",
+        "indentRainbow.enabled" => "Colour each indentation level.",
+        "indentRainbow.indicatorStyle" => "Colour whole indents (classic) or a light line (light).",
+        "indentRainbow.colors" => "The colours, one per level, as a JSON list.",
+        "indentRainbow.errorColor" => "The colour of an indent that is not a multiple of the tab size.",
+        "indentRainbow.tabmixColor" => "The colour of an indent mixing tabs and spaces.",
+        "indentRainbow.excludedLanguages" => "Languages without the rainbow.",
+        "indentRainbow.includedLanguages" => "Only these languages (empty: all).",
+        "indentRainbow.ignoreErrorLanguages" => "Languages whose odd indents are not errors.",
+        "indentRainbow.ignoreLinePatterns" => "Lines matching these patterns are left alone.",
+        "files.trimTrailingWhitespace" => "Remove spaces at the ends of lines when saving.",
+        "files.insertFinalNewline" => "End the file with a newline when saving.",
+        "termcode.restoreSession" => "Reopen the tabs and layout a folder had last time.",
+        "workbench.editor.restoreViewState" => "Reopened files come back where you were in them.",
+        "workbench.tree.enableStickyScroll" => "Keep the folders of the top row in view while scrolling.",
+        "workbench.tree.stickyScrollMaxItemCount" => "The most folder rows kept in view.",
+        "git.blame.statusBarItem.enabled" => "Who changed the cursor's line, and when, in the status bar.",
+        "git.blame.editorDecoration.enabled" => "Who changed the cursor's line, at its end.",
+        "git.confirmSync" => "Ask before pulling and pushing with Sync.",
+        _ => "",
+    }
+}
+
+/// Rows a setting takes in the list: its name, what it does, its control, a gap.
+const FIELD_H: u16 = 4;
+
 #[derive(Clone, Copy, PartialEq)]
 enum Focus {
+    /// The search box at the top.
+    Search,
     Categories,
     Fields,
     Apply,
@@ -226,6 +302,7 @@ struct Hits {
     buttons: Vec<(Rect, usize)>,
     options: Vec<(Rect, usize)>,
     content: Rect,
+    search: Rect,
 }
 
 struct Edit {
@@ -258,6 +335,8 @@ pub struct Dialog {
     hits: Hits,
     graphics: crate::settingsgraphics::Graphics,
     palette: Option<(Map<String, Value>, Result<crate::theme::Pal, String>)>,
+    /// The search box's text: the list shows the settings it finds in every category.
+    query: String,
 }
 
 fn toggles(app: &App) -> [bool; 5] {
@@ -303,14 +382,36 @@ pub fn open(app: &mut App) {
                 hits: Hits::default(),
                 graphics: crate::settingsgraphics::Graphics::new(),
                 palette: None,
+                query: String::new(),
             });
         }
     }
 }
 
+/// A search's lower-cased text `q` is in the setting's name, key or description.
+fn found(f: &Field, q: &str) -> bool {
+    [f.label, &f.key.replace('/', "."), describe(f.key), CATEGORIES[f.category]].iter().any(|t| t.to_lowercase().contains(q))
+}
+
 impl Dialog {
+    /// The settings listed: the category's, or (a search) every one the text is found in.
     fn rows(&self) -> Vec<usize> {
-        FIELDS.iter().enumerate().filter(|(_, f)| f.category == self.category).map(|(i, _)| i).collect()
+        let q = self.query.trim().to_lowercase();
+        FIELDS
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| if q.is_empty() { f.category == self.category } else { found(f, &q) })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The setting was set (it is in the settings file), not left at its default.
+    fn is_set(&self, row: usize) -> bool {
+        let key = FIELDS[row].key;
+        match key.split_once('/') {
+            Some((k, member)) => self.draft.get(k).is_some_and(|v| v.get(member).is_some()),
+            None => self.draft.contains_key(key),
+        }
     }
 
     fn value_in(&self, map: &Map<String, Value>, row: usize) -> Value {
@@ -528,6 +629,7 @@ impl Dialog {
 
     fn category(&mut self, category: usize) {
         self.category = category;
+        self.query.clear();
         self.selected = 0;
         self.scroll = 0;
         self.dropdown = None;
@@ -536,23 +638,41 @@ impl Dialog {
 
     fn tab(&mut self, back: bool) {
         let count = self.rows().len();
+        // Search, the categories, each setting, Apply, Save; round again.
         let current = match self.focus {
-            Focus::Categories => 0,
-            Focus::Fields => self.selected + 1,
-            Focus::Apply => count + 1,
-            Focus::Save => count + 2,
+            Focus::Search => 0,
+            Focus::Categories => 1,
+            Focus::Fields => self.selected + 2,
+            Focus::Apply => count + 2,
+            Focus::Save => count + 3,
         };
-        let next = (current as i32 + if back { -1 } else { 1 }).rem_euclid((count + 3) as i32) as usize;
-        self.focus = if next == 0 {
-            Focus::Categories
-        } else if next <= count {
-            self.selected = next - 1;
-            Focus::Fields
-        } else if next == count + 1 {
-            Focus::Apply
-        } else {
-            Focus::Save
+        let next = (current as i32 + if back { -1 } else { 1 }).rem_euclid((count + 4) as i32) as usize;
+        self.focus = match next {
+            0 => Focus::Search,
+            1 => Focus::Categories,
+            n if n < count + 2 => {
+                self.selected = n - 2;
+                Focus::Fields
+            }
+            n if n == count + 2 => Focus::Apply,
+            _ => Focus::Save,
         };
+    }
+
+    /// A key in the search box: text, Backspace; ↓ or Enter go to what it found; Esc
+    /// empties it (then closes, as Esc does).
+    fn search_key(&mut self, k: KeyEvent) -> bool {
+        match k.code {
+            KeyCode::Char(c) if !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => self.query.push(c),
+            KeyCode::Backspace => {
+                self.query.pop();
+            }
+            KeyCode::Down | KeyCode::Enter if !self.rows().is_empty() => self.focus = Focus::Fields,
+            KeyCode::Esc if !self.query.is_empty() => self.query.clear(),
+            _ => return false,
+        }
+        (self.selected, self.scroll) = (0, 0);
+        true
     }
 
     fn key(&mut self, app: &mut App, k: KeyEvent) -> bool {
@@ -604,7 +724,23 @@ impl Dialog {
             }
             return true;
         }
+        // Ctrl+F or / : the search box.
+        if ctrl && k.code == KeyCode::Char('f') || self.focus != Focus::Search && k.code == KeyCode::Char('/') {
+            self.focus = Focus::Search;
+            return true;
+        }
+        if self.focus == Focus::Search && self.search_key(k) {
+            return true;
+        }
         let rows = self.rows();
+        if rows.is_empty() {
+            match k.code {
+                KeyCode::Esc => return self.close(app),
+                KeyCode::Tab | KeyCode::BackTab => self.tab(k.code == KeyCode::BackTab),
+                _ => {}
+            }
+            return true;
+        }
         let row = rows[self.selected.min(rows.len() - 1)];
         if let Some(option) = self.dropdown {
             if let Choice(options) = FIELDS[row].kind {
@@ -790,6 +926,10 @@ impl Dialog {
                 if !self.commit_edit() {
                     return true;
                 }
+                if self.hits.search.contains(p) {
+                    self.focus = Focus::Search;
+                    return true;
+                }
                 if let Some((_, category)) = self.hits.categories.iter().find(|(r, _)| r.contains(p)).copied() {
                     self.category(category);
                 }
@@ -808,7 +948,10 @@ impl Dialog {
                 if !self.confirm && self.hits.content.contains(p) && self.commit_edit() =>
             {
                 let rows = self.rows();
-                let step = (self.hits.content.height as usize / 3).max(1);
+                if rows.is_empty() {
+                    return true;
+                }
+                let step = 1;
                 if m.kind == MouseEventKind::ScrollDown {
                     self.selected = (self.selected + step).min(rows.len() - 1);
                 } else {
@@ -931,122 +1074,195 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         return;
     }
     let st = Style::new().fg(P.widget_fg).bg(P.widget_bg);
+    let dim = st.fg(P.dim);
     let active = Style::new().fg(P.button_fg).bg(P.button_bg);
-    d.hits.title = Rect::new(r.x + 1, r.y, w - 2, 1);
-    text(
-        f,
-        Rect::new(r.x + 1, r.y, w - 6, 1),
-        if d.dirty() { " Settings *  (drag to move) " } else { " Settings  (drag to move) " },
-        st.add_modifier(Modifier::BOLD),
-    );
+    let accent = P.focus_border;
+    // The title (dragging it moves the window), a dot while there are unsaved changes.
+    d.hits.title = Rect::new(r.x + 1, r.y, w - 5, 1);
+    text(f, Rect::new(r.x + 2, r.y, 10, 1), " Settings ", st.add_modifier(Modifier::BOLD));
+    if d.dirty() {
+        text(f, Rect::new(r.x + 12, r.y, 2, 1), "● ", st.fg(accent));
+    }
     d.hits.close = Rect::new(r.right() - 4, r.y, 3, 1);
     text(f, d.hits.close, &format!(" {} ", icons().close), st);
-    let nav_w = if w >= 64 { 20 } else { 15 };
-    let footer_y = r.bottom() - 5;
-    let divider_x = r.x + nav_w;
-    let mut content = Rect::new(divider_x + 2, r.y + 2, w.saturating_sub(nav_w + 4), h - 8);
-    let graphics = d.graphics.enabled() && !d.confirm && d.dropdown.is_none();
-    let preview = (d.category == 0 && graphics && content.width >= 65 && content.height >= 17)
-        .then(|| {
-            let area = Rect::new(content.right() - 26, content.y, 26, content.height);
-            content.width -= 29;
-            area
-        });
-    d.hits.content = content;
+    // The search box, across the top.
     let rows = d.rows();
-    d.selected = d.selected.min(rows.len() - 1);
-    let capacity = (content.height as usize / 3).max(1);
-    if d.selected < d.scroll {
-        d.scroll = d.selected;
+    let sr = Rect::new(r.x + 2, r.y + 1, w - 4, 1);
+    d.hits.search = sr;
+    let searching = d.focus == Focus::Search;
+    f.render_widget(Clear, sr);
+    fill(f, sr, P.input_bg);
+    let count = if d.query.is_empty() { String::new() } else { format!("{} found ", rows.len()) };
+    let room = (sr.width as usize).saturating_sub(4 + count.width());
+    let (shown, style) = if d.query.is_empty() && !searching {
+        ("Search settings  (Ctrl+F)".to_string(), Style::new().fg(P.placeholder).bg(P.input_bg))
+    } else {
+        let q: String = d.query.chars().rev().take(room).collect::<Vec<_>>().into_iter().rev().collect();
+        (q, Style::new().fg(P.input_fg).bg(P.input_bg))
+    };
+    text(f, Rect::new(sr.x, sr.y, 3, 1), &format!(" {} ", icons().search), Style::new().fg(P.icon_fg).bg(P.input_bg));
+    text(f, Rect::new(sr.x + 3, sr.y, room as u16, 1), &shown, style);
+    text(f, Rect::new(sr.right() - count.width() as u16, sr.y, count.width() as u16, 1), &count, Style::new().fg(P.dim).bg(P.input_bg));
+    if searching {
+        f.set_cursor_position((sr.x + 3 + d.query.width().min(room) as u16, sr.y));
+        // The box's edge lights up, as a focused input's.
+        text(f, Rect::new(sr.x - 1, sr.y, 1, 1), "▏", st.fg(accent));
     }
-    if d.selected >= d.scroll + capacity {
-        d.scroll = d.selected + 1 - capacity;
+    let nav_w = if w >= 64 { 22 } else { 16 };
+    let top = r.y + 3;
+    let footer_y = r.bottom() - 4;
+    let divider_x = r.x + nav_w;
+    let border = Style::new().fg(P.widget_border).bg(P.widget_bg);
+    text(f, Rect::new(r.x + 1, top - 1, w - 2, 1), &icons().border[4].repeat((w - 2) as usize), border);
+    text(f, Rect::new(r.x + 1, footer_y, w - 2, 1), &icons().border[4].repeat((w - 2) as usize), border);
+    for y in top..footer_y {
+        text(f, Rect::new(divider_x, y, 1, 1), icons().border[5], border);
     }
-    let nav_count = ((h - 7) / 2).max(1) as usize;
+    for (x, y, glyph) in [(divider_x, top - 1, "┬"), (divider_x, footer_y, "┴"), (r.x, top - 1, "├"), (r.right() - 1, top - 1, "┤"), (r.x, footer_y, "├"), (r.right() - 1, footer_y, "┤")] {
+        text(f, Rect::new(x, y, 1, 1), if crate::theme::ascii() { "+" } else { glyph }, border);
+    }
+    // The categories, each with how many settings it has (a search: how many it found).
+    let q = d.query.trim().to_lowercase();
+    let nav_count = (footer_y.saturating_sub(top + 1)).max(1) as usize;
     let nav_off = d.category.saturating_sub(nav_count - 1);
     for (slot, (i, label)) in CATEGORIES.iter().enumerate().skip(nav_off).take(nav_count).enumerate() {
-        let y = r.y + 2 + slot as u16 * 2;
+        let y = top + 1 + slot as u16;
         if y >= footer_y {
             break;
         }
+        let n = FIELDS.iter().filter(|f| f.category == i && (q.is_empty() || found(f, &q))).count();
         let row = Rect::new(r.x + 1, y, nav_w - 1, 1);
-        let style = if i == d.category { active } else { st };
+        let current = i == d.category && q.is_empty();
+        let style = if current && d.focus == Focus::Categories {
+            active
+        } else if current {
+            st.bg(P.list_inactive_bg).add_modifier(Modifier::BOLD)
+        } else if n == 0 {
+            dim
+        } else {
+            st
+        };
+        fill(f, row, style.bg.unwrap_or(P.widget_bg));
         text(f, row, &format!(" {label}"), style);
+        let count = format!("{n} ");
+        text(f, Rect::new(row.right() - count.width() as u16, y, count.width() as u16, 1), &count, style.fg(if current && d.focus == Focus::Categories { P.button_fg } else { P.dim }));
         d.hits.categories.push((row, i));
     }
-    let border = Style::new().fg(P.widget_border).bg(P.widget_bg);
-    for y in r.y + 1..footer_y {
-        text(f, Rect::new(divider_x, y, 1, 1), icons().border[5], border);
-    }
-    text(f, Rect::new(r.x + 1, footer_y, w - 2, 1), &icons().border[4].repeat((w - 2) as usize), border);
-    for (x, glyph) in [(divider_x, "┴"), (r.x, "├"), (r.right() - 1, "┤")] {
-        text(f, Rect::new(x, footer_y, 1, 1), if crate::theme::ascii() { "+" } else { glyph }, border);
-    }
-    for (slot, &row) in rows.iter().skip(d.scroll).take(capacity).enumerate() {
-        let y = content.y + slot as u16 * 3;
-        let field = &FIELDS[row];
-        let selected = d.focus == Focus::Fields && rows[d.selected] == row;
-        let label_style = if selected { st.add_modifier(Modifier::BOLD).fg(P.focus_border) } else { st };
-        text(f, Rect::new(content.x, y, content.width, 1), field.label, label_style);
-        let control = Rect::new(content.x, y + 1, content.width,
-            if matches!(field.kind, Check(_)) && graphics && d.graphics.pixel_controls() && content.width >= 15 { 2 } else { 1 });
-        let value = d.value(row);
-        let style = if selected { Style::new().fg(P.input_fg).bg(P.input_bg) } else { st };
-        match field.kind {
-            Check(default) => {
-                let on = value.as_bool().unwrap_or(default);
-                if control.height == 2 {
-                    let switch = Rect::new(control.x, control.y, 6, 2);
-                    let bg = if selected { P.input_bg } else { P.widget_bg };
-                    d.graphics.switch(f, switch, on, selected,
-                        [bg, if on { P.button_bg } else { P.widget_border }, P.button_fg]);
-                    text(f, Rect::new(control.x + 7, control.y, control.width - 7, 1),
-                        if on { "Enabled" } else { "Disabled" }, style);
-                } else {
-                    text(f, control, if on { "[x] Enabled" } else { "[ ] Disabled" }, style);
+    // The settings: a heading (the category, or the search), then each one as VS Code lists
+    // them: its name (a bar left of it when set in the file), what it does, its control.
+    let mut content = Rect::new(divider_x + 3, top + 1, w.saturating_sub(nav_w + 6), footer_y.saturating_sub(top + 1));
+    let graphics = d.graphics.enabled() && !d.confirm && d.dropdown.is_none();
+    // The palettes beside Appearance's settings (a search finding only those too).
+    let appearance = !rows.is_empty() && rows.iter().all(|&row| FIELDS[row].category == 0);
+    let preview = (appearance && graphics && content.width >= 65 && content.height >= 17).then(|| {
+        let area = Rect::new(content.right() - 26, content.y, 26, content.height);
+        content.width -= 29;
+        area
+    });
+    let heading = if q.is_empty() { CATEGORIES[d.category].to_string() } else { format!("Search: {}", d.query.trim()) };
+    text(f, Rect::new(content.x, content.y, content.width, 1), &heading, st.add_modifier(Modifier::BOLD).fg(P.sidebar_title));
+    content = Rect::new(content.x, content.y + 2, content.width, content.height.saturating_sub(2));
+    d.hits.content = content;
+    if rows.is_empty() {
+        text(f, Rect::new(content.x, content.y, content.width, 1), "No settings found.", dim);
+    } else {
+        d.selected = d.selected.min(rows.len() - 1);
+        let capacity = (content.height / FIELD_H).max(1) as usize;
+        if d.selected < d.scroll {
+            d.scroll = d.selected;
+        }
+        if d.selected >= d.scroll + capacity {
+            d.scroll = d.selected + 1 - capacity;
+        }
+        for (slot, &row) in rows.iter().skip(d.scroll).take(capacity).enumerate() {
+            let y = content.y + slot as u16 * FIELD_H;
+            let field = &FIELDS[row];
+            let selected = rows[d.selected] == row && d.focus == Focus::Fields;
+            let block = Rect::new(content.x - 1, y, content.width + 1, FIELD_H - 1);
+            if selected {
+                fill(f, block, P.list_inactive_bg);
+            }
+            let bg = if selected { P.list_inactive_bg } else { P.widget_bg };
+            let row_st = st.bg(bg);
+            if d.is_set(row) {
+                for yy in y..y + FIELD_H - 1 {
+                    text(f, Rect::new(content.x - 2, yy, 1, 1), "▎", st.fg(accent));
                 }
             }
-            Number(lo, hi, default) => {
-                let n = value.as_u64().unwrap_or(default as u64).clamp(lo as u64, hi as u64);
-                let track_w = control.width.saturating_sub(8).clamp(1, 28);
-                let track = Rect::new(control.x + 1, control.y, track_w, 1);
-                let pos = ((n - lo as u64) * track_w.saturating_sub(1) as u64 / (hi - lo).max(1) as u64) as usize;
-                let bar: String = (0..track_w as usize)
-                    .map(|i| {
-                        if i == pos {
-                            'O'
-                        } else if i < pos {
-                            '='
+            // "Category: Name" in a search, as VS Code shows where a setting lives.
+            let name = if q.is_empty() { field.label.to_string() } else { format!("{}: {}", CATEGORIES[field.category], field.label) };
+            text(f, Rect::new(content.x, y, content.width, 1), &name, row_st.add_modifier(Modifier::BOLD).fg(if selected { accent } else { P.widget_fg }));
+            text(f, Rect::new(content.x, y + 1, content.width, 1), describe(field.key), row_st.fg(P.dim));
+            let control = Rect::new(content.x, y + 2, content.width, 1);
+            let value = d.value(row);
+            let input = Style::new().fg(P.input_fg).bg(P.input_bg);
+            match field.kind {
+                Check(default) => {
+                    let on = value.as_bool().unwrap_or(default);
+                    let ascii = crate::theme::ascii();
+                    if graphics && d.graphics.pixel_controls() {
+                        // A real switch, in pixels, where the terminal draws pictures.
+                        d.graphics.switch(f, Rect::new(control.x, control.y, 4, 1), on, selected, [bg, if on { P.button_bg } else { P.widget_border }, P.button_fg]);
+                    } else {
+                        let (mark, mst) = if on {
+                            (if ascii { "[x]".to_string() } else { format!(" {} ", icons().check) }, Style::new().fg(P.button_fg).bg(P.button_bg))
                         } else {
-                            '-'
-                        }
-                    })
-                    .collect();
-                text(f, control, &format!("[{bar}] {n}"), style);
-                d.hits.rows.push((Rect::new(content.x, y, content.width, 2), track, row));
-                continue;
-            }
-            Choice(_) => text(f, control, &format!("[ {}  v ]", d.display(row)), style),
-            Text(_) | Json(_) => {
-                if let Some(e) = d.edit.as_ref().filter(|e| e.row == row) {
-                    let room = control.width.saturating_sub(2) as usize;
-                    let before = &e.text[..e.cursor];
-                    let tail: String = before
-                        .chars()
-                        .rev()
-                        .take(room.saturating_sub(1))
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev()
-                        .collect();
-                    let shown = format!("{tail}|{}", &e.text[e.cursor..]);
-                    text(f, control, &shown, if e.all { active } else { style });
-                } else {
-                    text(f, control, &format!("[ {} ]", d.display(row)), style);
+                            (if ascii { "[ ]".into() } else { "   ".into() }, input)
+                        };
+                        text(f, Rect::new(control.x, control.y, 3, 1), &mark, mst);
+                    }
+                    text(f, Rect::new(control.x + 5, control.y, control.width.saturating_sub(5), 1), if on { "Enabled" } else { "Disabled" }, row_st);
+                    d.hits.rows.push((Rect::new(content.x, y, content.width, FIELD_H - 1), Rect::new(control.x, control.y, control.width.min(14), 1), row));
+                }
+                Number(lo, hi, default) => {
+                    let n = value.as_u64().unwrap_or(default as u64).clamp(lo as u64, hi as u64);
+                    let track_w = control.width.saturating_sub(8).clamp(4, 30);
+                    let track = Rect::new(control.x, control.y, track_w, 1);
+                    let pos = ((n - lo as u64) * track_w.saturating_sub(1) as u64 / (hi - lo).max(1) as u64) as u16;
+                    let (fill_c, rest) = if crate::theme::ascii() { ("=", "-") } else { ("━", "─") };
+                    text(f, Rect::new(track.x, track.y, pos, 1), &fill_c.repeat(pos as usize), row_st.fg(accent));
+                    text(f, Rect::new(track.x + pos, track.y, 1, 1), if crate::theme::ascii() { "O" } else { "●" }, row_st.fg(if selected { accent } else { P.widget_fg }));
+                    text(f, Rect::new(track.x + pos + 1, track.y, track_w - pos - 1, 1), &rest.repeat((track_w - pos - 1) as usize), row_st.fg(P.widget_border));
+                    let num = format!(" {n} ");
+                    text(f, Rect::new(track.right() + 2, control.y, num.width() as u16, 1), &num, input);
+                    d.hits.rows.push((Rect::new(content.x, y, content.width, FIELD_H - 1), track, row));
+                }
+                Choice(options) => {
+                    let wide = options.iter().map(|o| o.width()).max().unwrap_or(4).max(d.display(row).width()) + 5;
+                    let r2 = Rect::new(control.x, control.y, (wide as u16).min(control.width), 1);
+                    let shown = format!(" {:<w$} {} ", crate::ui::fit(&d.display(row), wide - 5), icons().chev_down, w = wide - 5);
+                    text(f, r2, &shown, input);
+                    d.hits.rows.push((Rect::new(content.x, y, content.width, FIELD_H - 1), r2, row));
+                }
+                Text(_) | Json(_) => {
+                    let r2 = Rect::new(control.x, control.y, control.width.min(56), 1);
+                    if let Some(e) = d.edit.as_ref().filter(|e| e.row == row) {
+                        let room = r2.width.saturating_sub(2) as usize;
+                        let before = &e.text[..e.cursor];
+                        let tail: String = before.chars().rev().take(room.saturating_sub(1)).collect::<Vec<_>>().into_iter().rev().collect();
+                        fill(f, r2, P.input_bg);
+                        let style = if e.all { active } else { input };
+                        text(f, Rect::new(r2.x + 1, r2.y, r2.width - 1, 1), &format!("{tail}{}", &e.text[e.cursor..]), style);
+                        f.set_cursor_position((r2.x + 1 + tail.width() as u16, r2.y));
+                        text(f, Rect::new(r2.x - 1, r2.y, 1, 1), "▏", st.fg(accent));
+                    } else {
+                        fill(f, r2, P.input_bg);
+                        text(f, Rect::new(r2.x + 1, r2.y, r2.width - 1, 1), &d.display(row), input);
+                    }
+                    d.hits.rows.push((Rect::new(content.x, y, content.width, FIELD_H - 1), r2, row));
                 }
             }
         }
-        d.hits.rows.push((Rect::new(content.x, y, content.width, control.height + 1), control, row));
+        // A scrollbar when they do not all fit.
+        if rows.len() > capacity && content.height > 0 {
+            let track_h = content.height as usize;
+            let len = (track_h * capacity / rows.len()).clamp(1, track_h);
+            let at = (d.scroll * (track_h - len)).div_ceil(rows.len() - capacity);
+            let x = r.right() - 2;
+            for k in 0..len {
+                text(f, Rect::new(x, content.y + (at + k) as u16, 1, 1), if crate::theme::ascii() { "#" } else { "┃" }, st.fg(P.dim));
+            }
+        }
     }
     if let Some(area) = preview {
         if !d.palette.as_ref().is_some_and(|(draft, _)| draft == &d.draft) {
@@ -1058,7 +1274,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         let saved = crate::theme::build_pal(d.baseline.theme.json["colors"].as_object().unwrap_or(&Map::new()));
         for (i, label) in ["Draft palette", "Saved palette"].iter().enumerate() {
             let y = area.y + i as u16 * 9;
-            text(f, Rect::new(area.x, y, area.width, 1), label, st.fg(P.dim));
+            text(f, Rect::new(area.x, y, area.width, 1), label, dim);
             let card = Rect::new(area.x, y + 1, area.width, 7);
             let palette = if i == 1 { Ok(&saved) } else { d.palette.as_ref().unwrap().1.as_ref() };
             match palette {
@@ -1069,29 +1285,21 @@ pub fn draw(app: &mut App, f: &mut Frame) {
             }
         }
     }
-    let selected_row = rows[d.selected];
-    let key = FIELDS[selected_row].key.replace('/', ".");
-    text(f, Rect::new(content.x, footer_y - 1, content.width, 1), &key, st.fg(P.dim));
-    text(f, Rect::new(r.x + 2, r.bottom() - 4, w - 4, 1), &d.note, st);
-    text(
-        f,
-        Rect::new(r.x + 2, r.bottom() - 3, w - 4, 1),
-        "Tab: focus  Arrows: adjust  Enter: edit  Esc: close",
-        st.fg(P.dim),
-    );
+    // The footer: the setting's key and what last happened; the keys; Apply and Save.
+    let key = rows.get(d.selected).map(|&row| FIELDS[row].key.replace('/', ".")).unwrap_or_default();
+    let line1 = if d.note.is_empty() { key } else { format!("{key}  ·  {}", d.note) };
+    text(f, Rect::new(r.x + 2, footer_y + 1, w.saturating_sub(4), 1), &line1, dim);
+    text(f, Rect::new(r.x + 2, footer_y + 2, w.saturating_sub(26), 1), "Tab moves · ↑↓ choose · ←→ change · Enter edits · Esc closes", dim);
+    let selected_row = rows.get(d.selected).copied().unwrap_or(0);
     for (index, label, focus) in [(0, "Apply", Focus::Apply), (1, "Save", Focus::Save)] {
-        let button = Rect::new(r.right() - 21 + index as u16 * 10, r.bottom() - 2, 9, 1);
-        let style = if d.focus == focus { active.add_modifier(Modifier::BOLD) } else { active };
+        let button = Rect::new(r.right() - 21 + index as u16 * 10, footer_y + 2, 9, 1);
+        let hot = app.hover.is_some_and(|p| button.contains(p));
+        let style = crate::ui::button_style(index == 1, hot || d.focus == focus);
+        let style = if d.focus == focus { style.add_modifier(Modifier::BOLD) } else { style };
         f.render_widget(Paragraph::new(label).alignment(Alignment::Center).style(style), button);
-        crate::ui::round_ends(f, button, P.button_bg, P.widget_bg);
+        crate::ui::round_ends(f, button, style.bg.unwrap_or(P.button_bg), P.widget_bg);
         d.hits.buttons.push((button, index));
     }
-    text(
-        f,
-        Rect::new(r.x + 2, r.bottom() - 2, w.saturating_sub(25), 1),
-        &format!("{}-{} / {}", d.scroll + 1, (d.scroll + capacity).min(rows.len()), rows.len()),
-        st.fg(P.dim),
-    );
     if let Some(option) = d.dropdown {
         if let Choice(options) = FIELDS[selected_row].kind {
             if let Some((_, control, _)) = d.hits.rows.iter().find(|(_, _, row)| *row == selected_row).copied() {
@@ -1233,6 +1441,14 @@ mod tests {
             .join("\n")
     }
 
+    /// Ctrl+F, then `q` typed into the search box.
+    fn search(app: &mut App, q: &str) {
+        app.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        for c in q.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
     fn click(app: &mut App, t: &mut Terminal<TestBackend>, label: &str) {
         let text = screen(app, t);
         let d = app.settings_dlg.as_ref().unwrap();
@@ -1280,16 +1496,16 @@ mod tests {
         click(&mut app, &mut t, "Minimap");
         screen(&mut app, &mut t);
         let (_, control, _) = app.settings_dlg.as_ref().unwrap().hits.rows[0];
-        let symbols: String = (control.x..control.x + 4)
+        let symbols: String = (control.x..control.x + 3)
             .map(|x| t.backend().buffer()[(x, control.y)].symbol()).collect();
-        assert_eq!(symbols, "[x] ", "small switches must not become low-resolution image blocks");
+        assert_eq!(symbols, format!(" {} ", icons().check), "a checkbox, ticked (no low-resolution image blocks)");
         app.on_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: control.x + 2, row: control.y, modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.settings_dlg.as_ref().unwrap().draft["editor.minimap.enabled"], false);
         assert!(app.settings.minimap.enabled, "a switch edits only the draft");
-        assert!(screen(&mut app, &mut t).contains("[ ] Disabled"));
+        assert!(screen(&mut app, &mut t).contains("    Disabled"));
         press(&mut app, KeyCode::Char(' '));
         assert_eq!(app.settings_dlg.as_ref().unwrap().value(app.settings_dlg.as_ref().unwrap().rows()[0]), true);
         press(&mut app, KeyCode::Char(' '));
@@ -1303,6 +1519,7 @@ mod tests {
         let (mut app, mut t, path) = setup("palette-cards");
         let before = fs::read(&path).unwrap();
         let original = app.settings.theme.clone();
+        search(&mut app, "workbench colors");
         click(&mut app, &mut t, "Workbench colors");
         app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
         app.paste_text(r##"{"editor.background":"#123456"}"##);
@@ -1432,6 +1649,7 @@ mod tests {
         click(&mut app, &mut t, "Discard");
         assert_eq!(app.settings.tab_size, 8, "closing should load the external settings");
         open(&mut app);
+        search(&mut app, "workbench colors");
         click(&mut app, &mut t, "Workbench colors");
         app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
         app.paste_text("{invalid JSON}");
