@@ -613,6 +613,27 @@ pub enum FileOp {
     Trashed { rel: String, name: String, dir: PathBuf },
 }
 
+impl FileOp {
+    /// As a reload carries it (`session::save_for_reload`).
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            Moved { from, to } => serde_json::json!(["moved", from, to]),
+            Copied { from, to } => serde_json::json!(["copied", from, to]),
+            Trashed { rel, name, dir } => serde_json::json!(["trashed", rel, name, dir.to_string_lossy()]),
+        }
+    }
+
+    pub fn from_json(v: &serde_json::Value) -> Option<FileOp> {
+        let s = |i: usize| v.get(i)?.as_str().map(str::to_string);
+        Some(match v.get(0)?.as_str()? {
+            "moved" => Moved { from: s(1)?, to: s(2)? },
+            "copied" => Copied { from: s(1)?, to: s(2)? },
+            "trashed" => Trashed { rel: s(1)?, name: s(2)?, dir: PathBuf::from(s(3)?) },
+            _ => return None,
+        })
+    }
+}
+
 /// A paste running on its thread: each copy and how it went.
 pub struct FileJob {
     rx: mpsc::Receiver<Vec<(FileOp, Result<(), String>)>>,

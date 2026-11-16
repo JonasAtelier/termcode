@@ -31,7 +31,7 @@ use std::time::{Duration, Instant, SystemTime};
 // `impl App`, by topic.
 mod qdiff;
 mod gitfs;
-mod rename;
+pub(crate) mod rename;
 mod search;
 mod outline;
 mod tabs;
@@ -1068,6 +1068,7 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     }
     let wanted = (app.settings.restore_session, app.settings.restore_view_state);
     if reloaded {
+        app.session.from = app.session.file.as_deref().map(crate::session::reload_file).filter(|f| f.exists());
         (app.settings.restore_session, app.settings.restore_view_state) = (true, true);
     }
     crate::session::restore(&mut app);
@@ -1137,7 +1138,12 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
         if app.term_open {
             std::env::set_var(RELOAD_TERM_ENV, "1");
         }
-        return Err(format!("reload failed: {}", reexec()));
+        let own = crate::session::save_for_reload(&app);
+        let e = reexec();
+        if let Some(f) = own {
+            let _ = fs::remove_file(f);
+        }
+        return Err(format!("reload failed: {e}"));
     }
     // Quitting just ends this process: herdr then closes the tab. Nothing here
     // signals or closes anything else.

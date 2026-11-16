@@ -50,6 +50,25 @@ pub struct State {
     fetching: HashSet<String>,
     /// Reopened files with a hot-exit backup, offered one prompt at a time.
     offers: std::collections::VecDeque<String>,
+    /// A reload's own session (`reload_file`), read instead of `file` once.
+    pub from: Option<PathBuf>,
+}
+
+/// This process's session for its reload: a file of its own (the pid survives the exec),
+/// so another panel on the same folder saving meanwhile cannot swap their layouts.
+pub fn reload_file(file: &Path) -> PathBuf {
+    file.with_extension(format!("reload-{}.json", std::process::id()))
+}
+
+/// Before a reload: the session and the Explorer's undo history in `reload_file`.
+pub fn save_for_reload(app: &App) -> Option<PathBuf> {
+    let file = reload_file(app.session.file.as_ref()?);
+    let mut v = snapshot(app);
+    let ops = |stack: &[Vec<crate::panel::rename::FileOp>]| Value::from(stack.iter().map(|g| Value::from(g.iter().map(|op| op.to_json()).collect::<Vec<_>>())).collect::<Vec<_>>());
+    v["file_undo"] = ops(&app.file_undo);
+    v["file_redo"] = ops(&app.file_redo);
+    crate::editor::write_record(file.parent()?, &file, &v).ok()?;
+    Some(file)
 }
 
 /// The session file of launch folder `key` in the plugin state directory.
@@ -100,7 +119,8 @@ pub fn save(app: &mut App) {
     if text.len() as u64 > MAX_BYTES || app.session.written.as_deref() == Some(&text) {
         return;
     }
-    // ponytail: two panels on one root write the same file; the last save wins.
+    // ponytail: two panels on one root share the file; the last to save (to quit) wins.
+    // A reload reads its own (`reload_file`), so reloading together swaps nothing.
     if file.parent().is_some_and(|d| crate::editor::write_record(d, &file, &v).is_ok()) {
         app.session.written = Some(text);
     }
@@ -246,7 +266,17 @@ fn usable(app: &App, key: &str, gone: &HashSet<String>) -> bool {
 /// left as a fresh start.
 pub fn restore(app: &mut App) {
     let (layout, views) = (app.settings.restore_session, app.settings.restore_view_state);
-    let Some(v) = app.session.file.as_deref().filter(|_| layout || views).and_then(read) else { return };
+    let from = app.session.from.take();
+    let v = from.as_deref().or(app.session.file.as_deref()).filter(|_| layout || views).and_then(read);
+    if let Some(f) = from {
+        let _ = std::fs::remove_file(f);
+    }
+    let Some(v) = v else { return };
+    // A reload's Explorer undo history.
+    let ops = |v: &Value| -> Vec<Vec<crate::panel::rename::FileOp>> {
+        v.as_array().into_iter().flatten().map(|g| g.as_array().into_iter().flatten().filter_map(crate::panel::rename::FileOp::from_json).collect()).collect()
+    };
+    (app.file_undo, app.file_redo) = (ops(&v["file_undo"]), ops(&v["file_redo"]));
     if views {
         // Closed files, then the tabs that were open (newer): reopened by hand, they come back where they were.
         let open_tabs = v["groups"].as_array().into_iter().flatten().flat_map(|g| g["tabs"].as_array().into_iter().flatten()).map(|t| json!([t["key"], t["view"]]));
@@ -426,6 +456,29 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn a_reload_reads_its_own_session_with_the_explorer_undo_not_another_panels() {
+        use crate::panel::rename::FileOp;
+        let (t, r) = setup("sess-reload");
+        let mut app = open(&t, &r);
+        app.open_file(0, "a.txt", false);
+        app.file_undo = vec![vec![FileOp::Moved { from: "x".into(), to: "sub/x".into() }], vec![FileOp::Trashed { rel: "y".into(), name: "y.2".into(), dir: "/t/Trash".into() }]];
+        app.file_redo = vec![vec![FileOp::Copied { from: "c".into(), to: "c (1)".into() }]];
+        save(&mut app);
+        let own = save_for_reload(&app).unwrap();
+        // Another panel on the folder saves meanwhile: one tab, b.txt.
+        let mut other = open(&t, &r);
+        other.open_file(0, "b.txt", false);
+        save(&mut other);
+        let mut back = open(&t, &r);
+        back.session.from = Some(own.clone());
+        (back.settings.restore_session, back.settings.restore_view_state) = (true, true);
+        restore(&mut back);
+        assert_eq!(tabs(&back), [[("file:a.txt".to_string(), false)]]);
+        assert_eq!((back.file_undo.clone(), back.file_redo.clone()), (app.file_undo.clone(), app.file_redo.clone()));
+        assert!(!own.exists(), "read once");
     }
 
     #[test]
