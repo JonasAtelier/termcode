@@ -994,7 +994,7 @@ pub struct App {
     /// The Explorer's selected items beyond the cursor's (Ctrl+click, Shift+click, Shift+↑↓).
     pub tree_marks: Vec<String>,
     /// Markdown previews as last rendered, by file: (what they were rendered from, lines).
-    pub(crate) md_cache: HashMap<String, (u64, Vec<ratatui::text::Line<'static>>)>,
+    pub(crate) md_cache: HashMap<String, (u64, crate::mdpreview::Rendered)>,
     /// A Markdown tab's other look (source or preview), its view as it was, by its key.
     pub(crate) md_views: HashMap<String, View>,
     /// Where a Shift+click or Shift+↑↓ range starts.

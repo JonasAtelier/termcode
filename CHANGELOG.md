@@ -66,6 +66,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   and **source** on the breadcrumbs' row, or Ctrl+Shift+V (Markdown: Toggle Preview).
   Each keeps its place; the preview follows unsaved edits. Ctrl+K V still opens it
   beside the source.
+- The Markdown preview looks as GitHub shows a README: pictures beside it drawn (real
+  pixels in Ghostty and kitty), the HTML READMEs use (`<p align="center">`, `<img>`,
+  `<details>`, `<br>`, `<kbd>`…), alerts (`> [!NOTE]`…), tables in a grid (aligned,
+  wrapped, striped), ordered lists counted, setext headings, bare URLs as links,
+  `:emoji:` and entities. Nothing is fetched: a picture from the web shows its name.
 - The Settings window looks as VS Code's: a search box over every setting (Ctrl+F), each
   category with its count, each setting with a line on what it does, real checkboxes,
   sliders, dropdowns and text boxes, a bar beside settings set in your file, a scrollbar.

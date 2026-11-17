@@ -199,12 +199,14 @@ pub struct State {
     trash: Vec<u32>,
     trash_old: Vec<u32>,
     next_id: u32,
+    /// Pictures kept in the terminal whole (a Markdown preview's): their image ids.
+    kept: HashMap<u64, u32>,
 }
 
 impl Default for State {
     fn default() -> Self {
         let (tx, rx) = channel();
-        State { views: HashMap::new(), gfx: None, tx, rx, hits: Vec::new(), tools: None, trash: Vec::new(), trash_old: Vec::new(), next_id: 0 }
+        State { views: HashMap::new(), gfx: None, tx, rx, hits: Vec::new(), tools: None, trash: Vec::new(), trash_old: Vec::new(), next_id: 0, kept: HashMap::new() }
     }
 }
 
@@ -966,6 +968,36 @@ fn draw_tiles(app: &mut App, f: &mut Frame, area: Rect, (key, path): (&str, &Pat
         c.set_symbol(&sym);
     }
     crate::settingsgraphics::mark_drawn(area);
+}
+
+/// A cell's size in pixels (pictures are sized by it).
+pub fn cell(app: &mut App) -> (u16, u16) {
+    let gfx = app.media.gfx.get_or_insert_with(crate::settingsgraphics::Graphics::new);
+    gfx.refresh_size();
+    gfx.cell()
+}
+
+/// A picture kept in the terminal whole by `key` (Kitty), `cols`×`rows` cells: its image
+/// id, and the sequence sending it when new (to go out with this frame); its pixels from
+/// `make(w, h)`, once. None: no Kitty graphics here.
+pub fn kept(app: &mut App, key: u64, (cols, rows): (u16, u16), make: impl FnOnce((u32, u32)) -> Option<RgbaImage>) -> Option<(u32, String)> {
+    let (tiles, cell) = app.media.gfx.as_ref().map(|g| (g.tiles(), g.cell()))?;
+    if !tiles {
+        return None;
+    }
+    if let Some(&id) = app.media.kept.get(&key) {
+        return Some((id, String::new()));
+    }
+    let img = make((u32::from(cols) * u32::from(cell.0), u32::from(rows) * u32::from(cell.1)))?;
+    // ponytail: 32 at most, then all go; a README has a few.
+    if app.media.kept.len() >= 32 {
+        let old: Vec<u32> = app.media.kept.drain().map(|(_, id)| id).collect();
+        app.media.trash.extend(old);
+    }
+    let id = app.media.new_id();
+    let seq = app.media.gfx.as_ref()?.transmit(id, &img, cols, rows);
+    app.media.kept.insert(key, id);
+    Some((id, seq))
 }
 
 /// The tiles replaced a frame ago leave the terminal (ui::draw, each frame).

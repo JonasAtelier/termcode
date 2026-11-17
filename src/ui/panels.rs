@@ -235,7 +235,8 @@ pub(super) fn markdown_preview(app: &mut App, f: &mut Frame, g: usize, rel: &str
         Some(id) => id.hash(&mut h),
         None => std::fs::metadata(app.root.join(rel)).ok().map(|m| (m.len(), m.modified().ok())).hash(&mut h),
     }
-    (text.width, link, P.editor_fg, P.widget_bg).hash(&mut h);
+    let cell = crate::media::cell(app);
+    (text.width, link, P.editor_fg, P.widget_bg, cell).hash(&mut h);
     let key = h.finish();
     if app.md_cache.get(rel).is_none_or(|(k, _)| *k != key) {
         let src: Vec<String> = match app.docs.get(&format!("file:{rel}")) {
@@ -245,13 +246,14 @@ pub(super) fn markdown_preview(app: &mut App, f: &mut Frame, g: usize, rel: &str
                 Err(e) => vec![format!("Cannot read {rel}: {e}")],
             },
         };
-        let lines = crate::mdpreview::render(&src, text.width as usize, link);
+        let dir = app.root.join(rel).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let doc = crate::mdpreview::render_doc(&src, text.width as usize, link, Some((&dir, cell)));
         if app.md_cache.len() >= 8 {
             app.md_cache.clear();
         }
-        app.md_cache.insert(rel.to_string(), (key, lines));
+        app.md_cache.insert(rel.to_string(), (key, doc));
     }
-    let lines = &app.md_cache[rel].1;
+    let lines = &app.md_cache[rel].1.lines;
     let h = text.height as usize;
     let max = lines.len().saturating_sub(h);
     let grp = &mut app.groups[g];
@@ -260,9 +262,34 @@ pub(super) fn markdown_preview(app: &mut App, f: &mut Frame, g: usize, rel: &str
     let off = view.scroll;
     let shown: Vec<Line> = lines.iter().skip(off).take(h).cloned().collect();
     f.render_widget(Paragraph::new(shown).style(Style::new().fg(P.editor_fg).bg(P.editor_bg)), text);
+    let (n, pics) = (lines.len(), app.md_cache[rel].1.pics.clone());
+    // Pictures in view: their real pixels over the half-blocks, where the terminal has
+    // Kitty graphics (sent once; scrolling moves the cells pointing into them).
+    for pic in pics.iter().filter(|p| p.row < off + h && p.row + p.rows as usize > off) {
+        let mut hk = std::collections::hash_map::DefaultHasher::new();
+        (&pic.path, std::fs::metadata(&pic.path).and_then(|m| m.modified()).ok(), pic.cols, pic.rows, cell, P.editor_bg).hash(&mut hk);
+        let Some((id, seq)) = crate::media::kept(app, hk.finish(), (pic.cols, pic.rows), |wh| crate::mdpreview::pixels(&pic.path, wh)) else { break };
+        let first = pic.row.max(off);
+        let last = (pic.row + pic.rows as usize).min(off + h);
+        let x0 = text.x + pic.col;
+        let buf = f.buffer_mut();
+        for row in first..last {
+            let y = text.y + (row - off) as u16;
+            for c in 0..pic.cols.min(text.right().saturating_sub(x0)) {
+                let (sym, fg) = crate::settingsgraphics::placeholder(id, (row - pic.row) as u16, c);
+                buf[(x0 + c, y)].set_symbol(&sym).set_fg(fg);
+            }
+        }
+        let at = Position::new(x0, text.y + (first - off) as u16);
+        if !seq.is_empty() {
+            let c = &mut buf[(at.x, at.y)];
+            let sym = format!("{seq}{}", c.symbol());
+            c.set_symbol(&sym);
+        }
+        crate::settingsgraphics::mark_drawn(Rect::new(x0, at.y, pic.cols, (last - first) as u16));
+    }
     gh.text = text;
-    gh.preview_rows = lines.len();
-    let n = lines.len();
+    gh.preview_rows = n;
     if n > h {
         let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
         scrollbar(app, f, track, ScrollTarget::Editor(g), n, h, off, max);
