@@ -411,7 +411,17 @@ impl App {
             }
         }
         if std::mem::take(dirty) {
-            t.draw(|f| crate::ui::draw(self, f))?;
+            // The terminal shows the frame whole (synchronized output), not half drawn.
+            let sync = |on: bool| {
+                if !cfg!(test) {
+                    let mut out = io::stdout();
+                    let _ = out.write_all(if on { b"\x1b[?2026h" } else { b"\x1b[?2026l" }).and_then(|()| out.flush());
+                }
+            };
+            sync(true);
+            let drawn = t.draw(|f| crate::ui::draw(self, f));
+            sync(false);
+            drawn?;
             self.last_draw = Some(Instant::now());
             if matches!(self.drag, Drag::ClosePending) {
                 self.drag = Drag::None;
