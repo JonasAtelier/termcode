@@ -308,11 +308,13 @@ pub(crate) fn other_look(key: &str) -> Option<(&str, &'static str)> {
             Some((rel, "preview:"))
         } else if crate::patch::is_patch(rel) {
             Some((rel, "patch:"))
+        } else if rel.to_ascii_lowercase().ends_with(".map") {
+            Some((rel, "usage:"))
         } else {
             None
         };
     }
-    key.strip_prefix("preview:").map(|r| (r, "preview:")).or_else(|| key.strip_prefix("patch:").map(|r| (r, "patch:")))
+    ["preview:", "patch:", "usage:"].into_iter().find_map(|look| key.strip_prefix(look).map(|r| (r, look)))
 }
 
 pub struct DiffDoc {
@@ -2143,6 +2145,7 @@ impl App {
         use crate::media::As;
         match () {
             _ if b.binary => As::Hex,
+            _ if b.size_view => As::Size,
             _ if b.pdf_text => As::Text,
             _ if b.media.is_some() || b.elf => As::Main,
             _ => As::Text,
@@ -2169,6 +2172,13 @@ impl App {
             As::Text if pdf => Buffer::pdf_text(&path, crate::media::pdf_text(self, &path)),
             As::Text => Buffer::open_as(&path, Some(false)),
             As::Main => Buffer::open_as(&path, None),
+            As::Size => match Buffer::elf_size(&path) {
+                Some(b) => b,
+                None => {
+                    self.msg = "no size without readelf (sudo apt install binutils)".into();
+                    return;
+                }
+            },
         };
         let Some((b, tab)) = self.ed() else { return };
         *b = new;
@@ -2177,6 +2187,7 @@ impl App {
             As::Hex => "shown as a hexdump".into(),
             As::Text => "shown as text".into(),
             As::Main if b.elf => "shown as readelf's report".into(),
+            As::Size => "shown as where its bytes go".into(),
             As::Main => "shown as it is".into(),
         };
     }
@@ -2247,8 +2258,10 @@ impl App {
         let Some(key) = self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map(|t| t.key.clone()) else { return };
         let Some((rel, look)) = other_look(&key).map(|(r, l)| (r.to_string(), l)) else { return };
         let to = if rendered { format!("{look}{rel}") } else { self.file_doc(&rel) };
-        if rendered && look == "patch:" {
-            crate::patch::ensure(self, &to, &rel);
+        match look {
+            "patch:" if rendered => crate::patch::ensure(self, &to, &rel),
+            "usage:" if rendered => crate::size::ensure(self, &to, &rel),
+            _ => {}
         }
         let grp = &mut self.groups[g];
         if key == to {

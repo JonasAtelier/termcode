@@ -1464,7 +1464,11 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         breadcrumbs(app, f, r, g, &key);
         if let Some(look) = look {
             let rendered = !key.starts_with("file:");
-            let shown = if look == "patch:" { " diff " } else { " preview " };
+            let shown = match look {
+                "patch:" => " diff ",
+                "usage:" => " usage ",
+                _ => " preview ",
+            };
             let mut x = r.right().saturating_sub(1);
             for (label, on) in [(shown, true), (" source ", false)].into_iter().rev() {
                 x = x.saturating_sub(label.width() as u16 + 1);
@@ -1485,6 +1489,10 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     // A patch as a diff: made again as the patch changes.
     if let Some(rel) = key.strip_prefix("patch:") {
         crate::patch::ensure(app, &key, rel);
+    }
+    // A map file's memory use, as its source changes.
+    if let Some(rel) = key.strip_prefix("usage:") {
+        crate::size::ensure(app, &key, rel);
     }
     // A repository page: its frame (header, tree, outline), then in the middle the README
     // or, while a file shows, that file as an editor (the tab's document).

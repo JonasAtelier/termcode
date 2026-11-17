@@ -300,6 +300,10 @@ pub struct Buffer {
     /// An ELF file shown as readelf's report; the file is an ELF one (whichever way shown).
     pub elf: bool,
     pub elf_file: bool,
+    /// An ELF file shown as where its bytes go (size.rs).
+    pub size_view: bool,
+    /// Text termcode made (a report, a PDF's text): no white space marks in it.
+    pub report: bool,
     /// A picture or a PDF shown as one (media.rs draws it; no lines read).
     pub media: Option<crate::media::Kind>,
     /// A PDF shown as its text (pdftotext).
@@ -628,6 +632,8 @@ impl Buffer {
             hex: None,
             elf: false,
             elf_file: false,
+            size_view: false,
+            report: false,
             media: None,
             pdf_text: false,
             mtime: None,
@@ -675,11 +681,22 @@ impl Buffer {
             b.line_ids = fresh_line_ids(b.lines.len()).collect();
         }
         b.readonly = Some(why.into());
+        b.report = true;
         let (ss, p) = (syntaxes(), Path::new(path));
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
         b.set_syntax(ss.find_syntax_by_extension(ext).or_else(|| ss.find_syntax_by_extension(name)).or_else(|| ss.find_syntax_by_first_line(&b.lines[0])));
         b
+    }
+
+    /// ELF file `path` as where its bytes go (size.rs); None without readelf.
+    pub fn elf_size(path: &Path) -> Option<Buffer> {
+        let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let mut b = Buffer::from_lines("size.md", crate::size::elf_report(path, &name)?, "ELF file: where its bytes go");
+        b.path = Some(path.to_path_buf());
+        b.mtime = fs::metadata(path).and_then(|m| m.modified()).ok();
+        (b.elf_file, b.size_view) = (true, true);
+        Some(b)
     }
 
     /// A PDF as its text (`lines`, from pdftotext), read-only, its pages as headings.
@@ -870,7 +887,8 @@ impl Buffer {
     pub fn symbols(&mut self) -> std::rc::Rc<[crate::symbols::Symbol]> {
         if self.derived.symbols.as_ref().is_none_or(|(v, _)| *v != self.version) {
             // readelf's report is Markdown: its parts are the outline.
-            let path = if self.elf { "readelf.md" } else { self.path.as_deref().and_then(Path::to_str).unwrap_or("") };
+            // readelf's report, a size report, a PDF's text: Markdown, whatever the file.
+            let path = if self.elf || self.lang == "Markdown" { "report.md" } else { self.path.as_deref().and_then(Path::to_str).unwrap_or("") };
             self.derived.symbols = Some((self.version, crate::symbols::symbols(path, &self.lines).into()));
         }
         self.derived.symbols.as_ref().unwrap().1.clone()

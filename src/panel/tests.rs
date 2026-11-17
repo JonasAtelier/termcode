@@ -5411,6 +5411,38 @@ fn a_patch_turns_into_a_diff_of_its_files_and_back() {
 }
 
 #[test]
+fn a_map_file_turns_into_its_memory_use_and_an_elf_shows_its_size() {
+    let root = repo("size-view");
+    fs::write(root.join("fw.map"), "Memory Configuration\n\nName             Origin             Length             Attributes\nFLASH            0x0000000008000000 0x0000000000010000 xr\n*default*        0x0000000000000000 0xffffffffffffffff\n\nLinker script and memory map\n\n.text           0x0000000008000000     0x800\n .text.main     0x0000000008000000     0x800 Core/Src/main.o\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    app.open_file(0, "fw.map", false);
+    (app.focus, app.side_visible, app.minimap_on) = (Focus::Editor, false, false);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains(" usage ") && s.contains("Memory Configuration"), "its text first\n{s}");
+    let r = app.ui.md_btns.iter().find(|b| b.2).unwrap().0;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
+    assert_eq!(app.groups[0].tabs[0].key, "usage:fw.map");
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("Usage fw.map") && s.contains("3.1%") && s.contains("2.0 KB of 64.0 KB") && s.contains("Core/Src/main.o"), "{s}");
+    // An ELF: size beside readelf and hexdump (with readelf here).
+    if std::process::Command::new("readelf").arg("--version").output().is_ok() {
+        fs::copy("/bin/true", root.join("tool")).unwrap();
+        app.open_file(0, "tool", false);
+        screen(&mut app, &mut t);
+        let r = app.ui.view_btns.iter().find(|(_, h)| *h == crate::media::As::Size).unwrap().0;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
+        let s = screen(&mut app, &mut t);
+        assert!(s.contains("tool: size") && s.contains("text ") && s.contains(" · bss "), "{s}");
+        let Some(Doc::Text(b)) = app.docs.get_mut("file:tool") else { panic!("a text view") };
+        assert!(b.size_view && !b.symbols().is_empty(), "its parts in the Outline");
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn brackets_are_coloured_by_depth_and_a_stray_closer_stands_out() {
     let root = repo("brackets");
     fs::write(root.join("b.c"), "f(a[1]);\n)\n").unwrap();

@@ -65,6 +65,8 @@ pub enum As {
     Main,
     Text,
     Hex,
+    /// An ELF file's size (size.rs).
+    Size,
 }
 
 /// The banner's buttons for a file: (label, how).
@@ -72,7 +74,7 @@ pub fn buttons(path: &Path, elf: bool) -> Vec<(&'static str, As)> {
     match kind(path) {
         Some(Kind::Image) => vec![("picture", As::Main), ("hexdump", As::Hex)],
         Some(Kind::Pdf) => vec![("pages", As::Main), ("text", As::Text), ("hexdump", As::Hex)],
-        None if elf => vec![("readelf", As::Main), ("hexdump", As::Hex)],
+        None if elf => vec![("size", As::Size), ("readelf", As::Main), ("hexdump", As::Hex)],
         None => vec![("text", As::Text), ("hexdump", As::Hex)],
     }
 }
@@ -1438,7 +1440,7 @@ mod tests {
     fn kinds_and_buttons_go_by_the_extension() {
         assert_eq!((kind(Path::new("a/b.PNG")), kind(Path::new("x.jpeg")), kind(Path::new("m.pdf")), kind(Path::new("x.svg"))), (Some(Kind::Image), Some(Kind::Image), Some(Kind::Pdf), None));
         assert_eq!(buttons(Path::new("m.pdf"), false).iter().map(|b| b.0).collect::<Vec<_>>(), ["pages", "text", "hexdump"]);
-        assert_eq!(buttons(Path::new("t.so"), true).iter().map(|b| b.0).collect::<Vec<_>>(), ["readelf", "hexdump"]);
+        assert_eq!(buttons(Path::new("t.so"), true).iter().map(|b| b.0).collect::<Vec<_>>(), ["size", "readelf", "hexdump"]);
     }
 
     #[test]

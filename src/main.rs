@@ -38,6 +38,7 @@ mod term;
 mod md5;
 mod media;
 mod patch;
+mod size;
 mod mdpreview;
 mod theme;
 mod ui;

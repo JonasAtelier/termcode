@@ -159,6 +159,7 @@ impl App {
             Some(Doc::Diff(d)) => d.title.clone(),
             _ => match key.split_once(':') {
                 Some(("preview", rel)) => format!("Preview {}", base(rel)),
+                Some(("usage", rel)) => format!("Usage {}", base(rel)),
                 // A repository's page; a file of one (its path after the repository).
                 Some(("repo", repo)) => repo.to_string(),
                 Some(("programmer", _)) => "Programmer".into(),

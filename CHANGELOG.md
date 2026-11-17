@@ -67,6 +67,12 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   (new, deleted, renamed), each hunk's `@@` line, the files' own line numbers, the
   commit message above; F7 goes from change to change.
 
+- Where a program's bytes go, as a build analyzer shows it. An ELF file has **size**
+  beside readelf and hexdump: text, data and bss, its sections, its largest symbols
+  (with the Flash and RAM bars of the `.map` beside it). A linker map (`.map`) turns
+  into its **usage**: each memory region's use as a bar, its sections (and where they
+  load from), what each object file and library puts in each region, the largest pieces.
+
 ### Changed
 - Arrows in the Search results show each match as they land on it (a preview tab; the
   keys stay in the list). Enter and the mouse work as before.

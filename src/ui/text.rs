@@ -61,7 +61,8 @@ pub(super) fn text_editor(
     let word = (d.occurrences && group_focus && sel.is_none()).then(|| editor::cursor_word(&b.lines[c.line], c.col).map(str::to_string)).flatten();
     // editor.bracketPairColorization: depth at each line start (plain text has no brackets).
     let depths = (d.bracket_colors && b.syntax_name() != "Plain Text").then(|| b.bracket_depths());
-    let guides = d.guides.then(|| Guides::new(&b.lines, tab));
+    // Text termcode made (reports, a PDF's text) aligns with spaces, not indents.
+    let guides = (d.guides && !b.report).then(|| Guides::new(&b.lines, tab));
     let active = guides.as_ref().and_then(|g| g.active(c.line));
     // The peek zone sits before line `before` when that place is on screen.
     let zone = d.peek.as_ref().filter(|p| p.hunk.peek_before() >= v.scroll && p.hunk.peek_before() <= v.scroll + h).map(|p| {
@@ -147,7 +148,7 @@ pub(super) fn text_editor(
         // Display columns of what is drawn over the text: blanks shown, coloured brackets.
         let selected = sel.filter(|(a, e)| a.line <= i && i <= e.line).map(|(a, e)| (if a.line == i { a.col } else { 0 }, if e.line == i { e.col } else { line.len() }));
         // A hexdump's or readelf's columns are spaces, not whitespace to show.
-        let ws_mode = if b.binary || b.elf { editor::Whitespace::None } else { d.whitespace };
+        let ws_mode = if b.binary || b.elf || b.report { editor::Whitespace::None } else { d.whitespace };
         let mut blanks = editor::whitespace_marks(line, ws_mode, selected).into_iter().peekable();
         let (mut ws, mut paint) = (Vec::new(), Vec::new());
         let mut depth = depths.as_ref().map_or(0, |dp| dp[i]);
