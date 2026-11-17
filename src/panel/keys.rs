@@ -168,7 +168,7 @@ impl App {
             Focus::Side => self.side_key(k),
             Focus::Editor => {
                 // The STM32 Programmer's page scrolls by keys too (it has no text).
-                if !crate::stm32::page_key(self, k) {
+                if !crate::programmer::page_key(self, k) {
                     self.editor_key(k, ctrl, alt, shift);
                 }
             }
@@ -344,8 +344,8 @@ impl App {
         if self.side == Side::Scm && crate::scm::key(self, k) {
             return;
         }
-        if self.side == Side::Stm32 {
-            if !crate::stm32::key(self, k) && k.code == KeyCode::Esc {
+        if self.side == Side::Programmer {
+            if !crate::programmer::key(self, k) && k.code == KeyCode::Esc {
                 self.focus = Focus::Editor;
             }
             return;
@@ -726,7 +726,7 @@ impl App {
         if self.gitui.cmds.picker.is_some() {
             return crate::gitcmds::picker_paste(self, text);
         }
-        if self.focus == Focus::Editor && crate::stm32::paste(self, text) {
+        if self.focus == Focus::Editor && crate::programmer::paste(self, text) {
             return;
         }
         match self.focus {

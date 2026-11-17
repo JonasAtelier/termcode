@@ -34,7 +34,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   tool's output and progress, and the target's, in the panel's new Programmer and Serial
   tabs. Pages are cards: the target at the top with Connect or Disconnect, a running
   job's progress with its steps, fields typed in place (a bad value said in red), F5 for
-  each page's main action. Without the tool, an Install button.
+  each page's main action. Without the tool, an Install button. A switch at the top picks
+  the tool: STM32Cube, Arduino (`arduino-cli`: the boards it sees, a sketch compiled and
+  uploaded for the chosen one) or ESP-IDF (`idf.py`: a project built, flashed, its flash
+  erased, its target set). An upload borrows the Serial Console's port and gives it back.
 
 ### Changed
 - The Settings window looks as VS Code's: a search box over every setting (Ctrl+F), each

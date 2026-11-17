@@ -142,7 +142,7 @@ impl App {
                 Some(("preview", rel)) => format!("Preview {}", base(rel)),
                 // A repository's page; a file of one (its path after the repository).
                 Some(("repo", repo)) => repo.to_string(),
-                Some(("stm32", _)) => "Programmer".into(),
+                Some(("programmer", _)) => "Programmer".into(),
                 Some(("ghfile", rest)) => base(rest.split_once(':').map_or(rest, |(_, p)| p)).to_string(),
                 Some(("diff" | "cdiff", rest)) => base(rest.split_once(':').map_or(rest, |(_, p)| p)).to_string(),
                 Some((_, rel)) => base(rel).to_string(),
@@ -308,8 +308,8 @@ impl App {
             self.drop_doc(&key);
             self.sync_backups();
         }
-        if refs == 1 && key == crate::stm32::KEY {
-            crate::stm32::closed(self);
+        if refs == 1 && key == crate::programmer::KEY {
+            crate::programmer::closed(self);
         }
         self.find_refresh();
     }
@@ -432,7 +432,7 @@ impl App {
                 }
             }
             PAct::GitHub(a) => crate::github::run(self, a),
-            PAct::Stm32(op) => crate::stm32::run(self, op),
+            PAct::Prog(op) => crate::programmer::run(self, op),
             PAct::Move(rels, into) => self.move_into(&rels, &into),
             PAct::Delete(rels, forever) => self.delete_paths(&rels, forever),
             PAct::KillTerminal(i) => self.kill_terminal(i, false),

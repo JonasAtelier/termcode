@@ -208,7 +208,7 @@ pub enum Pick {
     /// A GitHub repository page's branch: (repository, branch) to show.
     GitHubBranch(String, String),
     /// The STM32 Programmer's file browser: a folder, a file, or type a path.
-    Stm32(crate::stm32::Browse),
+    Prog(crate::programmer::Browse),
 }
 
 /// What Enter does with the typed text in an input box.
@@ -217,7 +217,7 @@ pub enum Input {
     Branch(Option<String>),
     Stash(StashOpts),
     /// A value of the STM32 Programmer's page.
-    Stm32(crate::stm32::Field),
+    Prog(crate::programmer::Field),
 }
 
 pub struct Item {
@@ -690,10 +690,10 @@ pub(crate) fn pick(app: &mut App, i: usize) {
                 }
             }
             Input::Stash(o) => run_op(app, Op::StashPush(text, o)),
-            Input::Stm32(f) => {
-                if let Err(e) = crate::stm32::entered(app, f, &text) {
+            Input::Prog(f) => {
+                if let Err(e) = crate::programmer::entered(app, f, &text) {
                     app.msg = e;
-                    app.gitui.cmds.picker = Some(Picker { query: text, input: Some(Input::Stm32(f)), ..p });
+                    app.gitui.cmds.picker = Some(Picker { query: text, input: Some(Input::Prog(f)), ..p });
                 }
             }
         };
@@ -705,7 +705,7 @@ pub(crate) fn pick(app: &mut App, i: usize) {
         Pick::BranchFrom => run_cmd(app, GitCmd::CreateBranchFrom),
         Pick::Confirm(text, button, op) => confirm(app, text, &button, op, true),
         Pick::GitHubBranch(repo, branch) => crate::github::page::switch_branch(app, &repo, &branch),
-        Pick::Stm32(b) => crate::stm32::picked(app, b),
+        Pick::Prog(b) => crate::programmer::picked(app, b),
     }
 }
 

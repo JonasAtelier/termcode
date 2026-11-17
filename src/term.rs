@@ -499,8 +499,21 @@ impl App {
         if self.terms.is_empty() {
             return self.new_terminal();
         }
-        self.stm32.log_shown = false;
+        self.prog.log_shown = false;
         (self.term_open, self.focus) = (true, Focus::Term);
+    }
+
+    /// `cmd` typed into a new terminal's shell (never one in use: it may run vim, be on
+    /// another host over ssh, or hold half a command). False when no shell started.
+    pub fn run_in_new_terminal(&mut self, cmd: &str) -> bool {
+        let before = self.terms.len();
+        self.new_terminal();
+        if self.terms.len() == before {
+            return false;
+        }
+        let at = self.terms.len() - 1;
+        self.terms[at].send(format!("{cmd}\r").as_bytes());
+        true
     }
 
     /// Terminal: Create New Terminal (Ctrl+Shift+`, the panel's +): another shell, shown.
@@ -513,7 +526,7 @@ impl App {
                 self.terms.push(t);
                 self.term_at = self.terms.len() - 1;
                 self.term_find = None;
-                self.stm32.log_shown = false;
+                self.prog.log_shown = false;
                 (self.term_open, self.focus) = (true, Focus::Term);
             }
             Err(e) => self.msg = format!("terminal: {e}"),
@@ -549,7 +562,7 @@ impl App {
         if to < self.terms.len() {
             self.term_at = to;
             self.term_find = None;
-            self.stm32.log_shown = false;
+            self.prog.log_shown = false;
             (self.term_open, self.focus) = (true, Focus::Term);
         }
     }
@@ -582,7 +595,7 @@ impl App {
             }
         }
         // (The panel stays for the STM32 Programmer's log.)
-        if self.terms.is_empty() && self.term_open && !self.stm32.log_shown {
+        if self.terms.is_empty() && self.term_open && !self.prog.log_shown {
             self.term_find = None;
             self.hide_terminal();
         }
@@ -667,7 +680,7 @@ impl App {
         let area = self.ui.term;
         let p = Position::new(m.column, m.row);
         let ours = matches!(self.drag, Drag::TermSelect(_) | Drag::TermMouse);
-        if area.is_empty() || !(area.contains(p) || ours) || self.terms.is_empty() || self.stm32.log_shown {
+        if area.is_empty() || !(area.contains(p) || ours) || self.terms.is_empty() || self.prog.log_shown {
             return None;
         }
         let at = (p.y.clamp(area.y, area.bottom() - 1) - area.y, p.x.clamp(area.x, area.right() - 1) - area.x);

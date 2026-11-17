@@ -398,7 +398,7 @@ impl App {
         *dirty |= self.drain();
         *dirty |= self.term_pump();
         *dirty |= crate::github::tick(self);
-        *dirty |= crate::stm32::tick(self);
+        *dirty |= crate::programmer::tick(self);
         *dirty |= self.file_job_tick();
         if let Some((path, _)) = self.tree_spring.take_if(|(_, t)| Instant::now() >= *t) {
             if matches!(self.drag, Drag::File { active: true, .. }) {
@@ -432,6 +432,7 @@ impl App {
             || self.lints.busy()
             || self.gh.busy()
             || self.file_job.is_some()
+            || self.prog.busy()
             || self.tip.as_ref().is_some_and(|t| t.md5_rx.is_some());
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);

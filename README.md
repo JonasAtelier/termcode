@@ -283,6 +283,7 @@ termcode src/main.rs:120    # a file at line 120 (also :LINE:COL)
 termcode --tab src          # the same, as a herdr tab
 ```
 
+
 - **Quitting:** Ctrl+Q, or Close in the title bar. You are asked about unsaved files first.
 - **Sessions:** open the same folder again and your tabs, cursors and layout come back.
   Unsaved text survives a crash too.
@@ -298,7 +299,7 @@ termcode --tab src          # the same, as a herdr tab
 | Explorer | Alt+1, Ctrl+E | Files. **Timeline** below shows the open file's commits |
 | Search | Alt+4, F4 | Search all files. **References** below shows where the symbol at the cursor is used |
 | Source Control | Alt+2, F2, Ctrl+G | Changes, commits and the commit graph |
-| Programmer | the chip icon above GitHub | Program, read and erase STM32 chips (below) |
+| Programmer | the chip icon above GitHub | STM32CubeProgrammer, Arduino sketches, ESP-IDF projects (below) |
 
 Click the active sidebar icon to hide the sidebar. Drag any divider to resize.
 
@@ -489,6 +490,20 @@ bad one says why in red. Closing the page's tab goes back to the Explorer.
 | Erase | The full chip, or sectors (`0-3`, `0 1 2`); each asks first |
 | Option Bytes | Shows them, read only |
 | Serial Console | The target's UART output (its `printf`) through the ST-LINK's virtual COM port, in the panel's **Serial** tab; **Send…** writes a line to it |
+
+The switch at the top of the view picks the tool: **STM32Cube** (above), **Arduino** or
+**ESP-IDF**. Each takes any target it knows, given what it needs:
+
+| Tool | Give it | Pages |
+|---|---|---|
+| Arduino (`arduino-cli`) | a sketch folder (its `.ino`) and the board's FQBN | **Boards** (what it sees: port, name, FQBN; pick one), **Sketch** (Compile, Upload, verify after), **Serial Console** on the board's port |
+| ESP-IDF (`idf.py`) | a project folder (`CMakeLists.txt`, `main/`) | **Project** (Build, Flash, Erase Flash, the target chip: set-target asks first), **Serial Console** |
+
+The sketch or project is found in the workspace (or above the open file), or picked
+with **Browse…**. Uploading or flashing takes the Serial Console's port for its time
+and gives it back. ESP-IDF is found through `$IDF_PATH`, Espressif's installer's record
+(`~/.espressif/idf-env.json`) or `~/esp/esp-idf`; termcode loads its `export.sh` itself.
+Without a tool, an **Install** button runs its installer in the terminal.
 
 Without the tool, the view has an **Install** button: it runs ST's installer from
 `~/Downloads/en.stm32cubeprg-lin*.zip` in the terminal, or opens ST's download page (ST

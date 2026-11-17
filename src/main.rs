@@ -31,7 +31,7 @@ mod settings;
 mod settingsui;
 mod serial;
 mod settingsgraphics;
-mod stm32;
+mod programmer;
 mod symbols;
 mod term;
 mod md5;

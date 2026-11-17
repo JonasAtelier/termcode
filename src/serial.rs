@@ -114,8 +114,21 @@ fn nice(id: &str) -> String {
 }
 
 /// The serial ports: those with a stable name (/dev/serial/by-id, named for the device),
-/// then the other USB ones. (path, what it is).
+/// then the other USB ones. (path, what it is). Listed once a second at most: pages
+/// draw every frame.
 pub fn ports() -> Vec<(PathBuf, String)> {
+    type Cache = Option<(std::time::Instant, Vec<(PathBuf, String)>)>;
+    static CACHE: std::sync::Mutex<Cache> = std::sync::Mutex::new(None);
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, v)) = c.as_ref().filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(1)) {
+        return v.clone();
+    }
+    let v = list_ports();
+    *c = Some((std::time::Instant::now(), v.clone()));
+    v
+}
+
+fn list_ports() -> Vec<(PathBuf, String)> {
     let mut named: Vec<(PathBuf, String)> = Vec::new();
     let mut seen = Vec::new();
     for e in fs::read_dir("/dev/serial/by-id").into_iter().flatten().flatten() {

@@ -126,7 +126,7 @@ pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
     let focused = app.focus == Focus::Term;
     let hot = matches!(app.drag, Drag::TermSash) || app.hover.is_some_and(|p| p.y == r.y && (r.x..r.right()).contains(&p.x));
     // With the STM32 Programmer's log, two tabs on the border instead of the title.
-    let tabs = app.stm32.has_log();
+    let tabs = app.prog.has_log();
     let mut block = Block::bordered()
         .border_set(crate::blocks::border_set())
         .border_style(Style::new().fg(crate::blocks::border(focused)).bg(P.editor_bg))
@@ -150,9 +150,9 @@ pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
     // the right end closes the one shown.
     let mut x = r.x + 2 + " Terminal ".len() as u16 + 1;
     if tabs {
-        x = crate::stm32::panel_tabs(app, f, r);
-        if app.stm32.log_shown {
-            return crate::stm32::draw_log(app, f, inner);
+        x = crate::programmer::panel_tabs(app, f, r);
+        if app.prog.log_shown {
+            return crate::programmer::draw_log(app, f, inner);
         }
     }
     let n = app.terms.len();
