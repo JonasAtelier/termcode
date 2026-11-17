@@ -5419,6 +5419,13 @@ fn the_terminal_button_opens_a_shell_under_the_editors_and_its_top_edge_resizes_
     mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sash.x + 20, sash.y - 4);
     screen(&mut app, &mut t);
     assert_eq!((app.term_h, app.ui.term.height + 2), (Some(h + 4), h + 4));
+    // And down 6 rows, the pointer over the shell's text on the way: 6 shorter.
+    let sash = app.ui.term_sash;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sash.x + 20, sash.y);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), sash.x + 20, sash.y + 6);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sash.x + 20, sash.y + 6);
+    screen(&mut app, &mut t);
+    assert_eq!((app.term_h, app.ui.term.height + 2), (Some(h - 2), h - 2), "dragged down");
 
     // Ctrl+` hides it with the shell still running; the button shows it again.
     key(&mut app, KeyCode::Char('`'), KeyModifiers::CONTROL);

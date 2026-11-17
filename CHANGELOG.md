@@ -67,6 +67,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   sliders, dropdowns and text boxes, a bar beside settings set in your file, a scrollbar.
 
 ### Fixed
+- The terminal panel's top edge drags down as well as up (the drag no longer goes to the
+  shell once the pointer is over it).
 - A commit message indented with tabs (a JSON example, say) no longer breaks its card:
   tabs show as spaces to the next tab stop. No control character in text from outside
   (commit messages, titles, file names) reaches the terminal any more; pictures (the

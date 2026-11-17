@@ -705,7 +705,10 @@ impl App {
         let area = self.ui.term;
         let p = Position::new(m.column, m.row);
         let ours = matches!(self.drag, Drag::TermSelect(_) | Drag::TermMouse);
-        if area.is_empty() || !(area.contains(p) || ours) || self.terms.is_empty() || self.prog.log_shown {
+        // A drag begun elsewhere (the panel's top edge, a scrollbar) keeps its events
+        // over the terminal: the sash dragged down crosses into it.
+        let theirs = !ours && !matches!(self.drag, Drag::None);
+        if theirs || area.is_empty() || !(area.contains(p) || ours) || self.terms.is_empty() || self.prog.log_shown {
             return None;
         }
         let at = (p.y.clamp(area.y, area.bottom() - 1) - area.y, p.x.clamp(area.x, area.right() - 1) - area.x);
