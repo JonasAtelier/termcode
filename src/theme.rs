@@ -666,7 +666,7 @@ const CODICONS: Icons = Icons {
     dirty: "\u{ea71}",
     split: "\u{eb56}",
     terminal: "\u{ea85}",
-    outline: "\u{eb86}",
+    outline: "\u{eb5b}",
     check: "\u{eab2}",
     add: "\u{ea60}",
     remove: "\u{eb3b}",
