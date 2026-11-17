@@ -6827,3 +6827,40 @@ fn a_binarys_banner_chooses_between_readelf_and_hexdump() {
     assert_eq!(elf(&app), (true, false), "readelf's report again");
     fs::remove_dir_all(&root).unwrap();
 }
+
+/// explorer.autoReveal: the active editor's file shows in the Explorer, as the active
+/// editor changes, and only then.
+#[test]
+fn the_explorer_shows_the_active_editors_file() {
+    let root = repo("reveal");
+    fs::create_dir_all(root.join("drivers/net/eth")).unwrap();
+    fs::write(root.join("drivers/net/eth/phy.c"), "int phy;\n").unwrap();
+    fs::write(root.join("top.c"), "int top;\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    wait(&mut app);
+    app.show_side(Side::Explorer, false);
+    app.auto_reveal();
+    let at = |app: &App, p: &str| app.tree.iter().position(|n| n.path == p);
+    // A file deep in folders: they open, it is selected.
+    app.open_file(0, "drivers/net/eth/phy.c", false);
+    assert!(app.auto_reveal());
+    assert!(["drivers", "drivers/net", "drivers/net/eth"].iter().all(|d| app.tree[at(&app, d).unwrap()].open));
+    assert_eq!(app.sel[0], at(&app, "drivers/net/eth/phy.c").unwrap());
+    // A folder closed by hand stays closed while the same editor is active.
+    let d = at(&app, "drivers").unwrap();
+    app.toggle(d);
+    assert!(!app.auto_reveal() && at(&app, "drivers/net").is_none());
+    // Another editor: shown in its turn; back to the first: open again.
+    app.open_file(0, "top.c", false);
+    assert!(app.auto_reveal());
+    assert_eq!(app.sel[0], at(&app, "top.c").unwrap());
+    app.cycle_tab(-1);
+    assert!(app.auto_reveal() && at(&app, "drivers/net/eth/phy.c").is_some());
+    // Turned off: the Explorer stays as it is.
+    app.settings.auto_reveal = false;
+    let d = at(&app, "drivers").unwrap();
+    app.toggle(d);
+    app.cycle_tab(1);
+    assert!(!app.auto_reveal() && at(&app, "drivers/net").is_none());
+    fs::remove_dir_all(&root).unwrap();
+}

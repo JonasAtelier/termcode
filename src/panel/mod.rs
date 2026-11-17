@@ -990,6 +990,8 @@ pub struct App {
     pub tab: bool,
     /// A switch to another folder asked for: termcode starts again there (this argument).
     pub reroot: Option<String>,
+    /// The editor last shown in the Explorer (explorer.autoReveal).
+    revealed: Option<String>,
     pub outline_open: bool,
     pub outline_w: Option<u16>,
     pub outline_off: usize,
@@ -1714,6 +1716,7 @@ impl App {
             api: None,
             tab: false,
             reroot: None,
+            revealed: None,
             gh: crate::github::GitHub::new(
                 gh_here,
                 saved["github_repo"].as_str().map(String::from),

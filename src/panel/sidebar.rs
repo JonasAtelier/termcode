@@ -339,6 +339,48 @@ impl App {
         self.focus = Focus::Side;
     }
 
+    /// explorer.autoReveal: as the active editor changes (a click in another group, a tab,
+    /// a file opened), its file is shown in the Explorer: its folders opened, it selected
+    /// and in view. Only on a change: a folder closed by hand stays closed meanwhile.
+    pub(crate) fn auto_reveal(&mut self) -> bool {
+        let key = self.active_tab_ref().map(|t| t.key.clone());
+        if key == self.revealed || self.tree.is_empty() {
+            return false;
+        }
+        self.revealed = key.clone();
+        let rel = key.as_deref().and_then(|k| ["file:", "preview:", "diff:staged:", "diff:changes:"].iter().find_map(|p| k.strip_prefix(p)));
+        match rel {
+            Some(rel) if self.settings.auto_reveal => self.reveal_in_explorer(rel),
+            _ => false,
+        }
+    }
+
+    /// `rel` in the Explorer: the folders down to it opened, it selected and in view (when
+    /// another view shows, as it will be in the Explorer).
+    pub(crate) fn reveal_in_explorer(&mut self, rel: &str) -> bool {
+        let parts: Vec<&str> = rel.split('/').collect();
+        let mut at = String::new();
+        for part in &parts[..parts.len() - 1] {
+            at = if at.is_empty() { part.to_string() } else { format!("{at}/{part}") };
+            let Some(i) = self.tree.iter().position(|n| n.dir && n.path == at) else { return false };
+            if !self.tree[i].open {
+                self.toggle(i);
+            }
+        }
+        let Some(i) = self.tree.iter().position(|n| n.path == rel) else { return false };
+        let s = Side::Explorer as usize;
+        if self.sel[s] == i && self.side != Side::Explorer {
+            return false;
+        }
+        self.sel[s] = i;
+        if self.side == Side::Explorer {
+            self.move_side(0); // in view, under its pinned folders
+        } else {
+            self.off[s] = i.saturating_sub(3);
+        }
+        true
+    }
+
     pub(super) fn move_side(&mut self, d: isize) {
         let n = self.side_count();
         if n == 0 {

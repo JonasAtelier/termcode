@@ -169,6 +169,8 @@ pub struct Settings {
     pub confirm_sync: bool,
     /// `workbench.editor.restoreViewState`: cursors and scroll come back with a file.
     pub restore_view_state: bool,
+    /// `explorer.autoReveal`: the active editor's file shown in the Explorer.
+    pub auto_reveal: bool,
     /// `termcode.restoreSession`: the groups, tabs and sidebar of the last session.
     pub restore_session: bool,
     /// Parts that were skipped (a bad regex): shown, the rest still applies.
@@ -220,6 +222,7 @@ impl Default for Settings {
             blame_decoration: false,
             confirm_sync: true,
             restore_view_state: true,
+            auto_reveal: true,
             restore_session: true,
             warnings: Vec::new(),
         }
@@ -383,6 +386,7 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         blame_decoration: g("git.blame.editorDecoration.enabled").and_then(Value::as_bool).unwrap_or(d.blame_decoration),
         confirm_sync: g("git.confirmSync").and_then(Value::as_bool).unwrap_or(d.confirm_sync),
         restore_view_state: g("workbench.editor.restoreViewState").and_then(Value::as_bool).unwrap_or(d.restore_view_state),
+        auto_reveal: g("explorer.autoReveal").and_then(Value::as_bool).unwrap_or(d.auto_reveal),
         restore_session: g("termcode.restoreSession").and_then(Value::as_bool).unwrap_or(d.restore_session),
         warnings,
     })

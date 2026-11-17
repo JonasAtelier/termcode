@@ -198,6 +198,7 @@ const FIELDS: &[Field] = &[
         kind: Check(true),
     },
     Field { category: 5, label: "Enable sticky scroll", key: "workbench.tree.enableStickyScroll", kind: Check(true) },
+    Field { category: 5, label: "Reveal the open file", key: "explorer.autoReveal", kind: Check(true) },
     Field {
         category: 5,
         label: "Sticky scroll rows",
@@ -271,6 +272,7 @@ fn describe(key: &str) -> &'static str {
         "termcode.restoreSession" => "Reopen the tabs and layout a folder had last time.",
         "workbench.editor.restoreViewState" => "Reopened files come back where you were in them.",
         "workbench.tree.enableStickyScroll" => "Keep the folders of the top row in view while scrolling.",
+        "explorer.autoReveal" => "Show the open file in the Explorer: its folders opened, it selected.",
         "workbench.tree.stickyScrollMaxItemCount" => "The most folder rows kept in view.",
         "git.blame.statusBarItem.enabled" => "Who changed the cursor's line, and when, in the status bar.",
         "git.blame.editorDecoration.enabled" => "Who changed the cursor's line, at its end.",

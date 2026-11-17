@@ -44,6 +44,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   folder keeps its session). `--new` still starts a second one. Each termcode listens on
   a private socket for this (`$XDG_RUNTIME_DIR/termcode/`, only you can reach it).
 
+- The Explorer follows the active editor, as VS Code's `explorer.autoReveal`: a click in
+  another editor group, another tab or a file opened shows its file there (its folders
+  opened, it selected and in view). A folder you close stays closed until the editor
+  changes; the setting turns it off.
+
 ### Changed
 - The Settings window looks as VS Code's: a search box over every setting (Ctrl+F), each
   category with its count, each setting with a line on what it does, real checkboxes,

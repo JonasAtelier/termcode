@@ -591,6 +591,7 @@ A few more examples:
 | `files.trimTrailingWhitespace` | `true` | On save, on edited lines |
 | `files.insertFinalNewline` | `true` | On save |
 | `workbench.tree.enableStickyScroll` | `true` | Keep the current folder pinned while scrolling |
+| `explorer.autoReveal` | `true` | Show the active editor's file in the Explorer (its folders opened, it selected) |
 | `workbench.tree.stickyScrollMaxItemCount` | `1` | More than 1: nested rows, like VS Code |
 | `termcode.colors` | `"auto"` | `"truecolor"`, `"256"` or `"16"`; auto reads the terminal's environment |
 | `termcode.keybindings` | `{}` | Your own keys for F1 commands, see [Your own keys](#your-own-keys) |
