@@ -29,6 +29,7 @@ mod semantic;
 mod session;
 mod settings;
 mod settingsui;
+mod api;
 mod serial;
 mod settingsgraphics;
 mod programmer;
@@ -46,7 +47,7 @@ mod scm;
 use serde_json::Value;
 use std::env;
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write as _};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -57,7 +58,7 @@ pub const ISSUES: &str = "https://github.com/JonasAtelier/termcode-releases";
 const PLUGIN_ID: &str = "jonasatelier.termcode";
 /// herdr labels a plugin pane with its `[[panes]]` title.
 const PANE_LABEL: &str = "Code";
-const USAGE: &str = "usage: termcode [--tab] [PATH[:LINE[:COL]]]
+const USAGE: &str = "usage: termcode [--tab|--new] [PATH[:LINE[:COL]]]
 
 Open PATH like `code PATH`, in this terminal; quitting returns to the shell.
   FOLDER        the workspace root (Explorer, Search, Quick Open); git from its repo
@@ -65,6 +66,8 @@ Open PATH like `code PATH`, in this terminal; quitting returns to the shell.
   (no PATH)     this folder's git repo, or the folder
   --tab         in a 'Code: <name>' tab of this herdr workspace instead (reused if open);
                 also used when there is no terminal
+  --new         a new termcode even in a termcode's terminal (there, PATH otherwise
+                opens in that termcode: a file in place, a folder by switching to it)
   --default-config  print the default settings.json (every option, commented out)
   -V, --version     print the version
 Relative paths resolve against this folder. Settings: ~/.config/termcode/settings.json.
@@ -76,7 +79,7 @@ enum Cmd {
     Version,
     DefaultConfig,
     Panel,
-    Open { tab: bool, path: Option<String> },
+    Open { tab: bool, new: bool, path: Option<String> },
 }
 
 fn parse_args(args: &[String]) -> Result<Cmd, String> {
@@ -85,19 +88,20 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
             return Ok(Cmd::Panel);
         }
     }
-    let (mut tab, mut path) = (false, None);
+    let (mut tab, mut new, mut path) = (false, false, None);
     for a in args {
         match a.as_str() {
             "-h" | "--help" => return Ok(Cmd::Help),
             "-V" | "--version" => return Ok(Cmd::Version),
             "--default-config" => return Ok(Cmd::DefaultConfig),
             "--tab" => tab = true,
+            "--new" => new = true,
             s if s.starts_with('-') => return Err(format!("unknown option {s:?} (a path starting with '-' needs ./)\n{USAGE}")),
             s if path.is_none() => path = Some(s.to_string()),
             s => return Err(format!("unexpected argument {s:?}\n{USAGE}")),
         }
     }
-    Ok(Cmd::Open { tab, path })
+    Ok(Cmd::Open { tab, new, path })
 }
 
 /// (tab mode, note): in place needs a terminal on stdin and stdout; without one
@@ -131,26 +135,48 @@ fn main() -> ExitCode {
             let key = env::var_os("TERMCODE_KEY").map(PathBuf::from).filter(|k| k.is_absolute()).unwrap_or_else(|| root.clone());
             panel::run(root, key, env::var("TERMCODE_OPEN").ok(), true)
         }),
-        Cmd::Open { tab, path } => match mode(tab, std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
-            (true, note) => {
-                if let Some(n) = note {
-                    eprintln!("termcode: {n}");
+        // In a termcode's terminal, PATH goes to that termcode (not a second one, and not a
+        // herdr tab when the output is redirected): first, whatever the terminal state.
+        Cmd::Open { tab: false, new: false, path } if env::var_os(api::ENV).is_some_and(|s| !s.is_empty()) => {
+            let cwd = env::current_dir().map_err(|e| e.to_string())?;
+            let (root, file) = target(path.as_deref(), &cwd)?;
+            match api::forward(Path::new(&env::var_os(api::ENV).unwrap_or_default()), &root, file.as_ref()) {
+                api::Forward::Done(note) => {
+                    println!("termcode: {note}");
+                    Ok(())
                 }
-                launch(path.as_deref())
+                api::Forward::Tab => launch(path.as_deref()),
+                api::Forward::Refused(e) => Err(e),
+                // No termcode there any more: as if outside one.
+                api::Forward::Unreachable => open_here(false, path),
             }
-            (false, _) => {
-                let cwd = env::current_dir().map_err(|e| e.to_string())?;
-                let (root, file) = target(path.as_deref(), &cwd)?;
-                let key = session_key(path.as_deref(), &cwd, &root);
-                panel::run(root, key, file.map(|(p, l, c)| format!("open:{}:{l}:{c}", p.display())), false)
-            }
-        },
+        }
+        Cmd::Open { tab, new: _, path } => open_here(tab, path),
     });
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("termcode: {e}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// `termcode [--tab] [PATH]` in this terminal, or as a herdr tab (asked, or with no
+/// terminal here).
+fn open_here(tab: bool, path: Option<String>) -> Result<(), String> {
+    match mode(tab, std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        (true, note) => {
+            if let Some(n) = note {
+                let _ = writeln!(std::io::stderr(), "termcode: {n}");
+            }
+            launch(path.as_deref())
+        }
+        (false, _) => {
+            let cwd = env::current_dir().map_err(|e| e.to_string())?;
+            let (root, file) = target(path.as_deref(), &cwd)?;
+            let key = session_key(path.as_deref(), &cwd, &root);
+            panel::run(root, key, file.map(|(p, l, c)| format!("open:{}:{l}:{c}", p.display())), false)
         }
     }
 }
@@ -549,7 +575,7 @@ mod tests {
     #[test]
     fn argv_runs_in_place_unless_tab() {
         let a = |v: &[&str]| parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        let open = |tab, p: Option<&str>| Ok(Cmd::Open { tab, path: p.map(String::from) });
+        let open = |tab, p: Option<&str>| Ok(Cmd::Open { tab, new: false, path: p.map(String::from) });
         assert_eq!(a(&[]), open(false, None));
         assert_eq!(a(&["src/main.rs:12"]), open(false, Some("src/main.rs:12")));
         assert_eq!(a(&["--tab"]), open(true, None));
@@ -557,6 +583,7 @@ mod tests {
         assert_eq!(a(&["drivers", "--tab"]), open(true, Some("drivers")));
         assert_eq!(a(&["panel"]), Ok(Cmd::Panel));
         assert_eq!(a(&["--tab", "panel"]), open(true, Some("panel")), "a folder named panel");
+        assert_eq!(a(&["--new", "src"]), Ok(Cmd::Open { tab: false, new: true, path: Some("src".into()) }));
         assert_eq!(a(&["-h"]), Ok(Cmd::Help));
         assert_eq!((a(&["--version"]), a(&["-V"]), a(&["x", "--version"])), (Ok(Cmd::Version), Ok(Cmd::Version), Ok(Cmd::Version)));
         assert_eq!(a(&["x", "--help"]), Ok(Cmd::Help));

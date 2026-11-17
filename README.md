@@ -281,8 +281,15 @@ termcode                    # this folder (its git repo if inside one)
 termcode ~/proj             # any folder
 termcode src/main.rs:120    # a file at line 120 (also :LINE:COL)
 termcode --tab src          # the same, as a herdr tab
+termcode --new ~/proj       # a second termcode, even inside one's terminal
 ```
 
+- **From termcode's own terminal:** `termcode PATH` there opens PATH in *this* termcode
+  instead of a second one inside it: a file of this folder opens in place; another
+  folder switches termcode over to it (your shells keep running, each folder keeps its
+  own session). `cd ~/other && termcode .` jumps folders. It waits while a Programmer
+  job or a Git write runs, or a file is unsaved. In a herdr Code tab, the folder opens
+  as its own tab. (Each termcode has a private socket for this: `$XDG_RUNTIME_DIR/termcode/`.)
 
 - **Quitting:** Ctrl+Q, or Close in the title bar. You are asked about unsaved files first.
 - **Sessions:** open the same folder again and your tabs, cursors and layout come back.

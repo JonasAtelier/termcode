@@ -350,6 +350,10 @@ impl Programmer {
         self.job.is_some() || self.serial.is_some() || self.installing.is_some() || self.ard.installing.is_some() || self.idf.installing.is_some()
     }
 
+    pub fn busy_job(&self) -> bool {
+        self.job.is_some()
+    }
+
     fn has_serial(&self) -> bool {
         self.serial.is_some() || !self.serial_out.is_empty()
     }

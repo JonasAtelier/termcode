@@ -399,6 +399,7 @@ impl App {
         *dirty |= self.term_pump();
         *dirty |= crate::github::tick(self);
         *dirty |= crate::programmer::tick(self);
+        *dirty |= crate::api::tick(self);
         *dirty |= self.file_job_tick();
         if let Some((path, _)) = self.tree_spring.take_if(|(_, t)| Instant::now() >= *t) {
             if matches!(self.drag, Drag::File { active: true, .. }) {

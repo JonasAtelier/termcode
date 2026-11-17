@@ -985,6 +985,11 @@ pub struct App {
     pub gh: crate::github::GitHub,
     /// The STM32 Programmer view, its page and its log.
     pub prog: crate::programmer::Programmer,
+    /// This termcode's socket (`termcode PATH` from its terminals); a herdr tab's pane.
+    pub api: Option<crate::api::Server>,
+    pub tab: bool,
+    /// A switch to another folder asked for: termcode starts again there (this argument).
+    pub reroot: Option<String>,
     pub outline_open: bool,
     pub outline_w: Option<u16>,
     pub outline_off: usize,
@@ -1133,8 +1138,15 @@ pub struct App {
 /// which also takes requests from `termcode --tab FILE`; in place it does not.
 /// Every exit restores the terminal, so in place the shell gets it back.
 pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> {
+    // A termcode started in another's terminal is its own: its shells get its socket.
+    std::env::remove_var(crate::api::ENV);
     let state = crate::data_dir(true);
     let mut app = App::new(root, Some(state.join("layout.json")));
+    app.tab = tab;
+    app.api = crate::api::start(&crate::api::dir());
+    if let Some(s) = &app.api {
+        crate::api::arm(s);
+    }
     app.settings_file = Some(settings::path());
     if app.untrusted.is_some() {
         app.msg = "Git is off: this repository's own settings run programs (see Source Control).".into();
@@ -1174,11 +1186,16 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
         std::env::remove_var(RELOAD_TERMS_ENV); // not for the shells started later
         let dir = crate::data_dir(true).join("terminals");
         let mut parts = v.splitn(3, '|');
-        let open = parts.next() == Some("1");
+        let shown = parts.next();
+        let open = matches!(shown, Some("1" | "2"));
         let at = parts.next().and_then(|a| a.parse().ok()).unwrap_or(0usize);
         app.terms = parts.next().unwrap_or("").split(';').filter_map(|s| crate::term::Term::adopt(s, &dir)).collect();
         app.term_at = at.min(app.terms.len().saturating_sub(1));
         app.term_open = open && !app.terms.is_empty();
+        app.reap_strays();
+        if app.term_open && shown == Some("2") {
+            app.focus = Focus::Term;
+        }
     } else if std::env::var_os(RELOAD_TERM_ENV).is_some() {
         // From a termcode before 0.3: new shells, as many.
         let n = std::env::var(RELOAD_TERM_ENV).ok().and_then(|n| n.parse().ok()).unwrap_or(1usize);
@@ -1238,6 +1255,18 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
         let out = io::BufWriter::with_capacity(1 << 16, Gate { w: io::stdout(), off: &RESTORED });
         Terminal::new(CrosstermBackend::new(out)).and_then(|mut t| app.event_loop(&mut t))
     }));
+    // Keys typed into the terminal as it switched or reloaded, read already: to its shell,
+    // not lost with this process (the next command typed right after `termcode FOLDER`).
+    if app.reload && app.focus == Focus::Term && matches!(res, Ok(Ok(()))) {
+        while matches!(event::poll(Duration::ZERO), Ok(true)) {
+            match event::read() {
+                Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => app.term_key(k),
+                Ok(Event::Paste(text)) => app.paste_text(&text),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    }
     // The terminal first: saving backups and the session never holds the shell back.
     restore();
     finish(&mut app);
@@ -1249,10 +1278,15 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
             let dir = crate::data_dir(true).join("terminals");
             let _ = std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o700).create(&dir);
             let specs: Vec<String> = app.terms.iter_mut().filter_map(|t| t.hand_over(&dir).ok()).collect();
-            std::env::set_var(RELOAD_TERMS_ENV, format!("{}|{}|{}", u8::from(app.term_open), app.term_at, specs.join(";")));
+            // 1: the panel showed; 2: and the terminal had the keys (`termcode FOLDER` typed there).
+            let shown = if app.term_open && app.focus == Focus::Term { 2 } else { u8::from(app.term_open) };
+            std::env::set_var(RELOAD_TERMS_ENV, format!("{shown}|{}|{}", app.term_at, specs.join(";")));
         }
-        let own = crate::session::save_for_reload(&app);
-        let e = reexec();
+        // A switch to another folder: termcode as launched there (its own session), not a
+        // reload of this one.
+        let reroot = app.reroot.take();
+        let own = if reroot.is_none() { crate::session::save_for_reload(&app) } else { None };
+        let e = reexec(reroot);
         if let Some(f) = own {
             let _ = fs::remove_file(f);
         }
@@ -1260,6 +1294,7 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     }
     // Quitting just ends this process: herdr then closes the tab. Nothing here
     // signals or closes anything else.
+    crate::api::remove();
     match res {
         Err(panic) => std::panic::resume_unwind(panic),
         Ok(r) => r.map_err(|e| e.to_string()),
@@ -1267,8 +1302,9 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
 }
 
 /// Exec the installed binary (the path the running one was started from) with this
-/// process's arguments; returns only when that fails.
-fn reexec() -> io::Error {
+/// process's arguments (a switch: `--new FOLDER`, as a launch there); returns only when
+/// that fails.
+fn reexec(reroot: Option<String>) -> io::Error {
     use std::os::unix::process::CommandExt;
     let exe = match fs::read_link("/proc/self/exe") {
         Ok(l) => replaced(&l).unwrap_or(l),
@@ -1276,6 +1312,9 @@ fn reexec() -> io::Error {
     };
     let mut args = std::env::args_os();
     let arg0 = args.next().unwrap_or_else(|| exe.clone().into_os_string());
+    if let Some(arg) = reroot {
+        return Command::new(&exe).arg0(arg0).args(["--new".into(), arg]).exec();
+    }
     Command::new(&exe).arg0(arg0).args(args).env(RELOAD_ENV, "1").exec()
 }
 
@@ -1439,7 +1478,8 @@ enum Input {
 /// ends the wait early, as `Idle`.
 fn wait_input(fd: libc::c_int, wait: Duration) -> Input {
     // The input, then every terminal's PTY.
-    let mut polls: Vec<libc::pollfd> = std::iter::once(fd).chain(crate::term::fds()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
+    // (The socket's wake-up pipe counts as a shell's output: the loop turns at once.)
+    let mut polls: Vec<libc::pollfd> = std::iter::once(fd).chain(crate::term::fds()).chain(crate::api::wake_fd()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
     let ms = wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
     // SAFETY: valid pollfds, as many as given.
     if unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, ms) } <= 0 {
@@ -1596,6 +1636,20 @@ pub fn base(rel: &str) -> &str {
 }
 
 impl App {
+    /// Why termcode must not switch to another folder now (`termcode FOLDER` from its
+    /// terminal), if anything would be cut short or lost: a flash, a git write, unsaved
+    /// edits.
+    pub fn busy_for_switch(&self) -> Option<String> {
+        if self.prog.busy_job() {
+            return Some("a Programmer job is running".into());
+        }
+        if self.gitui.writes() > 0 {
+            return Some("Git is still writing".into());
+        }
+        let dirty = self.docs.values().filter(|d| matches!(d, Doc::Text(b) if b.dirty())).count();
+        (dirty > 0).then(|| format!("{dirty} unsaved file{}: save {} first", if dirty == 1 { "" } else { "s" }, if dirty == 1 { "it" } else { "them" }))
+    }
+
     pub fn new(root: PathBuf, layout_file: Option<PathBuf>) -> App {
         let (tx, rx) = mpsc::sync_channel(MAX_HITS + 1);
         let (load_tx, load_rx) = mpsc::channel();
@@ -1657,6 +1711,9 @@ impl App {
             file_redo: Vec::new(),
             trash: if cfg!(test) { std::env::temp_dir().join(format!("termcode-test-trash-{}", std::process::id())) } else { crate::data_home().join("Trash") },
             prog: Default::default(),
+            api: None,
+            tab: false,
+            reroot: None,
             gh: crate::github::GitHub::new(
                 gh_here,
                 saved["github_repo"].as_str().map(String::from),

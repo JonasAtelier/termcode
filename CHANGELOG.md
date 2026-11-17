@@ -39,6 +39,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   uploaded for the chosen one) or ESP-IDF (`idf.py`: a project built, flashed, its flash
   erased, its target set). An upload borrows the Serial Console's port and gives it back.
 
+- `termcode PATH` typed in termcode's own terminal opens PATH in that termcode: a file of
+  its folder in place, another folder by switching to it (the shells keep running; each
+  folder keeps its session). `--new` still starts a second one. Each termcode listens on
+  a private socket for this (`$XDG_RUNTIME_DIR/termcode/`, only you can reach it).
+
 ### Changed
 - The Settings window looks as VS Code's: a search box over every setting (Ctrl+F), each
   category with its count, each setting with a line on what it does, real checkboxes,

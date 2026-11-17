@@ -74,6 +74,7 @@ impl Term {
             .env("TERM", "xterm-256color")
             .env("COLORTERM", "truecolor")
             .env("TERM_PROGRAM", "termcode")
+            .env(crate::api::ENV, crate::api::path().map(|p| p.as_os_str()).unwrap_or_default())
             .stdin(slave.try_clone()?)
             .stdout(slave.try_clone()?)
             .stderr(slave);
@@ -514,6 +515,20 @@ impl App {
         let at = self.terms.len() - 1;
         self.terms[at].send(format!("{cmd}\r").as_bytes());
         true
+    }
+
+    /// Children an earlier image of this process (before a reload's or a switch's exec)
+    /// started and no longer waits for (a git status, a search still running then): waited
+    /// for, so none lingers as a zombie. The terminals' shells are their own terminals'.
+    pub fn reap_strays(&self) {
+        let shells: Vec<i32> = self.terms.iter().map(|t| t.pid).collect();
+        for task in fs::read_dir("/proc/self/task").into_iter().flatten().flatten() {
+            let Ok(kids) = fs::read_to_string(task.path().join("children")) else { continue };
+            for pid in kids.split_whitespace().filter_map(|p| p.parse::<i32>().ok()).filter(|p| !shells.contains(p)) {
+                // SAFETY: waitpid on a child of this process; it blocks this thread only.
+                std::thread::spawn(move || unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) });
+            }
+        }
     }
 
     /// Terminal: Create New Terminal (Ctrl+Shift+`, the panel's +): another shell, shown.
