@@ -15,7 +15,8 @@ enum Mode {
     Text,
 }
 
-fn mode(get: impl Fn(&str) -> Option<String>) -> Mode {
+/// `pixels`: the terminal tells its size in pixels (TIOCGWINSZ).
+fn mode(get: impl Fn(&str) -> Option<String>, pixels: bool) -> Mode {
     match get("TERMCODE_GRAPHICS").as_deref() {
         Some("kitty") => return Mode::Kitty,
         Some("blocks") => return Mode::Blocks,
@@ -25,6 +26,11 @@ fn mode(get: impl Fn(&str) -> Option<String>) -> Mode {
     // Multiplexers must opt in: an inherited terminal name does not prove passthrough.
     if get("TMUX").is_some() || get("STY").is_some() {
         return Mode::Blocks;
+    }
+    // herdr passes a pane's Kitty pictures on to a terminal that shows them, and then
+    // gives the pane its size in pixels (none: it cannot).
+    if get("HERDR_ENV").is_some() {
+        return if pixels { Mode::Kitty } else { Mode::Blocks };
     }
     if matches!(
         get("TERM").as_deref(),
@@ -79,7 +85,7 @@ impl Graphics {
         let mode = if cfg!(test) {
             Mode::Blocks
         } else {
-            mode(|k| std::env::var(k).ok())
+            mode(|k| std::env::var(k).ok(), ratatui::crossterm::terminal::window_size().is_ok_and(|s| s.width > 0 && s.height > 0))
         };
         let cell = cell_size();
         Self {
@@ -339,12 +345,15 @@ mod tests {
                 vec![("TERMCODE_GRAPHICS", "kitty"), ("TMUX", "socket")],
                 Mode::Kitty,
             ),
+            // herdr: its TERM says nothing; its pane's pixel size says it passes pictures on.
+            (vec![("HERDR_ENV", "1"), ("TERM", "xterm-256color"), ("PIXELS", "")], Mode::Kitty),
+            (vec![("HERDR_ENV", "1"), ("TERM", "xterm-256color")], Mode::Blocks),
         ] {
             assert_eq!(
-                mode(|key| vars
-                    .iter()
-                    .find(|(k, _)| *k == key)
-                    .map(|(_, v)| v.to_string())),
+                mode(
+                    |key| vars.iter().find(|(k, _)| *k == key).map(|(_, v)| v.to_string()),
+                    vars.iter().any(|(k, _)| *k == "PIXELS")
+                ),
                 want,
                 "{vars:?}"
             );
