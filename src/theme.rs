@@ -637,8 +637,9 @@ pub struct Icons {
     pub lane_cursor: &'static str,
     /// Popup border: top-left, top-right, bottom-left, bottom-right, horizontal, vertical.
     pub border: [&'static str; 6],
-    /// The Outline's symbol icons, in `symbols::KINDS` order.
+    /// The Outline's symbol icons, in `symbols::KINDS` order; a PDF's chapter.
     pub symbols: [&'static str; 10],
+    pub bookmark: &'static str,
     /// The GitHub view: GitHub, pull request, draft, issue, passed, failed, running,
     /// queued, skipped, edit, open, refresh, re-run, stop, repository, star, fork
     /// (github.rs names them).
@@ -665,7 +666,7 @@ const CODICONS: Icons = Icons {
     dirty: "\u{ea71}",
     split: "\u{eb56}",
     terminal: "\u{ea85}",
-    outline: "\u{f03a}",
+    outline: "\u{eb86}",
     check: "\u{eab2}",
     add: "\u{ea60}",
     remove: "\u{eb3b}",
@@ -692,6 +693,7 @@ const CODICONS: Icons = Icons {
     lane_cursor: "─",
     border: ["╭", "╮", "╰", "╯", "─", "│"],
     symbols: ["\u{ea8c}", "\u{ea91}", "\u{eb5b}", "\u{ea95}", "\u{eb61}", "\u{ea8b}", "\u{ea92}", "\u{eb5d}", "\u{ea88}", "\u{eb8d}"],
+    bookmark: "\u{eaa5}",
     gh: ["\u{ea84}", "\u{ea64}", "\u{ebdb}", "\u{eb0c}", "\u{eba4}", "\u{ea87}", "\u{ea77}", "\u{ea77}", "\u{eabd}", "\u{ea73}", "\u{eb14}", "\u{eb37}", "\u{ebc0}", "\u{eba5}", "\u{ea62}", "\u{eb59}", "\u{ea63}"],
 };
 
@@ -744,6 +746,7 @@ const SYMBOLS: Icons = Icons {
     lane_cursor: "─",
     border: ["╭", "╮", "╰", "╯", "─", "│"],
     symbols: ["ƒ", "◇", "◆", "∈", "◎", "§", "τ", "π", "χ", "#"],
+    bookmark: "¶",
     gh: ["⊙", "⇄", "⇄", "○", "✓", "✗", "↻", "◌", "⊘", "✎", "↗", "↻", "↻", "■", "▤", "★", "Y"],
 };
 
@@ -794,6 +797,7 @@ const PLAIN: Icons = Icons {
     lane_cursor: "-",
     border: ["+", "+", "+", "+", "-", "|"],
     symbols: ["f", "S", "C", "E", "I", "M", "T", "K", "V", "#"],
+    bookmark: "#",
     gh: ["G", "P", "p", "o", "+", "x", "~", ".", "-", "e", "^", "R", "R", "#", "#", "*", "Y"],
 };
 
@@ -974,7 +978,7 @@ mod tests {
                 set.file, set.close, set.tab_close, set.settings, set.dirty, set.split, set.terminal, set.outline, set.check, set.add, set.remove,
                 set.discard, set.open_file, set.case, set.regex, set.word, set.up, set.down, set.replace, set.replace_all,
                 set.branch, set.lock, set.folder_dot, set.gutter_bar, set.gutter_del, set.ws_space, set.ws_tab, set.guide,
-                set.lane_left, set.lane_right, set.lane_cursor];
+                set.lane_left, set.lane_right, set.lane_cursor, set.bookmark];
             for g in all.into_iter().chain(set.border).chain(set.problem).chain(set.symbols).chain(set.gh) {
                 assert!(!g.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c)), "{name}: {g:?} needs a Nerd Font");
                 assert!(g.width() <= 1, "{name}: {g:?} is wider than a cell");

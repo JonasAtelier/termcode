@@ -110,7 +110,7 @@ pub(super) fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
         let spans = vec![
             Span::raw(lead.clone()),
             Span::styled(format!("{chev} "), Style::new().fg(P.icon_fg)),
-            Span::styled(ic.symbols[kind], Style::new().fg(P.symbol[kind])),
+            Span::styled(if pdf { ic.bookmark } else { ic.symbols[kind] }, Style::new().fg(P.symbol[kind])),
             Span::styled(name, Style::new().fg(P.sidebar_fg)),
         ];
         row(f, rr, bg, spans);
