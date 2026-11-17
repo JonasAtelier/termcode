@@ -566,7 +566,19 @@ fn command(bin: &Path, root: &Path) -> Command {
 
 /// `gh ARGS` in `root`: its output. Exit 4 is gh's "not signed in".
 fn gh(bin: &Path, root: &Path, args: &[&str]) -> Result<Vec<u8>, Fail> {
-    let out = match command(bin, root).args(args).output() {
+    // "Text file busy": gh (a script) still open for writing somewhere, e.g. in a child
+    // another thread forked just then: a moment later it runs.
+    let mut tries = 0;
+    let run = loop {
+        match command(bin, root).args(args).output() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && tries < 10 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            r => break r,
+        }
+    };
+    let out = match run {
         Ok(o) => o,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Fail::NoGh),
         Err(e) => return Err(Fail::Other(e.to_string())),
