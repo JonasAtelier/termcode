@@ -71,6 +71,13 @@ apt also installs git, ripgrep, xclip (copy and paste) and shellcheck (checks sh
 scripts). Optional: clang, to check C/C++ files; [herdr](https://herdr.dev), for termcode
 as a Code tab; [Ghostty](https://ghostty.org), the terminal termcode is tested in.
 
+**Everything else at once:** `/usr/share/termcode/setup.sh` sets up what termcode's
+features use, as on the machine termcode is made on: clang, readelf and poppler (C/C++
+checks, ELF files, PDFs), the GitHub CLI, a Nerd Font, Ghostty, serial port access,
+and for the Programmer arduino-cli and ESP-IDF (with herdr, if you use it: the Code tab
+and its pictures). It asks before each part (`--yes` takes the defaults, `--all` says
+yes to all, `--dry-run` only shows the commands) and leaves what is there alone.
+
 user -->
 <!-- dev -->
 ## 1. What you need

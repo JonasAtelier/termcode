@@ -56,6 +56,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   Ctrl+C, its table of contents in the Outline; also as its text (pdftotext) with a
   heading for each page. The bar's buttons switch to the hexdump.
 
+- `/usr/share/termcode/setup.sh` sets up what termcode's features use (clang, readelf,
+  poppler, gh, a Nerd Font, Ghostty, serial access, arduino-cli, ESP-IDF; herdr's Code
+  tab and pictures if you have herdr), asking before each part; `--dry-run` shows the
+  commands only.
+
 ### Changed
 - The Settings window looks as VS Code's: a search box over every setting (Ctrl+F), each
   category with its count, each setting with a line on what it does, real checkboxes,
