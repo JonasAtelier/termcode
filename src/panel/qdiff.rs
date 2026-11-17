@@ -400,6 +400,7 @@ impl App {
         *dirty |= crate::github::tick(self);
         *dirty |= crate::programmer::tick(self);
         *dirty |= self.auto_reveal();
+        *dirty |= crate::media::tick(self);
         *dirty |= crate::api::tick(self);
         *dirty |= self.file_job_tick();
         if let Some((path, _)) = self.tree_spring.take_if(|(_, t)| Instant::now() >= *t) {

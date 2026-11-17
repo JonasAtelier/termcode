@@ -300,6 +300,10 @@ pub struct Buffer {
     /// An ELF file shown as readelf's report; the file is an ELF one (whichever way shown).
     pub elf: bool,
     pub elf_file: bool,
+    /// A picture or a PDF shown as one (media.rs draws it; no lines read).
+    pub media: Option<crate::media::Kind>,
+    /// A PDF shown as its text (pdftotext).
+    pub pdf_text: bool,
     pub mtime: Option<SystemTime>,
     mode: Option<u32>,
     pub indent: String,
@@ -624,6 +628,8 @@ impl Buffer {
             hex: None,
             elf: false,
             elf_file: false,
+            media: None,
+            pdf_text: false,
             mtime: None,
             mode: None,
             indent: " ".repeat(tab()),
@@ -676,6 +682,15 @@ impl Buffer {
         b
     }
 
+    /// A PDF as its text (`lines`, from pdftotext), read-only, its pages as headings.
+    pub fn pdf_text(path: &Path, lines: Vec<String>) -> Buffer {
+        let mut b = Buffer::from_lines("text.md", lines, "a PDF's text (pdftotext), read-only");
+        b.path = Some(path.to_path_buf());
+        b.mtime = fs::metadata(path).and_then(|m| m.modified()).ok();
+        b.pdf_text = true;
+        b
+    }
+
     pub fn open(path: &Path) -> Buffer {
         Buffer::open_as(path, None)
     }
@@ -697,6 +712,15 @@ impl Buffer {
                 b.readonly = Some(e.to_string());
                 return b;
             }
+        }
+        // A picture or a PDF: shown as one (its bytes on asking: View: Toggle Hexdump).
+        if let Some(kind) = crate::media::kind(path).filter(|_| hex != Some(true)) {
+            b.media = Some(kind);
+            b.readonly = Some(match kind {
+                crate::media::Kind::Image => "a picture, shown as one".into(),
+                crate::media::Kind::Pdf => "a PDF, its pages shown".into(),
+            });
+            return b;
         }
         let mut buf = Vec::new();
         if let Err(e) = fs::File::open(path).and_then(|f| f.take(MAX_BYTES + 1).read_to_end(&mut buf)) {

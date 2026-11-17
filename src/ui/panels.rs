@@ -29,9 +29,11 @@ pub(super) fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
     let Some(tab) = grp.tabs.get(grp.active) else { return note(f, " Open a file to see its outline.") };
     let (cursor, folds, key) = (tab.view.cursor, tab.view.fold_ends.clone(), tab.key.clone());
     let Some(Doc::Text(b)) = app.docs.get_mut(&key) else { return note(f, " No outline for this editor.") };
-    let syms = b.symbols();
+    // A PDF: its table of contents, a heading a chapter at its page.
+    let pdf = b.media == Some(crate::media::Kind::Pdf) && !b.pdf_text;
+    let syms = if pdf { crate::media::toc(&app.media, &key).unwrap_or_default() } else { b.symbols() };
     if syms.is_empty() {
-        return note(f, " No symbols found in this file.");
+        return note(f, if pdf { " This PDF has no table of contents." } else { " No symbols found in this file." });
     }
     let depths = crate::symbols::depths(&syms, &b.lines, &folds);
     let tree = crate::symbols::tree(&syms, &depths);
@@ -45,11 +47,11 @@ pub(super) fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
         }
         let open = !(*kids && app.outline_folded.contains(&format!("{key}\n{path}")));
         hide = (!open).then_some(d);
-        let col = b.lines[s.line].find(s.name.as_str()).unwrap_or(0);
+        let col = if pdf { 0 } else { b.lines[s.line].find(s.name.as_str()).unwrap_or(0) };
         items.push((i, crate::panel::OutlineItem { to: editor::Pos::new(s.line, col), path: path.clone(), depth: d, kids: *kids, open }));
     }
     // The cursor's symbol, or the row it is folded into.
-    let line = b.clamp(cursor).line;
+    let line = if pdf { crate::media::page_now(&app.media, &key) } else { b.clamp(cursor).line };
     let cur = crate::symbols::path_at(&syms, &b.lines, &folds, line).last().and_then(|s| syms.iter().position(|x| x.line == s.line));
     let cur = cur.and_then(|c| {
         let p = &tree[c].0;

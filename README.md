@@ -296,6 +296,16 @@ termcode --new ~/proj       # a second termcode, even inside one's terminal
   Unsaved text survives a crash too.
 - **Subfolders:** `termcode drivers/net` shows only that folder, but Source Control still
   uses the whole repo.
+- **Pictures and PDFs:** a PNG, JPEG, GIF, WebP, BMP or ICO opens as the picture (fitted;
+  `+` `-` zoom, `0` fits, `1` is actual size, the arrows pan); a PDF as a document, drawn
+  by poppler's `pdftoppm`: its pages one under another with a scrollbar (the wheel, the
+  arrows, PgUp/PgDn, Home/End; ‹ › go a page; Ctrl+wheel zooms around the mouse; in
+  Ghostty and kitty the pages stay in the terminal as tiles, so scrolling only moves
+  them), **2 pages** side by side while whole pages fit, its text selected with the
+  mouse and copied with Ctrl+C (Ctrl+A: the page), its table of contents in the Outline
+  (a click goes there). **text** shows its text, a page a heading; `sudo apt install
+  poppler-utils` if missing. **hexdump** on the bar shows the bytes. Pictures use the Kitty graphics protocol (Ghostty, kitty),
+  half-blocks elsewhere.
 - **Keyboard shortcut for the Code tab:** none is set. In herdr, bind `plugin_action`
   `jonasatelier.termcode.open` to a free key.
 

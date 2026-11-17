@@ -659,6 +659,8 @@ pub enum ScrollTarget {
     Quick,
     /// Source Control lists: 0 = GRAPH, 1 = Explorer TIMELINE.
     Git(u8),
+    /// A PDF's pages in group `g` (in points).
+    Media(usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -750,6 +752,8 @@ pub enum Drag {
     Scroll(ScrollHit, u16),
     /// Minimap slider grabbed `grab` rows below its top.
     Minimap(MiniHit, u16),
+    /// Selecting a PDF's text.
+    Media,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -807,7 +811,7 @@ pub struct Hits {
     pub tip_md5: Rect,
     pub tip_copy: Rect,
     /// The read-only banner's way-to-show buttons: each one, and whether it is the hexdump.
-    pub view_btns: Vec<(Rect, bool)>,
+    pub view_btns: Vec<(Rect, crate::media::As)>,
     /// The Explorer row being renamed, its box and the display columns scrolled off it.
     pub rename: Rect,
     pub rename_field: (Rect, usize),
@@ -992,6 +996,8 @@ pub struct App {
     pub reroot: Option<String>,
     /// The editor last shown in the Explorer (explorer.autoReveal).
     revealed: Option<String>,
+    /// Pictures and PDFs in editor tabs: their zoom, pages, pixels.
+    pub media: crate::media::State,
     pub outline_open: bool,
     pub outline_w: Option<u16>,
     pub outline_off: usize,
@@ -1717,6 +1723,7 @@ impl App {
             tab: false,
             reroot: None,
             revealed: None,
+            media: Default::default(),
             gh: crate::github::GitHub::new(
                 gh_here,
                 saved["github_repo"].as_str().map(String::from),
@@ -2075,30 +2082,56 @@ impl App {
 
     /// View: Toggle Hexdump: the active file again, as a hexdump or as text.
     fn toggle_hex(&mut self) {
-        let Some(hex) = self.ed().map(|(b, _)| !b.binary) else { return };
-        self.show_hex(hex);
+        use crate::media::As;
+        let Some((hex, elf, media)) = self.ed().map(|(b, _)| (b.binary, b.elf_file, b.path.as_deref().and_then(crate::media::kind))) else { return };
+        // Back from the hexdump: to the picture, the pages or readelf's report; else text.
+        self.show_as(match () {
+            _ if !hex => As::Hex,
+            _ if elf || media.is_some() => As::Main,
+            _ => As::Text,
+        });
     }
 
-    /// The active file again as a hexdump (`hex`), or else as text (an ELF file: readelf's
-    /// report). The banner's buttons and View: Toggle Hexdump.
-    pub(crate) fn show_hex(&mut self, hex: bool) {
-        let Some((b, tab)) = self.ed() else { return };
+    /// How the active file shows now (the banner's lit button).
+    pub(crate) fn shown_as(b: &Buffer) -> crate::media::As {
+        use crate::media::As;
+        match () {
+            _ if b.binary => As::Hex,
+            _ if b.pdf_text => As::Text,
+            _ if b.media.is_some() || b.elf => As::Main,
+            _ => As::Text,
+        }
+    }
+
+    /// The active file again, shown `how`: as it is meant to be (a picture, a PDF's pages,
+    /// readelf's report), as text (a PDF: pdftotext's), as a hexdump. The banner's
+    /// buttons and View: Toggle Hexdump.
+    pub(crate) fn show_as(&mut self, how: crate::media::As) {
+        use crate::media::As;
+        let Some((b, _)) = self.ed() else { return };
         let Some(path) = b.path.clone() else { return };
-        if b.binary == hex {
+        if Self::shown_as(b) == how {
             return;
         }
         if b.dirty() {
             self.msg = "save it first: a hexdump cannot hold unsaved edits".into();
             return;
         }
-        *b = Buffer::open_as(&path, Some(hex));
+        let pdf = crate::media::kind(&path) == Some(crate::media::Kind::Pdf);
+        let new = match how {
+            As::Hex => Buffer::open_as(&path, Some(true)),
+            As::Text if pdf => Buffer::pdf_text(&path, crate::media::pdf_text(self, &path)),
+            As::Text => Buffer::open_as(&path, Some(false)),
+            As::Main => Buffer::open_as(&path, None),
+        };
+        let Some((b, tab)) = self.ed() else { return };
+        *b = new;
         tab.view = View::default();
-        self.msg = if hex {
-            "shown as a hexdump".into()
-        } else if b.elf {
-            "shown as readelf's report".into()
-        } else {
-            "shown as text".into()
+        self.msg = match how {
+            As::Hex => "shown as a hexdump".into(),
+            As::Text => "shown as text".into(),
+            As::Main if b.elf => "shown as readelf's report".into(),
+            As::Main => "shown as it is".into(),
         };
     }
 

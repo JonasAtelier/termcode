@@ -32,7 +32,10 @@ impl App {
     fn outline_go(&mut self, k: usize, focus_editor: bool) {
         let Some(to) = self.ui.outline_items.get(k).map(|it| it.to) else { return };
         self.outline_select(k);
-        self.jump_to(to);
+        // A PDF's table of contents: `to` is the page.
+        if !crate::media::goto_page(self, to.line) {
+            self.jump_to(to);
+        }
         if !focus_editor {
             self.focus = Focus::Outline;
         }

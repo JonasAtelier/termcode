@@ -6816,7 +6816,10 @@ fn a_binarys_banner_chooses_between_readelf_and_hexdump() {
     let mut t = Terminal::new(TestBackend::new(170, 30)).unwrap();
     let s = screen(&mut app, &mut t);
     assert!(s.contains("# t.so: ELF") && s.contains(" readelf ") && s.contains(" hexdump ") && s.contains("ELF"), "{s}");
-    let btn = |app: &App, hex: bool| app.ui.view_btns.iter().find(|(_, h)| *h == hex).map(|(r, _)| *r).unwrap();
+    let btn = |app: &App, hex: bool| {
+        let how = if hex { crate::media::As::Hex } else { crate::media::As::Main };
+        app.ui.view_btns.iter().find(|(_, h)| *h == how).map(|(r, _)| *r).unwrap()
+    };
     let elf = |app: &App| match app.docs.get("file:t.so") { Some(Doc::Text(b)) => (b.elf, b.binary), _ => panic!() };
     let r = btn(&app, true);
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);

@@ -173,7 +173,7 @@ impl App {
             }
             return;
         }
-        if crate::scm::click(self, p, double) || crate::github::click(self, p, double) || crate::github::page::click(self, p, double) || crate::programmer::click(self, p) {
+        if crate::scm::click(self, p, double) || crate::github::click(self, p, double) || crate::github::page::click(self, p, double) || crate::programmer::click(self, p) || crate::media::click(self, p) {
             return;
         }
         if self.ui.close.contains(p) {
@@ -225,8 +225,8 @@ impl App {
         if self.ui.term_btns.iter().any(|r| r.contains(p)) {
             return if self.term_open { self.hide_terminal() } else { self.toggle_terminal() };
         }
-        if let Some(&(_, hex)) = self.ui.view_btns.iter().find(|(r, _)| r.contains(p)) {
-            return self.show_hex(hex);
+        if let Some(&(_, how)) = self.ui.view_btns.iter().find(|(r, _)| r.contains(p)) {
+            return self.show_as(how);
         }
         if self.ui.term_new.contains(p) {
             return self.new_terminal();
@@ -411,6 +411,7 @@ impl App {
             ScrollTarget::Side => self.off[self.side as usize],
             ScrollTarget::Quick => self.quick.as_ref().map_or(0, |q| q.off),
             ScrollTarget::Git(w) => crate::scm::scroll_of(self, w),
+            ScrollTarget::Media(g) => crate::media::scroll_of(self, g),
         }
     }
 
@@ -441,6 +442,7 @@ impl App {
                 self.off[self.side as usize] = off.min(n.saturating_sub(h));
             }
             ScrollTarget::Git(w) => crate::scm::set_scroll(self, w, off),
+            ScrollTarget::Media(g) => crate::media::set_scroll(self, g, off),
             ScrollTarget::Quick => {
                 let h = self.ui.quick_list.height.max(1) as usize;
                 if let Some(q) = self.quick.as_mut() {
@@ -665,6 +667,7 @@ impl App {
                 let off = decor::drag_offset(at, grab, len, sb.slider.1, sb.max_off);
                 self.set_scroll(sb.target, off);
             }
+            Drag::Media => crate::media::drag_to(self, p),
             Drag::Rename => {
                 let field = self.ui.rename_field;
                 if let Some(r) = self.rename.as_mut() {
@@ -830,7 +833,7 @@ impl App {
             q.sel = (q.sel as isize + d).clamp(0, (q.items.len() as isize - 1).max(0)) as usize;
             return q.sel != old;
         }
-        if crate::scm::wheel(self, p, d) || crate::github::wheel(self, p, d) || crate::github::page::wheel(self, p, d) || crate::programmer::wheel(self, p, d) {
+        if crate::scm::wheel(self, p, d) || crate::github::wheel(self, p, d) || crate::github::page::wheel(self, p, d) || crate::programmer::wheel(self, p, d) || crate::media::wheel(self, p, d, self.mouse_mods.contains(KeyModifiers::CONTROL)) {
             return true;
         }
         if self.ui.outline.contains(p) {

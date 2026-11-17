@@ -215,6 +215,7 @@ pub fn lang_id(name: &str) -> String {
 
 pub fn draw(app: &mut App, f: &mut Frame) {
     draw_frame(app, f);
+    crate::media::flush(app, f);
     scrub(f.buffer_mut(), &crate::settingsgraphics::take_drawn());
     // A terminal without 24-bit colour gets the nearest it has (`colors`).
     crate::colors::fit(f.buffer_mut());
@@ -240,6 +241,7 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     app.gitui.hits = Default::default();
     app.gh.hits = Default::default();
     app.prog.clear_hits();
+    app.media.clear_hits();
     let lay = lay(app);
     let area = f.area();
     f.render_widget(Block::new().style(Style::new().bg(P.editor_bg).fg(P.editor_fg)), area);
@@ -429,6 +431,10 @@ fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         };
         let eol = if b.crlf { "CRLF" } else { "LF" };
         items = vec![s, indent, enc, eol.to_string(), b.syntax_name().to_string()];
+        // A picture or a PDF's pages: no lines, columns or indent to tell.
+        if let Some(kind) = b.media {
+            items = vec![format!("{}{}Read-only", icons().lock, sp(lay.s.icon_gap)), if kind == crate::media::Kind::Pdf { "PDF".into() } else { "Image".into() }];
+        }
     }
     // Only the branch, the blame, the message and these: problems and errors are shown
     // where they are (underlines, the settings notification), never here.
@@ -1494,6 +1500,15 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     let slider_c = slider_color(app, track, target);
     let hrow = body.bottom().saturating_sub(u16::from(border_y.is_none()));
     let hcolor = slider_color(app, Rect::new(body.x, hrow, body.width, 1), ScrollTarget::EditorHorizontal(g));
+    // A picture or a PDF's pages: media.rs draws the tab (its bar, its buttons).
+    if let Some(Doc::Text(b)) = app.docs.get(&key) {
+        if let (Some(kind), Some(path)) = (b.media, b.path.clone()) {
+            gh.text = body;
+            crate::media::draw(app, f, g, &key, &path, kind, body);
+            app.ui.groups.push(gh);
+            return;
+        }
+    }
     let sb = match app.docs.get_mut(&key) {
         None => {
             f.render_widget(Paragraph::new("Loading…").style(Style::new().fg(P.dim)), body);
@@ -1567,16 +1582,16 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             };
             let out = text_editor(f, b, view, body, focused_group, editor_focus, &deco);
             // A binary (or an ELF) file: how to show it, on the banner's right.
-            if b.readonly.is_some() && (b.binary || b.elf_file || b.hex.is_some()) {
-                let other = if b.elf_file { "readelf" } else { "text" };
+            if b.readonly.is_some() && (b.binary || b.elf_file || b.hex.is_some() || b.pdf_text) {
+                let now = App::shown_as(b);
                 let mut x = body.right().saturating_sub(2);
-                for (label, hex) in [("hexdump", true), (other, false)] {
+                for (label, how) in b.path.as_deref().map(|p| crate::media::buttons(p, b.elf_file)).unwrap_or_default().into_iter().rev() {
                     let t = format!(" {label} ");
                     x = x.saturating_sub(t.width() as u16 + 1);
                     let r = Rect::new(x, body.y, t.width() as u16, 1);
                     let hot = app.hover.is_some_and(|p| r.contains(p));
-                    f.render_widget(Span::styled(t, button_style(b.binary == hex, hot)), r);
-                    app.ui.view_btns.push((r, hex));
+                    f.render_widget(Span::styled(t, button_style(now == how, hot)), r);
+                    app.ui.view_btns.push((r, how));
                 }
             }
             if let Some(p) = out.caret.filter(|p| !card.is_some_and(|r| r.contains(*p))) {

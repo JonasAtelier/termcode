@@ -49,6 +49,13 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   opened, it selected and in view). A folder you close stays closed until the editor
   changes; the setting turns it off.
 
+- Pictures and PDFs open as themselves. A PNG, JPEG, GIF, WebP, BMP or ICO shows fitted
+  to its tab, zoomed with + and - (0 fits, 1 is actual size, the arrows pan); a PDF
+  reads as a document (poppler's pdftoppm): its pages scrolled with a scrollbar, two
+  side by side while whole pages fit, its text selected with the mouse and copied with
+  Ctrl+C, its table of contents in the Outline; also as its text (pdftotext) with a
+  heading for each page. The bar's buttons switch to the hexdump.
+
 ### Changed
 - The Settings window looks as VS Code's: a search box over every setting (Ctrl+F), each
   category with its count, each setting with a line on what it does, real checkboxes,
