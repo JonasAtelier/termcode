@@ -187,6 +187,17 @@ impl App {
     }
 
     /// Single click opens a preview; `pin` (double click, Enter) keeps it open.
+    /// The keys' way through a sidebar list: in Search, a match the selection lands on
+    /// shows at once (as a preview tab; the keys stay in the list).
+    pub(super) fn step_side(&mut self, by: isize) {
+        self.move_side(by);
+        let i = self.sel[Side::Search as usize];
+        if self.side == Side::Search && matches!(self.search_rows().get(i), Some(HRow::Hit(_))) {
+            self.activate_side(i, false);
+            self.focus = Focus::Side;
+        }
+    }
+
     pub(super) fn activate_side(&mut self, i: usize, pin: bool) {
         match self.side {
             Side::Explorer => match self.tree.get(i) {

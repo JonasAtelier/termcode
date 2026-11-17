@@ -410,12 +410,12 @@ impl App {
         let page = self.ui.side_rows.max(1) as isize;
         let s = self.side as usize;
         match k.code {
-            KeyCode::Up => self.move_side(-1),
-            KeyCode::Down => self.move_side(1),
-            KeyCode::PageUp => self.move_side(-page),
-            KeyCode::PageDown => self.move_side(page),
-            KeyCode::Home => self.move_side(-1_000_000),
-            KeyCode::End => self.move_side(1_000_000),
+            KeyCode::Up => self.step_side(-1),
+            KeyCode::Down => self.step_side(1),
+            KeyCode::PageUp => self.step_side(-page),
+            KeyCode::PageDown => self.step_side(page),
+            KeyCode::Home => self.step_side(-1_000_000),
+            KeyCode::End => self.step_side(1_000_000),
             KeyCode::Enter => self.activate_side(self.sel[s], true),
             KeyCode::Char(' ') if self.side == Side::Search && matches!(self.search_rows().get(self.sel[s]), Some(HRow::File(..))) => {
                 self.toggle_search_group(self.sel[s]);

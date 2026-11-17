@@ -68,6 +68,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   commit message above; F7 goes from change to change.
 
 ### Changed
+- Arrows in the Search results show each match as they land on it (a preview tab; the
+  keys stay in the list). Enter and the mouse work as before.
 - A Markdown file (a README) turns into its preview and back in its own tab: **preview**
   and **source** on the breadcrumbs' row, or Ctrl+Shift+V (Markdown: Toggle Preview).
   Each keeps its place; the preview follows unsaved edits. Ctrl+K V still opens it

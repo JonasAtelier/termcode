@@ -3153,6 +3153,33 @@ fn changes_section_headers_stick_and_take_the_click() {
 }
 
 #[test]
+fn arrows_in_search_results_show_each_match_as_they_go() {
+    let root = repo("search-arrows");
+    fs::write(root.join("a.txt"), "x\narrow_token here\n").unwrap();
+    fs::write(root.join("b.txt"), "arrow_token there\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.show_side(Side::Search, false);
+    app.query = "arrow_token".into();
+    app.start_search();
+    wait(&mut app);
+    (app.sel[1], app.focus) = (0, Focus::Side);
+    let files: Vec<String> = app.search_rows().iter().filter_map(|r| if let HRow::File(p, _) = r { Some(format!("file:{p}")) } else { None }).collect();
+    assert_eq!(files.len(), 2);
+    // Down from a file's row onto its match: shown, the keys still in the list.
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    let tab = |app: &App| app.groups[0].tabs.get(app.groups[0].active).map(|t| (t.key.clone(), t.preview));
+    assert_eq!((tab(&app), app.focus), (Some((files[0].clone(), true)), Focus::Side));
+    let line = if files[0] == "file:a.txt" { 1 } else { 0 };
+    assert!(matches!(app.ed(), Some((_, t)) if t.view.cursor.line == line), "at the match");
+    // On over the next file's row (nothing opens) to its match: the preview moves there.
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(tab(&app).map(|t| t.0), Some(files[0].clone()), "a file's row shows nothing new");
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!((tab(&app), app.groups[0].tabs.len()), (Some((files[1].clone(), true)), 1), "one preview tab, replaced");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn search_file_groups_fold_without_opening_files_or_losing_results() {
     let root = repo("search-folds");
     fs::write(root.join("aaa.txt"), "fold_token\n".repeat(30)).unwrap();
