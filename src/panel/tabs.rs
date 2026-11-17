@@ -69,8 +69,9 @@ impl App {
         if !used && !dirty {
             self.drop_doc(key);
         }
-        // A Markdown preview shown in place of its source: the source goes with it.
-        if let Some(rel) = key.strip_prefix("preview:").filter(|_| !used) {
+        // A Markdown preview (a patch's diff) shown in place of its source: the source goes
+        // with it.
+        if let Some((rel, _)) = other_look(key).filter(|_| !used && !key.starts_with("file:")) {
             self.gc(&format!("file:{rel}"));
         }
     }
@@ -81,6 +82,7 @@ impl App {
     /// `sync_backups`, which also deletes the file of one no longer needed.
     pub(super) fn drop_doc(&mut self, key: &str) {
         self.docs.remove(key);
+        self.patch_stamps.remove(key);
         self.loading.remove(key);
         self.loading.remove(&format!("base:{key}"));
         self.qdiff.remove(key);
@@ -99,11 +101,12 @@ impl App {
     }
 
     pub fn open_file(&mut self, g: usize, rel: &str, preview: bool) {
-        // Shown here as its Markdown preview (the source turned into it): that tab.
-        let (fk, pk) = (format!("file:{rel}"), format!("preview:{rel}"));
+        // Shown here as its other look (the source turned into it): that tab.
+        let fk = format!("file:{rel}");
         if let Some(grp) = self.groups.get(g).filter(|grp| !grp.tabs.iter().any(|t| t.key == fk)) {
-            if grp.tabs.iter().any(|t| t.key == pk) {
-                return self.show_tab(g, pk, preview);
+            let other = other_look(&fk).map(|(_, look)| format!("{look}{rel}"));
+            if let Some(ok) = other.filter(|ok| grp.tabs.iter().any(|t| t.key == *ok)) {
+                return self.show_tab(g, ok, preview);
             }
         }
         let fresh = !self.docs.contains_key(&fk);
@@ -289,8 +292,9 @@ impl App {
     /// Close tab `i` of group `g`; asks first when it is the last view of a dirty file.
     pub fn close_tab(&mut self, g: usize, i: usize, force: bool) {
         let Some(key) = self.groups.get(g).and_then(|grp| grp.tabs.get(i)).map(|t| t.key.clone()) else { return };
-        // A Markdown preview in place of its unsaved source: closed as that source (asks).
-        if let Some(rel) = key.strip_prefix("preview:") {
+        // A Markdown preview (a patch's diff) in place of its unsaved source: closed as that
+        // source (asks).
+        if let Some((rel, _)) = other_look(&key).filter(|_| !key.starts_with("file:")) {
             let fk = format!("file:{rel}");
             let hidden = !self.groups.iter().any(|grp| grp.tabs.iter().any(|t| t.key == fk));
             if hidden && matches!(self.docs.get(&fk), Some(Doc::Text(b)) if b.dirty()) {
@@ -337,8 +341,8 @@ impl App {
         if refs == 1 && key == crate::programmer::KEY {
             crate::programmer::closed(self);
         }
-        // A preview's source shown nowhere goes with it.
-        if let Some(rel) = key.strip_prefix("preview:") {
+        // A preview's (a patch diff's) source shown nowhere goes with it.
+        if let Some((rel, _)) = other_look(&key).filter(|_| !key.starts_with("file:")) {
             self.gc(&format!("file:{rel}"));
         }
         self.find_refresh();

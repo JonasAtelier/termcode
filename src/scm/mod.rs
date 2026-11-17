@@ -910,7 +910,7 @@ pub fn commit_diff_doc(root: &std::path::Path, hash: &str, short: &str, f: FileC
         Ok((a, b)) if a.binary || b.binary => (Vec::new(), Some("binary file: no text diff".to_string())),
         Ok((a, b)) => (diff::align(&String::from_utf8_lossy(&a.bytes), &String::from_utf8_lossy(&b.bytes)), None),
     };
-    DiffDoc { title, rows, note, file, id: Default::default() }
+    DiffDoc { title, rows, note, file, id: Default::default(), patch: None }
 }
 
 /// Open (or show again) the read-only side-by-side diff of `f` in commit `hash`.
@@ -934,7 +934,7 @@ pub fn load_commit_diff(app: &mut App, key: &str, hash: &str, path: &str) {
         let f = gitops::commit_files(&root, &hash).ok().and_then(|fs| fs.into_iter().find(|f| f.path == path || f.orig_path.as_deref() == Some(path.as_str())));
         let doc = match f {
             Some(f) => commit_diff_doc(&root, &hash, &short, f),
-            None => DiffDoc { title: format!("{} ({short})", base(&path)), rows: Vec::new(), note: Some(format!("{path} is not in {short}")), file: ScmFile { section: Section::Changes, path, orig: None, letter: 'M' }, id: Default::default() },
+            None => DiffDoc { title: format!("{} ({short})", base(&path)), rows: Vec::new(), note: Some(format!("{path} is not in {short}")), file: ScmFile { section: Section::Changes, path, orig: None, letter: 'M' }, id: Default::default(), patch: None },
         };
         Msg::Diff(key, doc)
     });

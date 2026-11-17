@@ -148,10 +148,10 @@ pub fn save_guarded(app: &mut App) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| save(app)));
 }
 
-/// Keys of documents a session can reopen: files (as text, a Markdown preview),
-/// working-tree and index diffs, commit diffs.
+/// Keys of documents a session can reopen: files (as text, a Markdown preview, a patch's
+/// diff), working-tree and index diffs, commit diffs.
 fn restorable(key: &str) -> bool {
-    ["file:", "preview:", "diff:staged:", "diff:changes:", "cdiff:", "repo:", "programmer:"].iter().any(|p| key.starts_with(p))
+    ["file:", "preview:", "patch:", "diff:staged:", "diff:changes:", "cdiff:", "repo:", "programmer:"].iter().any(|p| key.starts_with(p))
 }
 
 fn view_json(v: &View) -> Value {
@@ -443,8 +443,8 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn previews_reopen_with_the_session() {
-        assert!(restorable("preview:README.md") && !restorable("ghfile:x:y"));
+    fn previews_and_patch_diffs_reopen_with_the_session() {
+        assert!(restorable("preview:README.md") && restorable("patch:fix.patch") && !restorable("ghfile:x:y"));
     }
 
     /// a..d.txt (5 lines), long.txt (50), sub/deep/x.txt, f00..f19.txt; a.txt then changed.

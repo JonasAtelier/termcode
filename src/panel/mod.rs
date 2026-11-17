@@ -300,6 +300,21 @@ pub struct Node {
     pub link: Option<(String, bool)>,
 }
 
+/// A file tab's other look, from either of its keys: a Markdown file's preview, a
+/// patch's diff. The file and the look's key prefix.
+pub(crate) fn other_look(key: &str) -> Option<(&str, &'static str)> {
+    if let Some(rel) = key.strip_prefix("file:") {
+        return if crate::symbols::is_markdown(rel) {
+            Some((rel, "preview:"))
+        } else if crate::patch::is_patch(rel) {
+            Some((rel, "patch:"))
+        } else {
+            None
+        };
+    }
+    key.strip_prefix("preview:").map(|r| (r, "preview:")).or_else(|| key.strip_prefix("patch:").map(|r| (r, "patch:")))
+}
+
 pub struct DiffDoc {
     pub title: String,
     pub rows: Vec<diff::Row>,
@@ -307,6 +322,8 @@ pub struct DiffDoc {
     pub file: ScmFile,
     /// Keys this diff's syntax and minimap buffers in the panel.
     pub id: DiffId,
+    /// A patch file's view: its files' and hunks' heads, its own line numbers.
+    pub patch: Option<Box<crate::patch::PatchRows>>,
 }
 
 /// One DiffDoc, unique per construction (`Default` draws the next number): the
@@ -997,6 +1014,8 @@ pub struct App {
     pub(crate) md_cache: HashMap<String, (u64, crate::mdpreview::Rendered)>,
     /// A Markdown tab's other look (source or preview), its view as it was, by its key.
     pub(crate) md_views: HashMap<String, View>,
+    /// A patch's diff, by key: what it was made from (patch.rs).
+    pub(crate) patch_stamps: HashMap<String, u64>,
     /// Where a Shift+click or Shift+↑↓ range starts.
     pub tree_anchor: Option<String>,
     /// A dragged item resting on this closed folder opens it at this time.
@@ -1736,6 +1755,7 @@ impl App {
             tree_marks: Vec::new(),
             md_cache: HashMap::new(),
             md_views: HashMap::new(),
+            patch_stamps: HashMap::new(),
             tree_anchor: None,
             tree_spring: None,
             file_job: None,
@@ -2221,16 +2241,15 @@ impl App {
         self.find_refresh();
     }
 
-    /// Group `g`'s Markdown tab rendered (`rendered`) or as its source, in place; each
+    /// Group `g`'s Markdown tab rendered (a patch's: as a diff, `rendered`) or as its source, in place; each
     /// look keeps its view (scroll, cursor) for coming back. The preview's buttons.
     pub(crate) fn md_show(&mut self, g: usize, rendered: bool) {
         let Some(key) = self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map(|t| t.key.clone()) else { return };
-        let rel = match (key.strip_prefix("file:"), key.strip_prefix("preview:")) {
-            (Some(r), _) if crate::symbols::is_markdown(r) => r.to_string(),
-            (_, Some(r)) => r.to_string(),
-            _ => return,
-        };
-        let to = if rendered { format!("preview:{rel}") } else { self.file_doc(&rel) };
+        let Some((rel, look)) = other_look(&key).map(|(r, l)| (r.to_string(), l)) else { return };
+        let to = if rendered { format!("{look}{rel}") } else { self.file_doc(&rel) };
+        if rendered && look == "patch:" {
+            crate::patch::ensure(self, &to, &rel);
+        }
         let grp = &mut self.groups[g];
         if key == to {
             return;
@@ -2253,13 +2272,13 @@ impl App {
     /// group, the source staying.
     fn md_preview(&mut self, side: bool) {
         let Some(key) = self.active_tab_ref().map(|t| t.key.clone()) else { return };
-        let md = key.strip_prefix("file:").is_some_and(crate::symbols::is_markdown);
-        if !md && !key.starts_with("preview:") {
-            self.msg = "Markdown preview: the active editor is not a Markdown file".into();
+        let Some((_, look)) = other_look(&key) else {
+            self.msg = "Markdown preview: the active editor is not a Markdown file (or a patch)".into();
             return;
-        }
-        if !side || !md {
-            return self.md_show(self.ag, md);
+        };
+        let source = key.starts_with("file:");
+        if !side || !source || look == "patch:" {
+            return self.md_show(self.ag, source);
         }
         let Some(rel) = key.strip_prefix("file:") else { return };
         let pk = format!("preview:{rel}");

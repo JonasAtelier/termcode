@@ -75,7 +75,9 @@ pub(crate) fn diff_view(
     let mut track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
     let mut area = Rect::new(area.x, area.y, area.width.saturating_sub(1 + blank), area.height);
     // As the editor's gutter: [pad][number][sign]code, pad = `gap` (editorPadding).
-    let digits = n.to_string().len().max(2) as u16;
+    // A patch numbers its lines as its files do.
+    let top = d.patch.as_ref().map_or(n, |p| p.nums.iter().flatten().flatten().max().copied().unwrap_or(0));
+    let digits = top.to_string().len().max(2) as u16;
     let gw = gap + digits + 1;
     // The minimap takes its columns from the modified side, as in the editor.
     let right_w = area.width.saturating_sub(area.width.saturating_sub(1) / 2 + 1);
@@ -103,6 +105,20 @@ pub(crate) fn diff_view(
     let (sel, sel_bg) = (v.selection(), if focus { P.selection } else { P.sel_inactive });
     for (k, r) in d.rows.iter().skip(v.scroll).take(area.height as usize).enumerate() {
         let y = area.y + k as u16;
+        // A patch's heads across both sides: a file's name, a hunk's @@ line, its message.
+        if let Some(head) = d.patch.as_ref().and_then(|p| p.heads.get(&(v.scroll + k))) {
+            use crate::patch::Head;
+            let bar = Rect::new(area.x, y, text_area.width, 1);
+            let (text, st) = match head {
+                Head::File(name) => (format!(" {name}"), Style::new().fg(P.editor_fg).bg(P.widget_bg).bold()),
+                Head::Hunk(h) => (format!(" {h}"), Style::new().fg(P.dim).bg(P.widget_bg)),
+                Head::Text(t) => (format!(" {t}"), Style::new().fg(P.editor_fg).bg(P.editor_bg)),
+            };
+            // Over the line between the sides.
+            f.render_widget(ratatui::widgets::Clear, bar);
+            row(f, bar, st.bg.unwrap_or(P.editor_bg), vec![Span::styled(fit(&text, bar.width as usize), st)]);
+            continue;
+        }
         let words = if r.kind == Kind::Change {
             match (&r.left, &r.right) {
                 (Some((_, old)), Some((_, new))) => diff_word_spans(old, new),
@@ -133,7 +149,9 @@ pub(crate) fn diff_view(
                         _ => "+",
                     };
                     fill(f, sr, bg);
-                    let g = Span::styled(format!("{}{:>w$}{sign}", sp(gap), n + 1, w = digits as usize), Style::new().fg(P.line_nr).bg(bg));
+                    let num = d.patch.as_ref().map_or(Some(n + 1), |p| p.nums.get(v.scroll + k).and_then(|x| x[s]));
+                    let num = num.map_or(String::new(), |x| x.to_string());
+                    let g = Span::styled(format!("{}{:>w$}{sign}", sp(gap), num, w = digits as usize), Style::new().fg(P.line_nr).bg(bg));
                     f.render_widget(g, Rect::new(sr.x, y, gw.min(sr.width), 1));
                     let tr = Rect::new(sr.x + gw.min(sr.width), y, sr.width.saturating_sub(gw), 1);
                     let word_bg = if s == 0 { P.diff_del_text } else { P.diff_ins_text };

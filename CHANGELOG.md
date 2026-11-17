@@ -61,6 +61,12 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   tab and pictures if you have herdr), asking before each part; `--dry-run` shows the
   commands only.
 
+- A patch (`.patch`, `.diff`: `git format-patch`, `git diff` output) turns into a diff
+  in its tab, as Source Control shows changes: **diff** and **source** on the
+  breadcrumbs' row (or Ctrl+Shift+V). Each file side by side under a bar with its name
+  (new, deleted, renamed), each hunk's `@@` line, the files' own line numbers, the
+  commit message above; F7 goes from change to change.
+
 ### Changed
 - A Markdown file (a README) turns into its preview and back in its own tab: **preview**
   and **source** on the breadcrumbs' row, or Ctrl+Shift+V (Markdown: Toggle Preview).

@@ -3414,7 +3414,7 @@ fn open_big_diff(app: &mut App) -> Vec<diff::Row> {
     new.drain(265..268);
     let rows = diff::align(&(old.join("\n") + "\n"), &(new.join("\n") + "\n"));
     let file = ScmFile { section: Section::Changes, path: "big.c".into(), orig: None, letter: 'M' };
-    let doc = DiffDoc { title: "big.c".into(), rows: rows.clone(), note: None, file, id: Default::default() };
+    let doc = DiffDoc { title: "big.c".into(), rows: rows.clone(), note: None, file, id: Default::default(), patch: None };
     app.docs.insert("cdiff:abc:big.c".into(), Doc::Diff(doc));
     app.show_tab(0, "cdiff:abc:big.c".into(), false);
     app.focus = Focus::Editor;
@@ -3454,7 +3454,7 @@ fn diff_syntax_colours_match_both_original_code_views() {
     let rows = diff::align(old, new);
     let key = "cdiff:abc:syntax.c".to_string();
     let file = ScmFile { section: Section::Changes, path: "syntax.c".into(), orig: None, letter: 'M' };
-    app.docs.insert(key.clone(), Doc::Diff(DiffDoc { title: "syntax.c".into(), rows: rows.clone(), note: None, file, id: Default::default() }));
+    app.docs.insert(key.clone(), Doc::Diff(DiffDoc { title: "syntax.c".into(), rows: rows.clone(), note: None, file, id: Default::default(), patch: None }));
     app.show_tab(0, key, false);
     crate::editor::set_frame_budget(Some(Duration::ZERO));
     t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
@@ -3764,7 +3764,7 @@ fn a_reloaded_diff_with_new_rows_drops_the_selection() {
     let land = |app: &mut App, rows: Vec<diff::Row>| {
         let file = ScmFile { section: Section::Changes, path: "big.c".into(), orig: None, letter: 'M' };
         app.loading.insert(key.clone(), 7);
-        app.load_tx.send((key.clone(), 7, Load::Diff(DiffDoc { title: "big.c".into(), rows, note: None, file, id: Default::default() }))).unwrap();
+        app.load_tx.send((key.clone(), 7, Load::Diff(DiffDoc { title: "big.c".into(), rows, note: None, file, id: Default::default(), patch: None }))).unwrap();
         app.drain();
     };
     app.groups[0].tabs[0].view.anchor = Some(Pos::new(3, 0));
@@ -5348,6 +5348,38 @@ fn markdown_turns_to_its_preview_and_back_in_place() {
     press(&mut app, true);
     app.close_tab(0, r, false);
     assert!(app.prompt.is_some() && app.groups[0].tabs[r].key == "file:README.md", "Save?");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_patch_turns_into_a_diff_of_its_files_and_back() {
+    let root = repo("patch-view");
+    fs::write(root.join("fix.patch"), "Subject: [PATCH] Fix\n\ndiff --git a/src/a.c b/src/a.c\n--- a/src/a.c\n+++ b/src/a.c\n@@ -40,2 +40,2 @@ int main()\n keep();\n-old();\n+new();\ndiff --git a/b.c b/b.c\n--- a/b.c\n+++ b/b.c\n@@ -1 +1,2 @@\n x();\n+y();\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    app.open_file(0, "fix.patch", false);
+    app.focus = Focus::Editor;
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains(" diff ") && s.contains(" source ") && s.contains("+new();"), "its text first\n{s}");
+    let r = app.ui.md_btns.iter().find(|b| b.2).unwrap().0;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
+    assert_eq!(app.groups[0].tabs[0].key, "patch:fix.patch");
+    let s = screen(&mut app, &mut t);
+    // Both files under their bars, the hunk's @@ line, the files' own line numbers.
+    assert!(s.contains(" src/a.c") && s.contains(" b.c") && s.contains("@@ -40,2 +40,2 @@ int main()"), "{s}");
+    assert!(s.contains("41-old();") && s.contains("41+new();") && s.contains(" 2+y();"), "{s}");
+    assert!(s.contains("Diff fix.patch"), "the tab's title\n{s}");
+    // F7: its changes, as any diff's.
+    key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
+    assert!(app.groups[0].tabs[0].view.want_x.is_some(), "jumped to a change");
+    // Edited as text, the diff follows; back to the source.
+    let r = app.ui.md_btns.iter().find(|b| !b.2).unwrap().0;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
+    assert_eq!(app.groups[0].tabs[0].key, "file:fix.patch");
+    key(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    assert_eq!(app.groups[0].tabs[0].key, "patch:fix.patch", "Ctrl+Shift+V too");
     let _ = fs::remove_dir_all(&root);
 }
 

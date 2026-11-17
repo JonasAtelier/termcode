@@ -324,7 +324,7 @@ fn show_diff(app: &mut App) {
             (diff::align(&String::from_utf8_lossy(&old), &String::from_utf8_lossy(&new)), None)
         };
         let path = f.path.clone();
-        ScmMsg::Dlg(Msg::Diff(side, path, DiffDoc { title: f.path.clone(), rows, note, file: f, id: Default::default() }))
+        ScmMsg::Dlg(Msg::Diff(side, path, DiffDoc { title: f.path.clone(), rows, note, file: f, id: Default::default(), patch: None }))
     });
 }
 

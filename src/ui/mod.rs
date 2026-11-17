@@ -1456,15 +1456,17 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         app.ui.groups.push(gh);
         return;
     };
-    // A Markdown file: its preview and source buttons, on the breadcrumbs' row.
-    let md = key.starts_with("preview:") || key.strip_prefix("file:").is_some_and(crate::symbols::is_markdown);
-    if app.breadcrumbs_on && (key.starts_with("file:") || md) && body.height > 2 {
+    // A Markdown file (a patch): its preview (diff) and source buttons, on the breadcrumbs'
+    // row.
+    let look = crate::panel::other_look(&key).map(|(_, l)| l);
+    if app.breadcrumbs_on && (key.starts_with("file:") || look.is_some()) && body.height > 2 {
         let r = Rect::new(body.x, body.y, body.width, 1);
         breadcrumbs(app, f, r, g, &key);
-        if md {
-            let rendered = key.starts_with("preview:");
+        if let Some(look) = look {
+            let rendered = !key.starts_with("file:");
+            let shown = if look == "patch:" { " diff " } else { " preview " };
             let mut x = r.right().saturating_sub(1);
-            for (label, on) in [(" preview ", true), (" source ", false)].into_iter().rev() {
+            for (label, on) in [(shown, true), (" source ", false)].into_iter().rev() {
                 x = x.saturating_sub(label.width() as u16 + 1);
                 let b = Rect::new(x, r.y, label.width() as u16, 1);
                 let hot = app.hover.is_some_and(|p| b.contains(p));
@@ -1479,6 +1481,10 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         markdown_preview(app, f, g, rel, body, &mut gh);
         app.ui.groups.push(gh);
         return;
+    }
+    // A patch as a diff: made again as the patch changes.
+    if let Some(rel) = key.strip_prefix("patch:") {
+        crate::patch::ensure(app, &key, rel);
     }
     // A repository page: its frame (header, tree, outline), then in the middle the README
     // or, while a file shows, that file as an editor (the tab's document).
@@ -1654,7 +1660,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
 fn breadcrumbs(app: &mut App, f: &mut Frame, r: Rect, g: usize, key: &str) {
     fill(f, r, P.breadcrumb_bg);
     let st = Style::new().fg(P.breadcrumb_fg).bg(P.breadcrumb_bg);
-    let rel = key.strip_prefix("file:").or_else(|| key.strip_prefix("preview:")).unwrap_or(key);
+    let rel = crate::panel::other_look(key).map_or_else(|| key.strip_prefix("file:").unwrap_or(key), |(rel, _)| rel);
     let names: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
     let mut parts: Vec<Vec<Span<'static>>> = names
         .iter()

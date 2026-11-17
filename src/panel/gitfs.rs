@@ -92,7 +92,7 @@ impl App {
             .filter_map(|g| g.tabs.get(g.active))
             .filter_map(|t| match self.docs.get(&t.key) {
                 // A commit's diff never changes.
-                Some(Doc::Diff(d)) if !t.key.starts_with("cdiff:") => Some((t.key.clone(), d.file.clone())),
+                Some(Doc::Diff(d)) if !t.key.starts_with("cdiff:") && !t.key.starts_with("patch:") => Some((t.key.clone(), d.file.clone())),
                 _ => None,
             })
             .collect();

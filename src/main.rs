@@ -37,6 +37,7 @@ mod symbols;
 mod term;
 mod md5;
 mod media;
+mod patch;
 mod mdpreview;
 mod theme;
 mod ui;

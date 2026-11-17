@@ -875,7 +875,7 @@ pub fn resolve(app: &mut App, g: usize, i: usize, a: Accept) {
         let (cur, inc) = (side(&r.current).join("\n"), side(&r.incoming).join("\n"));
         let title = format!("{}: Current ↔ Incoming", base(&key));
         let file = crate::git::ScmFile { section: crate::git::Section::Changes, path: key["file:".len()..].to_string(), orig: None, letter: '!' };
-        let doc = DiffDoc { title, rows: diff::align(&format!("{cur}\n"), &format!("{inc}\n")), note: None, file, id: Default::default() };
+        let doc = DiffDoc { title, rows: diff::align(&format!("{cur}\n"), &format!("{inc}\n")), note: None, file, id: Default::default(), patch: None };
         let ck = format!("conflict:{}:{}", &key["file:".len()..], r.start);
         app.show_tab(app.ag, ck.clone(), true);
         app.docs.insert(ck, Doc::Diff(doc));

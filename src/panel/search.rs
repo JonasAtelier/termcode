@@ -223,7 +223,7 @@ impl App {
             } else {
                 (diff::align(&String::from_utf8_lossy(&old), &String::from_utf8_lossy(&new)), None)
             };
-            Load::Diff(DiffDoc { title, rows, note, file: f, id: Default::default() })
+            Load::Diff(DiffDoc { title, rows, note, file: f, id: Default::default(), patch: None })
         });
     }
 }
