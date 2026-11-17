@@ -173,7 +173,7 @@ impl App {
             }
             return;
         }
-        if crate::scm::click(self, p, double) || crate::github::click(self, p, double) || crate::github::page::click(self, p, double) || crate::programmer::click(self, p) || crate::media::click(self, p) {
+        if crate::scm::click(self, p, double) || crate::github::click(self, p, double) || crate::github::page::click(self, p, double) || crate::programmer::click(self, p) || crate::media::click(self, p) || crate::logview::click(self, p) {
             return;
         }
         if self.ui.close.contains(p) {

@@ -83,6 +83,7 @@ impl App {
     pub(super) fn drop_doc(&mut self, key: &str) {
         self.docs.remove(key);
         self.patch_stamps.remove(key);
+        self.logs.forget(key);
         self.loading.remove(key);
         self.loading.remove(&format!("base:{key}"));
         self.qdiff.remove(key);
@@ -160,6 +161,7 @@ impl App {
             _ => match key.split_once(':') {
                 Some(("preview", rel)) => format!("Preview {}", base(rel)),
                 Some(("usage", rel)) => format!("Usage {}", base(rel)),
+                Some(("log", rel)) => format!("Log {}", base(rel)),
                 // A repository's page; a file of one (its path after the repository).
                 Some(("repo", repo)) => repo.to_string(),
                 Some(("programmer", _)) => "Programmer".into(),

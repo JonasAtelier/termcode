@@ -880,6 +880,7 @@ dependencies = [
  "fancy-regex",
  "image",
  "libc",
+ "memchr",
  "ratatui",
  "ratatui-image",
  "serde_json",

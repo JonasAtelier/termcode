@@ -1467,6 +1467,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             let shown = match look {
                 "patch:" => " diff ",
                 "usage:" => " usage ",
+                "log:" => " log ",
                 _ => " preview ",
             };
             let mut x = r.right().saturating_sub(1);
@@ -1483,6 +1484,11 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     }
     if let Some(rel) = key.strip_prefix("preview:") {
         markdown_preview(app, f, g, rel, body, &mut gh);
+        app.ui.groups.push(gh);
+        return;
+    }
+    if let Some(rel) = key.strip_prefix("log:") {
+        crate::logview::draw(app, f, g, &key, rel, body, &mut gh);
         app.ui.groups.push(gh);
         return;
     }

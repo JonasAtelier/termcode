@@ -5443,6 +5443,78 @@ fn a_map_file_turns_into_its_memory_use_and_an_elf_shows_its_size() {
 }
 
 #[test]
+fn a_log_reads_by_level_filters_jumps_to_problems_and_follows_its_end() {
+    let root = repo("log-view");
+    let mut text = String::new();
+    for i in 0..100 {
+        let lv = if i == 40 { "ERROR" } else if i == 70 { "WARN" } else { "INFO" };
+        text.push_str(&format!("2026-11-17 12:00:{:02}.{:03} {lv} step {i}\n", i / 10, (i % 10) * 100));
+        if i == 40 {
+            text.push_str("    at trace.line()\n");
+        }
+    }
+    fs::write(root.join("app.log"), &text).unwrap();
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(120, 24)).unwrap();
+    app.open_file(0, "app.log", false);
+    (app.focus, app.side_visible) = (Focus::Editor, false);
+    screen(&mut app, &mut t);
+    let r = app.ui.md_btns.iter().find(|b| b.2).unwrap().0;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
+    assert_eq!(app.groups[0].tabs[0].key, "log:app.log");
+    let settle = |app: &mut App, t: &mut Terminal<TestBackend>, want: &str| {
+        for _ in 0..200 {
+            crate::logview::tick(app);
+            let s = screen(app, t);
+            if s.contains(want) {
+                return s;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("no {want:?}\n{}", screen(app, t));
+    };
+    let s = settle(&mut app, &mut t, "101 lines");
+    assert!(s.contains("● 1 errors") && s.contains("● 1 warnings") && s.contains("● 98 info"), "{s}");
+    assert!(s.contains("+100 ms") && s.contains("INFO step 1"), "the time since the line before\n{s}");
+    // F8: the error, selected; again: the warning.
+    key(&mut app, KeyCode::F(8), KeyModifiers::NONE);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("ERROR step 40"), "{s}");
+    key(&mut app, KeyCode::F(8), KeyModifiers::NONE);
+    assert!(screen(&mut app, &mut t).contains("WARN step 70"));
+    // A filter: the error alone, with its trace when only errors show.
+    key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    typ(&mut app, "step 4");
+    let s = settle(&mut app, &mut t, "11 of 101 lines");
+    assert!(s.contains("INFO step 41") && !s.contains("step 50"), "{s}");
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    let info = app.logs_hit_for_test("info");
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), info.x + 2, info.y);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), info.x + 2, info.y);
+    let warn = app.logs_hit_for_test("warnings");
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), warn.x + 2, warn.y);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), warn.x + 2, warn.y);
+    let s = settle(&mut app, &mut t, "2 of 101 lines");
+    assert!(s.contains("ERROR step 40") && s.contains("at trace.line()"), "{s}");
+    // All levels again; at the end, lines written later show as they come.
+    for l in ["info", "warnings"] {
+        let r = app.logs_hit_for_test(l);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 2, r.y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x + 2, r.y);
+    }
+    settle(&mut app, &mut t, "101 lines");
+    key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    screen(&mut app, &mut t);
+    let mut f = fs::OpenOptions::new().append(true).open(root.join("app.log")).unwrap();
+    std::io::Write::write_all(&mut f, b"2026-11-17 12:01:00.000 INFO later\n").unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    let s = settle(&mut app, &mut t, "INFO later");
+    assert!(s.contains("102 lines"), "{s}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn brackets_are_coloured_by_depth_and_a_stray_closer_stands_out() {
     let root = repo("brackets");
     fs::write(root.join("b.c"), "f(a[1]);\n)\n").unwrap();

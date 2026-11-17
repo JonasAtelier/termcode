@@ -310,11 +310,13 @@ pub(crate) fn other_look(key: &str) -> Option<(&str, &'static str)> {
             Some((rel, "patch:"))
         } else if rel.to_ascii_lowercase().ends_with(".map") {
             Some((rel, "usage:"))
+        } else if crate::logview::is_log(rel) {
+            Some((rel, "log:"))
         } else {
             None
         };
     }
-    ["preview:", "patch:", "usage:"].into_iter().find_map(|look| key.strip_prefix(look).map(|r| (r, look)))
+    ["preview:", "patch:", "usage:", "log:"].into_iter().find_map(|look| key.strip_prefix(look).map(|r| (r, look)))
 }
 
 pub struct DiffDoc {
@@ -1044,6 +1046,8 @@ pub struct App {
     revealed: Option<String>,
     /// Pictures and PDFs in editor tabs: their zoom, pages, pixels.
     pub media: crate::media::State,
+    /// Log files' log looks: their lines' index, filters (logview.rs).
+    pub logs: crate::logview::State,
     pub outline_open: bool,
     pub outline_w: Option<u16>,
     pub outline_off: usize,
@@ -1772,6 +1776,7 @@ impl App {
             reroot: None,
             revealed: None,
             media: Default::default(),
+            logs: Default::default(),
             gh: crate::github::GitHub::new(
                 gh_here,
                 saved["github_repo"].as_str().map(String::from),
@@ -2275,6 +2280,10 @@ impl App {
             let view = self.md_views.remove(&to).unwrap_or_default();
             let old = std::mem::replace(&mut tab.view, view);
             tab.key = to;
+            // A log look shown nowhere now: no longer read or watched.
+            if !self.groups.iter().any(|g| g.tabs.iter().any(|t| t.key == key)) {
+                self.logs.forget(&key);
+            }
             self.md_views.insert(key, old);
         }
         self.find_refresh();

@@ -401,6 +401,7 @@ impl App {
         *dirty |= crate::programmer::tick(self);
         *dirty |= self.auto_reveal();
         *dirty |= crate::media::tick(self);
+        *dirty |= crate::logview::tick(self);
         *dirty |= crate::api::tick(self);
         *dirty |= self.file_job_tick();
         if let Some((path, _)) = self.tree_spring.take_if(|(_, t)| Instant::now() >= *t) {
@@ -446,8 +447,13 @@ impl App {
             || self.gh.busy()
             || self.file_job.is_some()
             || self.prog.busy()
+            || self.logs.busy()
             || self.tip.as_ref().is_some_and(|t| t.md5_rx.is_some());
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
+        // A log in a tab: its file looked at for new lines twice a second.
+        if self.logs.watching() {
+            wait = wait.min(Duration::from_millis(500));
+        }
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
         let upgrade_due = self.upgrade.next.filter(|_| self.upgrade.watch);
         let poll_due = self.status_poll_due.filter(|_| self.poll_status);

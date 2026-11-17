@@ -37,6 +37,7 @@ mod symbols;
 mod term;
 mod md5;
 mod media;
+mod logview;
 mod patch;
 mod size;
 mod mdpreview;

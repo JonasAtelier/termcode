@@ -343,7 +343,8 @@ Click the active sidebar icon to hide the sidebar. Drag any divider to resize.
 | Alt+Up / Alt+Down | Move lines up / down |
 | Ctrl+Shift+[ / ] | Fold / unfold |
 | Alt+Z | Toggle word wrap |
-| Ctrl+Shift+V | Markdown: preview ↔ source; a patch: diff ↔ source, in the tab (or the buttons on the breadcrumbs' row) |
+| Ctrl+Shift+V | Markdown: preview ↔ source; a patch: diff ↔ source; a log: log ↔ source (or the buttons on the breadcrumbs' row) |
+| `/` · F8 or `n` · End | In a log: filter · next error or warning · follow the end |
 | Ctrl+K V | Markdown preview to the side |
 | F12 or Ctrl+click | Go to Definition |
 | Shift+F12 | Find all references |

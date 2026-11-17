@@ -11,6 +11,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ## [0.4.0] - 2026-11-17
 
 ### Added
+- A log file (`.log`, `app.log.1`, `syslog`…) turns into its **log** look: any size (a
+  million lines in a fraction of a second, only the rows in view read), errors and
+  warnings coloured with counts, the time since the line before, a filter (`/`, text and
+  levels), F8 or `n` to the next problem, the end followed as the file grows.
 - Picking a repository in the GitHub view shows it in the editor area as github.com does.
   Its main page lists the files and folders with each one's last commit, then insights
   (pull requests and issues by state, languages, the year's commits as a heat map,

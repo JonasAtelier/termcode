@@ -169,7 +169,7 @@ impl App {
             Focus::Editor => {
                 // The STM32 Programmer's page scrolls by keys too (it has no text).
                 // So do a picture and a PDF's pages (zoom, pan, pages).
-                if !crate::programmer::page_key(self, k) && !crate::media::key(self, k) {
+                if !crate::programmer::page_key(self, k) && !crate::media::key(self, k) && !crate::logview::key(self, k) {
                     self.editor_key(k, ctrl, alt, shift);
                 }
             }
