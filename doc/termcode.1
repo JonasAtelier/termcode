@@ -95,6 +95,22 @@ opens as a read-only hexdump, as
 prints it; F1
 .B View: Toggle Hexdump
 shows it as text instead, or any file as a hexdump.
+.TP
+.B Other ways to show a file
+Buttons on the file's bar (or Ctrl+Shift+V for the first two) turn it into another look
+and back: a Markdown file into its preview, drawn as GitHub shows a README; a
+.B .patch
+or
+.B .diff
+into a side-by-side diff of its files; a linker
+.B .map
+into its memory use; an ELF file into its size, readelf's report or a hexdump. Pictures
+(PNG, JPEG, GIF, WebP, BMP, ICO) and PDFs (with poppler's tools) open as themselves; a
+PDF's text selects and copies, and Ctrl+F searches it.
+.TP
+.B Programmer
+The chip icon on the activity bar: STM32CubeProgrammer, Arduino and ESP-IDF in one view,
+to read, erase and program boards, with a serial console.
 .PP
 Any F1 command can have a key of your own: see
 .B termcode.keybindings

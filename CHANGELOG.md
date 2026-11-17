@@ -8,6 +8,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-17
+
 ### Added
 - Picking a repository in the GitHub view shows it in the editor area as github.com does.
   Its main page lists the files and folders with each one's last commit, then insights
