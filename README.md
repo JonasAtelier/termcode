@@ -658,6 +658,33 @@ first time termcode starts.
 | C/C++ says a header is not found | Build the kernel once, or add a `compile_commands.json` (see [Error checking](#error-checking)) |
 | A file opens read-only | It is over 16 MB / 500,000 lines, binary, or not UTF-8 |
 
+## Performance
+
+Measured 2026-11-17 on an Intel i5-12500 (12 threads, 16 GB RAM, Ubuntu), each editor
+opening the same copy of termcode's source and its 2,374-line `src/panel/mod.rs`. Medians
+of 5 runs (VS Code: 3), after one warm-up run.
+
+| | termcode 0.4.0 | nvim 0.12 `--clean` | nvim 0.12 + LazyVim | VS Code 1.146 |
+|---|---|---|---|---|
+| Start, until the file's text is on screen | 100 ms | 61 ms | 109 ms | 1,006 ms ¹ |
+| Memory (PSS, all its processes) | 19 MB | 11 MB | 44 MB | 949 MB (8 processes) |
+| CPU while idle | 0% | 0% | 1.0% | 3.1% |
+| A key to the screen changing, p50 / p95 ² | 11.7 / 14.1 ms | 11.2 / 12.1 ms | 18.7 / 29.6 ms | not measured |
+| A 200,000-line log (13 MB): open / memory | 177 ms / 54 MB | 64 ms / 25 MB | 362 ms / 52 MB | 1,276 ms ¹ / 1,359 MB |
+| Installed | 12 MB, one file | 40 MB | 40 MB + 302 MB of plugins | 573 MB (snap) |
+
+- The terminal editors ran in tmux (120×40); "on screen" is the first frame tmux shows
+  with the file's text.
+- ¹ VS Code's own startup time (`--prof-append-timers`): from its main process starting
+  to its workbench being ready, without the snap's launch. It ran with a new profile and
+  no extensions, under Xwayland with software rendering (the snap could not load the GPU
+  driver here).
+- ² Down sent through tmux, until tmux's screen changes, so a few milliseconds are tmux's.
+  VS Code's GUI could not be driven from the test.
+- A file over 16 MB opens read-only and only its first 16 MB
+  (see [Troubleshooting](#troubleshooting)), so the big file is 13 MB: all of it in
+  every editor.
+
 ## Known limits
 
 - No language server: Go to Definition and References search the code with `rg`, so some
