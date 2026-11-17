@@ -156,7 +156,9 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("termcode: {e}");
+            // Not eprintln!: with the terminal gone (its window closed) that panics, and
+            // the next start would report an error that never was.
+            let _ = writeln!(std::io::stderr(), "termcode: {e}");
             ExitCode::FAILURE
         }
     }

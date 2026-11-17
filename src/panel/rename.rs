@@ -601,7 +601,9 @@ fn trash_in(path: &Path, trash: &Path) -> io::Result<String> {
     fs::create_dir_all(&files)?;
     fs::create_dir_all(&info)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    // The item's own place: its folder resolved, never the item (a symlink restores as
+    // the link, not over what it points to).
+    let abs = path.parent().and_then(|d| d.canonicalize().ok()).map_or_else(|| path.to_path_buf(), |d| d.join(&name));
     let when = local_iso(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64));
     for k in 1u32.. {
         let n = if k == 1 { name.clone() } else { format!("{name}.{k}") };

@@ -6322,6 +6322,16 @@ fn delete_moves_to_the_trash_once_asked_and_shift_delete_removes_for_good() {
     assert!(!root.join("a b.txt").exists() && trash.join("files/a b.txt").exists());
     let info = fs::read_to_string(trash.join("info/a b.txt.trashinfo")).unwrap();
     let abs = root.canonicalize().unwrap().join("a%20b.txt");
+    // A symlink trashed is recorded where the link was, not where it pointed: restoring
+    // never lands on the file it points to.
+    fs::write(root.join("target.txt"), "t").unwrap();
+    std::os::unix::fs::symlink("target.txt", root.join("link.txt")).unwrap();
+    app.reload_all();
+    select(&mut app, "link.txt");
+    key(&mut app, KeyCode::Delete, KeyModifiers::NONE);
+    app.run_prompt(app.prompt.as_ref().unwrap().buttons[0].1.clone());
+    let link_info = fs::read_to_string(trash.join("info/link.txt.trashinfo")).unwrap();
+    assert!(link_info.contains(&format!("Path={}\n", root.canonicalize().unwrap().join("link.txt").display())) && root.join("target.txt").exists(), "{link_info}");
     assert!(info.starts_with("[Trash Info]\nPath=") && info.contains(&format!("Path={}", abs.display())) && info.contains("DeletionDate=20"), "{info}");
     assert!(!app.groups[0].tabs.iter().any(|t| t.key == "file:a b.txt"), "its editor closed");
     // A second one of the name: NAME.2.

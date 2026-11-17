@@ -54,6 +54,13 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   tabs show as spaces to the next tab stop. No control character in text from outside
   (commit messages, titles, file names) reaches the terminal any more; pictures (the
   avatar, the contribution graph) keep theirs.
+- Closing the window termcode runs in no longer makes the next start report "termcode hit
+  an error last time".
+- A repository whose submodule's own config runs a program (`core.fsmonitor`, a filter…)
+  now asks for trust too: git read it for status and diff in the repository.
+- GitHub's Sign in runs gh in a new terminal, never in one already in use (it may be in
+  vim, on another host over ssh, or hold half a command).
+- A symlink moved to the Trash restores as the link, not over what it pointed to.
 
 ## [0.3.0] - 2026-11-16
 

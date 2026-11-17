@@ -1644,7 +1644,7 @@ fn breadcrumbs(app: &mut App, f: &mut Frame, r: Rect, g: usize, key: &str) {
         // The folds (a symbol's extent) are worked out as the text is drawn, after this
         // row: a tab's first frame needs them now.
         b.clamp_view(view);
-        let syms = b.symbols().to_vec();
+        let syms = b.symbols();
         let line = b.clamp(view.cursor).line;
         for s in crate::symbols::path_at(&syms, &b.lines, &view.fold_ends, line) {
             parts.push(vec![Span::styled(s.name.clone(), st)]);

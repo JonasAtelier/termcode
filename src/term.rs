@@ -32,6 +32,11 @@ pub fn shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into())
 }
 
+/// `s` as one shell word: in single quotes, a quote in it closed and escaped.
+pub fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 pub fn fds() -> Vec<i32> {
     FDS.with(|f| f.borrow().clone())
 }
@@ -131,19 +136,24 @@ impl Term {
         let n: Vec<i32> = spec.split(',').map(|x| x.parse().ok()).collect::<Option<_>>()?;
         let [fd, pid, rows, cols] = n[..] else { return None };
         let file = screen_file(dir, fd);
-        // SAFETY: fcntl on a descriptor number only reads its flags; -1 if not open.
-        if fd < 0 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        // Its screen file is read (or not wanted) once, whatever comes of it.
+        let screen = fs::read(&file).ok();
+        let _ = fs::remove_file(&file);
+        let (rows, cols) = (u16::try_from(rows).ok()?, u16::try_from(cols).ok()?);
+        // Never stdin, stdout or stderr, only a terminal (a PTY's master): a stale or
+        // made-up variable must not take the screen's descriptor over.
+        // SAFETY: fcntl and isatty on a descriptor number only read; -1/0 if not open.
+        if fd <= 2 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 || unsafe { libc::isatty(fd) } != 1 {
             return None;
         }
         // SAFETY: this process opened it before the exec and nothing else owns it.
         let master = unsafe { File::from_raw_fd(fd) };
         // SAFETY: an open descriptor.
         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-        let mut parser = vt100::Parser::new(rows as u16, cols as u16, SCROLLBACK);
-        if let Ok(screen) = fs::read(&file) {
+        let mut parser = vt100::Parser::new(rows, cols, SCROLLBACK);
+        if let Some(screen) = screen {
             parser.process(&screen);
         }
-        let _ = fs::remove_file(&file);
         FDS.with(|f| f.borrow_mut().push(fd));
         Some(Term { master, child: None, pid, parser, sel: None, name: RefCell::new(None) })
     }
@@ -866,6 +876,25 @@ pub fn key_bytes(k: KeyEvent, app_cursor: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_terminal_descriptor_past_stdio_is_adopted() {
+        let dir = std::env::temp_dir().join(format!("termcode-adopt-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(screen_file(&dir, 1), "screen").unwrap();
+        assert!(Term::adopt("1,1,24,80", &dir).is_none(), "never stdout");
+        assert!(!screen_file(&dir, 1).exists(), "its screen file gone all the same");
+        let f = fs::File::create(dir.join("plain")).unwrap();
+        assert!(Term::adopt(&format!("{},1,24,80", f.as_raw_fd()), &dir).is_none(), "never a plain file");
+        assert!(Term::adopt("99,1,99999,80", &dir).is_none(), "a size past u16");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_shell_word_survives_quotes_and_spaces() {
+        assert_eq!(sh_quote("/opt/my tools/gh"), "'/opt/my tools/gh'");
+        assert_eq!(sh_quote("a'b"), "'a'\\''b'");
+    }
 
     #[test]
     fn a_handed_over_terminal_is_adopted_with_its_screen_and_its_shell_still_running() {

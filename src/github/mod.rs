@@ -1071,12 +1071,8 @@ fn want_avatar(app: &mut App) {
 /// Sign in: `gh auth login --web` in the terminal (it shows a code to enter in the
 /// browser); the view looks every few seconds whether it is done.
 pub fn sign_in(app: &mut App) {
-    if app.terms.is_empty() || !app.term_open {
-        app.toggle_terminal();
-    }
-    let cmd = format!("{} auth login --web\r", app.gh.bin.display());
-    if let Some(t) = app.terms.get_mut(app.term_at) {
-        t.send(cmd.as_bytes());
+    let cmd = format!("{} auth login --web", crate::term::sh_quote(&app.gh.bin.to_string_lossy()));
+    if app.run_in_new_terminal(&cmd) {
         app.focus = Focus::Term;
         app.gh.signing_in = true;
         app.msg = "signing in to GitHub in the terminal…".into();

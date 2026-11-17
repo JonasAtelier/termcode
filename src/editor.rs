@@ -328,8 +328,8 @@ pub struct Buffer {
 #[derive(Default)]
 struct Derived {
     /// Bracket nesting depth at each line's start.
-    brackets: Option<(u64, Vec<u32>)>,
-    symbols: Option<(u64, Vec<crate::symbols::Symbol>)>,
+    brackets: Option<(u64, std::rc::Rc<[u32]>)>,
+    symbols: Option<(u64, std::rc::Rc<[crate::symbols::Symbol]>)>,
 }
 
 pub fn syntaxes() -> &'static SyntaxSet {
@@ -815,9 +815,15 @@ impl Buffer {
         width
     }
 
+    /// Which text this is: the buffer (its first line's id, fresh to it) and its version.
+    /// Cheap, for keys of what is worked out from the text.
+    pub fn identity(&self) -> (Option<u64>, u64) {
+        (self.line_ids.first().copied(), self.version)
+    }
+
     /// Bracket nesting depth at the start of each line, every kind together as VS Code's
     /// bracket pair colouring counts them. Text only, like `bracket_pair`.
-    pub fn bracket_depths(&mut self) -> &[u32] {
+    pub fn bracket_depths(&mut self) -> std::rc::Rc<[u32]> {
         if self.derived.brackets.as_ref().is_none_or(|(v, _)| *v != self.version) {
             let mut d = 0u32;
             let depths = self.lines.iter().map(|l| {
@@ -833,17 +839,17 @@ impl Buffer {
             });
             self.derived.brackets = Some((self.version, depths.collect()));
         }
-        &self.derived.brackets.as_ref().unwrap().1
+        self.derived.brackets.as_ref().unwrap().1.clone()
     }
 
     /// Go to Symbol's and the breadcrumbs' symbols, for this version.
-    pub fn symbols(&mut self) -> &[crate::symbols::Symbol] {
+    pub fn symbols(&mut self) -> std::rc::Rc<[crate::symbols::Symbol]> {
         if self.derived.symbols.as_ref().is_none_or(|(v, _)| *v != self.version) {
             // readelf's report is Markdown: its parts are the outline.
             let path = if self.elf { "readelf.md" } else { self.path.as_deref().and_then(Path::to_str).unwrap_or("") };
-            self.derived.symbols = Some((self.version, crate::symbols::symbols(path, &self.lines)));
+            self.derived.symbols = Some((self.version, crate::symbols::symbols(path, &self.lines).into()));
         }
-        &self.derived.symbols.as_ref().unwrap().1
+        self.derived.symbols.as_ref().unwrap().1.clone()
     }
 
     pub fn clamp(&self, p: Pos) -> Pos {

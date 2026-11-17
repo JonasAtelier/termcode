@@ -60,7 +60,7 @@ pub(super) fn text_editor(
     let brackets = (d.match_brackets && group_focus).then(|| b.bracket_pair(c)).flatten();
     let word = (d.occurrences && group_focus && sel.is_none()).then(|| editor::cursor_word(&b.lines[c.line], c.col).map(str::to_string)).flatten();
     // editor.bracketPairColorization: depth at each line start (plain text has no brackets).
-    let depths = (d.bracket_colors && b.syntax_name() != "Plain Text").then(|| b.bracket_depths().to_vec());
+    let depths = (d.bracket_colors && b.syntax_name() != "Plain Text").then(|| b.bracket_depths());
     let guides = d.guides.then(|| Guides::new(&b.lines, tab));
     let active = guides.as_ref().and_then(|g| g.active(c.line));
     // The peek zone sits before line `before` when that place is on screen.

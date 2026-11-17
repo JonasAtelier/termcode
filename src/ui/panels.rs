@@ -29,7 +29,7 @@ pub(super) fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
     let Some(tab) = grp.tabs.get(grp.active) else { return note(f, " Open a file to see its outline.") };
     let (cursor, folds, key) = (tab.view.cursor, tab.view.fold_ends.clone(), tab.key.clone());
     let Some(Doc::Text(b)) = app.docs.get_mut(&key) else { return note(f, " No outline for this editor.") };
-    let syms = b.symbols().to_vec();
+    let syms = b.symbols();
     if syms.is_empty() {
         return note(f, " No symbols found in this file.");
     }
@@ -225,20 +225,20 @@ pub(super) fn markdown_preview(app: &mut App, f: &mut Frame, g: usize, rel: &str
     // Rendered again only when the source, the width or the colours change: the open
     // buffer's text, else the file's size and time (not read every frame).
     let open = match app.docs.get(&format!("file:{rel}")) {
-        Some(Doc::Text(b)) => Some(&b.lines),
+        Some(Doc::Text(b)) => Some(b.identity()),
         _ => None,
     };
     let mut h = std::collections::hash_map::DefaultHasher::new();
     match open {
-        Some(lines) => lines.hash(&mut h),
+        Some(id) => id.hash(&mut h),
         None => std::fs::metadata(app.root.join(rel)).ok().map(|m| (m.len(), m.modified().ok())).hash(&mut h),
     }
     (text.width, link, P.editor_fg, P.widget_bg).hash(&mut h);
     let key = h.finish();
     if app.md_cache.get(rel).is_none_or(|(k, _)| *k != key) {
-        let src: Vec<String> = match open {
-            Some(lines) => lines.clone(),
-            None => match std::fs::read_to_string(app.root.join(rel)) {
+        let src: Vec<String> = match app.docs.get(&format!("file:{rel}")) {
+            Some(Doc::Text(b)) => b.lines.clone(),
+            _ => match std::fs::read_to_string(app.root.join(rel)) {
                 Ok(t) => t.lines().map(str::to_string).collect(),
                 Err(e) => vec![format!("Cannot read {rel}: {e}")],
             },

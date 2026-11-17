@@ -34,7 +34,9 @@ fn runs_program(key: &str, value: &str) -> bool {
 }
 
 /// `key=value` for each setting in the repository's own config (local and worktree,
-/// includes followed) that runs a program. Reading config runs nothing.
+/// includes followed) that runs a program; then each submodule's (`name: key=value`):
+/// git reads those too, for status and diff in the repository. Reading config runs
+/// nothing.
 pub fn risky(repo: &Path) -> Vec<String> {
     let Ok(out) = Command::new("git").arg("-C").arg(repo).args(["config", "--list", "--show-scope", "--includes", "-z"]).output() else {
         return Vec::new();
@@ -48,6 +50,58 @@ pub fn risky(repo: &Path) -> Vec<String> {
             found.push(format!("{key}={value}"));
         }
     }
+    for (name, file) in submodule_configs(repo) {
+        let Ok(out) = Command::new("git").arg("config").arg("--file").arg(&file).args(["--list", "--includes", "-z"]).output() else { continue };
+        for entry in String::from_utf8_lossy(&out.stdout).split('\0').filter(|e| !e.is_empty()) {
+            let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
+            if runs_program(key, value) {
+                found.push(format!("{name}: {key}={value}"));
+            }
+        }
+    }
+    found
+}
+
+/// The submodules' own config files: under the git dir's `modules/` (nested ones too),
+/// and those still kept in the submodule's folder (`sub/.git/config`, older git), with a
+/// name each (its place).
+fn submodule_configs(repo: &Path) -> Vec<(String, PathBuf)> {
+    let git_dir = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim_end_matches('\n')))
+        .map(|d| if d.is_absolute() { d } else { repo.join(d) });
+    let mut found = Vec::new();
+    if let Some(modules) = git_dir.map(|d| d.join("modules")) {
+        let mut stack = vec![(modules.clone(), 0)];
+        while let Some((dir, depth)) = stack.pop() {
+            for e in fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                if p.join("config").is_file() && p.join("HEAD").is_file() {
+                    let name = p.strip_prefix(&modules).unwrap_or(&p).to_string_lossy().replace("/modules/", "/");
+                    found.push((name, p.join("config")));
+                }
+                if depth < 8 {
+                    stack.push((p, depth + 1));
+                }
+            }
+        }
+    }
+    let paths = Command::new("git").arg("config").arg("--file").arg(repo.join(".gitmodules")).args(["--get-regexp", "-z", r"^submodule\..*\.path$"]).output().ok();
+    for entry in paths.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default().split('\0') {
+        let Some((_, path)) = entry.split_once('\n') else { continue };
+        let config = repo.join(path).join(".git/config");
+        if config.is_file() && !path.split('/').any(|c| c == "..") {
+            found.push((path.to_string(), config));
+        }
+    }
+    found.sort();
     found
 }
 
@@ -128,6 +182,28 @@ mod tests {
         git(&["config", "diff.external", "evil2"]);
         assert!(!trusted(&d, &risky(&d)), "a new program asks again");
         let _ = fs::remove_file(store());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// git status and diff in a repository read its submodules' config too, and run a
+    /// program one sets: the repository is not to be trusted unasked for it.
+    #[test]
+    fn a_submodules_own_config_counts() {
+        let d = std::env::temp_dir().join(format!("termcode-trust-sub-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let git = |dir: &Path, a: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(dir).args(["-c", "protocol.file.allow=always", "-c", "user.name=t", "-c", "user.email=t@t"]).args(a).output().unwrap();
+            assert!(out.status.success(), "{a:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&d, &["init", "-q", "sub"]);
+        git(&d.join("sub"), &["commit", "-q", "--allow-empty", "-m", "s"]);
+        git(&d, &["init", "-q", "top"]);
+        let top = d.join("top");
+        git(&top, &["submodule", "add", "-q", "../sub", "lib/sub"]);
+        assert!(risky(&top).is_empty(), "a plain submodule runs nothing");
+        git(&top.join(".git/modules/lib/sub"), &["config", "core.fsmonitor", "/tmp/evil.sh"]);
+        assert_eq!(risky(&top), ["lib/sub: core.fsmonitor=/tmp/evil.sh"]);
         fs::remove_dir_all(&d).unwrap();
     }
 }
