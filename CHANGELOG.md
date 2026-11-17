@@ -62,6 +62,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   commands only.
 
 ### Changed
+- A Markdown file (a README) turns into its preview and back in its own tab: **preview**
+  and **source** on the breadcrumbs' row, or Ctrl+Shift+V (Markdown: Toggle Preview).
+  Each keeps its place; the preview follows unsaved edits. Ctrl+K V still opens it
+  beside the source.
 - The Settings window looks as VS Code's: a search box over every setting (Ctrl+F), each
   category with its count, each setting with a line on what it does, real checkboxes,
   sliders, dropdowns and text boxes, a bar beside settings set in your file, a scrollbar.

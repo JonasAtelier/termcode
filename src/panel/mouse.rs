@@ -184,6 +184,11 @@ impl App {
         if self.ui.settings_btn.contains(p) {
             return crate::settingsui::open(self);
         }
+        // A Markdown tab's preview and source buttons, on the breadcrumbs' row.
+        if let Some(&(_, g, rendered)) = self.ui.md_btns.iter().find(|(r, ..)| r.contains(p)) {
+            self.ag = g;
+            return self.md_show(g, rendered);
+        }
         if let Some(g) = self.ui.groups.iter().position(|gh| gh.crumbs.contains(p)) {
             self.ag = g;
             self.focus = Focus::Editor;

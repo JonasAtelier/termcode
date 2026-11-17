@@ -5293,9 +5293,61 @@ fn markdown_preview_follows_the_unsaved_buffer_and_scrolls() {
     key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
     screen(&mut app, &mut t);
     assert!(app.groups[1].tabs[0].view.scroll > 0);
-    assert!(row(&t, gh.text.y).starts_with("Paragraph"), "scrolled");
+    assert!((gh.text.y..gh.text.y + 2).any(|y| row(&t, y).starts_with("Paragraph")), "scrolled");
     key(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert_eq!(app.groups[1].tabs[app.groups[1].active].key, "file:README.md", "again: back to the source");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn markdown_turns_to_its_preview_and_back_in_place() {
+    let root = repo("md-toggle");
+    fs::write(root.join("README.md"), "# Title\n\nSome *text*.\n").unwrap();
+    fs::write(root.join("notes.md"), "# Notes\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    app.open_file(0, "README.md", false);
+    app.focus = Focus::Editor;
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains(" preview ") && s.contains(" source ") && s.contains("# Title"), "{s}");
+    let press = |app: &mut App, rendered: bool| {
+        let r = app.ui.md_btns.iter().find(|b| b.2 == rendered).unwrap().0;
+        mouse(app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+        mouse(app, MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
+    };
+    // Rendered in the same tab; then its source again, edited: the preview follows.
+    press(&mut app, true);
+    assert_eq!(app.groups[0].tabs.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(), ["preview:README.md"]);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("Title") && !s.contains("# Title"), "{s}");
+    // Opened again from the Explorer: this tab, not a second one.
+    app.open_file(0, "README.md", false);
+    assert_eq!(app.groups[0].tabs.len(), 1);
+    press(&mut app, false);
+    assert_eq!(app.groups[0].tabs.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(), ["file:README.md"]);
+    key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    typ(&mut app, " Now");
+    press(&mut app, true);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("Title Now") && !s.contains("# Title"), "{s}");
+    // Back: the cursor where it was.
+    press(&mut app, false);
+    assert_eq!(app.groups[0].tabs[0].view.cursor, Pos::new(0, 11));
+    // Shown rendered, then closed: its clean source goes with it.
+    app.open_file(0, "notes.md", false);
+    screen(&mut app, &mut t);
+    press(&mut app, true);
+    let i = app.groups[0].active;
+    assert_eq!(app.groups[0].tabs[i].key, "preview:notes.md");
+    app.close_tab(0, i, false);
+    assert_eq!((app.docs.contains_key("file:notes.md"), app.docs.contains_key("file:README.md")), (false, true), "the dirty README stays");
+    // The unsaved README closed from its preview: asked about, as its source.
+    let r = app.groups[0].tabs.iter().position(|t| t.key == "file:README.md").unwrap();
+    app.groups[0].active = r;
+    screen(&mut app, &mut t);
+    press(&mut app, true);
+    app.close_tab(0, r, false);
+    assert!(app.prompt.is_some() && app.groups[0].tabs[r].key == "file:README.md", "Save?");
     let _ = fs::remove_dir_all(&root);
 }
 

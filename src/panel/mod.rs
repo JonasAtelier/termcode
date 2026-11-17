@@ -617,7 +617,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("Find All References", Cmd::Nav(crate::navui::Act::References), "Shift+F12"),
     ("Go Back", Cmd::Nav(crate::navui::Act::Back), "Alt+←"),
     ("Go Forward", Cmd::Nav(crate::navui::Act::Forward), "Alt+→"),
-    ("Markdown: Open Preview", Cmd::MdPreview(false), "Ctrl+Shift+V"),
+    ("Markdown: Toggle Preview", Cmd::MdPreview(false), "Ctrl+Shift+V"),
     ("Markdown: Open Preview to the Side", Cmd::MdPreview(true), "Ctrl+K V"),
     ("View: Show Explorer", Cmd::ShowSide(Side::Explorer), "Alt+1, Ctrl+E"),
     ("View: Show Search", Cmd::ShowSide(Side::Search), "Alt+4, F4"),
@@ -833,6 +833,8 @@ pub struct Hits {
     pub tip_copy: Rect,
     /// The read-only banner's way-to-show buttons: each one, and whether it is the hexdump.
     pub view_btns: Vec<(Rect, crate::media::As)>,
+    /// A Markdown tab's preview and source buttons: group, the preview's.
+    pub md_btns: Vec<(Rect, usize, bool)>,
     /// The Explorer row being renamed, its box and the display columns scrolled off it.
     pub rename: Rect,
     pub rename_field: (Rect, usize),
@@ -993,6 +995,8 @@ pub struct App {
     pub tree_marks: Vec<String>,
     /// Markdown previews as last rendered, by file: (what they were rendered from, lines).
     pub(crate) md_cache: HashMap<String, (u64, Vec<ratatui::text::Line<'static>>)>,
+    /// A Markdown tab's other look (source or preview), its view as it was, by its key.
+    pub(crate) md_views: HashMap<String, View>,
     /// Where a Shift+click or Shift+↑↓ range starts.
     pub tree_anchor: Option<String>,
     /// A dragged item resting on this closed folder opens it at this time.
@@ -1731,6 +1735,7 @@ impl App {
             tree_clip: None,
             tree_marks: Vec::new(),
             md_cache: HashMap::new(),
+            md_views: HashMap::new(),
             tree_anchor: None,
             tree_spring: None,
             file_job: None,
@@ -2216,17 +2221,47 @@ impl App {
         self.find_refresh();
     }
 
-    /// Markdown: Open Preview (to the side): the active Markdown file rendered read-only,
-    /// following its unsaved edits. On a preview it goes back to the source.
+    /// Group `g`'s Markdown tab rendered (`rendered`) or as its source, in place; each
+    /// look keeps its view (scroll, cursor) for coming back. The preview's buttons.
+    pub(crate) fn md_show(&mut self, g: usize, rendered: bool) {
+        let Some(key) = self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map(|t| t.key.clone()) else { return };
+        let rel = match (key.strip_prefix("file:"), key.strip_prefix("preview:")) {
+            (Some(r), _) if crate::symbols::is_markdown(r) => r.to_string(),
+            (_, Some(r)) => r.to_string(),
+            _ => return,
+        };
+        let to = if rendered { format!("preview:{rel}") } else { self.file_doc(&rel) };
+        let grp = &mut self.groups[g];
+        if key == to {
+            return;
+        }
+        // The other look open in this group already: go to it.
+        if let Some(i) = grp.tabs.iter().position(|t| t.key == to) {
+            grp.active = i;
+        } else {
+            let tab = &mut grp.tabs[grp.active];
+            let view = self.md_views.remove(&to).unwrap_or_default();
+            let old = std::mem::replace(&mut tab.view, view);
+            tab.key = to;
+            self.md_views.insert(key, old);
+        }
+        self.find_refresh();
+    }
+
+    /// Markdown: Toggle Preview: the active Markdown tab rendered read-only (following its
+    /// unsaved edits) or its source again, in place. To the side: the preview in the next
+    /// group, the source staying.
     fn md_preview(&mut self, side: bool) {
         let Some(key) = self.active_tab_ref().map(|t| t.key.clone()) else { return };
-        if let Some(rel) = key.strip_prefix("preview:") {
-            return self.open_file(self.ag, rel, false);
-        }
-        let Some(rel) = key.strip_prefix("file:").filter(|r| crate::symbols::is_markdown(r)) else {
+        let md = key.strip_prefix("file:").is_some_and(crate::symbols::is_markdown);
+        if !md && !key.starts_with("preview:") {
             self.msg = "Markdown preview: the active editor is not a Markdown file".into();
             return;
-        };
+        }
+        if !side || !md {
+            return self.md_show(self.ag, md);
+        }
+        let Some(rel) = key.strip_prefix("file:") else { return };
         let pk = format!("preview:{rel}");
         let from = self.ag;
         let g = if !side {

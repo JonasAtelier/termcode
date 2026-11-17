@@ -343,7 +343,8 @@ Click the active sidebar icon to hide the sidebar. Drag any divider to resize.
 | Alt+Up / Alt+Down | Move lines up / down |
 | Ctrl+Shift+[ / ] | Fold / unfold |
 | Alt+Z | Toggle word wrap |
-| Ctrl+K V | Markdown preview |
+| Ctrl+Shift+V | Markdown: preview ↔ source, in the tab (or **preview** / **source** on the breadcrumbs' row) |
+| Ctrl+K V | Markdown preview to the side |
 | F12 or Ctrl+click | Go to Definition |
 | Shift+F12 | Find all references |
 | Alt+← / Alt+→ | Go back / forward |

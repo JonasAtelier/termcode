@@ -63,8 +63,15 @@ impl App {
     pub(super) fn gc(&mut self, key: &str) {
         let used = self.groups.iter().any(|g| g.tabs.iter().any(|t| t.key == key));
         let dirty = matches!(self.docs.get(key), Some(Doc::Text(b)) if b.dirty());
+        if !used {
+            self.md_views.remove(key);
+        }
         if !used && !dirty {
             self.drop_doc(key);
+        }
+        // A Markdown preview shown in place of its source: the source goes with it.
+        if let Some(rel) = key.strip_prefix("preview:").filter(|_| !used) {
+            self.gc(&format!("file:{rel}"));
         }
     }
 
@@ -92,7 +99,14 @@ impl App {
     }
 
     pub fn open_file(&mut self, g: usize, rel: &str, preview: bool) {
-        let fresh = !self.docs.contains_key(&format!("file:{rel}"));
+        // Shown here as its Markdown preview (the source turned into it): that tab.
+        let (fk, pk) = (format!("file:{rel}"), format!("preview:{rel}"));
+        if let Some(grp) = self.groups.get(g).filter(|grp| !grp.tabs.iter().any(|t| t.key == fk)) {
+            if grp.tabs.iter().any(|t| t.key == pk) {
+                return self.show_tab(g, pk, preview);
+            }
+        }
+        let fresh = !self.docs.contains_key(&fk);
         let key = self.file_doc(rel);
         self.show_tab(g, key.clone(), preview);
         if fresh {
@@ -104,6 +118,8 @@ impl App {
 
     pub(super) fn open_file_at(&mut self, rel: &str, line: usize, col: usize) {
         self.open_file(self.ag, rel, true);
+        // A place in the text: the source, not the preview.
+        self.md_show(self.ag, false);
         let q = self.query.clone();
         if let Some((b, tab)) = self.ed() {
             let p = b.clamp(Pos::new(line.saturating_sub(1), col.saturating_sub(1)));
@@ -273,6 +289,16 @@ impl App {
     /// Close tab `i` of group `g`; asks first when it is the last view of a dirty file.
     pub fn close_tab(&mut self, g: usize, i: usize, force: bool) {
         let Some(key) = self.groups.get(g).and_then(|grp| grp.tabs.get(i)).map(|t| t.key.clone()) else { return };
+        // A Markdown preview in place of its unsaved source: closed as that source (asks).
+        if let Some(rel) = key.strip_prefix("preview:") {
+            let fk = format!("file:{rel}");
+            let hidden = !self.groups.iter().any(|grp| grp.tabs.iter().any(|t| t.key == fk));
+            if hidden && matches!(self.docs.get(&fk), Some(Doc::Text(b)) if b.dirty()) {
+                self.groups[g].active = i;
+                self.md_show(g, false);
+                return self.close_tab(g, i, force);
+            }
+        }
         let refs = self.groups.iter().map(|grp| grp.tabs.iter().filter(|t| t.key == key).count()).sum::<usize>();
         let dirty = matches!(self.docs.get(&key), Some(Doc::Text(b)) if b.dirty());
         if !force && refs == 1 && dirty {
@@ -310,6 +336,10 @@ impl App {
         }
         if refs == 1 && key == crate::programmer::KEY {
             crate::programmer::closed(self);
+        }
+        // A preview's source shown nowhere goes with it.
+        if let Some(rel) = key.strip_prefix("preview:") {
+            self.gc(&format!("file:{rel}"));
         }
         self.find_refresh();
     }
