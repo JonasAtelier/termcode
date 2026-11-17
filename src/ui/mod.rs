@@ -1506,6 +1506,10 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             gh.text = body;
             crate::media::draw(app, f, g, &key, &path, kind, body);
             app.ui.groups.push(gh);
+            // Find, under the bar (a PDF's text).
+            if focused_group && app.find.is_some() && kind == crate::media::Kind::Pdf {
+                find_widget(app, f, Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1)), lay);
+            }
             return;
         }
     }

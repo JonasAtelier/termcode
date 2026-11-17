@@ -101,6 +101,7 @@ enum Msg {
     Info(String, Info),
     Page(String, usize, u32, Result<RgbaImage, String>),
     Words(String, usize, Result<Vec<Word>, String>),
+    AllWords(String, Result<Vec<Vec<Word>>, String>),
     Toc(String, Vec<Symbol>),
 }
 
@@ -118,8 +119,18 @@ type Shown = (usize, Option<Arc<RgbaImage>>);
 type Source = (usize, Option<(Arc<RgbaImage>, f32)>);
 /// Where the pages sit: their sizes and places (points).
 type Pages<'a> = (&'a [(f32, f32)], &'a [(f32, f32)]);
-/// The selection's word boxes by page, their tint, the background.
-type Paint<'a> = (&'a [(usize, [f32; 4])], Rgba<u8>, Rgba<u8>);
+/// Boxes lit on the pages (the selection, Find's matches): page, box, tint.
+type Lit = (usize, [f32; 4], Rgba<u8>);
+
+/// A PDF's text for Find: a line of words a line, and where each line's words are (its
+/// page, its first word, each word's bytes in the line).
+struct FindText {
+    ver: u64,
+    lines: Rc<[String]>,
+    map: Vec<LineWords>,
+}
+/// A line's page, its first word, its words' bytes in the line.
+type LineWords = (usize, usize, Vec<(usize, usize)>);
 /// Each page's top left in the document (points), and the document's size.
 type Layout = (Vec<(f32, f32)>, (f32, f32));
 
@@ -150,6 +161,12 @@ struct View {
     asked: Vec<(usize, u32)>,
     words: HashMap<usize, Words>,
     words_asked: HashSet<usize>,
+    /// Bumped as words come; the whole document's asked for (Find).
+    words_ver: u64,
+    all_asked: bool,
+    find: Option<FindText>,
+    /// Find's match shown (its index in the matches).
+    find_cur: Option<usize>,
     /// The selected text: from, to (in either order).
     sel: Option<(At, At)>,
     geo: Option<Geo>,
@@ -290,21 +307,36 @@ fn page_words(prog: &Path, path: &Path, page: usize) -> Words {
     Ok(parse_words(&String::from_utf8_lossy(&html)))
 }
 
+/// Every page's words (Find searches the whole document).
+fn all_words(prog: &Path, path: &Path) -> Result<Vec<Vec<Word>>, String> {
+    let html = output(prog, &["-bbox-layout".into(), path.display().to_string(), "-".into()])?;
+    Ok(parse_pages(&String::from_utf8_lossy(&html)))
+}
+
 fn parse_words(html: &str) -> Vec<Word> {
+    parse_pages(html).into_iter().next().unwrap_or_default()
+}
+
+fn parse_pages(html: &str) -> Vec<Vec<Word>> {
     let attr = |tag: &str, k: &str| -> f32 { tag.split(&format!("{k}=\"")).nth(1).and_then(|r| r.split('"').next()).and_then(|v| v.parse().ok()).unwrap_or(0.0) };
     let mut line = 0u32;
-    let mut words = Vec::new();
+    let mut pages: Vec<Vec<Word>> = Vec::new();
     for l in html.lines() {
         let l = l.trim();
-        if l.starts_with("<line ") {
+        if l.starts_with("<page ") {
+            pages.push(Vec::new());
+        } else if l.starts_with("<line ") {
             line += 1;
         } else if let Some(rest) = l.strip_prefix("<word ") {
             let (tag, after) = rest.split_once('>').unwrap_or((rest, ""));
             let text = after.strip_suffix("</word>").unwrap_or(after);
-            words.push(Word { line, b: [attr(tag, "xMin"), attr(tag, "yMin"), attr(tag, "xMax"), attr(tag, "yMax")], text: unescape(text) });
+            if pages.is_empty() {
+                pages.push(Vec::new());
+            }
+            pages.last_mut().expect("pushed").push(Word { line, b: [attr(tag, "xMin"), attr(tag, "yMin"), attr(tag, "xMax"), attr(tag, "yMax")], text: unescape(text) });
         }
     }
-    words
+    pages
 }
 
 /// pdftohtml -xml: the PDF's outline (bookmarks), as headings at their pages.
@@ -508,6 +540,26 @@ pub fn tick(app: &mut App) -> bool {
                 if let Some(v) = app.media.views.get_mut(&key) {
                     v.words_asked.remove(&page);
                     v.words.insert(page, r);
+                    v.words_ver += 1;
+                }
+            }
+            Msg::AllWords(key, r) => {
+                if let Some(v) = app.media.views.get_mut(&key) {
+                    match r {
+                        Ok(pages) => {
+                            for (i, w) in pages.into_iter().enumerate() {
+                                v.words.insert(i, Ok(w));
+                            }
+                        }
+                        Err(e) => app.msg = format!("Find: {e}"),
+                    }
+                    v.words_ver += 1;
+                }
+                // Find's matches, over the whole document now; typed while they came: the
+                // first from the view shown.
+                app.find_refresh();
+                if app.focus == Focus::Find && app.find.as_ref().is_some_and(|f| f.cur.is_none()) {
+                    find_step(app, 0);
                 }
             }
         }
@@ -621,9 +673,9 @@ fn paste(canvas: &mut RgbaImage, src: &RgbaImage, ppu: f32, (ux, uy, uw, uh): (f
 }
 
 /// The pages (scaled; None: a blank page while it comes) on a `w`×`h` canvas whose top
-/// left is the document's pixel `origin`, the selected words lit.
+/// left is the document's pixel `origin`, the boxes in `lit` tinted.
 #[allow(clippy::too_many_arguments)]
-fn compose_pages(pages: &[Shown], sizes: &[(f32, f32)], pos: &[(f32, f32)], scale: f32, origin: (i64, i64), (w, h): (u32, u32), bg: Rgba<u8>, lit: &[(usize, [f32; 4])], tint: Rgba<u8>) -> RgbaImage {
+fn compose_pages(pages: &[Shown], sizes: &[(f32, f32)], pos: &[(f32, f32)], scale: f32, origin: (i64, i64), (w, h): (u32, u32), bg: Rgba<u8>, lit: &[Lit]) -> RgbaImage {
     let mut canvas = RgbaImage::from_pixel(w, h, bg);
     let px = |u: f32| (u * scale).round() as i64;
     for (i, img) in pages {
@@ -632,8 +684,8 @@ fn compose_pages(pages: &[Shown], sizes: &[(f32, f32)], pos: &[(f32, f32)], scal
             Some(img) => imageops::replace(&mut canvas, &**img, x0, y0),
             None => tint_rect(&mut canvas, (x0, y0, px(sizes[*i].0), px(sizes[*i].1)), |p| *p = Rgba([255, 255, 255, 255])),
         }
-        // The selection over its words.
-        for (_, b) in lit.iter().filter(|(p, _)| p == i) {
+        // The selection and Find's matches over their words.
+        for (_, b, tint) in lit.iter().filter(|(p, ..)| p == i) {
             let r = (x0 + px(b[0]), y0 + px(b[1]), px(b[2]) - px(b[0]), px(b[3]) - px(b[1]));
             tint_rect(&mut canvas, r, |p| {
                 for c in 0..3 {
@@ -780,26 +832,22 @@ pub fn draw(app: &mut App, f: &mut Frame, g: usize, key: &str, path: &Path, kind
             // The pages asked for at the resolution the view needs (in steps of 24 dpi,
             // 36 to 300), each as drawn so far meanwhile.
             let dpi = ((72.0 * scale / 24.0).ceil() as u32 * 24).clamp(36, 300);
+            let mut lit = find_hits(app, g, key);
             let v = app.media.views.get(key).expect("started");
-            let lit: Vec<(usize, [f32; 4])> = match v.sel {
-                Some(sel) => {
-                    let (a, b) = ordered(sel);
-                    (a.0..=b.0)
-                        .flat_map(|p| {
-                            let words = v.words.get(&p).and_then(|w| w.as_ref().ok()).map_or(&[][..], Vec::as_slice);
-                            let (lo, hi) = (if p == a.0 { a.1 } else { 0 }, if p == b.0 { b.1 } else { usize::MAX });
-                            words.iter().enumerate().filter(move |(i, _)| *i >= lo && *i <= hi).map(move |(_, w)| (p, w.b))
-                        })
-                        .collect()
+            if let Some(sel) = v.sel {
+                let (a, b) = ordered(sel);
+                let tint = crate::settingsgraphics::pixel(P.focus_border);
+                for p in a.0..=b.0 {
+                    let words = v.words.get(&p).and_then(|w| w.as_ref().ok()).map_or(&[][..], Vec::as_slice);
+                    let (lo, hi) = (if p == a.0 { a.1 } else { 0 }, if p == b.0 { b.1 } else { usize::MAX });
+                    lit.extend(words.iter().enumerate().filter(|(i, _)| *i >= lo && *i <= hi).map(|(_, w)| (p, w.b, tint)));
                 }
-                None => Vec::new(),
-            };
-            let tint = crate::settingsgraphics::pixel(P.focus_border);
+            }
             let origin = ((left * scale).round() as i64, (scroll * scale).round() as i64);
             if tiles {
                 let doc_px = ((doc_w * scale).ceil() as i64, (total * scale).ceil() as i64);
                 let made_for = digest((scale.to_bits(), spread, cell, bg.0));
-                draw_tiles(app, f, area, (key, path), (&sizes, &pos), scale, (origin, doc_px), dpi, (&lit, tint, bg), made_for);
+                draw_tiles(app, f, area, (key, path), (&sizes, &pos), scale, (origin, doc_px), dpi, (&lit, bg), made_for);
             } else {
                 // One picture of the view, made again as it moves (half-blocks are cheap).
                 let seen: Vec<usize> = (0..n_pages).filter(|&i| pos[i].1 < scroll + view_h && pos[i].1 + sizes[i].1 > scroll).collect();
@@ -811,8 +859,8 @@ pub fn draw(app: &mut App, f: &mut Frame, g: usize, key: &str, path: &Path, kind
                 let v = app.media.views.get_mut(key).expect("started");
                 let shown: Vec<Shown> = srcs.iter().map(|(i, s)| (*i, s.as_ref().map(|s| scaled(v, *i, s, sizes[*i], scale)))).collect();
                 let ptrs: Vec<(usize, usize)> = shown.iter().map(|(i, s)| (*i, s.as_ref().map_or(0, |a| Arc::as_ptr(a) as usize))).collect();
-                let key_d = digest((key, &ptrs, scale.to_bits(), origin, spread, (pw, ph), bg.0, lit.iter().map(|(p, b)| (*p, b.map(f32::to_bits))).collect::<Vec<_>>()));
-                picture(app, f, area, slot, key_d, |w, h| compose_pages(&shown, &sizes, &pos, scale, origin, (w, h), bg, &lit, tint));
+                let key_d = digest((key, &ptrs, scale.to_bits(), origin, spread, (pw, ph), bg.0, lit.iter().map(|(p, b, t)| (*p, b.map(f32::to_bits), t.0)).collect::<Vec<_>>()));
+                picture(app, f, area, slot, key_d, |w, h| compose_pages(&shown, &sizes, &pos, scale, origin, (w, h), bg, &lit));
             }
             // The scrollbar, in points.
             let track = Rect::new(area.right(), area.y, 1, area.height);
@@ -833,7 +881,7 @@ pub fn draw(app: &mut App, f: &mut Frame, g: usize, key: &str, path: &Path, kind
 /// then placeholder cells pointing into them, so scrolling sends cells, not pixels. The
 /// tiles over the view first, then a row above and below ahead (two a frame).
 #[allow(clippy::too_many_arguments)]
-fn draw_tiles(app: &mut App, f: &mut Frame, area: Rect, (key, path): (&str, &Path), (sizes, pos): Pages, scale: f32, (origin, doc_px): ((i64, i64), (i64, i64)), dpi: u32, (lit, tint, bg): Paint, made_for: u64) {
+fn draw_tiles(app: &mut App, f: &mut Frame, area: Rect, (key, path): (&str, &Path), (sizes, pos): Pages, scale: f32, (origin, doc_px): ((i64, i64), (i64, i64)), dpi: u32, (lit, bg): (&[Lit], Rgba<u8>), made_for: u64) {
     let Some(cell) = app.media.gfx.as_ref().map(|g| g.cell()) else { return };
     let (cw, ch) = (i64::from(cell.0), i64::from(cell.1));
     let (tw, th) = (i64::from(TILE.0) * cw, i64::from(TILE.1) * ch);
@@ -868,16 +916,16 @@ fn draw_tiles(app: &mut App, f: &mut Frame, area: Rect, (key, path): (&str, &Pat
         }
         let Some(v) = app.media.views.get_mut(key) else { return };
         let shown: Vec<Shown> = srcs.iter().map(|(i, s)| (*i, s.as_ref().map(|s| scaled(v, *i, s, sizes[*i], scale)))).collect();
-        let here: Vec<(usize, [f32; 4])> = lit
+        let here: Vec<Lit> = lit
             .iter()
-            .filter(|(p, b)| pages.contains(p) && meets(r, (px(pos[*p].0) + px(b[0]), px(pos[*p].1) + px(b[1]), px(b[2]) - px(b[0]) + 1, px(b[3]) - px(b[1]) + 1)))
+            .filter(|(p, b, _)| pages.contains(p) && meets(r, (px(pos[*p].0) + px(b[0]), px(pos[*p].1) + px(b[1]), px(b[2]) - px(b[0]) + 1, px(b[3]) - px(b[1]) + 1)))
             .copied()
             .collect();
-        let k = digest((shown.iter().map(|(i, s)| (*i, s.as_ref().map_or(0, |a| Arc::as_ptr(a) as usize))).collect::<Vec<_>>(), here.iter().map(|(p, b)| (*p, b.map(f32::to_bits))).collect::<Vec<_>>()));
+        let k = digest((shown.iter().map(|(i, s)| (*i, s.as_ref().map_or(0, |a| Arc::as_ptr(a) as usize))).collect::<Vec<_>>(), here.iter().map(|(p, b, t)| (*p, b.map(f32::to_bits), t.0)).collect::<Vec<_>>()));
         if v.tiles.get(&(tx, ty)).is_some_and(|t| t.1 == k) {
             continue;
         }
-        let img = compose_pages(&shown, sizes, pos, scale, (r.0, r.1), (tw as u32, th as u32), bg, &here, tint);
+        let img = compose_pages(&shown, sizes, pos, scale, (r.0, r.1), (tw as u32, th as u32), bg, &here);
         let id = app.media.new_id();
         let Some(gfx) = app.media.gfx.as_ref() else { return };
         seq.push_str(&gfx.transmit(id, &img, TILE.0, TILE.1));
@@ -1099,6 +1147,127 @@ fn pan(app: &mut App, dx: f32, dy: f32) -> bool {
     true
 }
 
+// ---------------------------------------------------------------- Find
+
+/// The PDF in the active tab, for Find: its key, its text's version and its lines (a line
+/// of words a line). The first time, the whole document's words are asked for.
+pub fn find_source(app: &mut App) -> Option<(String, u64, Rc<[String]>)> {
+    let Some((key, path, Kind::Pdf)) = active(app) else { return None };
+    let (tool, tx) = (app.media.tool("pdftotext"), app.media.tx.clone());
+    let v = app.media.views.get_mut(&key)?;
+    if !v.all_asked {
+        v.all_asked = true;
+        let k = key.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::AllWords(k, all_words(&tool, &path)));
+        });
+    }
+    if v.find.as_ref().is_none_or(|t| t.ver != v.words_ver) {
+        let mut pages: Vec<&usize> = v.words.keys().collect();
+        pages.sort();
+        let (mut lines, mut map) = (Vec::new(), Vec::new());
+        for &page in pages {
+            let Some(Ok(words)) = v.words.get(&page) else { continue };
+            let mut i = 0;
+            while i < words.len() {
+                let (first, mut text, mut spans) = (i, String::new(), Vec::new());
+                while i < words.len() && words[i].line == words[first].line {
+                    if !text.is_empty() {
+                        text.push(' ');
+                    }
+                    spans.push((text.len(), text.len() + words[i].text.len()));
+                    text.push_str(&words[i].text);
+                    i += 1;
+                }
+                lines.push(text);
+                map.push((page, first, spans));
+            }
+        }
+        v.find = Some(FindText { ver: v.words_ver, lines: lines.into(), map });
+    }
+    v.find.as_ref().map(|t| (key, t.ver, t.lines.clone()))
+}
+
+pub fn find_cur(app: &App, key: &str) -> Option<usize> {
+    app.media.views.get(key)?.find_cur
+}
+
+pub fn set_find_cur(app: &mut App, key: &str, cur: Option<usize>) {
+    if let Some(v) = app.media.views.get_mut(key) {
+        v.find_cur = cur;
+    }
+}
+
+/// The words a match covers: (page, word).
+fn match_words(t: &FindText, (a, e): (crate::editor::Pos, crate::editor::Pos)) -> Vec<At> {
+    let Some((page, first, spans)) = t.map.get(a.line) else { return Vec::new() };
+    let to = if e.line == a.line { e.col } else { usize::MAX };
+    spans.iter().enumerate().filter(|(_, (s, end))| *s < to && *end > a.col).map(|(j, _)| (*page, first + j)).collect()
+}
+
+/// Find's matches on the PDF of group `g` (when Find is on it): page, box, tint (the one
+/// shown brighter).
+fn find_hits(app: &App, g: usize, key: &str) -> Vec<Lit> {
+    let (Some(f), Some(v)) = (app.find.as_ref(), app.media.views.get(key)) else { return Vec::new() };
+    let Some(t) = v.find.as_ref().filter(|t| g == app.ag && f.of() == (key, t.ver)) else { return Vec::new() };
+    let (cur, other) = (crate::settingsgraphics::pixel(P.find_match), crate::settingsgraphics::pixel(P.find_other));
+    let mut out = Vec::new();
+    for (n, m) in f.matches.iter().enumerate() {
+        let tint = if f.cur == Some(n) { cur } else { other };
+        for (page, w) in match_words(t, *m) {
+            if let Some(word) = v.words.get(&page).and_then(|w| w.as_ref().ok()).and_then(|ws| ws.get(w)) {
+                out.push((page, word.b, tint));
+            }
+        }
+    }
+    out
+}
+
+/// Find's next (`dir` 1), previous (-1) or first from the view (0, as the query is typed)
+/// match on the active PDF, scrolled into view; false: the active tab is no PDF.
+pub fn find_step(app: &mut App, dir: isize) -> bool {
+    let Some((key, _, Kind::Pdf)) = active(app) else { return false };
+    app.find_refresh();
+    let Some(f) = app.find.as_ref() else { return true };
+    if f.matches.is_empty() {
+        if dir != 0 && !f.query.is_empty() {
+            app.msg = "No results".into();
+        }
+        return true;
+    }
+    let (matches, cur, n) = (f.matches.clone(), f.cur, f.matches.len());
+    let Some(v) = app.media.views.get_mut(&key) else { return true };
+    let Some(t) = v.find.as_ref() else { return true };
+    let page = |m: &(crate::editor::Pos, crate::editor::Pos)| t.map.get(m.0.line).map_or(0, |l| l.0);
+    let i = match (cur, dir) {
+        (Some(i), 1..) => (i + 1) % n,
+        (Some(i), ..0) => (i + n - 1) % n,
+        (Some(i), 0) => i,
+        (None, d) if d >= 0 => matches.iter().position(|m| page(m) >= v.now).unwrap_or(0),
+        (None, _) => matches.iter().rposition(|m| page(m) <= v.now).unwrap_or(n - 1),
+    };
+    // Into view when out of it: near the view's top.
+    let words = match_words(t, matches[i]);
+    if let (Some(&(page, w)), Some((pos, view_h))) = (words.first(), doc(v)) {
+        if let Some(b) = v.words.get(&page).and_then(|ws| ws.as_ref().ok()).and_then(|ws| ws.get(w)).map(|w| w.b) {
+            let (top, bottom) = (pos[page].1 + b[1], pos[page].1 + b[3]);
+            if top < v.scroll || bottom > v.scroll + view_h {
+                v.scroll = top - view_h / 10.0;
+            }
+        }
+    }
+    v.find_cur = Some(i);
+    app.find_refresh();
+    true
+}
+
+/// The selected text, one line of it (Find starts from it).
+pub fn selected_line(app: &App) -> Option<String> {
+    let (key, _, Kind::Pdf) = active(app)? else { return None };
+    let text = selected_text(app.media.views.get(&key)?);
+    (!text.is_empty() && !text.contains('\n')).then_some(text)
+}
+
 fn copy(app: &mut App, key: &str) {
     let Some(v) = app.media.views.get(key) else { return };
     let text = selected_text(v);
@@ -1268,6 +1437,8 @@ mod tests {
         assert_eq!(spread_fit(&sizes[..2], (2464, 792)), 1.0);
         let toc = parse_toc("<pdf2xml><page><text>x</text></page>\n<outline>\n<item page=\"3\">Intro &amp; more</item>\n<outline>\n<item page=\"5\">Part <b>A</b></item>\n<item>No page</item>\n</outline>\n<item page=\"9\">End</item>\n</outline>");
         assert_eq!(toc.iter().map(|s| (s.line, s.level, s.name.as_str())).collect::<Vec<_>>(), [(2, 1, "Intro & more"), (4, 2, "Part A"), (4, 2, "No page"), (8, 1, "End")]);
+        let pages = parse_pages("<page width=\"1\">\n<line>\n<word xMin=\"1\">a</word>\n<page width=\"1\">\n<page width=\"1\">\n<line>\n<word xMin=\"1\">b</word>\n");
+        assert_eq!(pages.iter().map(|p| p.iter().map(|w| w.text.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(), [vec!["a"], vec![], vec!["b"]], "an empty page keeps its place");
         let words = parse_words("<line xMin=\"1\">\n<word xMin=\"10.5\" yMin=\"20\" xMax=\"30\" yMax=\"28\">Tom&amp;Jerry</word>\n<word xMin=\"32\" yMin=\"20\" xMax=\"40\" yMax=\"28\">said</word>\n</line>\n<line xMin=\"1\">\n<word xMin=\"10\" yMin=\"40\" xMax=\"20\" yMax=\"48\">&lt;hi&gt;</word>\n");
         assert_eq!(words.iter().map(|w| (w.line, w.text.as_str())).collect::<Vec<_>>(), [(1, "Tom&Jerry"), (1, "said"), (2, "<hi>")]);
         assert_eq!(words[0].b, [10.5, 20.0, 30.0, 28.0]);
@@ -1373,7 +1544,14 @@ mod app_tests {
         script(&tools.join("pdftoppm"), "echo \"$*\" >> \"$(dirname \"$0\")/ppm.log\"\ncat \"$(dirname \"$0\")/page.png\"\n");
         script(
             &tools.join("pdftotext"),
-            "case \"$*\" in *-bbox-layout*) printf '<line xMin=\"0\">\\n<word xMin=\"0\" yMin=\"0\" xMax=\"300\" yMax=\"100\">Hello</word>\\n<word xMin=\"300\" yMin=\"0\" xMax=\"612\" yMax=\"100\">world</word>\\n</line>\\n' ;; *) printf 'Intro\\nfirst page\\fSecond\\fThird\\n' ;; esac\n",
+            concat!(
+                "line() { printf '<line xMin=\"0\">\\n<word xMin=\"0\" yMin=\"0\" xMax=\"300\" yMax=\"100\">%s</word>\\n<word xMin=\"300\" yMin=\"0\" xMax=\"612\" yMax=\"100\">world</word>\\n</line>\\n' \"$1\"; }\n",
+                "case \"$*\" in\n",
+                "  *'-bbox-layout -f '*) line Hello ;;\n",
+                "  *-bbox-layout*) for w in Hello Hi Third; do printf '<page width=\"612\">\\n'; line $w; done ;;\n",
+                "  *) printf 'Intro\\nfirst page\\fSecond\\fThird\\n' ;;\n",
+                "esac\n"
+            ),
         );
         script(&tools.join("pdftohtml"), "printf '<outline>\\n<item page=\"1\">Intro</item>\\n<item page=\"3\">The end</item>\\n</outline>\\n'\n");
         tools
@@ -1428,6 +1606,50 @@ mod app_tests {
     }
 
     #[test]
+    fn a_pdf_finds_its_text_across_its_pages() {
+        let dir = std::env::temp_dir().join(format!("termcode-media-find-{}", std::process::id()));
+        let tools = fake_pdf(&dir);
+        let mut app = App::new(dir.clone(), None);
+        app.media.tools = Some(tools);
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        app.open_file(0, "doc.pdf", false);
+        (app.focus, app.side_visible) = (Focus::Editor, false);
+        settle(&mut app, &mut t, "page 1 of 3");
+        // Ctrl+F, "world": one a page, in the whole document (its words asked for).
+        app.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+        assert_eq!(app.focus, Focus::Find);
+        for c in "world".chars() {
+            press(&mut app, c);
+        }
+        for _ in 0..300 {
+            tick(&mut app);
+            if app.find.as_ref().is_some_and(|f| f.matches.len() == 3) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let s = screen(&mut app, &mut t);
+        assert_eq!(app.find.as_ref().map(|f| (f.matches.len(), f.cur)), Some((3, Some(0))), "{s}");
+        assert!(s.contains("1 of 3"), "the Find box counts them\n{s}");
+        // Enter: the next, on page 2, then page 3; Shift+Enter back.
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        settle(&mut app, &mut t, "2 of 3");
+        assert_eq!(app.media.views["file:doc.pdf"].now, 1, "at page 2");
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        settle(&mut app, &mut t, "page 3 of 3");
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        settle(&mut app, &mut t, "2 of 3");
+        // A phrase across words; nothing found says so.
+        app.find.as_mut().unwrap().query = "third world".into();
+        app.find_refresh();
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 1);
+        app.find.as_mut().unwrap().query = "nowhere".into();
+        app.find_step(1);
+        assert_eq!(app.msg, "No results");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_pdf_scrolls_selects_and_copies_its_text() {
         let dir = std::env::temp_dir().join(format!("termcode-media-pdf-{}", std::process::id()));
         let tools = fake_pdf(&dir);
@@ -1450,7 +1672,12 @@ mod app_tests {
         settle(&mut app, &mut t, "page 2 of 3");
         app.on_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
         settle(&mut app, &mut t, "page 3 of 3");
-        assert!(fs::read_to_string(tools.join("ppm.log")).unwrap_or_default().contains("-f 3 -l 3"), "drawn as they came into view");
+        let drawn = (0..300).any(|_| {
+            tick(&mut app);
+            std::thread::sleep(Duration::from_millis(10));
+            fs::read_to_string(tools.join("ppm.log")).unwrap_or_default().contains("-f 3 -l 3")
+        });
+        assert!(drawn, "drawn as they came into view");
         // The scrollbar dragged to its top: page 1 again.
         set_scroll(&mut app, 0, 0);
         let s = settle(&mut app, &mut t, "page 1 of 3");

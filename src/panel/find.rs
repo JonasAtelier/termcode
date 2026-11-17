@@ -27,7 +27,7 @@ impl App {
             matches!(self.docs.get(&t.key), Some(Doc::Diff(_))).then_some(t.view.side)
         });
         let replace = replace && diff_side.is_none();
-        let seed = self.active_selection().filter(|s| !s.contains('\n'));
+        let seed = self.active_selection().filter(|s| !s.contains('\n')).or_else(|| crate::media::selected_line(self));
         let f = self.find.get_or_insert(Find {
             query: String::new(),
             replace: None,
@@ -59,6 +59,29 @@ impl App {
 
     /// Recompute matches when the query, the document or its content changed.
     pub fn find_refresh(&mut self) {
+        if self.find.is_none() {
+            return;
+        }
+        // A PDF: its words (read-only, so no replacing); the match shown is its view's.
+        if let Some((key, ver, lines)) = crate::media::find_source(self) {
+            let Some(f) = self.find.as_mut() else { return };
+            (f.diff_side, f.replace, f.field) = (None, None, 0);
+            let stamp = (key.clone(), ver, f.query.clone(), f.case, f.word, f.regex, None);
+            if stamp != f.stamp {
+                let asked = |s: &(String, u64, String, bool, bool, bool, Option<u8>)| (s.0.clone(), s.2.clone(), s.3, s.4, s.5);
+                let new_query = asked(&stamp) != asked(&f.stamp);
+                f.search(lines.iter().enumerate().map(|(i, l)| (i, l.as_str())));
+                f.stamp = stamp;
+                if new_query {
+                    crate::media::set_find_cur(self, &key, None);
+                }
+            }
+            let cur = crate::media::find_cur(self, &key);
+            if let Some(f) = self.find.as_mut() {
+                f.cur = cur.filter(|&i| i < f.matches.len());
+            }
+            return;
+        }
         let Some(f) = self.find.as_mut() else { return };
         let Some(tab) = self.groups.get(self.ag).and_then(|grp| grp.tabs.get(grp.active)) else {
             f.matches.clear();
@@ -93,18 +116,7 @@ impl App {
                     cell.as_ref().map(|(_, text)| (i, text.as_str()))
                 }).collect(),
             };
-            f.invalid = false;
-            f.matches = if f.regex && !f.query.is_empty() {
-                match editor::find_regex(&f.query, f.case, f.word) {
-                    Ok(re) => editor::find_re(lines, &re),
-                    Err(_) => {
-                        f.invalid = true;
-                        Vec::new()
-                    }
-                }
-            } else {
-                editor::find_in(lines, &f.query, f.case, f.word)
-            };
+            f.search(lines);
             f.stamp = stamp;
         }
         let c = tab.view.cursor;
@@ -114,6 +126,9 @@ impl App {
     }
 
     pub fn find_step(&mut self, dir: isize) {
+        if crate::media::find_step(self, dir.signum()) {
+            return;
+        }
         self.find_refresh();
         let Some(f) = self.find.as_ref() else { return };
         if f.matches.is_empty() {

@@ -266,6 +266,9 @@ impl App {
     /// longer query keeps the match it extends) is selected and revealed, as VS Code does;
     /// nothing found leaves the cursor where it is.
     pub(super) fn find_incremental(&mut self) {
+        if crate::media::find_step(self, 0) {
+            return;
+        }
         self.find_refresh();
         let Some(f) = self.find.as_ref().filter(|f| f.field == 0 && !f.matches.is_empty()) else { return };
         let (matches, side) = (f.matches.clone(), f.diff_side);

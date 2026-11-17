@@ -359,6 +359,27 @@ pub struct Find {
 }
 
 impl Find {
+    /// The document and its version the matches are for.
+    pub fn of(&self) -> (&str, u64) {
+        (&self.stamp.0, self.stamp.1)
+    }
+
+    /// The matches of the query in `lines`; `invalid` when its regular expression is.
+    fn search<'a>(&mut self, lines: impl IntoIterator<Item = (usize, &'a str)>) {
+        self.invalid = false;
+        self.matches = if self.regex && !self.query.is_empty() {
+            match editor::find_regex(&self.query, self.case, self.word) {
+                Ok(re) => editor::find_re(lines, &re),
+                Err(_) => {
+                    self.invalid = true;
+                    Vec::new()
+                }
+            }
+        } else {
+            editor::find_in(lines, &self.query, self.case, self.word)
+        };
+    }
+
     /// The regular expression in use, when the toggle is on and the query compiles.
     fn compiled(&self) -> Option<fancy_regex::Regex> {
         self.regex.then(|| editor::find_regex(&self.query, self.case, self.word).ok()).flatten()

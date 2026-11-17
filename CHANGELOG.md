@@ -53,8 +53,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   to its tab, zoomed with + and - (0 fits, 1 is actual size, the arrows pan); a PDF
   reads as a document (poppler's pdftoppm): its pages scrolled with a scrollbar, two
   side by side while whole pages fit, its text selected with the mouse and copied with
-  Ctrl+C, its table of contents in the Outline; also as its text (pdftotext) with a
-  heading for each page. The bar's buttons switch to the hexdump.
+  Ctrl+C, searched with Ctrl+F, its table of contents in the Outline; also as its text
+  (pdftotext) with a heading for each page. The bar's buttons switch to the hexdump.
 
 - `/usr/share/termcode/setup.sh` sets up what termcode's features use (clang, readelf,
   poppler, gh, a Nerd Font, Ghostty, serial access, arduino-cli, ESP-IDF; herdr's Code
