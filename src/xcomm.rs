@@ -110,6 +110,8 @@ pub enum Hit {
     Act(usize, Act),
     /// A port's note, to write.
     Note(usize),
+    /// A port watched here, read only (Monitor).
+    Monitor(usize),
 }
 
 /// A control as drawn: its label, what it does, whether it is the main one.
@@ -150,16 +152,16 @@ pub struct Serial {
     notes: Option<std::collections::BTreeMap<String, String>>,
     /// A note being written: its port's id and the text so far.
     pub editing: Option<(String, String)>,
-    /// `i`: the selected row's card shows (the pointer resting on a row shows its own).
-    pub peek: bool,
+    /// The ports pane's height (dragged at the line between the panes), the line itself.
+    pub split: Option<u16>,
+    pub sash: Rect,
+    /// Each pane's rows scrolled off its top: ports, channels.
+    pub scrolls: [u16; 2],
+    panes: [Rect; 2],
     /// A selection is being dragged on a channel's screen.
     dragging: bool,
-    /// The side bar's rows scrolled off its top.
-    pub scroll: u16,
     /// The active channel tab's Write / Read only button, as drawn.
     page_btn: Option<(Rect, String)>,
-    /// Where the side bar's blocks were drawn (the wheel scrolls them there).
-    view: Rect,
     /// The settings panel's controls, as drawn.
     panel_hits: Vec<(Rect, Hit)>,
     last_click: Option<(Instant, Position)>,
@@ -250,6 +252,13 @@ impl Serial {
 }
 
 fn env(k: &str) -> Option<String> {
+    // Under test: locks and control sockets in a folder of the test run's own (0700), never
+    // the machine's lock directory or the user's runtime one.
+    if cfg!(test) && matches!(k, "XCOMM_LOCK_DIR" | "XDG_RUNTIME_DIR") {
+        let d = std::env::temp_dir().join(format!("termcode-xcomm-env-{}", std::process::id()));
+        let _ = std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700).create(&d);
+        return Some(d.display().to_string());
+    }
     std::env::var(k).ok()
 }
 
@@ -555,7 +564,7 @@ impl Channel {
     /// Not on a read-only channel.
     pub fn send(&mut self, mut b: &[u8]) {
         if !self.write {
-            self.note = Some("read only: Write to type".into());
+            self.note = Some("read only: Attach to type".into());
             return;
         }
         match &mut self.source {
@@ -632,7 +641,7 @@ impl Channel {
         let tty = self.tty.clone();
         let line_change = matches!(a, Act::BaudDown | Act::BaudUp | Act::DataBits | Act::Parity | Act::StopBits | Act::Flow | Act::Dtr | Act::Rts | Act::Break);
         if line_change && !self.write {
-            return format!("{tty}: read only: Write first");
+            return format!("{tty}: read only: Attach first");
         }
         match (a, &mut self.source) {
             (Act::Write, _) => {
@@ -977,10 +986,12 @@ pub fn paste(app: &mut App, text: &str) -> bool {
 /// The wheel over a channel's tab scrolls its output back.
 pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
     // Over the side bar's blocks: they scroll.
-    if app.side == crate::panel::Side::Serial && app.side_visible && app.serial.view.contains(p) {
-        let s = &mut app.serial;
-        s.scroll = if d < 0 { s.scroll.saturating_sub(3) } else { s.scroll.saturating_add(3) };
-        return true;
+    if app.side == crate::panel::Side::Serial && app.side_visible {
+        if let Some(k) = app.serial.panes.iter().position(|r| r.contains(p)) {
+            let s = &mut app.serial.scrolls[k];
+            *s = if d < 0 { s.saturating_sub(3) } else { s.saturating_add(3) };
+            return true;
+        }
     }
     let Some(key) = active_key(app) else { return false };
     if !app.ui.groups.get(app.ag).is_some_and(|g| g.text.contains(p)) {
@@ -1073,7 +1084,7 @@ pub fn draw_page(app: &mut App, f: &mut Frame, r: Rect, key: &str, focused: bool
     let text = Span::styled(format!("{tty} · {}", status(ch)), Style::new().fg(P.editor_fg));
     f.render_widget(ratatui::widgets::Paragraph::new(Line::from(vec![dot, text])).style(Style::new().bg(P.widget_bg)), head);
     // Its one switch, at the right: Write (typing on) or Read only.
-    let label = if ch.write { " Read only " } else { " ✎ Write " };
+    let label = if ch.write { " Read only " } else { " Attach " };
     let w = label.chars().count() as u16;
     let b = Rect::new(head.right().saturating_sub(w + 1), head.y, w, 1);
     let hot = app.hover.is_some_and(|p| b.contains(p));
@@ -1087,9 +1098,10 @@ pub fn draw_page(app: &mut App, f: &mut Frame, r: Rect, key: &str, focused: bool
     crate::term::draw_screen(ch.screen.screen(), ch.sel_range(), f.buffer_mut(), body, (P.editor_fg, P.editor_bg, P.selection), focused && live);
 }
 
-/// The side bar: a block per port (its dot and tty, its note or adapter, its USB ID and
-/// holder; ✎ for the note), then a block per open channel (its state, its controls; ⋯
-/// for the rest). Blocks light up under the pointer; the wheel scrolls.
+/// The side bar: the ports pane (a block per port: its dot and tty, its note or adapter,
+/// its USB ID and holder, Monitor; ✎ for the note), the line between (dragged to resize,
+/// as GitHub's), the channels pane (a block per open channel: its state, Attach, ✕).
+/// Blocks light up under the pointer; each pane scrolls.
 pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
     use crate::theme::P;
     // In a card as the other views, its padding inside.
@@ -1097,36 +1109,40 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
     let card = crate::blocks::card(app.settings.blocks, f, r, P.sidebar_bg, focused_side);
     let r = crate::ui::inset(card, (app.settings.spacing.sidebar_padding.saturating_sub(1) / 2).max(1));
     app.ui.side_list = Rect::default();
-    if r.width < 12 || r.height < 3 {
+    if r.width < 12 || r.height < 6 {
         return;
     }
     let notes = app.serial.notes().clone();
     let (hover, focused) = (app.hover, app.focus == Focus::Side);
+    let dragging = matches!(app.drag, crate::panel::Drag::SerialSash);
     let ascii = crate::theme::ascii();
     let dot_ch = if ascii { "*" } else { "●" };
     let me = std::process::id() as i32;
     let s = &mut app.serial;
     let total = s.ports.len() + s.channels.len();
     s.sel = s.sel.min(total.saturating_sub(1));
-    // Everything laid out from `top` (0), drawn where it falls inside `r` after the scroll.
-    let mut hits = Vec::new();
-    let mut y: i32 = -i32::from(s.scroll);
-    let at = |y: i32, h: u16| -> Option<Rect> {
-        let top = i32::from(r.y) + y;
-        let bottom = (top + i32::from(h)).min(i32::from(r.bottom()));
-        let top = top.max(i32::from(r.y));
-        (bottom > top).then(|| Rect::new(r.x, top as u16, r.width, (bottom - top) as u16))
-    };
     let dim = Style::new().fg(P.dim);
-    let head = |f: &mut Frame, y: &mut i32, text: &str| {
-        if let Some(a) = at(*y, 1) {
-            f.render_widget(Span::styled(text.to_string(), dim.bold()), a);
-        }
-        *y += 1;
+    // The panes: ports above the line, channels under it.
+    let top_h = s.split.unwrap_or(r.height * 3 / 5).clamp(3, r.height.saturating_sub(4));
+    let panes = [Rect::new(r.x, r.y + 1, r.width, top_h - 1), Rect::new(r.x, r.y + top_h + 1, r.width, r.height - top_h - 1)];
+    let sash = Rect::new(r.x, r.y + top_h, r.width, 1);
+    f.render_widget(Span::styled(format!("PORTS {}", s.ports.len()), dim.bold()), Rect::new(r.x, r.y, r.width, 1));
+    let hot = dragging || hover.is_some_and(|p| sash.contains(p));
+    let label = format!(" CHANNELS {} ", s.channels.len());
+    let rest = usize::from(r.width).saturating_sub(label.chars().count() + 1);
+    let hl = if ascii { "-" } else { "─" };
+    f.render_widget(Line::from(vec![
+        Span::styled(hl, Style::new().fg(if hot { P.sash_hover } else { P.group_border })),
+        Span::styled(label, dim.bold()),
+        Span::styled(hl.repeat(rest), Style::new().fg(if hot { P.sash_hover } else { P.group_border })),
+    ]), sash);
+    // Each block laid out from its pane's top, drawn where it falls inside after its scroll.
+    let at = |pane: Rect, y: i32, h: u16| -> Option<Rect> {
+        let top = (i32::from(pane.y) + y).max(i32::from(pane.y));
+        let bottom = (i32::from(pane.y) + y + i32::from(h)).min(i32::from(pane.bottom()));
+        (bottom > top).then(|| Rect::new(pane.x, top as u16, pane.width, (bottom - top) as u16))
     };
-    // A block: its border lit under the pointer or when selected; its title the tty.
-    let block = |f: &mut Frame, y: i32, h: u16, title: Line<'static>, lit: bool| -> Option<Rect> {
-        let a = at(y, h)?;
+    let block = |f: &mut Frame, a: Rect, title: Line<'static>, lit: bool| -> Rect {
         let b = ratatui::widgets::Block::bordered()
             .border_set(crate::blocks::border_set())
             .border_style(Style::new().fg(if lit { P.focus_border } else { P.group_border }))
@@ -1134,35 +1150,39 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
             .style(Style::new().bg(if lit { P.widget_bg } else { P.sidebar_bg }));
         let inner = b.inner(a);
         f.render_widget(b, a);
-        Some(inner)
+        inner
     };
-    head(f, &mut y, &format!("PORTS {}", s.ports.len()));
+    let button = |f: &mut Frame, hits: &mut Vec<(Rect, Hit)>, b: Rect, label: &str, primary: bool, hit: Hit| {
+        let hot = hover.is_some_and(|h| b.contains(h));
+        f.render_widget(Span::styled(format!(" {label} "), crate::ui::button_style(primary || hot, hot)), b);
+        hits.push((b, hit));
+    };
+    let mut hits = Vec::new();
+    // Ports.
+    let mut y: i32 = -i32::from(s.scrolls[0]);
     if let Some(p) = &s.problem {
-        if let Some(a) = at(y, 1) {
-            f.render_widget(Span::styled(p.clone(), Style::new().fg(P.error_fg)), a);
-        }
+        f.render_widget(Span::styled(p.clone(), Style::new().fg(P.error_fg)), Rect::new(panes[0].x, panes[0].y, panes[0].width, 1));
         y += 1;
     } else if s.ports.is_empty() {
-        if let Some(a) = at(y, 1) {
-            f.render_widget(Span::styled("None plugged in", dim), a);
-        }
+        f.render_widget(Span::styled("None plugged in", dim), Rect::new(panes[0].x, panes[0].y, panes[0].width, 1));
         y += 1;
     }
     for (i, p) in s.ports.iter().enumerate() {
         let ours = s.channels.iter().find(|c| c.tty == p.tty);
         let shareable = p.lock_pid.is_some_and(|pid| pid != me) && session_socket(&p.tty, &env).is_some();
         let dot = ours.map_or_else(|| port_dot(p, shareable), channel_dot);
-        let area = at(y, 4);
-        let lit = (focused && s.sel == i) || hover.zip(area).is_some_and(|(h, a)| a.contains(h));
-        let id = port_id(p);
-        let title = Line::from(vec![Span::styled(format!(" {dot_ch} "), Style::new().fg(dot.color())), Span::styled(format!("{} ", p.tty), Style::new().fg(P.sidebar_fg).bold())]);
-        if let Some(inner) = block(f, y, 4, title, lit) {
+        if let Some(a) = at(panes[0], y, 4) {
+            let lit = (focused && s.sel == i) || hover.is_some_and(|h| a.contains(h));
+            let title = Line::from(vec![Span::styled(format!(" {dot_ch} "), Style::new().fg(dot.color())), Span::styled(format!("{} ", p.tty), Style::new().fg(P.sidebar_fg).bold())]);
+            let inner = block(f, a, title, lit);
+            hits.push((a, Hit::Port(i)));
+            let id = port_id(p);
             let product = p.product.clone().unwrap_or_else(|| "serial port".into());
             let first = match s.editing.as_ref().filter(|(e, _)| *e == id) {
                 Some((_, text)) => Span::styled(format!("{text}▏"), Style::new().fg(P.sidebar_fg).bg(P.input_bg)),
                 None => match notes.get(&id) {
                     Some(n) => Span::styled(n.clone(), Style::new().fg(P.tab_active_fg).bold()),
-                    None => Span::styled(product.clone(), Style::new().fg(P.sidebar_fg)),
+                    None => Span::styled(product, Style::new().fg(P.sidebar_fg)),
                 },
             };
             let held = match (ours, p.lock_pid, &p.herdr_pane) {
@@ -1173,13 +1193,18 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
                 (None, Some(pid), None) => std::fs::read_to_string(format!("/proc/{pid}/comm")).map_or_else(|_| format!("pid {pid}"), |c| c.trim().to_string()),
                 (None, None, _) => "free".into(),
             };
-            let second = format!("{} · {held}", p.vid_pid.as_deref().unwrap_or("not USB"));
-            let rows = [Line::from(first), Line::styled(second, Style::new().fg(if dot == Dot::Green { P.dim } else { dot.color() }))];
-            f.render_widget(ratatui::widgets::Paragraph::new(rows.to_vec()), inner);
-            hits.push((at(y, 4).unwrap_or_default(), Hit::Port(i)));
+            let second = Line::styled(format!("{} · {held}", p.vid_pid.as_deref().unwrap_or("not USB")), Style::new().fg(if dot == Dot::Green { P.dim } else { dot.color() }));
+            f.render_widget(ratatui::widgets::Paragraph::new(vec![Line::from(first), second]), inner);
+            // Monitor (or Show, when open here), right on the second row; none when it can't be.
+            let can = ours.is_some() || p.lock_pid.is_none_or(|pid| pid == me) || shareable;
+            let label = if ours.is_some() { "Show" } else { "Monitor" };
+            let w = label.chars().count() as u16 + 2;
+            if can && inner.height >= 2 && inner.width > w {
+                button(f, &mut hits, Rect::new(inner.right() - w, inner.y + 1, w, 1), label, false, Hit::Monitor(i));
+            }
             // ✎ on the top border, right: the note.
-            let pen = Rect::new(inner.right().saturating_sub(2), inner.y.saturating_sub(1), 2, 1);
-            if pen.y >= r.y && s.editing.is_none() {
+            let pen = Rect::new(inner.right().saturating_sub(2), a.y, 2, 1);
+            if a.y == (i32::from(panes[0].y) + y) as u16 && s.editing.is_none() {
                 let hot = hover.is_some_and(|h| pen.contains(h));
                 f.render_widget(Span::styled(if ascii { "e" } else { "✎" }, Style::new().fg(if hot { P.focus_border } else { P.dim })), pen);
                 hits.push((pen, Hit::Note(i)));
@@ -1187,62 +1212,37 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
         }
         y += 4;
     }
-    if !s.channels.is_empty() {
-        y += 1;
-        head(f, &mut y, &format!("CHANNELS {}", s.channels.len()));
+    let content = (y + i32::from(s.scrolls[0])).max(0) as u16;
+    s.scrolls[0] = s.scrolls[0].min(content.saturating_sub(panes[0].height));
+    // Channels.
+    let mut y: i32 = -i32::from(s.scrolls[1]);
+    if s.channels.is_empty() {
+        f.render_widget(Span::styled("Monitor a port to open one", dim), Rect::new(panes[1].x, panes[1].y, panes[1].width, 1));
     }
     for (i, c) in s.channels.iter().enumerate() {
-        let dot = channel_dot(c);
-        // The essentials; the rest is in the tab's settings panel (the Outline button).
-        let btns: Vec<Btn> = vec![
-            (if c.write { "Read only".into() } else { "✎ Write".into() }, Act::Write, !c.write),
-            ("✕".into(), Act::Close, false),
-        ];
-        // Buttons in rows: each " label ", a space between, a row as wide as the block.
-        let inner_w = r.width.saturating_sub(2);
-        let mut rows: Vec<Vec<Btn>> = vec![Vec::new()];
-        let mut x = 0u16;
-        for b in btns {
-            let w = b.0.chars().count() as u16 + 2;
-            if x + w > inner_w && x > 0 {
-                rows.push(Vec::new());
-                x = 0;
-            }
-            x += w + 1;
-            rows.last_mut().unwrap().push(b);
-        }
-        let h = 3 + rows.len() as u16;
-        let area = at(y, h);
-        let lit = (focused && s.sel == s.ports.len() + i) || hover.zip(area).is_some_and(|(hv, a)| a.contains(hv));
-        let title = Line::from(vec![Span::styled(format!(" {dot_ch} "), Style::new().fg(dot.color())), Span::styled(format!("{} ", c.tty), Style::new().fg(P.sidebar_fg).bold())]);
-        if let Some(inner) = block(f, y, h, title, lit) {
-            hits.push((at(y, h).unwrap_or_default(), Hit::Channel(i)));
-            let line = status(c);
-            f.render_widget(Span::styled(line, dim), Rect::new(inner.x, inner.y, inner.width, 1));
-            for (k, row) in rows.into_iter().enumerate() {
-                let by = i32::from(r.y) + y + 2 + k as i32;
-                if by < i32::from(r.y) || by >= i32::from(r.bottom()) {
-                    continue;
-                }
-                let mut bx = inner.x;
-                for (label, a, primary) in row {
+        if let Some(a) = at(panes[1], y, 4) {
+            let lit = (focused && s.sel == s.ports.len() + i) || hover.is_some_and(|h| a.contains(h));
+            let dot = channel_dot(c);
+            let title = Line::from(vec![Span::styled(format!(" {dot_ch} "), Style::new().fg(dot.color())), Span::styled(format!("{} ", c.tty), Style::new().fg(P.sidebar_fg).bold())]);
+            let inner = block(f, a, title, lit);
+            hits.push((a, Hit::Channel(i)));
+            f.render_widget(Span::styled(status(c), dim), Rect::new(inner.x, inner.y, inner.width, 1));
+            if inner.height >= 2 {
+                let mut x = inner.x;
+                for (label, act, primary) in [(if c.write { "Read only" } else { "Attach" }, Act::Write, !c.write), ("✕", Act::Close, false)] {
                     let w = label.chars().count() as u16 + 2;
-                    let b = Rect::new(bx, by as u16, w.min(inner.right().saturating_sub(bx)), 1);
-                    let hot = hover.is_some_and(|hv| b.contains(hv));
-                    // Under the pointer a button lights up (the main colour), else it is a quiet one.
-                    f.render_widget(Span::styled(format!(" {label} "), crate::ui::button_style(primary || hot, hot)), b);
-                    hits.push((b, Hit::Act(i, a)));
-                    bx += w + 1;
+                    if x + w <= inner.right() {
+                        button(f, &mut hits, Rect::new(x, inner.y + 1, w, 1), label, primary, Hit::Act(i, act));
+                    }
+                    x += w + 1;
                 }
             }
         }
-        y += i32::from(h);
+        y += 4;
     }
-    // Scroll kept within what there is.
-    let content = (y + i32::from(s.scroll)).max(0) as u16;
-    s.scroll = s.scroll.min(content.saturating_sub(r.height));
-    s.hits = hits;
-    s.view = r;
+    let content = (y + i32::from(s.scrolls[1])).max(0) as u16;
+    s.scrolls[1] = s.scrolls[1].min(content.saturating_sub(panes[1].height));
+    (s.hits, s.panes, s.sash) = (hits, panes, sash);
 }
 
 /// A channel tab's settings panel, right of the editors where the Outline goes (its
@@ -1263,7 +1263,7 @@ pub fn draw_settings(app: &mut App, f: &mut Frame, r: Rect) -> bool {
     let lines = c.lines();
     let onoff = |b: Option<bool>| if b == Some(true) { "● on" } else { "○ off" }.to_string();
     let rows: Vec<(&str, Vec<Btn>)> = vec![
-        ("Mode", vec![(if c.write { "Read only".into() } else { "✎ Write".into() }, Act::Write, !c.write)]),
+        ("Mode", vec![(if c.write { "Read only".into() } else { "Attach".into() }, Act::Write, !c.write)]),
         ("Baud", vec![("‹".into(), Act::BaudDown, false), (c.settings.baud.to_string(), Act::BaudUp, false), ("›".into(), Act::BaudUp, false)]),
         ("Data", vec![(data_bits(c.settings.data_bits).to_string(), Act::DataBits, false)]),
         ("Parity", vec![(format!("{:?}", c.settings.parity).to_lowercase(), Act::Parity, false)]),
@@ -1320,18 +1320,8 @@ pub fn draw_peek(app: &mut App, f: &mut Frame) {
         return;
     }
     let s = &app.serial;
-    let hovered = app.hover.and_then(|p| s.hits.iter().find(|(r, h)| r.contains(p) && matches!(h, Hit::Port(_) | Hit::Channel(_))).copied());
-    let (anchor, hit) = match hovered {
-        Some(x) => x,
-        None if s.peek => {
-            let want = if s.sel < s.ports.len() { Hit::Port(s.sel) } else { Hit::Channel(s.sel - s.ports.len()) };
-            match s.hits.iter().find(|(_, h)| *h == want) {
-                Some(&x) => x,
-                None => return,
-            }
-        }
-        None => return,
-    };
+    // Only while the pointer rests on a port's block.
+    let Some((anchor, hit)) = app.hover.and_then(|p| s.hits.iter().find(|(r, h)| r.contains(p) && matches!(h, Hit::Port(_))).copied()) else { return };
     let (port, chan) = match hit {
         Hit::Port(i) => {
             let p = s.ports.get(i);
@@ -1403,6 +1393,10 @@ pub fn click(app: &mut App, p: Position) -> bool {
     if app.side != crate::panel::Side::Serial || !app.side_visible {
         return false;
     }
+    if app.serial.sash.contains(p) {
+        app.drag = crate::panel::Drag::SerialSash;
+        return true;
+    }
     let Some(&(_, hit)) = app.serial.hits.iter().rev().find(|(r, _)| r.contains(p)) else { return false };
     activate(app, hit);
     true
@@ -1410,16 +1404,8 @@ pub fn click(app: &mut App, p: Position) -> bool {
 
 fn activate(app: &mut App, hit: Hit) {
     match hit {
-        Hit::Port(i) => {
-            app.serial.sel = i;
-            let Some(p) = app.serial.ports.get(i).cloned() else { return };
-            let me = std::process::id() as i32;
-            match p.lock_pid.filter(|&pid| pid != me) {
-                None => open(app, Path::new(&p.path)),
-                Some(_) if app.serial.channels.iter().any(|c| c.tty == p.tty) => open(app, Path::new(&p.path)),
-                Some(pid) => app.prompt = Some(held_prompt(&p, pid)),
-            }
-        }
+        Hit::Port(i) => app.serial.sel = i,
+        Hit::Monitor(i) => monitor(app, i),
         Hit::Note(i) => {
             app.serial.sel = i;
             start_note(app);
@@ -1429,6 +1415,10 @@ fn activate(app: &mut App, hit: Hit) {
             if let Some(tty) = app.serial.channels.get(i).map(|c| c.tty.clone()) {
                 app.show_tab(app.ag, format!("{PREFIX}{tty}"), false);
             }
+        }
+        Hit::Act(i, Act::Write) if app.serial.channels.get(i).is_some_and(|c| !c.write && c.link != Link::Open) => {
+            let tty = app.serial.channels[i].tty.clone();
+            app.prompt = Some(crate::panel::Prompt { text: vec![format!("{tty}: not available (unplugged?)")], buttons: vec![("OK".into(), crate::panel::PAct::Cancel)], sel: 0 });
         }
         Hit::Act(i, Act::Write) if app.serial.channels.get(i).is_some_and(|c| c.shared.is_some() && !c.write) => {
             let c = &app.serial.channels[i];
@@ -1458,30 +1448,24 @@ fn activate(app: &mut App, hit: Hit) {
     }
 }
 
-/// The little window for a port someone holds: an xcomm session's is shared (watched, or
-/// typed into through it, with a warning); another program's is explained.
-fn held_prompt(p: &PortInfo, pid: i32) -> crate::panel::Prompt {
-    use crate::panel::PAct;
-    let who = match &p.herdr_pane {
-        Some(pane) => format!("xcomm in herdr {pane} (pid {pid})"),
-        None => format!("pid {pid}"),
-    };
-    if session_socket(&p.tty, &env).is_none() {
-        let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).map_or_else(|_| "another program".into(), |c| c.trim().to_string());
-        return crate::panel::Prompt {
-            text: vec![format!("{}: held by {name} (pid {pid}), which can't share it.", p.tty)],
-            buttons: vec![("OK".into(), PAct::Cancel)],
-            sel: 0,
-        };
+/// Monitor on port `i`: watched here, read only, no questions: opened if free, shared
+/// with the xcomm holding it, its tab shown if already open; a holder that can't share
+/// is said.
+fn monitor(app: &mut App, i: usize) {
+    app.serial.sel = i;
+    let Some(p) = app.serial.ports.get(i).cloned() else { return };
+    let me = std::process::id() as i32;
+    if app.serial.channels.iter().any(|c| c.tty == p.tty) {
+        app.show_tab(app.ag, format!("{PREFIX}{}", p.tty), false);
+        return;
     }
-    crate::panel::Prompt {
-        text: vec![format!("⚠ {}: in use by {who}.", p.tty), "Watch: read only. Write: typing goes through it.".into()],
-        buttons: vec![
-            ("Watch".into(), PAct::Serial(p.tty.clone(), false)),
-            ("Write".into(), PAct::Serial(p.tty.clone(), true)),
-            ("Cancel".into(), PAct::Cancel),
-        ],
-        sel: 0,
+    match p.lock_pid.filter(|&pid| pid != me) {
+        None => open(app, Path::new(&p.path)),
+        Some(_) if session_socket(&p.tty, &env).is_some() => share(app, &p.tty, false),
+        Some(pid) => {
+            let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).map_or_else(|_| "another program".into(), |c| c.trim().to_string());
+            app.msg = format!("{}: held by {name} (pid {pid}), which can't share it", p.tty);
+        }
     }
 }
 
@@ -1525,6 +1509,13 @@ fn start_note(app: &mut App) {
     app.focus = Focus::Side;
 }
 
+/// The line between the panes dragged to `y`: the ports pane ends there.
+pub fn drag_to(app: &mut App, y: u16) {
+    // From the view's top (the PORTS heading above the pane): the line lands at `y`.
+    let top = app.serial.panes[0].y.saturating_sub(1);
+    app.serial.split = Some(y.saturating_sub(top).max(2));
+}
+
 /// Keys in the side bar: ↑ ↓ choose, Enter opens a port or shows a channel, `n` writes
 /// the port's note (Enter keeps it, Esc drops it), `i` shows the row's card.
 pub fn key(app: &mut App, k: ratatui::crossterm::event::KeyEvent) -> bool {
@@ -1549,16 +1540,13 @@ pub fn key(app: &mut App, k: ratatui::crossterm::event::KeyEvent) -> bool {
         start_note(app);
         return true;
     }
-    if k.code == KeyCode::Char('i') {
-        app.serial.peek = !app.serial.peek;
-        return true;
-    }
+
     let (sel, ports) = (app.serial.sel, app.serial.ports.len());
     let total = ports + app.serial.channels.len();
     match k.code {
         KeyCode::Up => app.serial.sel = sel.saturating_sub(1),
         KeyCode::Down => app.serial.sel = (sel + 1).min(total.saturating_sub(1)),
-        KeyCode::Enter if sel < ports => activate(app, Hit::Port(sel)),
+        KeyCode::Enter if sel < ports => activate(app, Hit::Monitor(sel)),
         KeyCode::Enter if sel < total => activate(app, Hit::Channel(sel - ports)),
         _ => return false,
     }
@@ -1712,7 +1700,7 @@ mod tests {
         let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 36)).unwrap();
         t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
         let text = crate::api::screen_text(t.backend().buffer());
-        for want in ["SETTINGS", "Mode", "✎ Write", "Baud", "115200", "Parity", "Agents"] {
+        for want in ["SETTINGS", "Mode", "Attach", "Baud", "115200", "Parity", "Agents"] {
             assert!(text.contains(want), "{want}: {text}");
         }
         let press = |app: &mut App, act: Act| {
@@ -1729,6 +1717,58 @@ mod tests {
         assert_eq!((c.settings.baud, c.settings.parity, c.write), (230_400, xcomm::cli::Parity::Even, true));
         drop(app);
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn monitor_watches_attach_writes_and_the_line_between_the_panes_drags() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let root = std::env::temp_dir().join(format!("termcode-xcomm-monitor-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.show_side(crate::panel::Side::Serial, false);
+        app.serial.listed = Some(Instant::now() + Duration::from_secs(3600)); // no real listing
+        let (_dev, tty) = pty();
+        let name = tty_of(&tty);
+        let mut free = fake_port(&name, "PTY0001", None);
+        free.path = tty.display().to_string();
+        app.serial.ports = vec![free, fake_port("ttyUSB9", "HELD0001", Some(1))];
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        let draw = |app: &mut App, t: &mut ratatui::Terminal<ratatui::backend::TestBackend>| {
+            t.draw(|f| crate::ui::draw(app, f)).unwrap();
+            crate::api::screen_text(t.backend().buffer())
+        };
+        let text = draw(&mut app, &mut t);
+        assert!(text.contains("PORTS 2") && text.contains("CHANNELS 0") && text.contains("Monitor"), "{text}");
+        assert_eq!(app.serial.hits.iter().filter(|(_, h)| matches!(h, Hit::Monitor(_))).count(), 1, "the one held by a program that can't share: no Monitor");
+        // Monitor: open, read only, no window asked.
+        let m = app.serial.hits.iter().find(|(_, h)| *h == Hit::Monitor(0)).unwrap().0;
+        assert!(click(&mut app, Position::new(m.x + 1, m.y)));
+        assert!(app.prompt.is_none() && app.serial.channels.len() == 1 && !app.serial.channels[0].write);
+        // Attach on its channel block: writing, its own port asking nothing.
+        let text = draw(&mut app, &mut t);
+        assert!(text.contains("CHANNELS 1") && text.contains("Attach"), "{text}");
+        let a = app.serial.hits.iter().find(|(_, h)| *h == Hit::Act(0, Act::Write)).unwrap().0;
+        assert!(click(&mut app, Position::new(a.x + 1, a.y)));
+        assert!(app.prompt.is_none() && app.serial.channels[0].write);
+        // Gone (unplugged): Attach says so in a small window.
+        app.serial.channels[0].write = false;
+        app.serial.channels[0].drop_port("gone".into());
+        draw(&mut app, &mut t);
+        let a = app.serial.hits.iter().find(|(_, h)| *h == Hit::Act(0, Act::Write)).unwrap().0;
+        click(&mut app, Position::new(a.x + 1, a.y));
+        assert!(app.prompt.as_ref().is_some_and(|p| p.text[0].contains("not available")));
+        app.prompt = None;
+        // The line between the panes: dragged down, the ports pane grows.
+        let before = app.serial.panes[0].height;
+        let sash = app.serial.sash;
+        let ev = |kind, y: u16| MouseEvent { kind, column: sash.x + 3, row: y, modifiers: KeyModifiers::NONE };
+        app.on_mouse(ev(MouseEventKind::Down(MouseButton::Left), sash.y));
+        app.on_mouse(ev(MouseEventKind::Drag(MouseButton::Left), sash.y + 5));
+        app.on_mouse(ev(MouseEventKind::Up(MouseButton::Left), sash.y + 5));
+        draw(&mut app, &mut t);
+        assert_eq!(app.serial.panes[0].height, before + 5);
+        drop(app);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// A stand-in for an xcomm session's control socket: it answers each request, streams
@@ -1832,13 +1872,18 @@ mod tests {
         // Blocks: the tty on the border, the note (else the adapter), USB ID and holder.
         assert!(text.contains("● ttyUSB7") && text.contains("│router console") && text.contains("0403:6015 · free"), "{text}");
         assert!(text.contains("│FT230X Basic UART") && text.contains("0403:6015 · xcomm w8:p1"), "the second's holder: {text}");
-        // `i`: the selected port's card, everything at a glance.
-        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        // The pointer resting on the port's block: its card, everything at a glance.
+        let block = app.serial.hits.iter().find(|(_, h)| *h == Hit::Port(0)).unwrap().0;
+        app.hover = Some(Position::new(block.x + 2, block.y + 1));
         t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
         let text = crate::api::screen_text(t.backend().buffer());
         for want in ["Adapter  FT230X Basic UART", "USB      0403:6015  serial A1B2C3D4", "by-id    usb-FTDI_FT230X_A1B2C3D4-if00-port0", "Holder   free"] {
             assert!(text.contains(want), "{want}: {text}");
         }
+        // The pointer elsewhere: no card.
+        app.hover = None;
+        t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+        assert!(!crate::api::screen_text(t.backend().buffer()).contains("Adapter"));
         // A note removed with "".
         app.serial.set_note("usb:0403:6015:A1B2C3D4", "").unwrap();
         assert!(!std::fs::read_to_string(notes_file()).unwrap().contains("router"));

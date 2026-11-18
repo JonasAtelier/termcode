@@ -848,6 +848,8 @@ pub enum Drag {
     OutlineSash,
     /// The line between the GitHub view's panes.
     GhSash,
+    /// The line between the Serial view's ports and channels.
+    SerialSash,
     /// An Explorer item (`dir`: a folder): onto an editor (a file), or into a folder.
     File { rel: String, from: Position, active: bool, dir: bool, keep: bool },
     /// Tab `i` of group `g` (VS Code's tab drag and drop); active once moved 2 cells.

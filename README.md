@@ -70,8 +70,8 @@ to trust the repository before enabling Git. Only grant trust if you know its or
 ## Serial ports
 
 The **Serial** view (the plug above the Programmer): a block per port and per open
-channel. Click a port to open it: its output streams in a tab you can split like code.
-It opens **read only**; **✎ Write** turns typing on. The Outline's button shows its
+channel. **Monitor** a port to watch it (read only) in a tab you can split like code;
+**Attach** on its channel turns typing on. The Outline's button shows its
 settings beside it (baud, format, DTR/RTS, break, record, agents). **Ctrl+T W** closes it. Ports are taken as [xcomm](https://crates.io/crates/xcomm) takes them (a
 UUCP lock, an exclusive open) and opened again after an unplug. A port another xcomm
 holds can be shared with it, read only or read & write. Dots: green reads and writes,

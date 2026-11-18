@@ -641,6 +641,7 @@ impl App {
             // The panel's right edge stays; its left border follows the pointer.
             Drag::OutlineSash => self.outline_w = Some((self.ui.outline.right() + 1).saturating_sub(p.x).max(16)),
             Drag::GhSash => crate::github::drag_to(self, p.y),
+            Drag::SerialSash => crate::xcomm::drag_to(self, p.y),
             Drag::File { rel, from, active, dir, .. } => {
                 if !*active && (from.x.abs_diff(p.x) + from.y.abs_diff(p.y)) >= 2 {
                     *active = true;

@@ -40,9 +40,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   there (Q in the view). gh keeps the token either way.
 
 ### Changed
-- Serial view: ports and channels as blocks that light up under the pointer, the
-  side bar scrolls, buttons light up when pointed at. A channel opens read only:
-  ✎ Write (in its block, or its tab's bar) turns typing on. Its settings (baud, format,
+- Serial view: a ports pane and a channels pane, the line between dragged to resize (as
+  GitHub's), each scrolling; blocks and buttons light up under the pointer, a port's
+  card shows while the pointer rests on it. Monitor on a port watches it, read only,
+  no questions; Attach on a channel turns typing on (asked only when someone else holds
+  the port, or said when it is gone). Its settings (baud, format,
   modem lines, break, record, agents) are a panel beside its tab: the Outline's button.
 - Split Editor Down also by dragging a tab to an editor's top or bottom edge, or the new
   button beside Split Editor; each space can have four groups.
