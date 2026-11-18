@@ -12,7 +12,7 @@ use crate::theme::{icons, P};
 use crate::ui::{button_style, fill, fit, fit_left, pill, row};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;

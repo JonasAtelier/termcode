@@ -11,7 +11,7 @@ use crate::editor::{Buffer, Pos, View};
 use crate::icons::{file_icon, folder_icon};
 use crate::panel::Doc;
 use crate::ui::{fill, fit};
-use ratatui::style::{Style, Stylize};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 use std::collections::{HashMap, HashSet};

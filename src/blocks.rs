@@ -76,7 +76,7 @@ pub fn gutter() -> Color {
 }
 
 /// The icon set's frame characters (ASCII ones in ascii mode).
-pub fn border_set() -> ratatui::symbols::border::Set {
+pub fn border_set() -> ratatui::symbols::border::Set<'static> {
     let s = icons().border;
     ratatui::symbols::border::Set {
         top_left: s[0],

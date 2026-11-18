@@ -6,6 +6,12 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
+## [Unreleased]
+
+### Changed
+- The .deb's binary is built with link-time optimisation: about a fifth smaller.
+- ratatui 0.30, vt100 0.16; the Settings window's pictures no longer need ratatui-image.
+
 ## [0.5.0] - 2026-11-18
 
 ### Added

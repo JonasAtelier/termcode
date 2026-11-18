@@ -49,5 +49,5 @@ for target in $TARGETS; do
     rustup target list --installed | grep -qx "$target" || rustup target add "$target"
     # The Rust crates built into this target's binary and their license texts.
     cargo metadata --format-version 1 --locked --filter-platform "$target" | python3 -I scripts/third-party.py > target/THIRD-PARTY-LICENSES
-    cargo deb --target "$target" --no-strip "$@"
+    cargo deb --target "$target" --profile dist --no-strip "$@"
 done

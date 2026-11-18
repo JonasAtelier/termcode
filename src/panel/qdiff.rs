@@ -424,7 +424,7 @@ impl App {
             sync(true);
             let drawn = t.draw(|f| crate::ui::draw(self, f));
             sync(false);
-            drawn?;
+            drawn.map_err(|e| io::Error::other(e.to_string()))?;
             self.last_draw = Some(Instant::now());
             if matches!(self.drag, Drag::ClosePending) {
                 self.drag = Drag::None;

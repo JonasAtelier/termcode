@@ -1,12 +1,8 @@
 //! Small raster controls; Kitty in known terminals, half-blocks elsewhere.
 
 use crate::theme::Pal;
-use image::{DynamicImage, Rgba, RgbaImage};
+use image::{Rgba, RgbaImage};
 use ratatui::prelude::*;
-use ratatui_image::{
-    protocol::{halfblocks::Halfblocks, kitty::Kitty, Protocol},
-    Image,
-};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -57,7 +53,10 @@ enum Graphic {
 struct Cached {
     graphic: Graphic,
     size: (u16, u16),
-    protocol: Protocol,
+    /// Per cell, row by row: its text, its colour and (half-blocks) its background.
+    cells: Vec<(String, Color, Option<Color>)>,
+    /// The picture's Kitty escape, sent with the next frame only.
+    send: String,
 }
 
 pub struct Graphics {
@@ -205,26 +204,47 @@ impl Graphics {
                 u32::from(area.width) * u32::from(self.cell.0),
                 u32::from(area.height) * u32::from(self.cell.1),
             );
-            let local = Rect::new(0, 0, area.width, area.height);
-            let protocol = if self.mode == Mode::Kitty {
-                // Stable, process-local IDs keep repeated dialog opens bounded in the terminal.
+            let (w, h) = size;
+            let (cells, send) = if self.mode == Mode::Kitty {
+                // Stable, process-local IDs keep repeated dialog opens bounded in the
+                // terminal; sending an id again replaces its picture.
                 let id = 0x48000000 | ((std::process::id() & 0xffff) << 4) | slot as u32;
-                Kitty::new(DynamicImage::ImageRgba8(pixels), local, id, self.tmux)
-                    .map(Protocol::Kitty)
+                let cells = (0..h).flat_map(|y| (0..w).map(move |x| placeholder(id, y, x))).map(|(s, fg)| (s, fg, None)).collect();
+                (cells, self.transmit(id, &pixels, w, h))
             } else {
-                Halfblocks::new(DynamicImage::ImageRgba8(pixels), local).map(Protocol::Halfblocks)
+                // Two pixels a cell: the upper as the colour of "▀", the lower as its background.
+                let small = image::imageops::resize(&pixels, u32::from(w), u32::from(h) * 2, image::imageops::FilterType::Triangle);
+                let rgb = |x: u16, y: u32| {
+                    let p = small.get_pixel(u32::from(x), y);
+                    Color::Rgb(p[0], p[1], p[2])
+                };
+                let cells = (0..h)
+                    .flat_map(|y| (0..w).map(move |x| (x, u32::from(y) * 2)))
+                    .map(|(x, y)| {
+                        let (up, down) = (rgb(x, y), rgb(x, y + 1));
+                        (if up == down { " " } else { "▀" }.to_string(), up, Some(down))
+                    })
+                    .collect();
+                (cells, String::new())
             };
-            let Ok(protocol) = protocol else { return };
-            self.cache[slot] = Some(Cached {
-                graphic,
-                size,
-                protocol,
-            });
+            self.cache[slot] = Some(Cached { graphic, size, cells, send });
         }
-        f.render_widget(
-            Image::new(&self.cache[slot].as_ref().unwrap().protocol),
-            area,
-        );
+        let c = self.cache[slot].as_mut().unwrap();
+        let send = std::mem::take(&mut c.send);
+        let buf = f.buffer_mut();
+        for (i, (sym, fg, bg)) in c.cells.iter().enumerate() {
+            let (x, y) = (area.x + (i % usize::from(area.width)) as u16, area.y + (i / usize::from(area.width)) as u16);
+            let cell = &mut buf[(x, y)];
+            if i == 0 && !send.is_empty() {
+                cell.set_symbol(&format!("{send}{sym}"));
+            } else {
+                cell.set_symbol(sym);
+            }
+            cell.set_fg(*fg);
+            if let Some(bg) = bg {
+                cell.set_bg(*bg);
+            }
+        }
         DRAWN.with(|d| d.borrow_mut().push(area));
     }
 }
@@ -276,8 +296,7 @@ pub fn mark_drawn(r: Rect) {
     DRAWN.with(|d| d.borrow_mut().push(r));
 }
 
-/// Kitty's row and column marks for placeholder cells (its rowcolumn-diacritics.txt, as
-/// ratatui-image has them, MIT).
+/// Kitty's row and column marks for placeholder cells (its rowcolumn-diacritics.txt).
 const DIACRITICS: [char; 297] = [
     '\u{305}', '\u{30D}', '\u{30E}', '\u{310}', '\u{312}', '\u{33D}', '\u{33E}', '\u{33F}', '\u{346}', '\u{34A}',
     '\u{34B}', '\u{34C}', '\u{350}', '\u{351}', '\u{352}', '\u{357}', '\u{35B}', '\u{363}', '\u{364}', '\u{365}',

@@ -183,7 +183,7 @@ impl Term {
     /// Writes `b` to the shell, reading its output meanwhile so neither side stalls on a
     /// full buffer; gives up after a second.
     pub fn send(&mut self, mut b: &[u8]) {
-        self.parser.set_scrollback(0);
+        self.parser.screen_mut().set_scrollback(0);
         self.sel = None;
         let deadline = Instant::now() + Duration::from_secs(1);
         while !b.is_empty() && Instant::now() < deadline {
@@ -236,7 +236,7 @@ impl Term {
             return self.send(&arrow.repeat(d.unsigned_abs()));
         }
         let off = self.parser.screen().scrollback();
-        self.parser.set_scrollback(if up { off + d.unsigned_abs() } else { off.saturating_sub(d.unsigned_abs()) });
+        self.parser.screen_mut().set_scrollback(if up { off + d.unsigned_abs() } else { off.saturating_sub(d.unsigned_abs()) });
     }
 
     /// What runs in it besides the shell waiting at its prompt, by name: the foreground
@@ -307,7 +307,7 @@ impl Term {
         if self.parser.screen().size() == (rows, cols) {
             return;
         }
-        self.parser.set_size(rows, cols);
+        self.parser.screen_mut().set_size(rows, cols);
         let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
         // SAFETY: an open PTY master and a valid winsize.
         unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) };
@@ -333,7 +333,7 @@ impl Term {
                 }
                 let text = c.contents();
                 // A wide character's second cell is drawn over by its first.
-                cell.set_symbol(if text.is_empty() || c.is_wide_continuation() { " " } else { &text }).set_fg(f).set_bg(b);
+                cell.set_symbol(if text.is_empty() || c.is_wide_continuation() { " " } else { text }).set_fg(f).set_bg(b);
                 let mut m = Modifier::empty();
                 m.set(Modifier::BOLD, c.bold());
                 m.set(Modifier::ITALIC, c.italic());
@@ -352,30 +352,30 @@ impl Term {
     pub fn lines(&mut self) -> Vec<String> {
         let keep = self.parser.screen().scrollback();
         let cols = self.parser.screen().size().1;
-        self.parser.set_scrollback(usize::MAX);
+        self.parser.screen_mut().set_scrollback(usize::MAX);
         let n = self.parser.screen().scrollback();
         let mut v: Vec<String> = self.parser.screen().rows(0, cols).take(n).collect();
-        self.parser.set_scrollback(0);
+        self.parser.screen_mut().set_scrollback(0);
         v.extend(self.parser.screen().rows(0, cols));
-        self.parser.set_scrollback(keep);
+        self.parser.screen_mut().set_scrollback(keep);
         v
     }
 
     /// Scrolls row `abs` of `lines` into the middle of the view and selects its columns
     /// `cols` (start, end exclusive).
     pub fn show(&mut self, abs: usize, cols: (u16, u16)) {
-        self.parser.set_scrollback(usize::MAX);
+        self.parser.screen_mut().set_scrollback(usize::MAX);
         let n = self.parser.screen().scrollback();
         let rows = self.parser.screen().size().0 as usize;
         let top = abs.saturating_sub(rows / 2).min(n);
-        self.parser.set_scrollback(n - top);
+        self.parser.screen_mut().set_scrollback(n - top);
         let row = (abs - top) as u16;
         self.sel = Some(((row, cols.0), (row, cols.1.saturating_sub(1).max(cols.0))));
     }
 
     /// Back to the live screen, nothing selected.
     pub fn scroll_to_bottom(&mut self) {
-        self.parser.set_scrollback(0);
+        self.parser.screen_mut().set_scrollback(0);
         self.sel = None;
     }
 

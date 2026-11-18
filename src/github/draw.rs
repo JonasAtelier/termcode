@@ -5,7 +5,7 @@
 use super::*;
 use crate::ui::{fit, inset, row};
 use image::RgbaImage;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;

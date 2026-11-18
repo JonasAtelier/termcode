@@ -234,6 +234,10 @@ pub(crate) fn scrub(buf: &mut ratatui::buffer::Buffer, pictures: &[Rect]) {
             let p = Position::new(area.x + (i % width) as u16, area.y + (i / width) as u16);
             if !pictures.iter().any(|r| r.contains(p)) {
                 cell.set_symbol(" ");
+            } else {
+                // A picture's escape is one cell on screen, whatever its text's width:
+                // otherwise the diff skips that many cells after it.
+                cell.diff_option = ratatui::buffer::CellDiffOption::ForcedWidth(std::num::NonZeroU16::MIN);
             }
         }
     }
