@@ -15,6 +15,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   its output. `termcode api --skill` prints the guide for AI agents. Only your user's
   programs reach it; before one changes files or runs anything termcode asks you, and
   `termcode.api` makes it read-only or turns it off.
+- GitHub sign-in by QR code: next to Sign in with GitHub, Sign in with a QR code shows
+  GitHub's device page as a QR code for your phone, with gh's one-time code to enter
+  there (Q in the view). gh keeps the token either way.
 
 ### Changed
 - The side-by-side diff's minimap is the editor's: pixels in Ghostty and kitty, and each

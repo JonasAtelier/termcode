@@ -5637,6 +5637,35 @@ fn a_diffs_minimap_in_kitty_is_pixels_with_its_changes_tinted() {
 }
 
 #[test]
+fn github_sign_in_offers_a_qr_code_for_a_phone() {
+    use crate::github::{device_code, QrSignIn, State};
+    assert_eq!(device_code("! First copy your one-time code: 1A2B-3C4D\nPress Enter"), Some("1A2B-3C4D".into()));
+    assert_eq!(device_code("one-time code: 1A2B"), None, "not whole yet");
+    let root = repo("gh-qr");
+    let mut app = App::new(root.clone(), None);
+    app.side_w = Some(40);
+    app.show_side(Side::GitHub, false);
+    app.gh.state = State::SignedOut;
+    let mut t = Terminal::new(TestBackend::new(120, 50)).unwrap();
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("Sign in with GitHub") && s.contains("Sign in with a QR code"), "both ways: {s}");
+    assert_eq!(app.gh.hits.btns.iter().map(|b| b.1).collect::<Vec<_>>(), [crate::github::Btn::SignIn, crate::github::Btn::SignInQr]);
+    // Signing in by QR: gh's code, and the device page as a QR code, black on white.
+    app.gh.signing_in = true;
+    app.gh.qr = Some(QrSignIn { term: 0, code: Some("1A2B-3C4D".into()), entered: true });
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("1A2B-3C4D") && s.contains("Scan this with your phone"), "{s}");
+    let buf = t.backend().buffer();
+    let (x, y) = (0..buf.area.height).flat_map(|y| (0..buf.area.width).map(move |x| (x, y))).find(|&(x, y)| buf[(x, y)].symbol() == "▀").expect("the QR code");
+    let (black, white) = (ratatui::style::Color::Rgb(0, 0, 0), ratatui::style::Color::Rgb(255, 255, 255));
+    // The finder pattern's corner, after the two modules of quiet zone: its first column
+    // dark in both halves, its first row dark above the light ring.
+    assert_eq!((buf[(x, y)].fg, buf[(x, y)].bg), (white, white), "quiet zone");
+    assert_eq!((buf[(x + 2, y + 1)].fg, buf[(x + 2, y + 1)].bg), (black, black));
+    assert_eq!((buf[(x + 3, y + 1)].fg, buf[(x + 3, y + 1)].bg), (black, white));
+}
+
+#[test]
 fn the_minimap_in_kitty_is_pixels_at_vscodes_scales() {
     let root = repo("mini-pixels");
     let body: String = (0..300).map(|i| format!("{}\n", "x".repeat(i % 40 + 1))).collect();

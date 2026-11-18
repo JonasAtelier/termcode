@@ -297,6 +297,8 @@ pub enum Key {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Btn {
     SignIn,
+    /// Sign in from a phone: the device page as a QR code.
+    SignInQr,
     Retry,
     Refresh,
     /// The chosen repository's page.
@@ -354,6 +356,8 @@ pub struct GitHub {
     repo_gen: u64,
     /// A sign-in is running in the terminal: look again soon.
     pub signing_in: bool,
+    /// That sign-in is by QR code (a phone opens the page).
+    pub qr: Option<QrSignIn>,
     /// An action is running (what it is, said in the status bar).
     pub acting: Option<String>,
     pub folded: [bool; 8],
@@ -413,6 +417,7 @@ impl GitHub {
             repo_fetched: None,
             repo_gen: 0,
             signing_in: false,
+            qr: None,
             acting: None,
             folded: [false; 8],
             sel: [0; 2],
@@ -976,7 +981,7 @@ pub fn choose(app: &mut App, name: &str) {
 /// Fold finished work in and start what is due; true when the view changes. Nothing is
 /// fetched while the view is hidden.
 pub fn tick(app: &mut App) -> bool {
-    let mut changed = false;
+    let mut changed = qr_tick(app);
     while let Ok(m) = app.gh.rx.try_recv() {
         changed = true;
         match m {
@@ -989,7 +994,7 @@ pub fn tick(app: &mut App) -> bool {
                             app.msg = format!("signed in to GitHub as {}", d.login);
                         }
                         let gh = &mut app.gh;
-                        gh.signing_in = false;
+                        (gh.signing_in, gh.qr) = (false, None);
                         gh.state = State::Ready;
                         gh.data = Some(*d);
                     }
@@ -1080,15 +1085,61 @@ fn want_avatar(app: &mut App) {
 
 // ---------------------------------------------------------------- actions
 
-/// Sign in: `gh auth login --web` in the terminal (it shows a code to enter in the
-/// browser); the view looks every few seconds whether it is done.
-pub fn sign_in(app: &mut App) {
-    let cmd = format!("{} auth login --web", crate::term::sh_quote(&app.gh.bin.to_string_lossy()));
+/// GitHub's page for a device's sign-in code.
+pub const DEVICE_PAGE: &str = "https://github.com/login/device";
+
+/// A sign-in by QR code under way: gh's terminal, the code gh gave, whether gh got the
+/// Enter it waits for before it waits for the phone.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QrSignIn {
+    pub term: usize,
+    pub code: Option<String>,
+    pub entered: bool,
+}
+
+/// Sign in: `gh auth login --web` in the terminal (it shows a code to enter on GitHub's
+/// device page); the view looks every few seconds whether it is done. `qr`: the page
+/// is opened on a phone, from a QR code the view shows with gh's code, not in a browser
+/// here (GH_BROWSER: a command that does nothing). Either way gh keeps the token, in
+/// the system keyring where there is one; termcode never sees it.
+pub fn sign_in(app: &mut App, qr: bool) {
+    let gh = crate::term::sh_quote(&app.gh.bin.to_string_lossy());
+    let cmd = if qr { format!("env GH_BROWSER=true {gh} auth login --web") } else { format!("{gh} auth login --web") };
     if app.run_in_new_terminal(&cmd) {
         app.focus = Focus::Term;
         app.gh.signing_in = true;
-        app.msg = "signing in to GitHub in the terminal…".into();
+        app.gh.qr = qr.then(|| QrSignIn { term: app.terms.len() - 1, ..QrSignIn::default() });
+        app.msg = if qr { "signing in to GitHub: scan the code in the GitHub view…" } else { "signing in to GitHub in the terminal…" }.into();
     }
+}
+
+/// The one-time code in gh's output (`First copy your one-time code: 1A2B-3C4D`).
+pub fn device_code(out: &str) -> Option<String> {
+    let after = out.rsplit_once("one-time code:")?.1;
+    let code: String = after.trim_start().chars().take(9).collect();
+    let ok = code.len() == 9 && code.char_indices().all(|(i, c)| if i == 4 { c == '-' } else { c.is_ascii_alphanumeric() });
+    ok.then_some(code)
+}
+
+/// A QR sign-in's terminal read: gh's code taken, and the Enter gh waits for sent (its
+/// "browser" does nothing). True when the view changes.
+fn qr_tick(app: &mut App) -> bool {
+    let Some(q) = app.gh.qr.as_mut() else { return false };
+    let Some(t) = app.terms.get_mut(q.term) else {
+        (app.gh.qr, app.gh.signing_in) = (None, false); // its terminal closed
+        return true;
+    };
+    let out = t.log.since(0);
+    let mut changed = false;
+    if q.code.is_none() {
+        q.code = device_code(out);
+        changed = q.code.is_some();
+    }
+    if q.code.is_some() && !q.entered && out.contains("Press Enter") {
+        t.send(b"\r");
+        q.entered = true;
+    }
+    changed
 }
 
 /// Open `url` in the browser; with none (over SSH), the link goes to the clipboard.
@@ -1300,7 +1351,11 @@ pub fn key(app: &mut App, k: KeyEvent) -> bool {
     let ctrl = k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
     match app.gh.state {
         State::SignedOut if k.code == KeyCode::Enter => {
-            sign_in(app);
+            sign_in(app, false);
+            return true;
+        }
+        State::SignedOut if k.code == KeyCode::Char('q') && !app.gh.signing_in => {
+            sign_in(app, true);
             return true;
         }
         State::NoGh | State::Failed(_) if k.code == KeyCode::Enter => {
@@ -1419,7 +1474,8 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
     }
     if let Some(&(_, b)) = app.gh.hits.btns.iter().find(|(r, _)| r.contains(p)) {
         match b {
-            Btn::SignIn => sign_in(app),
+            Btn::SignIn => sign_in(app, false),
+            Btn::SignInQr => sign_in(app, true),
             Btn::Retry | Btn::Refresh => fetch(app),
             Btn::Activity => app.gh.activity_folded = !app.gh.activity_folded,
             Btn::Stats => app.gh.stats_folded = !app.gh.stats_folded,

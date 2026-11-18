@@ -24,17 +24,46 @@ pub(super) fn button(app: &mut App, f: &mut Frame, at: Rect, label: &str, primar
     w
 }
 
-/// A message (with an optional button under it) in the view.
-pub(super) fn message(app: &mut App, f: &mut Frame, area: Rect, lines: Vec<Line<'static>>, btn: Option<(&str, Btn)>) {
+/// A message (with buttons under it, one a row, the first the main one) in the view;
+/// the row under it all.
+pub(super) fn message(app: &mut App, f: &mut Frame, area: Rect, lines: Vec<Line<'static>>, btns: &[(&str, Btn)]) -> u16 {
     let p = Paragraph::new(lines).wrap(Wrap { trim: true }).style(Style::new().fg(P.sidebar_fg));
     let h = p.line_count(area.width) as u16;
     f.render_widget(p, area);
-    if let Some((label, b)) = btn {
-        let y = area.y + h + 1;
+    let mut y = area.y + h;
+    for (i, (label, b)) in btns.iter().enumerate() {
+        y += if i == 0 { 1 } else { 0 };
         if y < area.bottom() {
-            button(app, f, Rect::new(area.x, y, area.width, 1), label, true, b);
+            button(app, f, Rect::new(area.x, y, area.width, 1), label, i == 0, *b);
+        }
+        y += 1;
+    }
+    y
+}
+
+/// `text` as a QR code in half blocks (two modules a cell, a quiet zone of two), black
+/// on white whatever the theme, so a phone's camera reads it; its rows, or None when it
+/// does not fit `at` (or half blocks can't be drawn).
+pub(super) fn qr(f: &mut Frame, at: Rect, text: &str) -> Option<u16> {
+    let code = qrcode::QrCode::with_error_correction_level(text, qrcode::EcLevel::L).ok()?;
+    let (n, quiet) = (code.width(), 2usize);
+    let size = n + 2 * quiet;
+    let rows = size.div_ceil(2);
+    if crate::theme::ascii() || usize::from(at.width) < size || usize::from(at.height) < rows {
+        return None;
+    }
+    let dots = code.to_colors();
+    let dark = |x: usize, y: usize| (quiet..quiet + n).contains(&x) && (quiet..quiet + n).contains(&y) && dots[(y - quiet) * n + x - quiet] == qrcode::Color::Dark;
+    let ink = |d: bool| if d { Color::Rgb(0, 0, 0) } else { Color::Rgb(255, 255, 255) };
+    let x0 = at.x + (at.width - size as u16) / 2;
+    let buf = f.buffer_mut();
+    for row in 0..rows {
+        for col in 0..size {
+            let cell = &mut buf[(x0 + col as u16, at.y + row as u16)];
+            cell.set_symbol("▀").set_fg(ink(dark(col, row * 2))).set_bg(ink(dark(col, row * 2 + 1)));
         }
     }
+    Some(rows as u16)
 }
 
 /// The view below its title: what needs doing first (gh, signing in), else the two panes.
@@ -50,7 +79,9 @@ pub fn draw(app: &mut App, f: &mut Frame, r: Rect) {
     app.ui.side_list = Rect::default();
     let dim = Style::new().fg(P.dim);
     match app.gh.state.clone() {
-        State::Loading if app.gh.data.is_none() => message(app, f, area, vec![Line::styled("Loading…", dim)], None),
+        State::Loading if app.gh.data.is_none() => {
+            message(app, f, area, vec![Line::styled("Loading…", dim)], &[]);
+        }
         State::NoGh => {
             let lines = vec![
                 Line::styled("GitHub CLI (gh) is not installed.", Style::new().bold()),
@@ -59,7 +90,7 @@ pub fn draw(app: &mut App, f: &mut Frame, r: Rect) {
                 Line::raw(""),
                 Line::styled("Install it from https://cli.github.com (Debian, Ubuntu: sudo apt install gh), then:", dim),
             ];
-            message(app, f, area, lines, Some((" Try Again ", Btn::Retry)));
+            message(app, f, area, lines, &[(" Try Again ", Btn::Retry)]);
         }
         State::SignedOut => {
             let mut lines = vec![
@@ -68,17 +99,43 @@ pub fn draw(app: &mut App, f: &mut Frame, r: Rect) {
                 Line::raw("to see your repositories, pull requests, review requests, issues and notifications."),
                 Line::raw(""),
             ];
-            if app.gh.signing_in {
-                lines.push(Line::styled("Finish signing in in the terminal below: it shows a code to enter in your browser.", Style::new().fg(P.git_modified)));
-                message(app, f, area, lines, None);
-            } else {
-                lines.push(Line::styled("gh asks for your account in the terminal below; termcode never sees a password or token.", dim));
-                message(app, f, area, lines, Some((" Sign in with GitHub ", Btn::SignIn)));
+            let busy = Style::new().fg(P.git_modified);
+            match (app.gh.signing_in, app.gh.qr.clone()) {
+                (true, Some(q)) => {
+                    let Some(code) = q.code else {
+                        lines.push(Line::styled("Answer gh in the terminal below; its code then shows here, with a QR code for your phone.", busy));
+                        message(app, f, area, lines, &[]);
+                        return;
+                    };
+                    lines.push(Line::styled("Scan this with your phone (camera or GitHub Mobile):", busy));
+                    let y = message(app, f, area, lines, &[]) + 1;
+                    let at = Rect::new(area.x, y.min(area.bottom()), area.width, area.bottom().saturating_sub(y));
+                    let h = qr(f, at, crate::github::DEVICE_PAGE).unwrap_or(0);
+                    let mut rest = vec![
+                        Line::from(vec![Span::raw("then enter "), Span::styled(code, Style::new().bold().fg(P.sidebar_fg)), Span::raw(" and approve.")]),
+                    ];
+                    if h == 0 {
+                        rest.push(Line::styled(format!("(On any device: {})", crate::github::DEVICE_PAGE), dim));
+                    }
+                    rest.push(Line::styled("gh keeps the sign-in; termcode never sees a password or token.", dim));
+                    let y = at.y + h + u16::from(h > 0);
+                    if y < area.bottom() {
+                        message(app, f, Rect::new(area.x, y, area.width, area.bottom() - y), rest, &[]);
+                    }
+                }
+                (true, None) => {
+                    lines.push(Line::styled("Finish signing in in the terminal below: it shows a code to enter in your browser.", busy));
+                    message(app, f, area, lines, &[]);
+                }
+                _ => {
+                    lines.push(Line::styled("gh asks for your account in the terminal below; termcode never sees a password or token.", dim));
+                    message(app, f, area, lines, &[(" Sign in with GitHub ", Btn::SignIn), (" Sign in with a QR code (phone) ", Btn::SignInQr)]);
+                }
             }
         }
         State::Failed(e) if app.gh.data.is_none() => {
             let lines = vec![Line::styled("Couldn't reach GitHub.", Style::new().bold()), Line::raw(""), Line::styled(e, Style::new().fg(P.error_fg))];
-            message(app, f, area, lines, Some((" Try Again ", Btn::Retry)));
+            message(app, f, area, lines, &[(" Try Again ", Btn::Retry)]);
         }
         _ => ready(app, f, area, focused),
     }
@@ -496,7 +553,8 @@ pub(super) fn repo_pane(app: &mut App, f: &mut Frame, r: Rect, focused: bool) {
     let dim = Style::new().fg(P.dim);
     let Some(name) = app.gh.chosen.clone() else {
         let lines = vec![Line::styled("Choose a repository above to see its Actions, pull requests and issues here.", dim)];
-        return message(app, f, r, lines, None);
+        message(app, f, r, lines, &[]);
+        return;
     };
     let info = app.gh.chosen_info().cloned().unwrap_or_else(|| RepoInfo { name: name.clone(), ..RepoInfo::default() });
     // Its description, then what it is: private, default branch, language, stars, forks,
@@ -529,9 +587,11 @@ pub(super) fn repo_pane(app: &mut App, f: &mut Frame, r: Rect, focused: bool) {
     match &app.gh.repo {
         Some(Err(e)) => {
             let lines = vec![Line::styled(format!("Couldn't read it: {e}"), Style::new().fg(P.error_fg))];
-            message(app, f, lists, lines, Some((" Try Again ", Btn::Retry)));
+            message(app, f, lists, lines, &[(" Try Again ", Btn::Retry)]);
         }
-        None => message(app, f, lists, vec![Line::styled("Loading…", dim)], None),
+        None => {
+            message(app, f, lists, vec![Line::styled("Loading…", dim)], &[]);
+        }
         Some(Ok(_)) => {
             let lists = stats(app, f, lists);
             list(app, f, lists, BOTTOM, focused)
