@@ -47,7 +47,7 @@ type Stamp = Option<(SystemTime, u64)>;
 /// Quick-diff recompute delay after an edit.
 const QDIFF_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const MAX_HITS: usize = 5_000;
-pub const MAX_GROUPS: usize = 3;
+pub const MAX_GROUPS: usize = 4;
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Set for the process a reload execs: the session comes back whatever the settings say.
 const RELOAD_ENV: &str = "TERMCODE_RELOADED";
@@ -359,6 +359,8 @@ pub struct Tab {
 pub struct Group {
     pub tabs: Vec<Tab>,
     pub active: usize,
+    /// Under the group before it, in its column (Split Editor Down); else a column of its own.
+    pub below: bool,
 }
 
 pub struct Find {
@@ -581,6 +583,8 @@ pub enum Cmd {
     Navigate(u8),
     /// Close the active terminal; the last one: the panel hidden, its shell kept.
     CloseTerminal,
+    /// The active tab again in a new group: to the right, or (true) below.
+    Split(bool),
     Nav(crate::navui::Act),
     Git(crate::gitcmds::GitCmd),
     GotoLine,
@@ -663,6 +667,8 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Show GitHub", Cmd::ShowSide(Side::GitHub), ""),
     ("View: Show Programmer", Cmd::ShowSide(Side::Programmer), ""),
     ("View: Show Serial", Cmd::ShowSide(Side::Serial), ""),
+    ("View: Split Editor Right", Cmd::Split(false), "Ctrl+T \\"),
+    ("View: Split Editor Down", Cmd::Split(true), "Ctrl+T -"),
     ("STM32: Connect", Cmd::Prog(crate::programmer::Op::Connect), ""),
     ("STM32: Start Programming", Cmd::Prog(crate::programmer::Op::Program), ""),
     ("STM32: Reset Target", Cmd::Prog(crate::programmer::Op::Reset), ""),
@@ -2158,6 +2164,7 @@ impl App {
                 }
             }
             Cmd::Navigate(dir) => self.navigate(dir),
+            Cmd::Split(down) => self.split(self.ag, down),
             Cmd::CloseTerminal if self.terms.len() > 1 => self.kill_terminal(self.term_at, true),
             Cmd::CloseTerminal => {
                 if self.term_open {

@@ -1346,20 +1346,43 @@ pub(crate) fn input_marked(f: &mut Frame, r: Rect, text: &str, placeholder: &str
 }
 
 fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
-    let n = app.groups.len().max(1) as u16;
     let st = app.settings.blocks;
     // Cards sit border to border; the other styles draw a 1-cell line between groups.
     let sep = u16::from(st != BlockStyle::Cards);
+    // Columns: a group `below` sits under the one before it, in its column.
+    let mut cols: Vec<Vec<usize>> = Vec::new();
+    for g in 0..app.groups.len() {
+        match cols.last_mut() {
+            Some(c) if app.groups[g].below => c.push(g),
+            _ => cols.push(vec![g]),
+        }
+    }
+    let n = cols.len().max(1) as u16;
     let gw = r.width.saturating_sub((n - 1) * sep) / n;
     let mut x = r.x;
-    for g in 0..app.groups.len() {
-        let w = if g + 1 == app.groups.len() { r.right().saturating_sub(x) } else { gw };
-        // Find's box sits in the group: its card keeps the focus border.
-        let focused = g == app.ag && matches!(app.focus, Focus::Editor | Focus::Find) && !app.activity_lit;
-        let area = crate::blocks::card(st, f, Rect::new(x, r.y, w, r.height), P.editor_bg, focused);
-        group(app, f, g, area, lay, (area.y > r.y).then_some(r.y));
+    for (ci, col) in cols.iter().enumerate() {
+        let w = if ci + 1 == cols.len() { r.right().saturating_sub(x) } else { gw };
+        let m = col.len() as u16;
+        let gh = r.height.saturating_sub((m - 1) * sep) / m;
+        let mut y = r.y;
+        for (k, &g) in col.iter().enumerate() {
+            let h = if k + 1 == col.len() { r.bottom().saturating_sub(y) } else { gh };
+            // Find's box sits in the group: its card keeps the focus border.
+            let focused = g == app.ag && matches!(app.focus, Focus::Editor | Focus::Find) && !app.activity_lit;
+            let area = crate::blocks::card(st, f, Rect::new(x, y, w, h), P.editor_bg, focused);
+            group(app, f, g, area, lay, (area.y > y).then_some(y));
+            y += h;
+            if k + 1 < col.len() {
+                match st {
+                    BlockStyle::None => f.render_widget(Paragraph::new("─".repeat(usize::from(w))).style(Style::new().fg(P.group_border).bg(P.editor_bg)), Rect::new(x, y, w, 1)),
+                    BlockStyle::Lines => crate::blocks::hline(y, x, x + w - 1),
+                    BlockStyle::Cards => {}
+                }
+                y += sep;
+            }
+        }
         x += w;
-        if g + 1 < app.groups.len() {
+        if ci + 1 < cols.len() {
             match st {
                 BlockStyle::None => {
                     let lines: Vec<Line> = (0..r.height).map(|_| Line::raw("│")).collect();

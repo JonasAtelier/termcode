@@ -329,7 +329,14 @@ impl App {
             grp.active = grp.active.saturating_sub(1);
         }
         if grp.tabs.is_empty() && self.groups.len() > 1 {
+            // A column's first group gone: the one under it heads the column now.
+            let head = !self.groups[g].below;
             self.groups.remove(g);
+            if head {
+                if let Some(next) = self.groups.get_mut(g) {
+                    next.below = false;
+                }
+            }
             if self.ag >= g && self.ag > 0 {
                 self.ag -= 1;
             }

@@ -244,13 +244,22 @@ impl App {
 
     /// "Split Editor Right": the active file again in a new group to the right.
     pub(super) fn split_right(&mut self, g: usize) {
+        self.split(g, false);
+    }
+
+    /// The active tab of group `g` again in a new group: to its right (a new column), or
+    /// (`down`) under it in its column.
+    pub(crate) fn split(&mut self, g: usize, down: bool) {
         if self.groups.len() >= MAX_GROUPS {
+            self.msg = format!("{MAX_GROUPS} editor groups at most");
             return;
         }
-        let Some(t) = self.groups[g].tabs.get(self.groups[g].active) else { return };
+        let Some(t) = self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)) else { return };
         let tab = Tab { key: t.key.clone(), preview: false, view: t.view.clone() };
-        self.groups.insert(g + 1, Group { tabs: vec![tab], active: 0 });
-        self.ag = g + 1;
+        // To the right: after the whole column `g` is in.
+        let at = if down { g + 1 } else { (g + 1..self.groups.len()).find(|&i| !self.groups[i].below).unwrap_or(self.groups.len()) };
+        self.groups.insert(at, Group { tabs: vec![tab], active: 0, below: down });
+        self.ag = at;
         self.focus = Focus::Editor;
     }
 

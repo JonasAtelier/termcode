@@ -5666,6 +5666,40 @@ fn github_sign_in_offers_a_qr_code_for_a_phone() {
 }
 
 #[test]
+fn an_editor_splits_down_as_well_as_right_into_columns() {
+    let root = repo("split-down");
+    fs::write(root.join("a.txt"), "alpha\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "a.txt", false);
+    app.focus = Focus::Editor;
+    let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    // Ctrl+T -: the tab again under it, in the same column.
+    key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('-'), KeyModifiers::NONE);
+    screen(&mut app, &mut t);
+    assert_eq!((app.groups.len(), app.ag, app.groups[1].below), (2, 1, true));
+    let (top, under) = (app.ui.groups[0].area, app.ui.groups[1].area);
+    assert!(top.x == under.x && top.width == under.width && under.y >= top.bottom(), "{top:?} {under:?}");
+    // Ctrl+T \ from the top: a new column right of that whole column.
+    app.ag = 0;
+    key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('\\'), KeyModifiers::NONE);
+    screen(&mut app, &mut t);
+    assert_eq!((app.groups.len(), app.ag, app.groups[2].below), (3, 2, false));
+    let (left, right) = (app.ui.groups[0].area, app.ui.groups[2].area);
+    assert!(right.x >= left.right() && right.height > left.height, "a column of its own, full height: {left:?} {right:?}");
+    // Ctrl+T ↓ from the top one: the one under it.
+    app.ag = 0;
+    key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(app.ag, 1);
+    // The column's head closed: the one under it heads the column, full height.
+    app.close_tab(0, 0, true);
+    screen(&mut app, &mut t);
+    assert!(!app.groups[0].below && app.ui.groups[0].area.height > top.height);
+}
+
+#[test]
 fn the_minimap_in_kitty_is_pixels_at_vscodes_scales() {
     let root = repo("mini-pixels");
     let body: String = (0..300).map(|i| format!("{}\n", "x".repeat(i % 40 + 1))).collect();

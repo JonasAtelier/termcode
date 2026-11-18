@@ -40,6 +40,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   there (Q in the view). gh keeps the token either way.
 
 ### Changed
+- Split Editor Down (Ctrl+T -) as well as Right (Ctrl+T \\): groups in columns, up to
+  four (2 × 2); Ctrl+T and the arrows move between them.
 - The side-by-side diff's minimap is the editor's: pixels in Ghostty and kitty, and each
   changed line tinted (green inserted or changed, red removed).
 - The change, problem and find marks beside the scrollbar sit under its slider exactly

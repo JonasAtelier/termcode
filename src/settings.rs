@@ -317,6 +317,8 @@ pub const DEFAULT_PREFIX_KEYS: &str = r#"{
     "p": "Terminal: Focus Previous Terminal",
     "x": "Terminal: Close Terminal",
     "w": "View: Close Editor",
+    "\\": "View: Split Editor Right",
+    "-": "View: Split Editor Down",
     "f": "Go to File...",
     "s": "View: Show Search",
     "e": "View: Show Explorer",

@@ -181,7 +181,7 @@ pub fn snapshot(app: &App) -> Value {
         .iter()
         .map(|g| {
             let tabs: Vec<Value> = g.tabs.iter().filter(|t| restorable(&t.key)).map(|t| json!({ "key": t.key, "preview": t.preview, "view": view_json(&t.view) })).collect();
-            json!({ "active": g.tabs.iter().take(g.active).filter(|t| restorable(&t.key)).count(), "tabs": tabs })
+            json!({ "active": g.tabs.iter().take(g.active).filter(|t| restorable(&t.key)).count(), "below": g.below, "tabs": tabs })
         })
         .collect();
     let open: Vec<&str> = app.tree.iter().filter(|n| n.dir && n.open).map(|n| n.path.as_str()).take(MAX_FOLDERS).collect();
@@ -371,7 +371,8 @@ pub fn restore(app: &mut App) {
             ag = groups.len();
         }
         app.session.pending.extend(tabs.iter().map(|t| t.key.clone()));
-        groups.push(Group { tabs, active });
+        // The first group heads a column whatever was saved.
+        groups.push(Group { tabs, active, below: g["below"] == true && !groups.is_empty() });
     }
     if !groups.is_empty() {
         app.groups = groups;
