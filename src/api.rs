@@ -94,6 +94,11 @@ pub struct Gate {
     pub answer: Option<u8>,
     /// The prompt for a client is up.
     pub asking: bool,
+    /// A `ui.prompt` answered: its number, the button picked.
+    pub picked: Option<(u64, usize)>,
+    /// The `ui.prompt` up, by number (another prompt over it, or Esc: no answer).
+    asked: Option<u64>,
+    next_ask: u64,
 }
 
 impl Gate {
@@ -136,6 +141,8 @@ enum Waiting {
     /// The user's answer: may `client` do `tier` (`req`, done once allowed)? `shown`:
     /// the prompt is up for it; `once`: allowed for this request only.
     Grant { client: Client, tier: Tier, req: Value, shown: bool, once: bool },
+    /// `ui.prompt` number `n`, from `who`: its question and buttons; `shown` once up.
+    Ask { n: u64, who: String, text: String, buttons: Vec<String>, shown: bool },
 }
 
 /// A request's answer: now, or later (see `Wait`), or (events.watch) now and then events
@@ -494,6 +501,19 @@ pub fn tick(app: &mut App) -> bool {
                 }
             },
             Waiting::Screen => None,
+            Waiting::Ask { n, buttons, shown, .. } => match app.api_gate.picked {
+                Some((pn, b)) if pn == *n => {
+                    app.api_gate.picked = None;
+                    app.api_gate.asked = None;
+                    Some(Ok(json!({"button": buttons.get(b), "index": b})))
+                }
+                // Closed without a pick (Esc, or another window over it): no answer.
+                _ if *shown && app.api_gate.asked == Some(*n) && app.prompt.is_none() => {
+                    app.api_gate.asked = None;
+                    Some(Ok(json!({"button": null})))
+                }
+                _ => None,
+            },
             Waiting::Grant { client, tier, req, once, .. } => {
                 match app.api_gate.check(&app.settings.api, client, *tier) {
                     _ if *once => {
@@ -510,6 +530,13 @@ pub fn tick(app: &mut App) -> bool {
             }
         };
         let done = done.or_else(|| (now >= w.until).then(|| Err(if matches!(w.what, Waiting::Grant { .. }) { "the user did not answer".to_string() } else { "timed out".to_string() })));
+        // A question given up on while up: its window goes with it.
+        if let (Some(Err(_)), Waiting::Ask { n, .. }) = (&done, &w.what) {
+            if app.api_gate.asked == Some(*n) {
+                app.api_gate.asked = None;
+                app.prompt = None;
+            }
+        }
         let keep = done.is_none();
         if let Some(r) = done {
             let _ = reply.send(envelope(&w.id, r));
@@ -524,6 +551,21 @@ pub fn tick(app: &mut App) -> bool {
             Reply::Watch(id, topics) => watch(app, id, topics, reply),
         }
         changed = true;
+    }
+    // A client's question, when no window is up.
+    if !app.api_gate.asking && app.api_gate.asked.is_none() && app.prompt.is_none() {
+        if let Some((w, _)) = waits.iter_mut().find(|(w, _)| matches!(w.what, Waiting::Ask { shown: false, .. })) {
+            if let Waiting::Ask { n, who, text, buttons, shown } = &mut w.what {
+                *shown = true;
+                app.api_gate.asked = Some(*n);
+                app.prompt = Some(crate::panel::Prompt {
+                    text: vec![format!("{who} asks:"), text.clone()],
+                    buttons: buttons.iter().enumerate().map(|(i, b)| (b.clone(), crate::panel::PAct::ApiPick(*n, i))).collect(),
+                    sel: 0,
+                });
+                changed = true;
+            }
+        }
     }
     // The next client to ask about, when no prompt is up.
     if !app.api_gate.asking && app.prompt.is_none() {
@@ -654,6 +696,17 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
             Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Output { term, re, mark, seen: None } }))
         }
         Ok(crate::rpc::Out::Watch(topics)) => Reply::Watch(id, topics),
+        Ok(crate::rpc::Out::Notify(text)) => {
+            let who = client.label.split(" (pid").next().unwrap_or(&client.label).to_string();
+            app.msg = format!("{who}: {text}");
+            Reply::Now(envelope(&id, Ok(json!({"shown": true}))))
+        }
+        Ok(crate::rpc::Out::Ask { text, buttons, timeout }) => {
+            let n = app.api_gate.next_ask;
+            app.api_gate.next_ask += 1;
+            let who = client.label.split(" (pid").next().unwrap_or(&client.label).to_string();
+            Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Ask { n, who, text, buttons, shown: false } }))
+        }
         Ok(crate::rpc::Out::Serial { tty, re, mark, timeout }) => {
             Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Serial { tty, re, mark, seen: None } }))
         }
@@ -956,6 +1009,79 @@ mod tests {
         assert_eq!((ev["params"]["topic"].as_str(), ev["params"]["path"].as_str()), (Some("buffer.changed"), Some("b.txt")), "{ev}");
         // An unknown topic is refused.
         assert!(crate::rpc::call(&mut app, "events.watch", &json!({"topics": ["nope"]})).is_err());
+        drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn clients_notify_ask_the_user_and_mark_lines() {
+        let dir = std::env::temp_dir().join(format!("termcode-api-ui-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("run")).unwrap();
+        fs::set_permissions(dir.join("run"), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(dir.join("a.c"), "int main() {\n    return 0;\n}\n").unwrap();
+        let mut app = App::new(fs::canonicalize(&dir).unwrap(), None);
+        app.api = start(&dir.join("run"));
+        let sock = dir.join(format!("run/{}.sock", std::process::id()));
+        let ask = |app: &mut App, req: &str, pick: Option<usize>| -> Value {
+            let s = UnixStream::connect(&sock).unwrap();
+            (&s).write_all(format!("{req}\n").as_bytes()).unwrap();
+            let mut lines = BufReader::new(s.try_clone().unwrap());
+            lines.get_ref().set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+            for _ in 0..300 {
+                tick(app);
+                // The user's click on the question's window.
+                if let (Some(b), Some(p)) = (pick, app.prompt.as_ref()) {
+                    if let Some(crate::panel::PAct::ApiPick(n, i)) = p.buttons.get(b).map(|x| x.1.clone()) {
+                        app.prompt = None;
+                        app.api_gate.picked = Some((n, i));
+                    }
+                }
+                let mut line = String::new();
+                if lines.read_line(&mut line).is_ok_and(|n| n > 0) {
+                    return serde_json::from_str(&line).unwrap();
+                }
+            }
+            panic!("no reply to {req}");
+        };
+        // notify: on the status bar, with who said it.
+        let r = ask(&mut app, r#"{"jsonrpc":"2.0","id":1,"method":"ui.notify","params":{"text":"tests passed"}}"#, None);
+        assert_eq!(r["result"]["shown"], true);
+        assert!(app.msg.ends_with(": tests passed"), "{}", app.msg);
+        // prompt: a window with the buttons; the one clicked is the answer.
+        let r = ask(&mut app, r#"{"jsonrpc":"2.0","id":2,"method":"ui.prompt","params":{"text":"Flash the board?","buttons":["Flash","Not now"]}}"#, Some(1));
+        assert_eq!((r["result"]["button"].as_str(), r["result"]["index"].as_u64()), (Some("Not now"), Some(1)), "{r}");
+        // Closed with Esc: no answer.
+        let s = UnixStream::connect(&sock).unwrap();
+        (&s).write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ui.prompt\",\"params\":{\"text\":\"Sure?\"}}\n").unwrap();
+        for _ in 0..50 {
+            tick(&mut app);
+            if app.prompt.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(app.prompt.as_ref().is_some_and(|p| p.text.iter().any(|t| t == "Sure?")));
+        app.prompt = None; // Esc
+        let mut lines = BufReader::new(s);
+        lines.get_ref().set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        let mut line = String::new();
+        for _ in 0..100 {
+            tick(&mut app);
+            if lines.read_line(&mut line).is_ok_and(|n| n > 0) {
+                break;
+            }
+        }
+        assert!(line.contains("\"button\":null"), "{line}");
+        // decorate: marks on lines, as problems (underline, hover, scrollbar); clear.
+        let r = crate::rpc::call(&mut app, "ui.decorate", &json!({"path": "a.c", "marks": [{"line": 2, "severity": "warning", "note": "always 0"}]}));
+        assert!(r.is_ok());
+        let marks = app.lints.all("file:a.c");
+        assert_eq!(marks.len(), 1);
+        assert_eq!((marks[0].0, marks[0].1, marks[0].3, marks[0].4), (1, 4, crate::lint::Sev::Warning, "always 0"), "the line's text, past its indent");
+        assert_eq!(app.lints.at("file:a.c", 1, 6).map(|h| h.1[0].1.clone()).as_deref(), Some("always 0"), "its note on hover");
+        assert!(crate::rpc::call(&mut app, "ui.clear", &json!({})).is_ok());
+        assert!(app.lints.all("file:a.c").is_empty());
         drop(app);
         fs::remove_dir_all(&dir).unwrap();
     }

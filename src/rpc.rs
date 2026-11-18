@@ -17,6 +17,10 @@ pub enum Out {
     Serial { tty: String, re: fancy_regex::Regex, mark: u64, timeout: Duration },
     /// The connection kept for events on these topics (none: all of them).
     Watch(Vec<String>),
+    /// `ui.notify`: shown with the client's name.
+    Notify(String),
+    /// `ui.prompt`: the user asked in termcode; the button picked is the answer.
+    Ask { text: String, buttons: Vec<String>, timeout: Duration },
 }
 
 /// What `events.watch` sends, each as `{"method": "event", "params": {"topic", …}}`.
@@ -42,6 +46,10 @@ pub const METHODS: &[&str] = &[
     "serial.send",
     "serial.set",
     "serial.close",
+    "ui.notify",
+    "ui.prompt",
+    "ui.decorate",
+    "ui.clear",
 ];
 
 /// What `method` may do (`api::Gate` asks the user before `Edit` and `Run`): reading
@@ -51,6 +59,8 @@ pub fn tier(method: &str, p: &Value) -> crate::api::Tier {
     use crate::api::Tier;
     match method {
         "editor.open" | "buffer.edit" | "buffer.save" | "serial.note" | "serial.monitor" | "serial.close" => Tier::Edit,
+        // Showing things in termcode, asking the user: as changing what is open.
+        "ui.notify" | "ui.prompt" | "ui.decorate" | "ui.clear" => Tier::Edit,
         "command.run" | "terminal.send" | "events.wait" | "serial.attach" | "serial.send" | "serial.set" => Tier::Run,
         "state.get" if matches!(p["path"].as_str(), Some("/terminals" | "/ui/screen")) => Tier::Run,
         // Output (a terminal's, a serial port's) is what running reads; the rest is reading.
@@ -131,6 +141,55 @@ pub fn call(app: &mut App, method: &str, p: &Value) -> Result<Out, String> {
             let mark = p["since"].as_u64().unwrap_or_else(|| t.log.end());
             let timeout = Duration::from_secs_f64(p["timeout"].as_f64().unwrap_or(30.0).clamp(0.0, 3600.0));
             Ok(Out::Output { term, re, mark, timeout })
+        }
+        "ui.notify" => {
+            let text = p["text"].as_str().ok_or("ui.notify: give \"text\"")?;
+            Ok(Out::Notify(text.chars().take(200).collect()))
+        }
+        "ui.prompt" => {
+            let text = p["text"].as_str().ok_or("ui.prompt: give \"text\" (and \"buttons\")")?.chars().take(300).collect();
+            let mut buttons: Vec<String> = p["buttons"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|b| b.chars().take(24).collect()).take(4).collect();
+            if buttons.is_empty() {
+                buttons = vec!["OK".into()];
+            }
+            let timeout = Duration::from_secs_f64(p["timeout"].as_f64().unwrap_or(120.0).clamp(1.0, 3600.0));
+            Ok(Out::Ask { text, buttons, timeout })
+        }
+        "ui.decorate" => {
+            let rel = rel_path(app, p)?;
+            let key = app.file_doc(&rel);
+            let Some(Doc::Text(b)) = app.docs.get(&key) else { return Err(format!("{rel} is not text")) };
+            let mut marks = Vec::new();
+            for m in p["marks"].as_array().ok_or("ui.decorate: give \"marks\": [{line, severity?, note}] ([] clears them)")? {
+                let line = m["line"].as_u64().ok_or("a mark needs its \"line\" (from 1)")? as usize;
+                let Some(text) = b.lines.get(line.saturating_sub(1)) else { continue };
+                let sev = match m["severity"].as_str().unwrap_or("info") {
+                    "error" => crate::lint::Sev::Error,
+                    "warning" => crate::lint::Sev::Warning,
+                    _ => crate::lint::Sev::Info,
+                };
+                let note = m["note"].as_str().unwrap_or_default().chars().take(300).collect();
+                // The whole line's text, its indentation left out.
+                let start = text.len() - text.trim_start().len();
+                marks.push(crate::lint::Diag::mark(line - 1, start, text.len().max(start + 1), sev, note));
+            }
+            let n = marks.len();
+            if marks.is_empty() {
+                app.lints.marks.remove(&key);
+            } else {
+                app.lints.marks.insert(key, marks);
+            }
+            now(json!({"path": rel, "marks": n}))
+        }
+        "ui.clear" => {
+            match p["path"].as_str() {
+                Some(_) => {
+                    let rel = rel_path(app, p)?;
+                    app.lints.marks.remove(&format!("file:{rel}"));
+                }
+                None => app.lints.marks.clear(),
+            }
+            now(json!({"cleared": true}))
         }
         "serial.ports" => now(crate::xcomm::ports_json(app)),
         "serial.monitor" => crate::xcomm::api_monitor(app, port(p)?).map(Out::Now),

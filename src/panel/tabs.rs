@@ -499,6 +499,7 @@ impl App {
             PAct::Delete(rels, forever) => self.delete_paths(&rels, forever),
             PAct::KillTerminal(i) => self.kill_terminal(i, false),
             PAct::Api(a) => self.api_gate.answer = Some(a),
+            PAct::ApiPick(n, b) => self.api_gate.picked = Some((n, b)),
             PAct::Serial(tty, write) => crate::xcomm::share(self, &tty, write),
             PAct::QuitEndTerminal => {
                 self.term_quit_ok = true;

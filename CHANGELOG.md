@@ -39,7 +39,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   attached; shown in the tab as `[api]`), `set` and `close`. `events.watch` keeps a
   connection for events: edits, saves, files opened and closed, the active tab, the
   cursor, problems, Git, terminal and serial output (`termcode api events.watch` prints
-  them, a JSON line each).
+  them, a JSON line each). `ui.notify` (the status bar), `ui.prompt` (a question with
+  buttons, the one clicked the answer), `ui.decorate` / `ui.clear` (marks on lines,
+  shown as problems with a note).
 - GitHub sign-in by QR code: next to Sign in with GitHub, Sign in with a QR code shows
   GitHub's device page as a QR code for your phone, with gh's one-time code to enter
   there (Q in the view). gh keeps the token either way.

@@ -41,6 +41,10 @@ status bar shows). Paths are relative to the workspace (absolute ones must be in
 | `terminal.send` | `text`, `index`? | `index`, `mark` (output position before it) |
 | `events.wait` | `topic: "terminal.output"`, `match` (regex), `timeout` (s, 30), `since`?, `index`? | `matched`, `output` |
 | `events.watch` | `topics`? (none: all): buffer.changed, file.saved, file.opened, file.closed, tab, cursor, diagnostics, git, terminal.output, serial.output | then one event a line, `{"topic", …}`, until you close (the CLI prints them) |
+| `ui.notify` | `text` | shown on termcode's status bar, with your name |
+| `ui.prompt` | `text`, `buttons` (up to 4; `["OK"]`), `timeout` (s, 120) | the `button` the user picked (`null`: closed) |
+| `ui.decorate` | `path`, `marks`: `[{line, severity (info, warning, error), note}]` (`[]` clears) | lines marked as problems: underlined, the note on hover |
+| `ui.clear` | `path`? (none: all) | your marks gone |
 | `serial.ports` | | each serial port: `tty`, `note`, `state` (green, yellow, red), adapter, USB ID, holder, the channel open here |
 | `serial.note` | `port` (`ttyUSB0`), `note` (`""` removes it) | the note beside that port, kept per adapter |
 | `serial.monitor` | `port` | opens it here, read only (as the Monitor button) |

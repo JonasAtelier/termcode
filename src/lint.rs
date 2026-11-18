@@ -82,11 +82,20 @@ pub struct Lints {
     job: Option<Job>,
     due: Option<Instant>,
     told: HashSet<String>,
+    /// Marks an API client put on a document's lines (`ui.decorate`), shown as problems.
+    pub marks: HashMap<String, Vec<Diag>>,
 }
 
 impl Default for Lints {
     fn default() -> Self {
-        Lints { on: !cfg!(test), files: HashMap::new(), seen: HashMap::new(), job: None, due: None, told: HashSet::new() }
+        Lints { on: !cfg!(test), files: HashMap::new(), seen: HashMap::new(), job: None, due: None, told: HashSet::new(), marks: HashMap::new() }
+    }
+}
+
+impl Diag {
+    /// A mark of an API client's: bytes `start..end` of `line`, its severity and note.
+    pub fn mark(line: usize, start: usize, end: usize, sev: Sev, msg: String) -> Diag {
+        Diag { line, start, end, sev, msg, text: String::new() }
     }
 }
 
@@ -101,23 +110,25 @@ impl Lints {
 
     /// The problems shown in `key`'s editor: (line, start, end, severity).
     pub fn shown(&self, key: &str) -> Vec<(usize, usize, usize, Sev)> {
-        let Some(c) = self.files.get(key) else { return Vec::new() };
-        c.diags.iter().zip(&c.placed).filter_map(|(d, l)| Some((((*l)?), d.start, d.end, d.sev))).collect()
+        self.all(key).into_iter().map(|(l, s, e, sev, _)| (l, s, e, sev)).collect()
     }
 
     /// Every problem shown in `key`'s editor: (line, start, end, severity, message).
     pub fn all(&self, key: &str) -> Vec<(usize, usize, usize, Sev, &str)> {
-        let Some(c) = self.files.get(key) else { return Vec::new() };
-        c.diags.iter().zip(&c.placed).filter_map(|(d, l)| Some(((*l)?, d.start, d.end, d.sev, d.msg.as_str()))).collect()
+        let checked = self.files.get(key).into_iter().flat_map(|c| c.diags.iter().zip(&c.placed)).filter_map(|(d, l)| Some(((*l)?, d.start, d.end, d.sev, d.msg.as_str())));
+        let marks = self.marks.get(key).into_iter().flatten().map(|d| (d.line, d.start, d.end, d.sev, d.msg.as_str()));
+        checked.chain(marks).collect()
     }
 
     /// The problems covering byte `col` of `line`: where the worst starts, and every
     /// message, worst first.
     pub fn at(&self, key: &str, line: usize, col: usize) -> Option<(usize, Vec<(Sev, String)>)> {
-        let c = self.files.get(key)?;
-        let mut hits: Vec<&Diag> = c.diags.iter().zip(&c.placed)
-            .filter(|(d, l)| **l == Some(line) && d.start <= col && col < d.end.max(d.start + 1))
-            .map(|(d, _)| d).collect();
+        let covers = |d: &Diag| d.start <= col && col < d.end.max(d.start + 1);
+        let mut hits: Vec<&Diag> = self.files.get(key).into_iter().flat_map(|c| c.diags.iter().zip(&c.placed))
+            .filter(|(d, l)| **l == Some(line) && covers(d))
+            .map(|(d, _)| d)
+            .chain(self.marks.get(key).into_iter().flatten().filter(|d| d.line == line && covers(d)))
+            .collect();
         hits.sort_by_key(|d| std::cmp::Reverse(d.sev));
         let first = hits.first()?;
         Some((first.start, hits.iter().map(|d| (d.sev, d.msg.clone())).collect()))

@@ -480,6 +480,8 @@ pub enum PAct {
     Api(u8),
     /// A serial port another xcomm holds: shared with it, typed into when true.
     Serial(String, bool),
+    /// An API client's question (`ui.prompt` number), button picked.
+    ApiPick(u64, usize),
 }
 
 /// Wheel and motion frames come at most this often (herdr itself renders every 16 ms).
