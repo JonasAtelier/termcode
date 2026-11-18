@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use unicode_width::UnicodeWidthStr;
 
 const CATEGORIES: &[&str] =
-    &["Appearance", "Layout", "Editor", "Minimap", "Indent Rainbow", "Files & Session", "Source Control"];
+    &["Appearance", "Layout", "Editor", "Minimap", "Indent Rainbow", "Files & Session", "Source Control", "Keys"];
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -99,7 +99,6 @@ const FIELDS: &[Field] = &[
     Field { category: 2, label: "Word wrap", key: "editor.wordWrap", kind: Choice(&["off", "on"]) },
     Field { category: 2, label: "Breadcrumbs", key: "breadcrumbs.enabled", kind: Check(true) },
     Field { category: 2, label: "Error checking (shell, C/C++)", key: "termcode.errorChecking", kind: Check(true) },
-    Field { category: 2, label: "Keybindings (JSON)", key: "termcode.keybindings", kind: Json("{}") },
     Field {
         category: 2,
         label: "Auto-close brackets",
@@ -209,6 +208,9 @@ const FIELDS: &[Field] = &[
     Field { category: 6, label: "Status bar blame", key: "git.blame.statusBarItem.enabled", kind: Check(true) },
     Field { category: 6, label: "Inline blame", key: "git.blame.editorDecoration.enabled", kind: Check(false) },
     Field { category: 6, label: "Confirm sync", key: "git.confirmSync", kind: Check(true) },
+    Field { category: 7, label: "Prefix", key: "termcode.prefix", kind: Text(crate::settings::DEFAULT_PREFIX) },
+    Field { category: 7, label: "Quick keys", key: "termcode.prefixKeys", kind: Json(crate::settings::DEFAULT_PREFIX_KEYS) },
+    Field { category: 7, label: "Keybindings (JSON)", key: "termcode.keybindings", kind: Json("{}") },
 ];
 
 /// What a setting does, under its name (and what the search box also finds).
@@ -247,6 +249,8 @@ fn describe(key: &str) -> &'static str {
         "breadcrumbs.enabled" => "The file's path and the symbols around the cursor, over the text.",
         "termcode.errorChecking" => "Underline problems shellcheck and the C/C++ compiler find.",
         "termcode.keybindings" => "Your own keys for F1 commands: \"ctrl+alt+p\": \"Git: Pull\".",
+        "termcode.prefix" => "The key before a quick key, anywhere, the terminal too: then one key runs a command.",
+        "termcode.prefixKeys" => "The quick keys after the prefix: \"key\": \"F1 command\". Yours go over these defaults.",
         "editor.autoClosingBrackets" => "Type the closing bracket with the opening one.",
         "editor.autoClosingQuotes" => "Type the closing quote with the opening one.",
         "editor.guides.indentation" => "Thin lines at each indentation level.",
@@ -1361,51 +1365,160 @@ fn default_of(kind: Kind) -> Value {
     }
 }
 
+/// What is sensible for a setting beyond its range: the values that work best, and the
+/// ones that may break the layout or a feature.
+fn advice(key: &str) -> &'static str {
+    match key {
+        "workbench.colorTheme" => "an installed VS Code theme's name; an unknown one falls back to the default",
+        "workbench.density" => "compact for terminals under about 100 columns",
+        "termcode.icons" => "ascii or unicode if boxes show instead of icons (no Nerd Font)",
+        "termcode.colors" => "keep auto; 256 or 16 only when colours look wrong in an old terminal",
+        "termcode.spacing/sidebarWidth" => "recommended 28-48 · under 20 cuts file names, over 80 crowds the editor",
+        "termcode.spacing/sidebarPadding" => "recommended 1-2",
+        "termcode.spacing/sectionGap" => "recommended 0-1",
+        "termcode.spacing/editorPadding" => "recommended 0-2 · more takes columns from the text",
+        "termcode.spacing/tabPadding" => "recommended 1-2 · 0 runs tab names together",
+        "termcode.spacing/statusBarGap" => "recommended 2-4",
+        "termcode.spacing/activityBarWidth" => "recommended 4-6 · under 4 its icons may be cut",
+        "termcode.spacing/listItemGap" => "0 or 1 · 1 halves the rows a list shows",
+        "termcode.spacing/popupPadding" => "recommended [2-4, 0-1] · more shrinks what a popup shows",
+        "termcode.spacing/iconGap" => "recommended 1-2",
+        "termcode.spacing/treeIndent" => "recommended 2-4 · 0 flattens the tree",
+        "termcode.spacing/titleBarPadding" => "recommended 1-3",
+        "termcode.spacing/buttonPadding" => "recommended 1-2 · 0 makes buttons hard to hit",
+        "termcode.spacing/findWidgetPadding" => "recommended 0-1",
+        "termcode.spacing/statusBarPadding" => "recommended 1-3",
+        "editor.tabSize" => "recommended 2, 4 or 8 · new indents use it too",
+        "editor.rulers" => "columns, as [80, 120]; [] for none · past the window's width they do not show",
+        "editor.minimap.maxColumn" => "recommended 80-160 · in pixels the minimap's width limits it (up to 24 cells)",
+        "editor.minimap.scale" => "recommended 2-3 · 1 is barely legible; dots elsewhere ignore it",
+        "editor.minimap.size" => "proportional keeps the slider easy to grab; fill squeezes a long file into dots",
+        "termcode.minimap.minEditorWidth" => "recommended 30-60 · higher hides the minimap in split editors",
+        "indentRainbow.colors" => "rgba with alpha 0.05-0.15 keeps the text readable",
+        "workbench.tree.stickyScrollMaxItemCount" => "recommended 1-3 · each sticky row is a row less of the list",
+        "termcode.restoreSession" => "off: every start is a clean window",
+        "git.confirmSync" => "off: Sync pulls and pushes without asking",
+        "termcode.prefix" => "a key your shell rarely needs; \"\" turns it off · not ctrl+b (herdr's) or a key termcode uses",
+        "termcode.prefixKeys" => "\"\" removes a default; any F1 command name works",
+        "termcode.keybindings" => "a key termcode uses gets yours instead; \"\" turns a key off",
+        _ => "",
+    }
+}
+
 /// The settings.json a new user starts with (and `termcode --default-config` prints):
 /// this window's options in its categories, each commented out at its default, so
 /// uncommenting a line is all it takes to change one.
 pub fn template() -> String {
+    template_with(None)
+}
+
+/// The settings file: its categories, and for each option what it does, the values it
+/// takes, what works best (and what may break), then the option, commented out at its
+/// default, or as `user` has it (Refresh Settings File). `user`'s options the window does
+/// not know close the file.
+fn template_with(user: Option<&serde_json::Map<String, Value>>) -> String {
     let mut out = String::from(
-        "// termcode settings: the options of the Settings window (Ctrl+,), each at its default.\n\
-         // Uncomment a line and change its value; saving applies it. This is VS Code's\n\
+        "// termcode settings, by category. For each option: what it does, the values it takes\n\
+         // (and which work best), then the option itself. A line starting with // is off and\n\
+         // shows the default: remove the // and change the value; saving applies it. VS Code's\n\
          // settings.json format: comments and trailing commas are fine. A broken file is\n\
-         // reported in the status bar and the last good settings stay. More: README.md, Settings.\n{\n",
+         // reported in the status bar and the last good settings stay.\n\
+         // F1 Preferences: Refresh Settings File rewrites this layout, keeping your values.\n{\n",
     );
-    let line = |out: &mut String, indent: &str, key: &str, value: &Value, hint: &str| {
-        let entry = format!("\"{key}\": {},", serde_json::to_string(value).unwrap());
-        out.push_str(&format!("    // {indent}{entry:<width$} // {hint}\n", width = 52 - indent.len()));
+    // An object over lines, nested by 4 spaces as the file is; anything else on one.
+    let json = |v: &Value| match v {
+        Value::Object(m) if !m.is_empty() => serde_json::to_string_pretty(v)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let n = l.len() - l.trim_start().len();
+                format!("{}{}", " ".repeat(n * 2), l.trim_start())
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => serde_json::to_string(v).unwrap(),
     };
+    // An option: its lines, commented out (off) or not, the value's lines indented with it.
+    let option = |out: &mut String, indent: &str, key: &str, value: &Value, on: bool| {
+        let mark = if on { "" } else { "// " };
+        let text = format!("\"{key}\": {},", json(value));
+        for l in text.lines() {
+            out.push_str(&format!("    {mark}{indent}{l}\n"));
+        }
+    };
+    let range = |f: &Field| -> String {
+        let r = match f.kind {
+            Check(_) => "true or false".to_string(),
+            Number(lo, hi, _) => format!("{lo} to {hi}"),
+            Choice(o) => o.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", "),
+            Text(_) => "text".to_string(),
+            Json(_) => "JSON".to_string(),
+        };
+        match advice(f.key) {
+            "" => r,
+            a => format!("{r} · {a}"),
+        }
+    };
+    let mut known: Vec<&str> = Vec::new();
     for (c, name) in CATEGORIES.iter().enumerate() {
         out.push_str(&format!("\n    // ---- {name} ----\n"));
-        let mut group: Option<&str> = None;
+        let mut group: Option<(&str, bool)> = None;
         for f in FIELDS.iter().filter(|f| f.category == c) {
-            let hint = match f.kind {
-                Choice(o) => format!("{}: {}", f.label, o.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ")),
-                Number(lo, hi, _) => format!("{} ({lo} to {hi})", f.label),
-                _ => f.label.trim_end_matches(" (JSON)").to_string(),
-            };
             let (key, member) = f.key.split_once('/').map_or((f.key, None), |(k, m)| (k, Some(m)));
-            if group.is_some() && group != member.map(|_| key) {
-                out.push_str("    // },\n");
+            known.push(key);
+            if let Some((_, on)) = group.filter(|(g, _)| member.is_none() || *g != key) {
+                out.push_str(if on { "    },\n" } else { "    // },\n" });
                 group = None;
             }
             match member {
                 Some(m) => {
+                    let set = user.and_then(|u| u.get(key)).and_then(Value::as_object);
                     if group.is_none() {
-                        out.push_str(&format!("    // \"{key}\": {{   // the compact density starts from smaller values\n"));
-                        group = Some(key);
+                        out.push_str(&format!("\n    // {}: {}\n", "Spacing", "the layout's gaps, in cells (the compact density starts from smaller ones)"));
+                        out.push_str(&format!("    {}\"{key}\": {{\n", if set.is_some() { "" } else { "// " }));
+                        group = Some((key, set.is_some()));
                     }
-                    line(&mut out, "    ", m, &default_of(f.kind), &hint);
+                    let mine = set.and_then(|s| s.get(m));
+                    out.push_str(&format!("    //     {} · {}\n", describe(f.key), range(f)));
+                    option(&mut out, "    ", m, mine.unwrap_or(&default_of(f.kind)), mine.is_some());
                 }
-                None => line(&mut out, "", key, &default_of(f.kind), &hint),
+                None => {
+                    out.push_str(&format!("\n    // {}\n    //   {}\n", describe(f.key), range(f)));
+                    let mine = user.and_then(|u| u.get(key));
+                    option(&mut out, "", key, mine.unwrap_or(&default_of(f.kind)), mine.is_some());
+                }
             }
         }
-        if group.is_some() {
-            out.push_str("    // },\n");
+        if let Some((_, on)) = group {
+            out.push_str(if on { "    },\n" } else { "    // },\n" });
+        }
+    }
+    // The user's options this window does not have, kept as they are.
+    let other: Vec<(&String, &Value)> = user.map(|u| u.iter().filter(|(k, _)| !known.contains(&k.as_str())).collect()).unwrap_or_default();
+    if !other.is_empty() {
+        out.push_str("\n    // ---- Yours, not in the Settings window ----\n");
+        for (k, v) in other {
+            option(&mut out, "", k, v, true);
         }
     }
     out.push_str("}\n");
     out
+}
+
+/// Settings.json rewritten in the template's layout with the user's values (the old file
+/// kept beside it as settings.json.bak, its comments in it): where it went, or why not.
+pub fn refresh(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let user = if text.trim().is_empty() { serde_json::Map::new() } else { crate::settings::parse_jsonc(&text).map_err(|e| format!("fix it first: {e}"))? };
+    let backup = path.with_extension("json.bak");
+    if !text.is_empty() {
+        std::fs::write(&backup, &text).map_err(|e| format!("{}: {e}", backup.display()))?;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    std::fs::write(path, template_with(Some(&user))).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(backup)
 }
 
 #[cfg(test)]
@@ -1431,6 +1544,24 @@ mod tests {
         for c in CATEGORIES {
             assert!(t.contains(&format!("---- {c} ----")), "{c}");
         }
+    }
+
+    #[test]
+    fn a_refreshed_settings_file_keeps_the_users_values_and_explains_every_option() {
+        let dir = std::env::temp_dir().join(format!("termcode-refresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+        std::fs::write(&p, "// mine\n{ \"editor.tabSize\": 2, \"termcode.spacing\": { \"sidebarWidth\": 40 }, \"some.other\": [1] }\n").unwrap();
+        let backup = refresh(&p).unwrap();
+        assert!(std::fs::read_to_string(&backup).unwrap().contains("// mine"), "the old file kept");
+        let t = std::fs::read_to_string(&p).unwrap();
+        let m = crate::settings::parse_jsonc(&t).unwrap();
+        assert_eq!((m["editor.tabSize"].clone(), m["termcode.spacing"]["sidebarWidth"].clone(), m["some.other"].clone()), (2.into(), 40.into(), serde_json::json!([1])));
+        assert_eq!(m.len(), 3, "only the user's values are on: {m:?}");
+        assert!(t.contains("1 to 16 · recommended 2, 4 or 8"), "a range and its advice");
+        assert!(t.contains("// ---- Keys ----") && t.contains("\"t\": \"View: Toggle Terminal\""));
+        assert!(crate::settings::resolve(&m).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};

@@ -125,6 +125,10 @@ pub struct Settings {
     pub colors: Option<crate::colors::Depth>,
     /// `termcode.keybindings`: key -> F1 command name ("" turns the key off).
     pub keybindings: Vec<(crate::parse::Chord, String)>,
+    /// `termcode.prefix` (Ctrl+T): the key before a quick key; None when "" (off).
+    pub prefix: Option<crate::parse::Chord>,
+    /// `termcode.prefixKeys` over `DEFAULT_PREFIX_KEYS`: quick key -> F1 command.
+    pub prefix_keys: Vec<(crate::parse::Chord, String)>,
     /// `termcode.errorChecking`: shellcheck and the C/C++ compiler underline problems.
     pub error_checking: bool,
     pub file_icons: FileIcons,
@@ -195,6 +199,8 @@ impl Default for Settings {
             error_checking: true,
             colors: None,
             keybindings: Vec::new(),
+            prefix: crate::parse::parse_chord(DEFAULT_PREFIX).ok(),
+            prefix_keys: prefix_keys(None).unwrap_or_default(),
             file_icons: FileIcons::default(),
             rainbow: Rainbow::default(),
             guides: true,
@@ -296,6 +302,60 @@ pub fn read_text(path: &Path) -> Result<Option<String>, String> {
     Ok(Some(text))
 }
 
+/// The key before a quick key: rarely a shell's, and none of termcode's or herdr's own.
+pub const DEFAULT_PREFIX: &str = "ctrl+t";
+
+/// The quick keys after the prefix: mnemonic, tmux's where it has one (c n p).
+pub const DEFAULT_PREFIX_KEYS: &str = r#"{
+    "t": "View: Toggle Terminal",
+    "c": "Terminal: Create New Terminal",
+    "n": "Terminal: Focus Next Terminal",
+    "p": "Terminal: Focus Previous Terminal",
+    "x": "Terminal: Close Terminal",
+    "f": "Go to File...",
+    "s": "View: Show Search",
+    "e": "View: Show Explorer",
+    "g": "View: Show Source Control",
+    "b": "View: Toggle Primary Side Bar Visibility",
+    "o": "View: Toggle Outline",
+    "m": "View: Toggle Minimap",
+    "z": "View: Toggle Word Wrap",
+    "v": "Markdown: Toggle Preview",
+    "h": "View: Toggle Hexdump",
+    "[": "View: Open Previous Editor",
+    "]": "View: Open Next Editor",
+    ",": "Preferences: Open Settings",
+    "left": "View: Navigate Left",
+    "right": "View: Navigate Right",
+    "up": "View: Navigate Up",
+    "down": "View: Navigate Down"
+}"#;
+
+/// `termcode.prefixKeys`: the defaults, each key of the user's over them ("" removes it).
+/// A key or command that does not exist is an error, as for keybindings.
+fn prefix_keys(v: Option<&Value>) -> Result<Vec<(crate::parse::Chord, String)>, String> {
+    let defaults: Value = serde_json::from_str(DEFAULT_PREFIX_KEYS).expect("valid");
+    let mut out: Vec<(crate::parse::Chord, String)> = Vec::new();
+    let user = match v {
+        Some(v) => Some(v.as_object().ok_or("termcode.prefixKeys: an object of \"key\": \"command\"")?),
+        None => None,
+    };
+    for map in [defaults.as_object(), user].into_iter().flatten() {
+        for (key, cmd) in map {
+            let chord = crate::parse::parse_chord(key).map_err(|e| format!("termcode.prefixKeys: {e}"))?;
+            let cmd = cmd.as_str().ok_or_else(|| format!("termcode.prefixKeys: {key:?} needs a command name"))?;
+            if !cmd.is_empty() && !crate::panel::all_commands().any(|(l, _)| l == cmd) {
+                return Err(format!("termcode.prefixKeys: no command {cmd:?} (F1 lists them)"));
+            }
+            out.retain(|(c, _)| *c != chord);
+            if !cmd.is_empty() {
+                out.push((chord, cmd.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// `termcode.keybindings`: `{ "ctrl+alt+p": "Git: Pull" }`. A key or command that does
 /// not exist is an error, so a typo shows instead of a key that silently does nothing.
 fn keybindings(v: Option<&Value>) -> Result<Vec<(crate::parse::Chord, String)>, String> {
@@ -347,6 +407,13 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         error_checking: g("termcode.errorChecking").and_then(Value::as_bool).unwrap_or(true),
         colors: g("termcode.colors").and_then(Value::as_str).and_then(crate::colors::parse),
         keybindings: keybindings(g("termcode.keybindings"))?,
+        prefix: match g("termcode.prefix").map(|v| v.as_str().ok_or("termcode.prefix: a key, as \"ctrl+t\"")) {
+            None => crate::parse::parse_chord(DEFAULT_PREFIX).ok(),
+            Some(Ok("")) => None,
+            Some(Ok(k)) => Some(crate::parse::parse_chord(k).map_err(|e| format!("termcode.prefix: {e}"))?),
+            Some(Err(e)) => return Err(e.into()),
+        },
+        prefix_keys: prefix_keys(g("termcode.prefixKeys"))?,
         icons: match g("termcode.icons").and_then(Value::as_str) {
             Some("nerd") => Some(crate::theme::IconSet::Nerd),
             Some("unicode") => Some(crate::theme::IconSet::Unicode),

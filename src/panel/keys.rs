@@ -47,6 +47,22 @@ impl App {
         if k.code == KeyCode::Esc && (self.gitui.card.take().is_some() || self.gitui.cmds.toast.take().is_some()) {
             return;
         }
+        // The prefix (termcode.prefix, Ctrl+T): the next key is a quick key
+        // (termcode.prefixKeys), wherever the keys are, the terminal too; the prefix
+        // twice is the key itself (to the shell or the editor).
+        if !self.replaying {
+            if let Some(p) = self.settings.prefix {
+                let key = crate::parse::chord(&k);
+                if std::mem::take(&mut self.prefix_armed) {
+                    if key != p {
+                        return self.prefix_key(key);
+                    }
+                } else if key == p {
+                    self.prefix_armed = true;
+                    return;
+                }
+            }
+        }
         // A palette command's keys (`replaying`) are termcode's, never the shell's.
         if self.focus == Focus::Term && !self.replaying {
             return self.term_key(k);
@@ -265,6 +281,73 @@ impl App {
     /// Find as you type: the first match at or after where the selection starts (so a
     /// longer query keeps the match it extends) is selected and revealed, as VS Code does;
     /// nothing found leaves the cursor where it is.
+    /// Focus the pane beside the focused one, as last drawn (`dir`: 0 left, 1 right, 2 up,
+    /// 3 down): the side bar, an editor group, the Outline, the terminal. The nearest past
+    /// the focused pane's edge that way, the one most alongside it first.
+    pub(super) fn navigate(&mut self, dir: u8) {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Pane {
+            Side,
+            Group(usize),
+            Outline,
+            Term,
+        }
+        let mut panes: Vec<(Pane, Rect)> = Vec::new();
+        if self.side_visible && !self.ui.side_list.is_empty() {
+            panes.push((Pane::Side, self.ui.side_list));
+        }
+        for (g, gh) in self.ui.groups.iter().enumerate() {
+            panes.push((Pane::Group(g), gh.area));
+        }
+        if self.outline_open && !self.ui.outline.is_empty() {
+            panes.push((Pane::Outline, self.ui.outline));
+        }
+        if self.term_open && !self.ui.term.is_empty() {
+            panes.push((Pane::Term, self.ui.term));
+        }
+        let now = match self.focus {
+            Focus::Side | Focus::SearchInput => Pane::Side,
+            Focus::Outline => Pane::Outline,
+            Focus::Term => Pane::Term,
+            _ => Pane::Group(self.ag),
+        };
+        let Some(&(_, at)) = panes.iter().find(|(p, _)| *p == now) else { return };
+        // How far past `at`'s edge a pane is that way (None: not that way), and how little
+        // it overlaps `at` across.
+        let fit = |r: &Rect| -> Option<(u16, i32)> {
+            let across = |a0: u16, a1: u16, b0: u16, b1: u16| i32::from(a1.min(b1)) - i32::from(a0.max(b0));
+            match dir {
+                0 => (r.right() <= at.x + 1).then(|| (at.x.saturating_sub(r.right()), -across(at.y, at.bottom(), r.y, r.bottom()))),
+                1 => (r.x + 1 >= at.right()).then(|| (r.x.saturating_sub(at.right()), -across(at.y, at.bottom(), r.y, r.bottom()))),
+                2 => (r.bottom() <= at.y + 1).then(|| (at.y.saturating_sub(r.bottom()), -across(at.x, at.right(), r.x, r.right()))),
+                _ => (r.y + 1 >= at.bottom()).then(|| (r.y.saturating_sub(at.bottom()), -across(at.x, at.right(), r.x, r.right()))),
+            }
+        };
+        let best = panes.iter().filter(|(p, _)| *p != now).filter_map(|(p, r)| fit(r).map(|f| (f, *p))).min_by_key(|(f, _)| *f);
+        match best.map(|(_, p)| p) {
+            Some(Pane::Side) => self.focus = Focus::Side,
+            Some(Pane::Group(g)) => (self.ag, self.focus) = (g, Focus::Editor),
+            Some(Pane::Outline) => self.focus = Focus::Outline,
+            Some(Pane::Term) => self.focus = Focus::Term,
+            None => self.msg = format!("no pane to the {}", ["left", "right", "top", "bottom"][usize::from(dir.min(3))]),
+        }
+    }
+
+    /// The key after the prefix: its quick key's command; Esc cancels.
+    fn prefix_key(&mut self, key: crate::parse::Chord) {
+        if key.0 == KeyCode::Esc {
+            return;
+        }
+        let name = self.settings.prefix_keys.iter().find(|(c, _)| *c == key).map(|(_, n)| n.clone());
+        match name.and_then(|n| all_commands().find(|(l, _)| *l == n)) {
+            Some((_, cmd)) => self.run_command(cmd),
+            None => {
+                let p = self.settings.prefix.map_or_else(String::new, crate::parse::chord_label);
+                self.msg = format!("{p} {}: no quick key (termcode.prefixKeys in settings)", crate::parse::chord_label(key));
+            }
+        }
+    }
+
     pub(super) fn find_incremental(&mut self) {
         if crate::media::find_step(self, 0) {
             return;

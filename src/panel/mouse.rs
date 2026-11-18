@@ -6,6 +6,10 @@ impl App {
     // ---- mouse ---------------------------------------------------------------------------
 
     pub fn on_mouse(&mut self, m: MouseEvent) -> bool {
+        // A click cancels a prefix waiting for its quick key.
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            self.prefix_armed = false;
+        }
         if self.settings_dlg.is_some() {
             return crate::settingsui::mouse(self, m);
         }

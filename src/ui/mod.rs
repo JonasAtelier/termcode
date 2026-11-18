@@ -215,6 +215,9 @@ pub fn lang_id(name: &str) -> String {
 
 pub fn draw(app: &mut App, f: &mut Frame) {
     draw_frame(app, f);
+    if app.prefix_armed {
+        prefix_hint(app, f);
+    }
     crate::media::flush(app, f);
     scrub(f.buffer_mut(), &crate::settingsgraphics::take_drawn());
     // A terminal without 24-bit colour gets the nearest it has (`colors`).
@@ -234,6 +237,38 @@ pub(crate) fn scrub(buf: &mut ratatui::buffer::Buffer, pictures: &[Rect]) {
             }
         }
     }
+}
+
+/// After the prefix: its quick keys and what they do, at the bottom right (which-key).
+fn prefix_hint(app: &App, f: &mut Frame) {
+    let Some(p) = app.settings.prefix else { return };
+    let label = |c: crate::parse::Chord| match c {
+        (ratatui::crossterm::event::KeyCode::Char(ch), m) if m.is_empty() => ch.to_string(),
+        c => crate::parse::chord_label(c),
+    };
+    let mut rows: Vec<(String, String)> = app.settings.prefix_keys.iter().map(|(c, n)| (label(*c), n.clone())).collect();
+    rows.sort_by_key(|r| r.0.to_lowercase());
+    let p = crate::parse::chord_label(p);
+    let foot = format!("{p} again: {p} itself · Esc: none");
+    let kw = rows.iter().map(|r| r.0.width()).max().unwrap_or(1);
+    let w = (rows.iter().map(|r| kw + 2 + r.1.width()).max().unwrap_or(0).max(foot.width()) + 4) as u16;
+    let area = f.area();
+    let h = (rows.len() + 4) as u16;
+    if area.width < w + 2 || area.height < h + 3 {
+        return;
+    }
+    let r = Rect::new(area.right() - w - 1, area.bottom() - h - 2, w, h);
+    f.render_widget(Clear, r);
+    let block = popup_block(P.widget_bg, P.widget_fg, (1, 0)).title(Span::styled(format!(" {p} then "), Style::new().fg(P.sidebar_title).bold()));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let mut lines: Vec<Line> = rows
+        .into_iter()
+        .map(|(k, n)| Line::from(vec![Span::styled(format!("{k:>kw$}  "), Style::new().fg(P.focus_border).bold()), Span::styled(n, Style::new().fg(P.widget_fg))]))
+        .collect();
+    lines.push(Line::default());
+    lines.push(Line::styled(foot, Style::new().fg(P.dim)));
+    f.render_widget(Paragraph::new(lines).style(Style::new().bg(P.widget_bg)), inner);
 }
 
 fn draw_frame(app: &mut App, f: &mut Frame) {

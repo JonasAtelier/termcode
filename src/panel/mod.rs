@@ -570,6 +570,11 @@ pub enum Cmd {
     QuickOpen,
     Save,
     ReloadSettings,
+    RefreshSettings,
+    /// Focus the pane beside the focused one: 0 left, 1 right, 2 up, 3 down.
+    Navigate(u8),
+    /// Close the active terminal; the last one: the panel hidden, its shell kept.
+    CloseTerminal,
     Nav(crate::navui::Act),
     Git(crate::gitcmds::GitCmd),
     GotoLine,
@@ -631,6 +636,12 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("Go to Symbol in Editor...", Cmd::GotoSymbol, "Ctrl+Shift+O"),
     ("File: Save", Cmd::Save, "Ctrl+S"),
     ("Developer: Reload Settings", Cmd::ReloadSettings, ""),
+    ("Preferences: Refresh Settings File", Cmd::RefreshSettings, ""),
+    ("Terminal: Close Terminal", Cmd::CloseTerminal, "Ctrl+T X"),
+    ("View: Navigate Left", Cmd::Navigate(0), "Ctrl+T ←"),
+    ("View: Navigate Right", Cmd::Navigate(1), "Ctrl+T →"),
+    ("View: Navigate Up", Cmd::Navigate(2), "Ctrl+T ↑"),
+    ("View: Navigate Down", Cmd::Navigate(3), "Ctrl+T ↓"),
     ("Developer: Reload Window", Cmd::ReloadWindow, ""),
     ("Help: Report Issue", Cmd::ReportIssue, ""),
     ("Go to Definition", Cmd::Nav(crate::navui::Act::Definition), "F12"),
@@ -1096,6 +1107,8 @@ pub struct App {
     pub quick: Option<Quick>,
     files: Vec<String>,
     pub drag: Drag,
+    /// The prefix (termcode.prefix) pressed: the next key is a quick key.
+    pub prefix_armed: bool,
     /// A minimap slider held at (or past) its edge: how far (rows, up negative) and the
     /// last step; the editor scrolls on by itself, faster the farther (`minimap_auto`).
     pub(crate) mini_auto: Option<(i32, Instant)>,
@@ -1822,6 +1835,7 @@ impl App {
             quick: None,
             files: Vec::new(),
             drag: Drag::None,
+            prefix_armed: false,
             mini_auto: None,
             drop: None,
             last_click: None,
@@ -2125,6 +2139,25 @@ impl App {
                     self.msg = "save the unsaved files first: a reload starts without undo history".into();
                 } else {
                     (self.reload, self.quit) = (true, true);
+                }
+            }
+            Cmd::Navigate(dir) => self.navigate(dir),
+            Cmd::CloseTerminal if self.terms.len() > 1 => self.kill_terminal(self.term_at, true),
+            Cmd::CloseTerminal => {
+                if self.term_open {
+                    self.hide_terminal();
+                }
+            }
+            Cmd::RefreshSettings => {
+                let path = crate::settings::path();
+                match crate::settingsui::refresh(&path) {
+                    Ok(backup) => {
+                        self.settings_stamp = None;
+                        self.check_settings();
+                        self.open_settings();
+                        self.msg = format!("settings.json rewritten, your values kept (the old one: {})", backup.display());
+                    }
+                    Err(e) => self.msg = format!("settings.json left as it was: {e}"),
                 }
             }
             Cmd::ReloadSettings => {

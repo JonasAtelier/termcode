@@ -8,6 +8,18 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 
 ## [Unreleased]
 
+### Added
+- A prefix key, Ctrl+T (`termcode.prefix`), then one quick key runs a command, wherever
+  the keys are, the terminal too: t terminal, c / n / p / x new, next, previous, close
+  terminal (the last one only hidden), f go to file, s search, e Explorer, g Source Control, b side bar, o Outline,
+  m minimap, z word wrap, v preview, h hexdump, [ ] previous / next editor, `,` Settings,
+  arrows the pane that way (View: Navigate Left/Right/Up/Down).
+  The keys show while it waits; Ctrl+T twice sends Ctrl+T; `termcode.prefixKeys` changes
+  them (any F1 command).
+- settings.json explains every option: what it does, the values it takes, which work
+  best and which may break. F1 Preferences: Refresh Settings File rewrites an older file
+  in this layout, keeping your values (the old one as settings.json.bak).
+
 ### Changed
 - The minimap keeps a fixed scale (`editor.minimap.size` now defaults to
   `"proportional"`), so its slider stays easy to grab in a long file. It shows a stretch

@@ -5675,6 +5675,69 @@ fn ghosttys_22_px_cells_keep_every_minimap_line_a_glyph_6_px_apart() {
 }
 
 #[test]
+fn the_prefix_then_a_quick_key_runs_its_command_and_shows_the_keys_meanwhile() {
+    let root = repo("prefix");
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "src/main.rs", false);
+    app.focus = Focus::Editor;
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let ctrl_t = || KeyCode::Char('t');
+    // Ctrl+T: waiting, its quick keys listed.
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    assert!(app.prefix_armed);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("Ctrl+T then") && s.contains("View: Toggle Minimap") && s.contains("Ctrl+T again: Ctrl+T itself"), "{s}");
+    // m: the minimap off, the list gone.
+    let on = app.minimap_on;
+    key(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+    assert!(!app.prefix_armed && app.minimap_on != on);
+    assert!(!screen(&mut app, &mut t).contains("Ctrl+T then"));
+    // A key with none: said so; Esc: nothing.
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+    assert!(app.msg.contains("Ctrl+T Q: no quick key"), "{}", app.msg);
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!app.prefix_armed);
+    // A click cancels it.
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 60, 10);
+    assert!(!app.prefix_armed);
+    // Twice: the key itself goes on (here, to the editor: no command, the prefix not waiting).
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    assert!(!app.prefix_armed);
+    // Ctrl+T →: the pane on the right; ←: back. Down to the terminal and up again.
+    app.split_right(0);
+    app.focus = Focus::Editor;
+    screen(&mut app, &mut t);
+    let start = app.ag;
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+    let left = app.ag;
+    assert_ne!(left, start, "the group on the left");
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    assert_eq!((app.ag, app.focus), (start, Focus::Editor));
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+    assert_eq!(app.focus, Focus::Side, "past the first group: the side bar");
+    // x with one terminal: hidden as t hides it, its shell kept.
+    app.toggle_terminal();
+    assert!(app.term_open && app.terms.len() == 1);
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+    assert!(!app.term_open && app.terms.len() == 1, "the last one hidden, not closed");
+    // Off ("" in settings): Ctrl+T is the editor's again.
+    app.settings.prefix = None;
+    key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
+    assert!(!app.prefix_armed);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn brackets_are_coloured_by_depth_and_a_stray_closer_stands_out() {
     let root = repo("brackets");
     fs::write(root.join("b.c"), "f(a[1]);\n)\n").unwrap();
