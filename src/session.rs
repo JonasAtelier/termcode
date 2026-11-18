@@ -171,6 +171,7 @@ fn side_name(s: Side) -> &'static str {
         Side::Scm => "scm",
         Side::GitHub => "github",
         Side::Programmer => "programmer",
+        Side::Serial => "serial",
     }
 }
 
@@ -313,6 +314,7 @@ pub fn restore(app: &mut App) {
         Some("scm") => Side::Scm,
         Some("github") => Side::GitHub,
         Some("programmer") => Side::Programmer,
+        Some("serial") => Side::Serial,
         _ => Side::Explorer,
     };
     app.side_visible = v["sidebar_visible"].as_bool().unwrap_or(app.side_visible);

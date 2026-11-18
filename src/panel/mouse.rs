@@ -177,7 +177,7 @@ impl App {
             }
             return;
         }
-        if crate::scm::click(self, p, double) || crate::github::click(self, p, double) || crate::github::page::click(self, p, double) || crate::programmer::click(self, p) || crate::media::click(self, p) || crate::logview::click(self, p) {
+        if crate::xcomm::click(self, p) || crate::scm::click(self, p, double) || crate::github::click(self, p, double) || crate::github::page::click(self, p, double) || crate::programmer::click(self, p) || crate::media::click(self, p) || crate::logview::click(self, p) {
             return;
         }
         if self.ui.close.contains(p) {
@@ -888,7 +888,7 @@ impl App {
             q.sel = (q.sel as isize + d).clamp(0, (q.items.len() as isize - 1).max(0)) as usize;
             return q.sel != old;
         }
-        if crate::scm::wheel(self, p, d) || crate::github::wheel(self, p, d) || crate::github::page::wheel(self, p, d) || crate::programmer::wheel(self, p, d) || crate::media::wheel(self, p, d, self.mouse_mods.contains(KeyModifiers::CONTROL)) {
+        if crate::xcomm::wheel(self, p, d) || crate::scm::wheel(self, p, d) || crate::github::wheel(self, p, d) || crate::github::page::wheel(self, p, d) || crate::programmer::wheel(self, p, d) || crate::media::wheel(self, p, d, self.mouse_mods.contains(KeyModifiers::CONTROL)) {
             return true;
         }
         if self.ui.outline.contains(p) {

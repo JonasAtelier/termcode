@@ -31,6 +31,7 @@ mod settings;
 mod settingsui;
 mod api;
 mod rpc;
+mod xcomm;
 mod serial;
 mod settingsgraphics;
 mod programmer;

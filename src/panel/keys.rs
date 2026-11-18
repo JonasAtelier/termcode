@@ -185,7 +185,7 @@ impl App {
             Focus::Editor => {
                 // The STM32 Programmer's page scrolls by keys too (it has no text).
                 // So do a picture and a PDF's pages (zoom, pan, pages).
-                if !crate::programmer::page_key(self, k) && !crate::media::key(self, k) && !crate::logview::key(self, k) {
+                if !crate::xcomm::page_key(self, k) && !crate::programmer::page_key(self, k) && !crate::media::key(self, k) && !crate::logview::key(self, k) {
                     self.editor_key(k, ctrl, alt, shift);
                 }
             }
@@ -429,6 +429,12 @@ impl App {
 
     pub(super) fn side_key(&mut self, k: KeyEvent) {
         if self.side == Side::Scm && crate::scm::key(self, k) {
+            return;
+        }
+        if self.side == Side::Serial {
+            if !crate::xcomm::key(self, k) && k.code == KeyCode::Esc {
+                self.focus = Focus::Editor;
+            }
             return;
         }
         if self.side == Side::Programmer {
@@ -813,7 +819,7 @@ impl App {
         if self.gitui.cmds.picker.is_some() {
             return crate::gitcmds::picker_paste(self, text);
         }
-        if self.focus == Focus::Editor && crate::programmer::paste(self, text) {
+        if self.focus == Focus::Editor && (crate::xcomm::paste(self, text) || crate::programmer::paste(self, text)) {
             return;
         }
         match self.focus {

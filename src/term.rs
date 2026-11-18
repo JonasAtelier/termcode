@@ -378,36 +378,8 @@ impl Term {
     /// The screen into `area` of `buf`, its default colours `fg` on `bg`, the selection on
     /// `sel_bg`; the cursor as a reversed cell when `focused` and the live screen (not the
     /// scrollback) shows.
-    pub fn draw(&self, buf: &mut Buffer, area: Rect, (fg, bg, sel_bg): (Color, Color, Color), focused: bool) {
-        let s = self.parser.screen();
-        let sel = self.sel_range();
-        let selected = |row: u16, col: u16| sel.is_some_and(|(a, b)| (row, col) >= a && (row, col) <= b);
-        for row in 0..area.height {
-            for col in 0..area.width {
-                let Some(c) = s.cell(row, col) else { continue };
-                let cell = &mut buf[(area.x + col, area.y + row)];
-                let (mut f, mut b) = (color(c.fgcolor(), fg), color(c.bgcolor(), bg));
-                if c.inverse() {
-                    (f, b) = (b, f);
-                }
-                if selected(row, col) {
-                    b = sel_bg;
-                }
-                let text = c.contents();
-                // A wide character's second cell is drawn over by its first.
-                cell.set_symbol(if text.is_empty() || c.is_wide_continuation() { " " } else { text }).set_fg(f).set_bg(b);
-                let mut m = Modifier::empty();
-                m.set(Modifier::BOLD, c.bold());
-                m.set(Modifier::ITALIC, c.italic());
-                m.set(Modifier::UNDERLINED, c.underline());
-                cell.modifier = m;
-            }
-        }
-        let (row, col) = s.cursor_position();
-        if focused && !s.hide_cursor() && s.scrollback() == 0 && row < area.height && col < area.width {
-            let cell = &mut buf[(area.x + col, area.y + row)];
-            cell.modifier.toggle(Modifier::REVERSED);
-        }
+    pub fn draw(&self, buf: &mut Buffer, area: Rect, colors: (Color, Color, Color), focused: bool) {
+        draw_screen(self.parser.screen(), self.sel_range(), buf, area, colors, focused);
     }
 
     /// Every row: the scrollback's, oldest first, then the screen's.
@@ -516,6 +488,39 @@ pub fn mouse_bytes(
 
 /// Where a reload keeps terminal `fd`'s screen: named by this process (the pid outlives
 /// the exec) and the descriptor.
+/// A terminal screen `s` into `area` of `buf`, its default colours `fg` on `bg`, `sel`
+/// (row, column from and to) on `sel_bg`; the cursor as a reversed cell when `focused`
+/// and the live screen (not the scrollback) shows. Terminals and serial channels.
+pub fn draw_screen(s: &vt100::Screen, sel: Option<((u16, u16), (u16, u16))>, buf: &mut Buffer, area: Rect, (fg, bg, sel_bg): (Color, Color, Color), focused: bool) {
+    let selected = |row: u16, col: u16| sel.is_some_and(|(a, b)| (row, col) >= a && (row, col) <= b);
+    for row in 0..area.height {
+        for col in 0..area.width {
+            let Some(c) = s.cell(row, col) else { continue };
+            let cell = &mut buf[(area.x + col, area.y + row)];
+            let (mut f, mut b) = (color(c.fgcolor(), fg), color(c.bgcolor(), bg));
+            if c.inverse() {
+                (f, b) = (b, f);
+            }
+            if selected(row, col) {
+                b = sel_bg;
+            }
+            let text = c.contents();
+            // A wide character's second cell is drawn over by its first.
+            cell.set_symbol(if text.is_empty() || c.is_wide_continuation() { " " } else { text }).set_fg(f).set_bg(b);
+            let mut m = Modifier::empty();
+            m.set(Modifier::BOLD, c.bold());
+            m.set(Modifier::ITALIC, c.italic());
+            m.set(Modifier::UNDERLINED, c.underline());
+            cell.modifier = m;
+        }
+    }
+    let (row, col) = s.cursor_position();
+    if focused && !s.hide_cursor() && s.scrollback() == 0 && row < area.height && col < area.width {
+        let cell = &mut buf[(area.x + col, area.y + row)];
+        cell.modifier.toggle(Modifier::REVERSED);
+    }
+}
+
 pub fn screen_file(dir: &Path, fd: i32) -> std::path::PathBuf {
     dir.join(format!("{}-{fd}", std::process::id()))
 }

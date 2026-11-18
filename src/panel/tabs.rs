@@ -344,6 +344,10 @@ impl App {
         if refs == 1 && key == crate::programmer::KEY {
             crate::programmer::closed(self);
         }
+        // A channel's last tab closed: its port given back.
+        if let Some(tty) = key.strip_prefix(crate::xcomm::PREFIX).filter(|_| refs == 1) {
+            crate::xcomm::close(self, tty);
+        }
         // A preview's (a patch diff's) source shown nowhere goes with it.
         if let Some((rel, _)) = other_look(&key).filter(|_| !key.starts_with("file:")) {
             self.gc(&format!("file:{rel}"));

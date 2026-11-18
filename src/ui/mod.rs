@@ -551,8 +551,9 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     }
     // GitHub right above Settings (VS Code's Accounts place), where the views leave room.
     let gh_r = Rect::new(r.x, bottom.y.saturating_sub(ih), r.width, ih);
-    // The STM32 Programmer right above GitHub.
+    // The STM32 Programmer right above GitHub, Serial above it.
     let st_r = Rect::new(r.x, gh_r.y.saturating_sub(ih), r.width, ih);
+    let se_r = Rect::new(r.x, st_r.y.saturating_sub(ih), r.width, ih);
     let fits = |q: Rect| q.y >= r.y + ih * SIDES.len() as u16 && r.width > 0;
     let mut views_end = bottom.y;
     if fits(gh_r) {
@@ -566,6 +567,12 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             let hot = app.hover.is_some_and(|p| st_r.contains(p));
             item(f, st_r.y + off, active, hot, ic.chip, gh_r.y + off);
             views_end = st_r.y;
+            if fits(se_r) && se_r.y < st_r.y {
+                let active = app.side == Side::Serial && app.side_visible && !settings_open;
+                let hot = app.hover.is_some_and(|p| se_r.contains(p));
+                item(f, se_r.y + off, active, hot, ic.serial, st_r.y + off);
+                views_end = se_r.y;
+            }
         }
     }
     for (i, s) in SIDES.iter().enumerate() {
@@ -580,7 +587,7 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             Side::Explorer => ic.files,
             Side::Search => ic.search,
             Side::Scm => ic.scm,
-            Side::GitHub | Side::Programmer => continue, // above Settings
+            Side::GitHub | Side::Programmer | Side::Serial => continue, // above Settings
         };
         let iy = y + off;
         item(f, iy, active, hot, icon, bottom.y);
@@ -593,8 +600,11 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     if views_end < bottom.y {
         app.ui.activity.push((gh_r, Side::GitHub));
     }
-    if views_end == st_r.y && views_end < gh_r.y {
+    if views_end <= st_r.y && st_r.y < gh_r.y {
         app.ui.activity.push((st_r, Side::Programmer));
+    }
+    if views_end == se_r.y && se_r.y < st_r.y {
+        app.ui.activity.push((se_r, Side::Serial));
     }
 }
 
@@ -697,6 +707,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         Side::Scm => "SOURCE CONTROL",
         Side::GitHub => "GITHUB",
         Side::Programmer => "PROGRAMMER",
+        Side::Serial => "SERIAL (XCOMM)",
     };
     let title_row = Rect::new(col.x, col.y, col.width, 1);
     let top = col.y + if st == BlockStyle::Cards { 0 } else { 1 + lay.s.section_gap };
@@ -707,6 +718,11 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
     }
     if app.side == Side::GitHub {
         crate::github::draw(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
+        side_title(app, f, title_row, title, lay, bg);
+        return;
+    }
+    if app.side == Side::Serial {
+        crate::xcomm::draw_side(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
         side_title(app, f, title_row, title, lay, bg);
         return;
     }
@@ -777,7 +793,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             }
         }
         Side::Scm => {}
-        Side::GitHub | Side::Programmer => {}
+        Side::GitHub | Side::Programmer | Side::Serial => {}
     }
     let list = Rect::new(r.x, y, r.width, r.bottom().saturating_sub(y));
     app.ui.side_list = list;
@@ -832,7 +848,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => {}
-            Side::GitHub | Side::Programmer => {}
+            Side::GitHub | Side::Programmer | Side::Serial => {}
         }
     }
     sticky_rows(app, f, list, lay.pad, lay.s.list_gap, &[], &search_rows);
@@ -907,7 +923,7 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
             }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
-            Side::GitHub | Side::Programmer => {}
+            Side::GitHub | Side::Programmer | Side::Serial => {}
         }
     }
     // Share the last header's row rather than reserving an empty separator row.
@@ -1468,7 +1484,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     f.render_widget(Span::styled(ic.terminal, Style::new().fg(lit)), term_btn);
     app.ui.term_btns.push(term_btn);
     // Off on a repository page: it shows its own outline.
-    let page = app.groups[g].tabs.get(app.groups[g].active).is_some_and(|t| t.key.starts_with("repo:") || t.key == crate::programmer::KEY);
+    let page = app.groups[g].tabs.get(app.groups[g].active).is_some_and(|t| t.key.starts_with("repo:") || t.key == crate::programmer::KEY || t.key.starts_with(crate::xcomm::PREFIX));
     let lit = if page { P.dim } else if app.outline_open { P.tab_active_fg } else { P.icon_fg };
     f.render_widget(Span::styled(ic.outline, Style::new().fg(lit)), outline_btn);
     if !page {
@@ -1545,6 +1561,13 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     if key == crate::programmer::KEY {
         gh.text = body;
         crate::programmer::draw_page(app, f, body);
+        app.ui.groups.push(gh);
+        return;
+    }
+    // A serial channel's stream: its status, then its screen (xcomm.rs).
+    if key.starts_with(crate::xcomm::PREFIX) {
+        gh.text = body;
+        crate::xcomm::draw_page(app, f, body, &key, focused_group && app.focus == Focus::Editor);
         app.ui.groups.push(gh);
         return;
     }

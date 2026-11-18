@@ -259,6 +259,8 @@ pub enum Side {
     GitHub,
     /// The Programmer: STM32 chips, Arduino boards (programmer.rs).
     Programmer,
+    /// Serial ports and their streams, on xcomm (xcomm.rs).
+    Serial,
 }
 /// Activity bar order (VS Code's).
 pub const SIDES: [Side; 3] = [Side::Explorer, Side::Search, Side::Scm];
@@ -658,6 +660,7 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Show Source Control", Cmd::ShowSide(Side::Scm), "Alt+2, F2, Ctrl+G"),
     ("View: Show GitHub", Cmd::ShowSide(Side::GitHub), ""),
     ("View: Show Programmer", Cmd::ShowSide(Side::Programmer), ""),
+    ("View: Show Serial", Cmd::ShowSide(Side::Serial), ""),
     ("STM32: Connect", Cmd::Prog(crate::programmer::Op::Connect), ""),
     ("STM32: Start Programming", Cmd::Prog(crate::programmer::Op::Program), ""),
     ("STM32: Reset Target", Cmd::Prog(crate::programmer::Op::Reset), ""),
@@ -1050,6 +1053,8 @@ pub struct App {
     pub gh: crate::github::GitHub,
     /// The STM32 Programmer view, its page and its log.
     pub prog: crate::programmer::Programmer,
+    /// The Serial view's ports and open channels.
+    pub serial: crate::xcomm::Serial,
     /// This termcode's socket (`termcode PATH` from its terminals); a herdr tab's pane.
     pub api: Option<crate::api::Server>,
     /// What API clients may do, as the user answered.
@@ -1560,7 +1565,7 @@ enum Input {
 fn wait_input(fd: libc::c_int, wait: Duration) -> Input {
     // The input, then every terminal's PTY.
     // (The socket's wake-up pipe counts as a shell's output: the loop turns at once.)
-    let mut polls: Vec<libc::pollfd> = std::iter::once(fd).chain(crate::term::fds()).chain(crate::api::wake_fd()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
+    let mut polls: Vec<libc::pollfd> = std::iter::once(fd).chain(crate::term::fds()).chain(crate::xcomm::fds()).chain(crate::api::wake_fd()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
     let ms = wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
     // SAFETY: valid pollfds, as many as given.
     if unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, ms) } <= 0 {
@@ -1796,6 +1801,7 @@ impl App {
             prog: Default::default(),
             api: None,
             api_gate: crate::api::Gate::from_env(),
+            serial: crate::xcomm::Serial::default(),
             tab: false,
             reroot: None,
             revealed: None,

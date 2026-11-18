@@ -5,10 +5,10 @@ search across them, and see edits side by side with the last commit. You can als
 editor as a Code tab in herdr.
 
 <!-- dev -->
-**Contents** · [Run from source](#run-from-source) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
+**Contents** · [Run from source](#run-from-source) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Serial ports](#serial-ports) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
 <!-- /dev -->
 <!-- user
-**Contents** · [Install on Debian or Ubuntu](#install-on-debian-or-ubuntu) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
+**Contents** · [Install on Debian or Ubuntu](#install-on-debian-or-ubuntu) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Serial ports](#serial-ports) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
 user -->
 
 ![termcode showing the file explorer, editor and integrated terminal](doc/screenshots/editor.png)
@@ -16,7 +16,7 @@ user -->
 <!-- dev -->
 ## Run from source
 
-On x86_64 or arm64 Linux, install Rust 1.88 or newer and a C linker. Install Git for
+On x86_64 or arm64 Linux, install Rust 1.93 or newer and a C linker. Install Git for
 source control and ripgrep (`rg`) for project search. Run the editor from the repository root.
 
 ```sh
@@ -66,6 +66,15 @@ file. Read the old and new versions side by side.
 
 When a repository’s Git settings can start external programs, Source Control asks you
 to trust the repository before enabling Git. Only grant trust if you know its origin.
+
+## Serial ports
+
+The **Serial** view (the plug above the Programmer) lists the serial ports with their
+adapter, USB ID and who holds each, and the channels open here with their state. Click a
+port to open it: its output streams in an editor tab you can split like code, and what
+you type there goes to the device. Baud, DTR, RTS, break, capture and close are under
+each channel. Ports are taken as [xcomm](https://crates.io/crates/xcomm) takes them (a
+UUCP lock, an exclusive open) and opened again after an unplug.
 
 ## Scripts and AI agents
 

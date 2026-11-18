@@ -633,7 +633,7 @@ fn percent(s: &str) -> String {
 }
 
 /// Local "YYYY-MM-DDTHH:MM:SS" (a .trashinfo's DeletionDate).
-fn local_iso(t: i64) -> String {
+pub(crate) fn local_iso(t: i64) -> String {
     #[allow(deprecated)] // libc marks musl's time_t for a future change; it is 64-bit here
     let tt = t as libc::time_t;
     // SAFETY: tm is plain data; localtime_r only writes into it.

@@ -399,6 +399,7 @@ impl App {
         *dirty |= self.term_pump();
         *dirty |= crate::github::tick(self);
         *dirty |= crate::programmer::tick(self);
+        *dirty |= crate::xcomm::tick(self);
         *dirty |= self.auto_reveal();
         *dirty |= crate::media::tick(self);
         *dirty |= crate::logview::tick(self);
