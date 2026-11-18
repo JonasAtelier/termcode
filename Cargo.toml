@@ -3,11 +3,16 @@ name = "termcode"
 version = "0.4.0"
 edition = "2021"
 description = "A VS Code-style code editor and Git panel in the terminal"
+rust-version = "1.88"
 repository = "https://github.com/JonasAtelier/termcode"
-# Public: releases and issues (the repository above is private).
+# Releases (.debs, the apt repository) and issues.
 homepage = "https://github.com/JonasAtelier/termcode-releases"
 license = "MIT"
-publish = false
+readme = "README.md"
+keywords = ["editor", "terminal", "git", "tui", "vscode"]
+categories = ["text-editors", "command-line-utilities", "development-tools"]
+# The crate: the code, what it embeds, its docs; not the screenshots or release tooling.
+include = ["src/**", "assets/**", "examples/**", "doc/termcode.1", "completions/**", "LICENSE", "README.md", "CHANGELOG.md"]
 
 # Build with scripts/deb.sh (static amd64 and arm64 binaries, no build-machine paths),
 # install with `sudo apt install ./target/deb/debian/termcode_*.deb`.

@@ -114,6 +114,9 @@ set `"termcode.icons": "nerd"`.
 <!-- dev -->
 ## 3. Build and install
 
+From [crates.io](https://crates.io/crates/termcode): `cargo install termcode` (to
+`~/.cargo/bin`). Or from the source:
+
 ```sh
 git clone https://github.com/JonasAtelier/termcode.git
 cd termcode
