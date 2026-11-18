@@ -36,7 +36,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   programs reach it; before one changes files or runs anything termcode asks you, and
   `termcode.api` makes it read-only or turns it off. Serial ports too: `serial.monitor`,
   `read`, `wait`, `attach` (asked in termcode when another xcomm holds it), `send` (only
-  attached; shown in the tab as `[api]`), `set` and `close`.
+  attached; shown in the tab as `[api]`), `set` and `close`. `events.watch` keeps a
+  connection for events: edits, saves, files opened and closed, the active tab, the
+  cursor, problems, Git, terminal and serial output (`termcode api events.watch` prints
+  them, a JSON line each).
 - GitHub sign-in by QR code: next to Sign in with GitHub, Sign in with a QR code shows
   GitHub's device page as a QR code for your phone, with gh's one-time code to enter
   there (Q in the view). gh keeps the token either way.

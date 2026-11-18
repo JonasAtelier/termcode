@@ -15,7 +15,12 @@ pub enum Out {
     Output { term: usize, re: fancy_regex::Regex, mark: u64, timeout: Duration },
     /// Serial channel `tty`'s output matching `re` after offset `mark`.
     Serial { tty: String, re: fancy_regex::Regex, mark: u64, timeout: Duration },
+    /// The connection kept for events on these topics (none: all of them).
+    Watch(Vec<String>),
 }
+
+/// What `events.watch` sends, each as `{"method": "event", "params": {"topic", …}}`.
+pub const TOPICS: &[&str] = &["buffer.changed", "file.saved", "file.opened", "file.closed", "tab", "cursor", "diagnostics", "git", "terminal.output", "serial.output"];
 
 pub const METHODS: &[&str] = &[
     "hello",
@@ -27,6 +32,7 @@ pub const METHODS: &[&str] = &[
     "buffer.save",
     "terminal.send",
     "events.wait",
+    "events.watch",
     "serial.ports",
     "serial.note",
     "serial.monitor",
@@ -47,6 +53,11 @@ pub fn tier(method: &str, p: &Value) -> crate::api::Tier {
         "editor.open" | "buffer.edit" | "buffer.save" | "serial.note" | "serial.monitor" | "serial.close" => Tier::Edit,
         "command.run" | "terminal.send" | "events.wait" | "serial.attach" | "serial.send" | "serial.set" => Tier::Run,
         "state.get" if matches!(p["path"].as_str(), Some("/terminals" | "/ui/screen")) => Tier::Run,
+        // Output (a terminal's, a serial port's) is what running reads; the rest is reading.
+        "events.watch" => {
+            let topics: Vec<&str> = p["topics"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            if topics.is_empty() || topics.iter().any(|t| t.ends_with(".output")) { Tier::Run } else { Tier::Read }
+        }
         _ => Tier::Read,
     }
 }
@@ -96,6 +107,13 @@ pub fn call(app: &mut App, method: &str, p: &Value) -> Result<Out, String> {
             let mark = t.log.end();
             t.send(text.as_bytes());
             now(json!({"index": i, "mark": mark}))
+        }
+        "events.watch" => {
+            let topics: Vec<String> = p["topics"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+            if let Some(t) = topics.iter().find(|t| !TOPICS.contains(&t.as_str())) {
+                return Err(format!("events.watch: no topic {t:?}; {}", TOPICS.join(", ")));
+            }
+            Ok(Out::Watch(topics))
         }
         "events.wait" => {
             match p["topic"].as_str() {

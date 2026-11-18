@@ -58,6 +58,9 @@ pub struct Server {
     rx: Receiver<Request>,
     wake: std::io::PipeReader,
     path: PathBuf,
+    /// Connections watching events, and the state they were last told of.
+    watchers: Vec<(Vec<String>, Sender<Value>)>,
+    last: Option<Snapshot>,
     /// Requests answered later: when the next frame is drawn, a terminal prints a match,
     /// the user answers whether a client may.
     waits: Vec<(Wait, Sender<Value>)>,
@@ -135,11 +138,129 @@ enum Waiting {
     Grant { client: Client, tier: Tier, req: Value, shown: bool, once: bool },
 }
 
-/// A request's answer: now, or later (see `Wait`).
+/// A request's answer: now, or later (see `Wait`), or (events.watch) now and then events
+/// on the same connection.
 pub enum Reply {
     Now(Value),
     /// Boxed: a wait is large next to a reply.
     Later(Box<Wait>),
+    Watch(Value, Vec<String>),
+}
+
+/// What watchers are told about, as last seen: each document's version and dirtiness, the
+/// active tab and cursor, problems per file, Git, each terminal's and serial port's output end.
+#[derive(Clone, Default, PartialEq)]
+struct Snapshot {
+    docs: std::collections::BTreeMap<String, (u64, bool)>,
+    active: Option<String>,
+    cursor: Option<(String, usize, usize)>,
+    diags: std::collections::BTreeMap<String, (usize, usize)>,
+    git: (String, usize),
+    terms: Vec<u64>,
+    serial: std::collections::BTreeMap<String, u64>,
+}
+
+fn snapshot(app: &App) -> Snapshot {
+    use crate::panel::Doc;
+    let docs = app.docs.iter().filter_map(|(k, d)| match d {
+        Doc::Text(b) if k.starts_with("file:") => Some((k.clone(), (b.version(), b.dirty()))),
+        _ => None,
+    });
+    let tab = app.groups.get(app.ag).and_then(|g| g.tabs.get(g.active));
+    let cursor = tab.filter(|t| t.key.starts_with("file:")).map(|t| (t.key.clone(), t.view.cursor.line + 1, t.view.cursor.col + 1));
+    let diags = app.docs.keys().filter(|k| k.starts_with("file:")).map(|k| {
+        let all = app.lints.all(k);
+        let errors = all.iter().filter(|d| d.3 == crate::lint::Sev::Error).count();
+        (k.clone(), (errors, all.len() - errors))
+    });
+    Snapshot {
+        docs: docs.collect(),
+        active: tab.map(|t| t.key.clone()),
+        cursor,
+        diags: diags.filter(|(_, (e, w))| e + w > 0).collect(),
+        git: (app.branch.clone(), app.status.len()),
+        terms: app.terms.iter().map(|t| t.log.end()).collect(),
+        serial: app.serial.channels.iter().map(|c| (c.tty.clone(), crate::xcomm::output_end(c))).collect(),
+    }
+}
+
+/// What changed between `a` and `b`, as events (topic, its fields).
+fn changes(app: &App, a: &Snapshot, b: &Snapshot) -> Vec<(&'static str, Value)> {
+    let path = |k: &str| k.strip_prefix("file:").unwrap_or(k).to_string();
+    let mut out = Vec::new();
+    for (k, &(ver, dirty)) in &b.docs {
+        match a.docs.get(k) {
+            None => {
+                out.push(("file.opened", json!({"path": path(k)})));
+                // Opened by an edit (an API's, a refactor's): changed as well.
+                if dirty {
+                    out.push(("buffer.changed", json!({"path": path(k), "version": ver, "dirty": dirty})));
+                }
+            }
+            Some(&(v0, d0)) => {
+                if v0 != ver {
+                    out.push(("buffer.changed", json!({"path": path(k), "version": ver, "dirty": dirty})));
+                }
+                if d0 && !dirty {
+                    out.push(("file.saved", json!({"path": path(k)})));
+                }
+            }
+        }
+    }
+    out.extend(a.docs.keys().filter(|k| !b.docs.contains_key(*k)).map(|k| ("file.closed", json!({"path": path(k)}))));
+    if a.active != b.active {
+        out.push(("tab", json!({"key": b.active})));
+    }
+    if let Some((k, line, col)) = &b.cursor {
+        if a.cursor != b.cursor {
+            out.push(("cursor", json!({"path": path(k), "line": line, "col": col})));
+        }
+    }
+    for (k, v) in b.diags.iter().filter(|(k, v)| a.diags.get(*k) != Some(*v)).chain(a.diags.iter().filter(|(k, _)| !b.diags.contains_key(*k)).map(|(k, _)| (k, &(0, 0)))) {
+        out.push(("diagnostics", json!({"path": path(k), "errors": v.0, "warnings": v.1})));
+    }
+    if a.git != b.git {
+        out.push(("git", json!({"branch": b.git.0, "changes": b.git.1})));
+    }
+    for (i, &end) in b.terms.iter().enumerate() {
+        let from = a.terms.get(i).copied().unwrap_or(end);
+        if end > from {
+            if let Some(t) = app.terms.get(i) {
+                out.push(("terminal.output", json!({"index": i, "text": tail(t.log.since(from), 16 << 10)})));
+            }
+        }
+    }
+    for (tty, &end) in &b.serial {
+        let from = a.serial.get(tty).copied().unwrap_or(end);
+        if end > from {
+            if let Some(c) = app.serial.channels.iter().find(|c| c.tty == *tty) {
+                let (text, _) = crate::xcomm::output_since(c, from, 16 << 10);
+                out.push(("serial.output", json!({"port": tty, "text": text})));
+            }
+        }
+    }
+    out
+}
+
+/// Watchers told what changed since they were last (their topics only); gone ones dropped.
+fn notify(app: &mut App) {
+    if app.api.as_ref().is_none_or(|s| s.watchers.is_empty()) {
+        return;
+    }
+    let now = snapshot(app);
+    let before = app.api.as_mut().unwrap().last.replace(now.clone()).unwrap_or_else(|| now.clone());
+    if before == now {
+        return;
+    }
+    let events = changes(app, &before, &now);
+    let srv = app.api.as_mut().unwrap();
+    srv.watchers.retain(|(topics, tx)| {
+        events.iter().filter(|(t, _)| topics.is_empty() || topics.iter().any(|x| x == t)).all(|(t, v)| {
+            let mut params = v.clone();
+            params["topic"] = json!(t);
+            tx.send(json!({"jsonrpc": "2.0", "method": "event", "params": params})).is_ok()
+        })
+    });
 }
 
 /// The running termcode's server: its socket for its shells, its pipe for the event loop.
@@ -206,7 +327,7 @@ pub fn start(dir: &Path) -> Option<Server> {
             drop(poke);
         })
         .ok()?;
-    Some(Server { rx, wake, path: p, waits: Vec::new() })
+    Some(Server { rx, wake, path: p, waits: Vec::new(), watchers: Vec::new(), last: None })
 }
 
 /// The connecting process: its pid and uid (SO_PEERCRED).
@@ -271,7 +392,35 @@ fn serve(s: UnixStream, tx: &Sender<Request>, poke: &mut std::io::PipeWriter, cl
                     let (rtx, rrx) = channel();
                     let _ = tx.send((req.clone(), rtx, client.clone()));
                     let _ = poke.write_all(b"!");
-                    rrx.recv_timeout(Duration::from_secs_f64(secs)).unwrap_or_else(|_| failure(&req, "termcode did not answer"))
+                    let reply = rrx.recv_timeout(Duration::from_secs_f64(secs)).unwrap_or_else(|_| failure(&req, "termcode did not answer"));
+                    // Watching: from now on this connection only carries the events.
+                    if req["method"] == "events.watch" && reply.get("result").is_some() {
+                        if (&s).write_all(format!("{reply}\n").as_bytes()).is_err() {
+                            return;
+                        }
+                        let _ = s.set_nonblocking(true);
+                        loop {
+                            match rrx.recv_timeout(Duration::from_secs(1)) {
+                                Ok(ev) => {
+                                    let _ = s.set_nonblocking(false);
+                                    let ok = (&s).write_all(format!("{ev}\n").as_bytes()).is_ok();
+                                    let _ = s.set_nonblocking(true);
+                                    if !ok {
+                                        return;
+                                    }
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    // The client gone (its end closed): stop.
+                                    let mut b = [0u8; 1];
+                                    if matches!((&s).read(&mut b), Ok(0)) {
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    reply
                 }
                 Err(e) => json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("not JSON: {e}")}}),
             },
@@ -372,6 +521,7 @@ pub fn tick(app: &mut App) -> bool {
         match respond(app, &req, &client, true) {
             Reply::Now(v) => drop(reply.send(v)),
             Reply::Later(w) => waits.push((*w, reply)),
+            Reply::Watch(id, topics) => watch(app, id, topics, reply),
         }
         changed = true;
     }
@@ -387,6 +537,7 @@ pub fn tick(app: &mut App) -> bool {
         }
     }
     app.api.as_mut().unwrap().waits = waits;
+    notify(app);
     changed
 }
 
@@ -417,7 +568,20 @@ fn admit(app: &mut App, req: &Value, client: &Client, reply: &Sender<Value>) -> 
             None
         }
         Reply::Later(w) => Some(*w),
+        Reply::Watch(id, topics) => {
+            watch(app, id, topics, reply.clone());
+            None
+        }
     }
+}
+
+/// A connection watching `topics`: told so, then each change (`notify`).
+fn watch(app: &mut App, id: Value, topics: Vec<String>, reply: Sender<Value>) {
+    let now = snapshot(app);
+    let Some(srv) = app.api.as_mut() else { return };
+    let _ = reply.send(envelope(&id, Ok(json!({"watching": if topics.is_empty() { crate::rpc::TOPICS.iter().map(|t| t.to_string()).collect() } else { topics.clone() }}))));
+    srv.last.get_or_insert(now);
+    srv.watchers.push((topics, reply));
 }
 
 /// The frame just drawn: the requests for the screen answered with its text.
@@ -489,6 +653,7 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
         Ok(crate::rpc::Out::Output { term, re, mark, timeout }) => {
             Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Output { term, re, mark, seen: None } }))
         }
+        Ok(crate::rpc::Out::Watch(topics)) => Reply::Watch(id, topics),
         Ok(crate::rpc::Out::Serial { tty, re, mark, timeout }) => {
             Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Serial { tty, re, mark, seen: None } }))
         }
@@ -651,11 +816,34 @@ pub fn cli(args: &[String]) -> Result<(), String> {
     };
     let sock = pick(&running, to.as_deref())?;
     let req = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+    if method == "events.watch" {
+        return watch_cli(&sock, &req);
+    }
     let reply = rpc(&sock, &req)?;
     if let Some(e) = reply.get("error") {
         return Err(e["message"].as_str().unwrap_or("failed").to_string());
     }
     println!("{}", serde_json::to_string_pretty(&reply["result"]).unwrap_or_default());
+    Ok(())
+}
+
+/// `termcode api events.watch`: the events, a JSON line each, until termcode goes or
+/// the command is stopped.
+fn watch_cli(sock: &Path, req: &Value) -> Result<(), String> {
+    let s = UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
+    (&s).write_all(format!("{req}\n").as_bytes()).map_err(|e| e.to_string())?;
+    let mut out = std::io::stdout();
+    for line in BufReader::new(&s).lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&line).unwrap_or_default();
+        if let Some(e) = v.get("error") {
+            return Err(e["message"].as_str().unwrap_or("failed").to_string());
+        }
+        let shown = if v.get("result").is_some() { v["result"].clone() } else { v["params"].clone() };
+        if writeln!(out, "{shown}").and_then(|()| out.flush()).is_err() {
+            return Ok(()); // the reader went away (| head)
+        }
+    }
     Ok(())
 }
 
@@ -726,6 +914,51 @@ pub fn remove() {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn a_watching_connection_gets_each_change_as_an_event() {
+        let dir = std::env::temp_dir().join(format!("termcode-api-watch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("run")).unwrap();
+        fs::set_permissions(dir.join("run"), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        fs::write(dir.join("b.txt"), "other\n").unwrap();
+        let mut app = App::new(fs::canonicalize(&dir).unwrap(), None);
+        app.open_file(0, "a.txt", false);
+        app.api = start(&dir.join("run"));
+        let sock = dir.join(format!("run/{}.sock", std::process::id()));
+        let s = UnixStream::connect(&sock).unwrap();
+        (&s).write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"events.watch\",\"params\":{\"topics\":[\"buffer.changed\",\"file.saved\"]}}\n").unwrap();
+        let mut lines = BufReader::new(s.try_clone().unwrap());
+        lines.get_ref().set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        let mut next = |app: &mut App| -> Value {
+            for _ in 0..300 {
+                tick(app);
+                let mut line = String::new();
+                if lines.read_line(&mut line).is_ok_and(|n| n > 0) {
+                    return serde_json::from_str(&line).unwrap();
+                }
+            }
+            panic!("nothing came");
+        };
+        let first = next(&mut app);
+        assert_eq!(first["result"]["watching"], json!(["buffer.changed", "file.saved"]), "{first}");
+        // An edit, then a save: an event each, on the same connection.
+        crate::rpc::call(&mut app, "buffer.edit", &json!({"path": "a.txt", "changes": [{"start": {"line": 1}, "text": "say "}]})).ok();
+        let ev = next(&mut app);
+        assert_eq!((ev["method"].as_str(), ev["params"]["topic"].as_str(), ev["params"]["path"].as_str()), (Some("event"), Some("buffer.changed"), Some("a.txt")), "{ev}");
+        app.save_doc("file:a.txt").unwrap();
+        let ev = next(&mut app);
+        assert_eq!(ev["params"]["topic"], "file.saved", "{ev}");
+        // An edit on a file not open yet: changed too (not only opened).
+        crate::rpc::call(&mut app, "buffer.edit", &json!({"path": "b.txt", "changes": [{"start": {"line": 1}, "text": "x"}]})).ok();
+        let ev = next(&mut app);
+        assert_eq!((ev["params"]["topic"].as_str(), ev["params"]["path"].as_str()), (Some("buffer.changed"), Some("b.txt")), "{ev}");
+        // An unknown topic is refused.
+        assert!(crate::rpc::call(&mut app, "events.watch", &json!({"topics": ["nope"]})).is_err());
+        drop(app);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn the_gate_reads_freely_asks_before_changes_and_keeps_the_answers() {
