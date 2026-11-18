@@ -285,7 +285,7 @@ impl Channel {
             }
             text.push_str(&String::from_utf8_lossy(&buf[..n]));
         }
-        let refused = text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).filter(|v| v["ok"] == false).next_back();
+        let refused = text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).rfind(|v| v["ok"] == false);
         if let Some(v) = refused {
             self.note = Some(v["error"].as_str().unwrap_or("refused").to_string());
             return true;
