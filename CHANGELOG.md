@@ -9,6 +9,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ## [Unreleased]
 
 ### Added
+- Mistakes underlined as you type, no language server: C/C++ through the compiler after a
+  short pause (not only on save), Rust's syntax in-process. Saving a Rust file runs
+  `cargo check` in the background for type and borrow errors: asked once per project (it
+  runs build scripts), never in an untrusted repository, skipped under 1.5 GB of free
+  memory, two jobs at most.
 - A Serial view, on xcomm: the serial ports with their adapter, USB ID, by-id link and
   who holds each (another xcomm, in which herdr pane); the channels open here with their
   line settings, state and bytes in and out; per channel the baud (‹ ›), data bits,

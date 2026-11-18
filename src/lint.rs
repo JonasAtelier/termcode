@@ -1,9 +1,9 @@
 //! Problems, as VS Code's squiggles: shell scripts through `shellcheck`, C/C++ through
 //! the compiler and flags `compile_commands.json` (or a built kernel's `.o.cmd` files)
 //! give the file, else `clang` with guessed include paths; a compiler that is not
-//! installed (a cross gcc) is stood in for by `clang --target`. Each run checks the
-//! buffer's text (unsaved edits included) in the background, one run at a time.
-//! Shell is checked after a typing pause, C/C++ when the file is opened or saved.
+//! installed (a cross gcc) is stood in for by `clang --target`; Rust's syntax in-process
+//! (syn). Each run checks the buffer's text (unsaved edits included) in the background,
+//! one run at a time, after a typing pause: a reminder while typing, no language server.
 //! Results stay on their lines while other lines are edited: a problem whose line text
 //! changed hides until the next check.
 
@@ -21,6 +21,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// Typing pause before a shell script is checked again.
 const SHELL_PAUSE: Duration = Duration::from_millis(500);
+/// Before a C/C++ file is (a compiler run, heavier), and a Rust file's syntax.
+const C_PAUSE: Duration = Duration::from_millis(800);
+const RUST_PAUSE: Duration = Duration::from_millis(400);
 /// A run still going after this frees the slot (its thread ends on its own).
 const GIVE_UP: Duration = Duration::from_secs(30);
 /// How far a problem looks for its line after lines above it were added or removed.
@@ -49,6 +52,7 @@ pub struct Diag {
 enum Tool {
     Shell,
     C,
+    Rust,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -84,11 +88,47 @@ pub struct Lints {
     told: HashSet<String>,
     /// Marks an API client put on a document's lines (`ui.decorate`), shown as problems.
     pub marks: HashMap<String, Vec<Diag>>,
+    /// What `cargo check` found after a save (types, borrows), per document, placed as
+    /// the others; the run going; workspaces to check again; each Rust document's saved
+    /// version seen; workspaces checked this session.
+    saved: HashMap<String, Checked>,
+    cargo: Option<CargoRun>,
+    cargo_due: Vec<PathBuf>,
+    cargo_seen: HashMap<String, u64>,
+    cargo_done: HashSet<PathBuf>,
+    /// Rust workspaces asked about (true: `cargo check` on save), kept in the state folder.
+    cargo_ok: Option<HashMap<String, bool>>,
 }
+
+/// A `cargo check` running for a workspace.
+struct CargoRun {
+    root: PathBuf,
+    since: Instant,
+    rx: Receiver<Result<Vec<(PathBuf, Diag)>, String>>,
+}
+
+/// `cargo check` runs only with this much memory free (it can take a lot, briefly).
+const CARGO_MIN_MB: u64 = 1500;
+/// A `cargo check` still going after this is let go (it ends on its own).
+const CARGO_GIVE_UP: Duration = Duration::from_secs(600);
 
 impl Default for Lints {
     fn default() -> Self {
-        Lints { on: !cfg!(test), files: HashMap::new(), seen: HashMap::new(), job: None, due: None, told: HashSet::new(), marks: HashMap::new() }
+        Lints {
+            on: !cfg!(test),
+            files: HashMap::new(),
+            seen: HashMap::new(),
+            job: None,
+            due: None,
+            told: HashSet::new(),
+            marks: HashMap::new(),
+            saved: HashMap::new(),
+            cargo: None,
+            cargo_due: Vec::new(),
+            cargo_seen: HashMap::new(),
+            cargo_done: HashSet::new(),
+            cargo_ok: None,
+        }
     }
 }
 
@@ -101,7 +141,7 @@ impl Diag {
 
 impl Lints {
     pub fn busy(&self) -> bool {
-        self.job.is_some()
+        self.job.is_some() || self.cargo.is_some()
     }
 
     pub fn due(&self) -> Option<Instant> {
@@ -115,7 +155,7 @@ impl Lints {
 
     /// Every problem shown in `key`'s editor: (line, start, end, severity, message).
     pub fn all(&self, key: &str) -> Vec<(usize, usize, usize, Sev, &str)> {
-        let checked = self.files.get(key).into_iter().flat_map(|c| c.diags.iter().zip(&c.placed)).filter_map(|(d, l)| Some(((*l)?, d.start, d.end, d.sev, d.msg.as_str())));
+        let checked = self.files.get(key).into_iter().chain(self.saved.get(key)).flat_map(|c| c.diags.iter().zip(&c.placed)).filter_map(|(d, l)| Some(((*l)?, d.start, d.end, d.sev, d.msg.as_str())));
         let marks = self.marks.get(key).into_iter().flatten().map(|d| (d.line, d.start, d.end, d.sev, d.msg.as_str()));
         checked.chain(marks).collect()
     }
@@ -124,7 +164,7 @@ impl Lints {
     /// message, worst first.
     pub fn at(&self, key: &str, line: usize, col: usize) -> Option<(usize, Vec<(Sev, String)>)> {
         let covers = |d: &Diag| d.start <= col && col < d.end.max(d.start + 1);
-        let mut hits: Vec<&Diag> = self.files.get(key).into_iter().flat_map(|c| c.diags.iter().zip(&c.placed))
+        let mut hits: Vec<&Diag> = self.files.get(key).into_iter().chain(self.saved.get(key)).flat_map(|c| c.diags.iter().zip(&c.placed))
             .filter(|(d, l)| **l == Some(line) && covers(d))
             .map(|(d, _)| d)
             .chain(self.marks.get(key).into_iter().flatten().filter(|d| d.line == line && covers(d)))
@@ -142,6 +182,7 @@ fn tool(key: &str, b: &Buffer) -> Option<Tool> {
     }
     match nav::lang_for(path) {
         Lang::C => Some(Tool::C),
+        Lang::Rust => Some(Tool::Rust),
         Lang::Shell if !path.ends_with(".zsh") => Some(Tool::Shell),
         Lang::Other if Path::new(path).extension().is_none() => b.lines.first().and_then(|l| shebang(l)).map(|_| Tool::Shell),
         _ => None,
@@ -183,7 +224,8 @@ pub fn tick(app: &mut App) -> bool {
     app.lints.files.retain(|k, _| docs.contains_key(k));
     app.lints.seen.retain(|k, _| docs.contains_key(k));
     // Problems follow their lines through edits elsewhere.
-    for (key, c) in app.lints.files.iter_mut() {
+    app.lints.saved.retain(|k, _| docs.contains_key(k));
+    for (key, c) in app.lints.files.iter_mut().chain(app.lints.saved.iter_mut()) {
         let Some(Doc::Text(b)) = app.docs.get(key) else { continue };
         if c.placed_ver != b.version() {
             c.placed = c.diags.iter().map(|d| place(d, &b.lines)).collect();
@@ -205,10 +247,10 @@ pub fn tick(app: &mut App) -> bool {
         if seen.0 != ver {
             *seen = (ver, now);
         }
-        let ready = match tool {
-            Tool::Shell => seen.1 + SHELL_PAUSE,
-            Tool::C if b.dirty() && app.lints.files.contains_key(&key) => continue,
-            Tool::C => now,
+        let ready = seen.1 + match tool {
+            Tool::Shell => SHELL_PAUSE,
+            Tool::C => C_PAUSE,
+            Tool::Rust => RUST_PAUSE,
         };
         if ready > now {
             app.lints.due = Some(app.lints.due.map_or(ready, |d| d.min(ready)));
@@ -227,7 +269,194 @@ pub fn tick(app: &mut App) -> bool {
         });
         app.lints.job = Some(Job { key, ver, since: now, rx });
     }
+    changed |= cargo_tick(app);
     changed
+}
+
+/// The Rust workspace `file` is in: the outermost Cargo.toml with `[workspace]` above it,
+/// else its nearest Cargo.toml's folder.
+pub fn cargo_root(file: &Path) -> Option<PathBuf> {
+    let krate = file.ancestors().skip(1).find(|d| d.join("Cargo.toml").is_file())?;
+    let ws = krate.ancestors().filter(|d| std::fs::read_to_string(d.join("Cargo.toml")).is_ok_and(|t| t.contains("[workspace]"))).last();
+    Some(ws.unwrap_or(krate).to_path_buf())
+}
+
+fn cargo_ok_file() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("termcode-rust-check-{}.json", std::process::id()));
+    }
+    crate::data_dir(true).join("rust-check.json")
+}
+
+impl Lints {
+    /// Whether `cargo check` may run in workspace `root` (None: not asked yet).
+    pub fn cargo_allowed(&mut self, root: &Path) -> Option<bool> {
+        let ok = self.cargo_ok.get_or_insert_with(|| std::fs::read(cargo_ok_file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default());
+        ok.get(&root.display().to_string()).copied()
+    }
+
+    /// The user's answer for `root`, kept; a yes checks it now.
+    pub fn set_cargo_allowed(&mut self, root: &Path, yes: bool) {
+        self.cargo_allowed(root);
+        let ok = self.cargo_ok.get_or_insert_with(HashMap::new);
+        ok.insert(root.display().to_string(), yes);
+        let _ = serde_json::to_vec_pretty(ok).map(|j| std::fs::write(cargo_ok_file(), j));
+        if yes && !self.cargo_due.contains(&root.to_path_buf()) {
+            self.cargo_due.push(root.to_path_buf());
+        }
+    }
+}
+
+/// Free memory, MB (MemAvailable).
+fn mem_available_mb() -> Option<u64> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    info.lines().find_map(|l| l.strip_prefix("MemAvailable:")).and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok()).map(|kb| kb / 1024)
+}
+
+/// Rust files saved (or first opened): their workspace checked with `cargo check` in the
+/// background, one run at a time; its problems put on the files they are in. Asked once
+/// per workspace (it runs the project's build scripts and macros); never in an untrusted
+/// repository, with error checking off, or with less than CARGO_MIN_MB free.
+fn cargo_tick(app: &mut App) -> bool {
+    let mut changed = false;
+    if let Some(run) = &app.lints.cargo {
+        match run.rx.try_recv() {
+            Ok(res) => {
+                let run = app.lints.cargo.take().unwrap();
+                changed = true;
+                match res {
+                    Ok(found) => {
+                        let root = std::fs::canonicalize(&app.root).unwrap_or_else(|_| app.root.clone());
+                        // This workspace's files: their old results go, the new ones come.
+                        app.lints.saved.retain(|k, _| !app.root.join(&k["file:".len()..]).starts_with(&run.root));
+                        let mut by: HashMap<String, Vec<Diag>> = HashMap::new();
+                        for (path, d) in found {
+                            let Ok(rel) = std::fs::canonicalize(&path).unwrap_or(path).strip_prefix(&root).map(|r| r.display().to_string()) else { continue };
+                            by.entry(format!("file:{rel}")).or_default().push(d);
+                        }
+                        for (key, diags) in by {
+                            let ver = match app.docs.get(&key) {
+                                Some(Doc::Text(b)) => b.version(),
+                                _ => continue,
+                            };
+                            app.lints.saved.insert(key, Checked { ver, diags, placed: Vec::new(), placed_ver: u64::MAX });
+                        }
+                    }
+                    Err(e) => {
+                        if app.lints.told.insert(e.clone()) {
+                            app.msg = e;
+                        }
+                    }
+                }
+            }
+            Err(TryRecvError::Disconnected) => app.lints.cargo = None,
+            Err(TryRecvError::Empty) if run.since.elapsed() > CARGO_GIVE_UP => app.lints.cargo = None,
+            Err(TryRecvError::Empty) => {}
+        }
+    }
+    // Saves (and first sights) since: their workspaces due.
+    let rust: Vec<(String, u64)> = app.docs.iter().filter(|(k, _)| k.ends_with(".rs") && k.starts_with("file:")).filter_map(|(k, d)| match d {
+        Doc::Text(b) if !b.dirty() && b.readonly.is_none() => Some((k.clone(), b.version())),
+        _ => None,
+    }).collect();
+    app.lints.cargo_seen.retain(|k, _| app.docs.contains_key(k));
+    for (key, ver) in rust {
+        let prev = app.lints.cargo_seen.insert(key.clone(), ver);
+        if prev == Some(ver) {
+            continue;
+        }
+        let Some(root) = cargo_root(&app.root.join(&key["file:".len()..])) else { continue };
+        if (prev.is_some() || !app.lints.cargo_done.contains(&root)) && !app.lints.cargo_due.contains(&root) {
+            app.lints.cargo_due.push(root);
+        }
+    }
+    if app.lints.cargo.is_some() || app.lints.cargo_due.is_empty() || !app.settings.error_checking || app.untrusted.is_some() {
+        return changed;
+    }
+    let root = app.lints.cargo_due[0].clone();
+    match app.lints.cargo_allowed(&root) {
+        Some(false) => {
+            app.lints.cargo_due.remove(0);
+            return changed;
+        }
+        None => {
+            // Asked once, when no other window is up.
+            if app.prompt.is_none() {
+                let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
+                app.prompt = Some(crate::panel::Prompt {
+                    text: vec![format!("Check {name} with cargo on save?"), "It builds the project: its build scripts and macros run.".into()],
+                    buttons: vec![("Check on save".into(), crate::panel::PAct::RustCheck(root.clone(), true)), ("Syntax only".into(), crate::panel::PAct::RustCheck(root, false))],
+                    sel: 1,
+                });
+                changed = true;
+            }
+            return changed;
+        }
+        Some(true) => {}
+    }
+    if mem_available_mb().is_some_and(|mb| mb < CARGO_MIN_MB) {
+        let note = format!("Rust check skipped: under {CARGO_MIN_MB} MB of memory free");
+        if app.lints.told.insert(note.clone()) {
+            app.msg = note;
+        }
+        return changed;
+    }
+    app.lints.cargo_due.remove(0);
+    app.lints.cargo_done.insert(root.clone());
+    let (tx, rx) = mpsc::channel();
+    let at = root.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(cargo_check(&at));
+    });
+    app.lints.cargo = Some(CargoRun { root, since: Instant::now(), rx });
+    changed
+}
+
+/// `cargo check` in `root` (two jobs at most): each compiler message's main place, as a
+/// problem on that file's line.
+fn cargo_check(root: &Path) -> Result<Vec<(PathBuf, Diag)>, String> {
+    let out = Command::new("cargo")
+        .args(["check", "--message-format=json", "--quiet", "-j2"])
+        .current_dir(root)
+        .env("CARGO_TERM_COLOR", "never")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("Rust problems need cargo: {e}"))?;
+    Ok(parse_cargo(root, &String::from_utf8_lossy(&out.stdout)))
+}
+
+/// `cargo check --message-format=json`'s compiler messages: (file, problem) each.
+fn parse_cargo(root: &Path, out: &str) -> Vec<(PathBuf, Diag)> {
+    let mut found = Vec::new();
+    let mut texts: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    for line in out.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v["reason"] != "compiler-message" {
+            continue;
+        }
+        let m = &v["message"];
+        let sev = match m["level"].as_str() {
+            Some("error") => Sev::Error,
+            Some("warning") => Sev::Warning,
+            _ => continue,
+        };
+        let Some(span) = m["spans"].as_array().into_iter().flatten().find(|s| s["is_primary"] == true) else { continue };
+        let Some(file) = span["file_name"].as_str() else { continue };
+        let path = root.join(file);
+        let lines = texts.entry(path.clone()).or_insert_with(|| std::fs::read_to_string(&path).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default());
+        let line = span["line_start"].as_u64().unwrap_or(1).saturating_sub(1) as usize;
+        let text = lines.get(line).cloned().unwrap_or_default();
+        let byte = |col: u64| text.char_indices().nth(col.saturating_sub(1) as usize).map_or(text.len(), |(i, _)| i);
+        let start = byte(span["column_start"].as_u64().unwrap_or(1));
+        let end = if span["line_end"] == span["line_start"] { byte(span["column_end"].as_u64().unwrap_or(1)) } else { text.len() };
+        let mut msg = m["message"].as_str().unwrap_or_default().to_string();
+        if let Some(label) = span["label"].as_str().filter(|l| !l.is_empty()) {
+            msg = format!("{msg}: {label}");
+        }
+        found.push((path, Diag { line, start, end: end.max(start + 1), sev, msg, text }));
+    }
+    found
 }
 
 /// Where `d`'s line is now: its own index if unchanged, else the nearest same line.
@@ -257,7 +486,26 @@ fn run(tool: Tool, path: &Path, top: &Path, text: &str) -> Found {
             }
         }
         Tool::C => check_c(path, &dir, top, text, &lines),
+        Tool::Rust => rust_syntax(text, &lines),
     }
+}
+
+/// A Rust file's syntax errors (syn: the first it finds), as rustc would place them.
+fn rust_syntax(text: &str, lines: &[&str]) -> Found {
+    let Err(err) = syn::parse_file(text) else { return Found::default() };
+    let byte = |line: &str, col: usize| line.char_indices().nth(col).map_or(line.len(), |(i, _)| i);
+    let diags = err
+        .into_iter()
+        .map(|e| {
+            let (a, z) = (e.span().start(), e.span().end());
+            let line = a.line.saturating_sub(1).min(lines.len().saturating_sub(1));
+            let l = lines.get(line).copied().unwrap_or("");
+            let start = byte(l, a.column);
+            let end = if z.line == a.line { byte(l, z.column) } else { l.len() };
+            Diag { line, start, end: end.max(start + 1), sev: Sev::Error, msg: e.to_string(), text: l.to_string() }
+        })
+        .collect();
+    Found { diags, hint: None }
 }
 
 fn check_c(path: &Path, dir: &Path, top: &Path, text: &str, lines: &[&str]) -> Found {
@@ -674,6 +922,40 @@ fn parses(a: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_checks_messages_land_on_their_files_lines() {
+        let dir = std::env::temp_dir().join(format!("termcode-cargo-parse-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("app/src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[workspace]\nmembers = [\"app\"]\n").unwrap();
+        std::fs::write(dir.join("app/Cargo.toml"), "[package]\nname = \"app\"\n").unwrap();
+        std::fs::write(dir.join("app/src/main.rs"), "fn main() {\n    let n: u8 = \"x\";\n}\n").unwrap();
+        assert_eq!(cargo_root(&dir.join("app/src/main.rs")), Some(dir.clone()), "the workspace above the crate");
+        let out = concat!(
+            r#"{"reason":"compiler-artifact","package_id":"x"}"#, "\n",
+            r#"{"reason":"compiler-message","message":{"level":"error","message":"mismatched types","spans":[{"file_name":"app/src/main.rs","line_start":2,"line_end":2,"column_start":17,"column_end":20,"is_primary":true,"label":"expected `u8`, found `&str`"}]}}"#, "\n",
+            r#"{"reason":"compiler-message","message":{"level":"failure-note","message":"aborting","spans":[]}}"#, "\n",
+        );
+        let found = parse_cargo(&dir, out);
+        assert_eq!(found.len(), 1);
+        let (path, d) = &found[0];
+        assert_eq!(path, &dir.join("app/src/main.rs"));
+        assert_eq!((d.line, &d.text[d.start..d.end], d.sev), (1, "\"x\"", Sev::Error));
+        assert_eq!(d.msg, "mismatched types: expected `u8`, found `&str`");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rust_syntax_errors_show_while_typing_where_rustc_would_put_them() {
+        let text = "fn main() {\n    let x = ;\n}\n";
+        let lines: Vec<&str> = text.lines().collect();
+        let found = rust_syntax(text, &lines);
+        assert_eq!(found.diags.len(), 1, "{found:?}");
+        let d = &found.diags[0];
+        assert_eq!((d.line, &lines[d.line][d.start..d.end], d.sev), (1, ";", Sev::Error), "{d:?}");
+        assert!(!d.msg.is_empty());
+        assert!(rust_syntax("fn ok() -> u8 { 1 }\n", &["fn ok() -> u8 { 1 }"]).diags.is_empty());
+    }
 
     #[test]
     fn shellcheck_columns_are_characters_and_a_tab_counts_once() {

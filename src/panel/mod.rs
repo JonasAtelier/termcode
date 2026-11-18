@@ -482,6 +482,8 @@ pub enum PAct {
     Serial(String, bool),
     /// An API client's question (`ui.prompt` number), button picked.
     ApiPick(u64, usize),
+    /// A Rust workspace: checked with cargo on save (true), or its syntax only.
+    RustCheck(PathBuf, bool),
 }
 
 /// Wheel and motion frames come at most this often (herdr itself renders every 16 ms).

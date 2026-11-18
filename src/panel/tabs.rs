@@ -500,6 +500,7 @@ impl App {
             PAct::KillTerminal(i) => self.kill_terminal(i, false),
             PAct::Api(a) => self.api_gate.answer = Some(a),
             PAct::ApiPick(n, b) => self.api_gate.picked = Some((n, b)),
+            PAct::RustCheck(root, yes) => self.lints.set_cargo_allowed(&root, yes),
             PAct::Serial(tty, write) => crate::xcomm::share(self, &tty, write),
             PAct::QuitEndTerminal => {
                 self.term_quit_ok = true;
