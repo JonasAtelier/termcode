@@ -8,7 +8,17 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 
 ## [Unreleased]
 
+### Added
+- An API: `termcode api METHOD [JSON]` (JSON-RPC 2.0 on termcode's private socket) runs
+  any command, opens files, reads open and unsaved text, problems, Git, terminals and the
+  screen, edits (versioned, one undo step) and saves, types into a terminal and waits for
+  its output. `termcode api --skill` prints the guide for AI agents. Only your user's
+  programs reach it; before one changes files or runs anything termcode asks you, and
+  `termcode.api` makes it read-only or turns it off.
+
 ### Changed
+- termcode's own folders (unsaved-file backups, commit drafts, sessions, settings) are
+  made readable by you alone, whatever made them before.
 - The .deb's binary is built with link-time optimisation: about a fifth smaller.
 - ratatui 0.30, vt100 0.16; the Settings window's pictures no longer need ratatui-image.
 

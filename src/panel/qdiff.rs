@@ -424,7 +424,8 @@ impl App {
             sync(true);
             let drawn = t.draw(|f| crate::ui::draw(self, f));
             sync(false);
-            drawn.map_err(|e| io::Error::other(e.to_string()))?;
+            let frame = drawn.map_err(|e| io::Error::other(e.to_string()))?;
+            crate::api::drawn(self, frame.buffer);
             self.last_draw = Some(Instant::now());
             if matches!(self.drag, Drag::ClosePending) {
                 self.drag = Drag::None;
@@ -438,6 +439,7 @@ impl App {
         // Wake often only while rg/git output streams in or a backup is pending,
         // so a HUP is noticed within 100 ms whenever there is something to save.
         let busy = self.search.is_some()
+            || crate::api::waiting(self)
             || self.queued_search.is_some()
             || !self.loading.is_empty()
             || self.backup_due.is_some()

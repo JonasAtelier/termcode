@@ -52,6 +52,67 @@ pub struct Term {
     sel: Option<((u16, u16), (u16, u16))>,
     /// Its tab's name and when it was worked out (looked up again after a second).
     name: RefCell<Option<(Instant, String)>>,
+    /// What the shell printed, as plain text (the API's `events.wait`).
+    pub log: OutLog,
+}
+
+/// A terminal's output as plain text, escapes and control characters dropped, the last
+/// 256 KB of it; `end` counts every byte of it since the shell started.
+#[derive(Default)]
+pub struct OutLog {
+    text: String,
+    end: u64,
+    /// Where the escape the last chunk ended in had got to (0: none).
+    esc: u8,
+}
+
+impl OutLog {
+    const KEEP: usize = 256 << 10;
+
+    pub fn push(&mut self, bytes: &[u8]) {
+        let mut plain = Vec::with_capacity(bytes.len());
+        for &c in bytes {
+            self.esc = match (self.esc, c) {
+                (0, 0x1b) => 1,
+                (0, b'\n' | b'\t') | (0, 0x20..=0x7e | 0x80..) => {
+                    plain.push(c);
+                    0
+                }
+                (1, b'[') => 2,
+                (1, b']' | b'P' | b'_' | b'^') => 3,
+                (2, 0x20..=0x3f) | (3, _) if c != 0x07 && c != 0x1b => self.esc,
+                (3, 0x1b) => 4,
+                (4, b'\\') => 0,
+                (4, _) => 3,
+                _ => 0,
+            };
+        }
+        let s = String::from_utf8_lossy(&plain);
+        self.end += s.len() as u64;
+        self.text.push_str(&s);
+        if self.text.len() > Self::KEEP {
+            let mut cut = self.text.len() - Self::KEEP / 2;
+            while !self.text.is_char_boundary(cut) {
+                cut += 1;
+            }
+            self.text.drain(..cut);
+        }
+    }
+
+    /// Bytes printed so far: a mark for `since`.
+    pub fn end(&self) -> u64 {
+        self.end
+    }
+
+    /// What was printed after `mark` (as much as is kept).
+    pub fn since(&self, mark: u64) -> &str {
+        let start = self.end - self.text.len() as u64;
+        let mut from = (mark.max(start) - start) as usize;
+        while !self.text.is_char_boundary(from) {
+            from += 1;
+        }
+        &self.text[from..]
+    }
 }
 
 impl Term {
@@ -97,7 +158,7 @@ impl Term {
         let child = cmd.spawn()?;
         FDS.with(|f| f.borrow_mut().push(m));
         let pid = child.id() as i32;
-        Ok(Term { master, child: Some(child), pid, parser: vt100::Parser::new(rows, cols, SCROLLBACK), sel: None, name: RefCell::new(None) })
+        Ok(Term { master, child: Some(child), pid, parser: vt100::Parser::new(rows, cols, SCROLLBACK), sel: None, name: RefCell::new(None), log: OutLog::default() })
     }
 
     /// For a reload's exec: the PTY stays open across it (no close-on-exec), and what the
@@ -155,7 +216,7 @@ impl Term {
             parser.process(&screen);
         }
         FDS.with(|f| f.borrow_mut().push(fd));
-        Some(Term { master, child: None, pid, parser, sel: None, name: RefCell::new(None) })
+        Some(Term { master, child: None, pid, parser, sel: None, name: RefCell::new(None), log: OutLog::default() })
     }
 
     /// Reads what the shell wrote (1 MB at most a turn: keys still come first). Returns
@@ -169,6 +230,7 @@ impl Term {
                 Ok(0) => return (got, false),
                 Ok(n) => {
                     self.parser.process(&buf[..n]);
+                    self.log.push(&buf[..n]);
                     got = true;
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return (got, true),
@@ -396,7 +458,7 @@ impl Term {
         n
     }
 
-    #[cfg(test)]
+    /// The screen's text.
     pub fn contents(&self) -> String {
         self.parser.screen().contents()
     }
@@ -879,6 +941,18 @@ pub fn key_bytes(k: KeyEvent, app_cursor: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_output_log_is_plain_text_even_with_escapes_split_across_reads() {
+        let mut log = OutLog::default();
+        log.push(b"\x1b[1;32mtest re");
+        let mark = log.end();
+        log.push(b"sult\x1b[0m: ok\r\n\x1b]0;title\x07done\x1b");
+        log.push(b"]8;;http://x\x1b\\link\n");
+        assert_eq!(log.since(0), "test result: ok\ndonelink\n");
+        assert_eq!(log.since(mark), "sult: ok\ndonelink\n");
+        assert_eq!(log.end(), log.since(0).len() as u64);
+    }
 
     #[test]
     fn only_a_terminal_descriptor_past_stdio_is_adopted() {

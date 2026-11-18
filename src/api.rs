@@ -3,7 +3,17 @@
 //! request a line, one reply. The shells in its terminals know it (TERMCODE_SOCKET), so
 //! `termcode PATH` typed in one opens PATH in this termcode instead of a second one
 //! inside it: a file of this folder in place, another folder by switching to it (the
-//! way a reload does: the shells go on). The ground for an API.
+//! way a reload does: the shells go on).
+//!
+//! It is also termcode's API (doc/api.md): JSON-RPC 2.0, a request a line, several on
+//! one connection. Commands, state, edits, terminals, the screen; `termcode api` is its
+//! command line and skills/termcode/SKILL.md the guide for agents.
+//!
+//! Safety: only this user's processes get in (the folder 0700, the socket 0600, and each
+//! peer's uid checked). Reading is free; changing files and running things (commands,
+//! terminals, the screen) is asked of the user once per client, the process behind the
+//! connection past shells and `termcode api` (`Gate`). `termcode.api` turns that to
+//! read-only or off.
 
 use crate::panel::App;
 use serde_json::{json, Value};
@@ -37,12 +47,96 @@ pub fn wake_fd() -> Option<i32> {
     Some(WAKE.load(Ordering::Relaxed)).filter(|&fd| fd >= 0)
 }
 
-type Request = (Value, Sender<Value>);
+type Request = (Value, Sender<Value>, Client);
+
+/// Connections served at once at most; more are turned away.
+const CONNECTIONS: usize = 16;
+/// Requests waiting at once at most (for the screen, output, the user's answer).
+const WAITS: usize = 64;
 
 pub struct Server {
     rx: Receiver<Request>,
     wake: std::io::PipeReader,
     path: PathBuf,
+    /// Requests answered later: when the next frame is drawn, a terminal prints a match,
+    /// the user answers whether a client may.
+    waits: Vec<(Wait, Sender<Value>)>,
+}
+
+/// Who asks: the first process behind the connection that is not a shell or `termcode
+/// api` (an agent, a script, an editor), as (pid, its start time) and how it shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Client {
+    pub key: (i32, u64),
+    pub label: String,
+    /// A shell of this termcode's own terminal, typed in by the user.
+    pub own: bool,
+}
+
+/// What a request may do: read, change files (`Edit`), run things (`Run`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Tier {
+    Read,
+    Edit,
+    Run,
+}
+
+/// The user's answers, per client and tier: allowed while that process runs, or refused.
+#[derive(Default)]
+pub struct Gate {
+    answers: std::collections::HashMap<((i32, u64), Tier), bool>,
+    /// Allowed for every client (TERMCODE_API_ALLOW, set by whoever starts termcode).
+    allowed: Vec<Tier>,
+    /// The answer to the prompt shown (`PAct::Api`): 0 deny, 1 once, 2 while it runs.
+    pub answer: Option<u8>,
+    /// The prompt for a client is up.
+    pub asking: bool,
+}
+
+impl Gate {
+    pub fn from_env() -> Self {
+        let allowed = std::env::var("TERMCODE_API_ALLOW").unwrap_or_default().split(',').filter_map(|t| match t.trim() {
+            "edit" => Some(Tier::Edit),
+            "run" => Some(Tier::Run),
+            _ => None,
+        }).collect();
+        Gate { allowed, ..Gate::default() }
+    }
+
+    /// Whether `c` may do `t` now: yes, no, or (None) the user is to be asked.
+    pub fn check(&self, mode: &str, c: &Client, t: Tier) -> Option<bool> {
+        match (mode, t) {
+            ("off", _) => Some(false),
+            (_, Tier::Read) => Some(true),
+            ("read-only", _) => Some(false),
+            _ if c.own || self.allowed.contains(&t) => Some(true),
+            _ => self.answers.get(&(c.key, t)).copied(),
+        }
+    }
+}
+
+/// An answer that waits, for request `id`, until `until` at most.
+pub struct Wait {
+    id: Value,
+    until: std::time::Instant,
+    what: Waiting,
+}
+
+enum Waiting {
+    /// The next frame's text.
+    Screen,
+    /// Terminal `term` printing a match of `re` after byte `mark` of its output (looked
+    /// at again only when it printed more than `seen`).
+    Output { term: usize, re: fancy_regex::Regex, mark: u64, seen: Option<u64> },
+    /// The user's answer: may `client` do `tier` (`req`, done once allowed)? `shown`:
+    /// the prompt is up for it; `once`: allowed for this request only.
+    Grant { client: Client, tier: Tier, req: Value, shown: bool, once: bool },
+}
+
+/// A request's answer: now, or later (see `Wait`).
+pub enum Reply {
+    Now(Value),
+    Later(Wait),
 }
 
 /// The running termcode's server: its socket for its shells, its pipe for the event loop.
@@ -55,8 +149,10 @@ pub fn arm(s: &Server) {
 /// The socket for this process in `dir` (made 0700), its requests to the event loop.
 pub fn start(dir: &Path) -> Option<Server> {
     let _ = std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o700).create(dir);
-    if fs::metadata(dir).ok()?.permissions().mode() & 0o077 != 0 {
-        return None; // never a socket others can reach
+    let meta = fs::metadata(dir).ok()?;
+    // SAFETY: geteuid has no preconditions.
+    if meta.permissions().mode() & 0o077 != 0 || std::os::unix::fs::MetadataExt::uid(&meta) != unsafe { libc::geteuid() } {
+        return None; // never a socket others can reach, nor in a folder of theirs
     }
     let p = dir.join(format!("{}.sock", std::process::id()));
     let _ = fs::remove_file(&p); // this pid's before a reload, or a crash's
@@ -71,55 +167,340 @@ pub fn start(dir: &Path) -> Option<Server> {
     // (bind made it with the umask's mode: no one else gets in, the folder being 0700.)
     fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).ok()?;
     let (tx, rx) = channel();
-    let (wake, mut poke) = std::io::pipe().ok()?;
+    let (wake, poke) = std::io::pipe().ok()?;
     // SAFETY: the pipe's read end is open; reads from it must not block the loop.
     unsafe {
         let fd = wake.as_raw_fd();
         libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK);
     }
+    let open = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     std::thread::Builder::new()
         .name("api".into())
         .spawn(move || {
             for s in listener.incoming().flatten() {
-                serve(s, &tx, &mut poke);
+                // Only this user's processes (the socket's mode says so; this makes sure).
+                let Some((pid, uid)) = peer(&s) else { continue };
+                // SAFETY: geteuid has no preconditions.
+                if uid != unsafe { libc::geteuid() } {
+                    continue;
+                }
+                // Each connection its own thread: a long wait holds up no one else.
+                if open.load(Ordering::Relaxed) >= CONNECTIONS {
+                    let _ = (&s).write_all(b"{\"jsonrpc\": \"2.0\", \"id\": null, \"error\": {\"code\": -32000, \"message\": \"too many connections\"}}\n");
+                    continue;
+                }
+                let (tx, mine) = (tx.clone(), open.clone());
+                let Ok(mut poke) = poke.try_clone() else { continue };
+                open.fetch_add(1, Ordering::Relaxed);
+                let spawned = std::thread::Builder::new().name("api-conn".into()).spawn(move || {
+                    serve(s, &tx, &mut poke, &client_of(pid));
+                    mine.fetch_sub(1, Ordering::Relaxed);
+                });
+                if spawned.is_err() {
+                    open.fetch_sub(1, Ordering::Relaxed);
+                }
             }
+            drop(poke);
         })
         .ok()?;
-    Some(Server { rx, wake, path: p })
+    Some(Server { rx, wake, path: p, waits: Vec::new() })
 }
 
-/// One connection: a request line in, the event loop's reply out.
-fn serve(s: UnixStream, tx: &Sender<Request>, poke: &mut std::io::PipeWriter) {
+/// The connecting process: its pid and uid (SO_PEERCRED).
+fn peer(s: &UnixStream) -> Option<(i32, u32)> {
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: an open socket, and a buffer of the size given.
+    let r = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&raw mut cred).cast(), &mut len) };
+    (r == 0).then_some((cred.pid, cred.uid))
+}
+
+/// A process's name, parent and start time (/proc/PID/stat).
+fn proc_stat(pid: i32) -> Option<(String, i32, u64)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (head, rest) = stat.rsplit_once(')')?;
+    let comm = head.split_once('(')?.1.to_string();
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    Some((comm, f.get(1)?.parse().ok()?, f.get(19)?.parse().ok()?))
+}
+
+fn cmdline(pid: i32) -> Vec<String> {
+    fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default().split(|&b| b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect()
+}
+
+/// Who is behind the process `pid` that connected (see `Client`).
+pub fn client_of(pid: i32) -> Client {
+    let me = std::process::id() as i32;
+    let mut p = pid;
+    for _ in 0..32 {
+        if p == me {
+            return Client { key: (me, 0), label: "this termcode's terminal".into(), own: true };
+        }
+        let Some((comm, parent, start)) = proc_stat(p) else { break };
+        let args = cmdline(p);
+        let go_on = matches!(comm.as_str(), "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "mksh" | "tcsh" | "csh" | "env" | "timeout" | "xargs")
+            || (comm == "termcode" && args.get(1).is_some_and(|a| a == "api"));
+        if !go_on {
+            let mut label = args.join(" ");
+            if label.chars().count() > 80 {
+                label = label.chars().take(79).collect::<String>() + "…";
+            }
+            return Client { key: (p, start), label: format!("{} (pid {p})", if label.is_empty() { comm } else { label }), own: false };
+        }
+        p = parent;
+    }
+    Client { key: (pid, 0), label: format!("pid {pid}"), own: false }
+}
+
+/// One connection: request lines in, each answered in turn, until it closes or idles 5 s.
+fn serve(s: UnixStream, tx: &Sender<Request>, poke: &mut std::io::PipeWriter, client: &Client) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
-    let mut line = String::new();
-    let reply = match BufReader::new((&s).take(MAX)).read_line(&mut line) {
-        Ok(_) => match serde_json::from_str::<Value>(&line) {
-            Ok(req) => {
-                let (rtx, rrx) = channel();
-                let _ = tx.send((req, rtx));
-                let _ = poke.write_all(b"!");
-                rrx.recv_timeout(Duration::from_secs(10)).unwrap_or_else(|_| json!({"ok": false, "error": "termcode did not answer"}))
-            }
-            Err(e) => json!({"ok": false, "error": format!("not JSON: {e}")}),
-        },
-        Err(e) => json!({"ok": false, "error": e.to_string()}),
-    };
-    let _ = (&s).write_all(format!("{reply}\n").as_bytes());
+    let mut lines = BufReader::new(&s);
+    loop {
+        let mut line = String::new();
+        let reply = match (&mut lines).take(MAX).read_line(&mut line) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => match serde_json::from_str::<Value>(&line) {
+                Ok(req) => {
+                    // A wait's own timeout, the user's answer, and some to spare.
+                    let secs = req["params"]["timeout"].as_f64().unwrap_or(0.0).clamp(0.0, 3600.0) + ASK.as_secs_f64() + 10.0;
+                    let (rtx, rrx) = channel();
+                    let _ = tx.send((req.clone(), rtx, client.clone()));
+                    let _ = poke.write_all(b"!");
+                    rrx.recv_timeout(Duration::from_secs_f64(secs)).unwrap_or_else(|_| failure(&req, "termcode did not answer"))
+                }
+                Err(e) => json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("not JSON: {e}")}}),
+            },
+        };
+        if (&s).write_all(format!("{reply}\n").as_bytes()).is_err() {
+            return;
+        }
+    }
 }
 
-/// The requests that came (from the event loop): each answered. True when one came.
+/// How long a client waits for the user's answer.
+const ASK: Duration = Duration::from_secs(120);
+
+/// The requests that came (from the event loop): each answered, put to wait, or put to
+/// the user; the waits that came true, were answered or ran out answered. True when
+/// something changed on screen.
 pub fn tick(app: &mut App) -> bool {
     let Some(srv) = app.api.as_mut() else { return false };
     let mut buf = [0u8; 64];
     while matches!((&srv.wake).read(&mut buf), Ok(n) if n > 0) {}
     let reqs: Vec<Request> = srv.rx.try_iter().collect();
-    for (req, reply) in &reqs {
-        let _ = reply.send(handle(app, req));
+    let mut changed = !reqs.is_empty();
+    let mut waits = std::mem::take(&mut app.api.as_mut().unwrap().waits);
+    for (req, reply, client) in reqs {
+        if waits.len() >= WAITS {
+            let _ = reply.send(failure(&req, "too many requests waiting"));
+            continue;
+        }
+        if let Some(w) = admit(app, &req, &client, &reply) {
+            waits.push((w, reply));
+        }
     }
-    !reqs.is_empty()
+    // The user's answer to the prompt up (3: closed with Esc, no for this request).
+    let answer = app.api_gate.answer.take().or_else(|| (app.api_gate.asking && app.prompt.is_none()).then_some(3));
+    if let Some(a) = answer {
+        app.api_gate.asking = false;
+        if let Some((w, _)) = waits.iter_mut().find(|(w, _)| matches!(w.what, Waiting::Grant { shown: true, .. })) {
+            if let Waiting::Grant { client, tier, shown, once, .. } = &mut w.what {
+                *shown = false;
+                if a == 3 {
+                    w.until = std::time::Instant::now();
+                } else if a == 1 {
+                    *once = true; // this request only
+                } else {
+                    app.api_gate.answers.insert((client.key, *tier), a == 2);
+                }
+            }
+        }
+        changed = true;
+    }
+    let now = std::time::Instant::now();
+    let mut later = Vec::new();
+    waits.retain_mut(|(w, reply)| {
+        let done = match &mut w.what {
+            Waiting::Output { term, re, mark, seen } => match app.terms.get(*term) {
+                None => Some(Err("the terminal closed".to_string())),
+                Some(t) if *seen == Some(t.log.end()) => None,
+                Some(t) => {
+                    *seen = Some(t.log.end());
+                    let text = t.log.since(*mark);
+                    re.find(text).ok().flatten().map(|m| Ok(json!({"matched": m.as_str(), "output": tail(text, 4096)})))
+                }
+            },
+            Waiting::Screen => None,
+            Waiting::Grant { client, tier, req, once, .. } => {
+                match app.api_gate.check(&app.settings.api, client, *tier) {
+                    _ if *once => {
+                        later.push((req.clone(), client.clone(), reply.clone()));
+                        return false;
+                    }
+                    Some(true) => {
+                        later.push((req.clone(), client.clone(), reply.clone()));
+                        return false;
+                    }
+                    Some(false) => Some(Err(format!("{} refused: the user said no", req["method"].as_str().unwrap_or("it")))),
+                    None => None,
+                }
+            }
+        };
+        let done = done.or_else(|| (now >= w.until).then(|| Err(if matches!(w.what, Waiting::Grant { .. }) { "the user did not answer".to_string() } else { "timed out".to_string() })));
+        let keep = done.is_none();
+        if let Some(r) = done {
+            let _ = reply.send(envelope(&w.id, r));
+        }
+        keep
+    });
+    // Allowed now: done, as if they had just come.
+    for (req, client, reply) in later {
+        match respond(app, &req, &client, true) {
+            Reply::Now(v) => drop(reply.send(v)),
+            Reply::Later(w) => waits.push((w, reply)),
+        }
+        changed = true;
+    }
+    // The next client to ask about, when no prompt is up.
+    if !app.api_gate.asking && app.prompt.is_none() {
+        if let Some((w, _)) = waits.iter_mut().find(|(w, _)| matches!(w.what, Waiting::Grant { .. })) {
+            if let Waiting::Grant { client, tier, req, shown, .. } = &mut w.what {
+                *shown = true;
+                app.api_gate.asking = true;
+                app.prompt = Some(ask(client, *tier, req));
+                changed = true;
+            }
+        }
+    }
+    app.api.as_mut().unwrap().waits = waits;
+    changed
 }
 
+/// The prompt asking the user whether `c` may do `t`.
+fn ask(c: &Client, t: Tier, req: &Value) -> crate::panel::Prompt {
+    use crate::panel::PAct;
+    let what = match t {
+        Tier::Edit => "open and change files",
+        _ => "run commands and use the terminals (type in them, read them and the screen)",
+    };
+    let method = req["method"].as_str().unwrap_or_default();
+    let mut detail = req["params"].to_string();
+    if detail.chars().count() > 70 {
+        detail = detail.chars().take(69).collect::<String>() + "…";
+    }
+    crate::panel::Prompt {
+        text: vec![format!("{} asks to {what}.", c.label), format!("First: {method} {detail}"), "Allow lets it while it runs; Deny refuses it until termcode restarts.".into()],
+        buttons: vec![("Allow".into(), PAct::Api(2)), ("Allow once".into(), PAct::Api(1)), ("Deny".into(), PAct::Api(0))],
+        sel: 2,
+    }
+}
+
+/// A request in: answered now (None), or its wait (the screen, output, the user).
+fn admit(app: &mut App, req: &Value, client: &Client, reply: &Sender<Value>) -> Option<Wait> {
+    match respond(app, req, client, false) {
+        Reply::Now(v) => {
+            let _ = reply.send(v);
+            None
+        }
+        Reply::Later(w) => Some(w),
+    }
+}
+
+/// The frame just drawn: the requests for the screen answered with its text.
+pub fn drawn(app: &mut App, buf: &ratatui::buffer::Buffer) {
+    let Some(srv) = app.api.as_mut() else { return };
+    if !srv.waits.iter().any(|(w, _)| matches!(w.what, Waiting::Screen)) {
+        return;
+    }
+    let text = screen_text(buf);
+    srv.waits.retain(|(w, reply)| {
+        if matches!(w.what, Waiting::Screen) {
+            let _ = reply.send(envelope(&w.id, Ok(json!({"text": text, "cols": buf.area.width, "rows": buf.area.height}))));
+            return false;
+        }
+        true
+    });
+}
+
+/// Whether requests wait (the event loop then wakes often enough to time them out).
+pub fn waiting(app: &App) -> bool {
+    app.api.as_ref().is_some_and(|s| !s.waits.is_empty())
+}
+
+/// A frame as text, row by row: pictures (escapes, placeholders) as blanks.
+pub fn screen_text(buf: &ratatui::buffer::Buffer) -> String {
+    let w = usize::from(buf.area.width.max(1));
+    buf.content
+        .chunks(w)
+        .map(|row| {
+            let line: String = row.iter().map(|c| c.symbol()).map(|s| if s.contains('\x1b') || s.starts_with('\u{10EEEE}') { " " } else { s }).collect();
+            line.trim_end().to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn tail(s: &str, n: usize) -> &str {
+    let mut from = s.len().saturating_sub(n);
+    while !s.is_char_boundary(from) {
+        from += 1;
+    }
+    &s[from..]
+}
+
+/// The answer to `req` from `client`: `open` and `ping` as `termcode PATH` sends them;
+/// anything with `"jsonrpc"` as JSON-RPC 2.0, once the gate lets it (`allowed`: it did).
+pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Reply {
+    if req.get("jsonrpc").is_none() {
+        return Reply::Now(handle(app, req));
+    }
+    let id = req.get("id").cloned().unwrap_or(Value::Null);
+    let method = req["method"].as_str().unwrap_or_default();
+    let tier = crate::rpc::tier(method, &req["params"]);
+    if !allowed {
+        match app.api_gate.check(&app.settings.api, client, tier) {
+            Some(true) => {}
+            Some(false) if app.settings.api == "off" => return Reply::Now(envelope(&id, Err("the API is off (termcode.api in settings)".into()))),
+            Some(false) if app.settings.api == "read-only" => return Reply::Now(envelope(&id, Err(format!("{method} refused: the API is read-only (termcode.api in settings)")))),
+            Some(false) => return Reply::Now(envelope(&id, Err(format!("{method} refused: the user said no")))),
+            None => return Reply::Later(Wait { id, until: std::time::Instant::now() + ASK, what: Waiting::Grant { client: client.clone(), tier, req: req.clone(), shown: false, once: false } }),
+        }
+    }
+    if tier != Tier::Read && !client.own {
+        app.msg = format!("API: {} — {method}", client.label);
+    }
+    match crate::rpc::call(app, method, &req["params"]) {
+        Ok(crate::rpc::Out::Now(v)) => Reply::Now(envelope(&id, Ok(v))),
+        Ok(crate::rpc::Out::Screen) => Reply::Later(Wait { id, until: std::time::Instant::now() + Duration::from_secs(5), what: Waiting::Screen }),
+        Ok(crate::rpc::Out::Output { term, re, mark, timeout }) => {
+            Reply::Later(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Output { term, re, mark, seen: None } })
+        }
+        Err(e) => Reply::Now(envelope(&id, Err(e))),
+    }
+}
+
+fn envelope(id: &Value, r: Result<Value, String>) -> Value {
+    match r {
+        Ok(v) => json!({"jsonrpc": "2.0", "id": id, "result": v}),
+        Err(e) => {
+            let code = if e.starts_with("unknown method") { -32601 } else { -32000 };
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": e}})
+        }
+    }
+}
+
+/// `req` failed with `e`, in its own protocol.
+fn failure(req: &Value, e: &str) -> Value {
+    if req.get("jsonrpc").is_some() {
+        envelope(&req.get("id").cloned().unwrap_or(Value::Null), Err(e.to_string()))
+    } else {
+        json!({"ok": false, "error": e})
+    }
+}
+
+/// `termcode PATH`'s protocol: {"method": "open"|"ping", …} → {"ok": …}.
 pub fn handle(app: &mut App, req: &Value) -> Value {
     match req["method"].as_str() {
         Some("ping") => json!({"ok": true, "root": app.root}),
@@ -211,6 +592,109 @@ fn send_open(sock: &Path, root: &Path, file: Option<&(PathBuf, usize, usize)>) -
     })
 }
 
+const CLI_HELP: &str = "usage: termcode api [--to PID|FOLDER] METHOD [JSON]
+       termcode api ls        the running termcodes: pid and folder
+       termcode api --skill   the guide for agents (SKILL.md)
+Calls a running termcode's API (JSON-RPC; doc/api.md) and prints the result as JSON.
+Which termcode: --to, else $TERMCODE_SOCKET (its own terminal), else the one open on
+this folder (or above it), else the only one running.
+  termcode api hello
+  termcode api command.run '{\"id\": \"view.toggleMinimap\"}'
+  termcode api state.get '{\"path\": \"/ui/screen\"}'";
+
+/// `termcode api …`.
+pub fn cli(args: &[String]) -> Result<(), String> {
+    let mut to = None;
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "-h" | "--help" => {
+                println!("{CLI_HELP}");
+                return Ok(());
+            }
+            "--skill" => {
+                print!("{}", include_str!("../skills/termcode/SKILL.md"));
+                return Ok(());
+            }
+            "--to" => to = Some(it.next().ok_or("--to: a pid or a folder")?.clone()),
+            _ => rest.push(a.clone()),
+        }
+    }
+    let running = running();
+    let [method, more @ ..] = rest.as_slice() else { return Err(CLI_HELP.into()) };
+    if method == "ls" {
+        for (pid, root, _) in &running {
+            println!("{pid}\t{}", root.display());
+        }
+        return Ok(());
+    }
+    let params: Value = match more {
+        [] => json!({}),
+        [j] => serde_json::from_str(j).map_err(|e| format!("not JSON: {e}"))?,
+        _ => return Err(CLI_HELP.into()),
+    };
+    let sock = pick(&running, to.as_deref())?;
+    let req = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+    let reply = rpc(&sock, &req)?;
+    if let Some(e) = reply.get("error") {
+        return Err(e["message"].as_str().unwrap_or("failed").to_string());
+    }
+    println!("{}", serde_json::to_string_pretty(&reply["result"]).unwrap_or_default());
+    Ok(())
+}
+
+/// One request over `sock`, its reply.
+pub fn rpc(sock: &Path, req: &Value) -> Result<Value, String> {
+    let s = UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
+    let secs = req["params"]["timeout"].as_f64().unwrap_or(0.0).clamp(0.0, 3600.0) + 15.0;
+    let _ = s.set_read_timeout(Some(Duration::from_secs_f64(secs)));
+    (&s).write_all(format!("{req}\n").as_bytes()).map_err(|e| e.to_string())?;
+    let mut line = String::new();
+    BufReader::new(&s).read_line(&mut line).map_err(|e| format!("no answer: {e}"))?;
+    serde_json::from_str(&line).map_err(|e| format!("bad answer: {e}"))
+}
+
+/// The termcodes running (that answer): pid, folder, socket.
+fn running() -> Vec<(u32, PathBuf, PathBuf)> {
+    let mut out: Vec<_> = fs::read_dir(dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let pid = e.file_name().to_str()?.strip_suffix(".sock")?.parse::<u32>().ok()?;
+            let hello = rpc(&e.path(), &json!({"jsonrpc": "2.0", "id": 0, "method": "hello", "params": {"timeout": 0}})).ok()?;
+            Some((pid, PathBuf::from(hello["result"]["root"].as_str()?), e.path()))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// The socket to talk to (see CLI_HELP).
+fn pick(running: &[(u32, PathBuf, PathBuf)], to: Option<&str>) -> Result<PathBuf, String> {
+    let list = || running.iter().map(|(pid, root, _)| format!("  {pid}  {}", root.display())).collect::<Vec<_>>().join("\n");
+    let within = |dir: &Path| running.iter().filter(|(_, root, _)| dir.starts_with(root)).max_by_key(|(_, root, _)| root.as_os_str().len()).map(|r| r.2.clone());
+    if let Some(to) = to {
+        if let Ok(pid) = to.parse::<u32>() {
+            return running.iter().find(|r| r.0 == pid).map(|r| r.2.clone()).ok_or_else(|| format!("no termcode {pid}; running:\n{}", list()));
+        }
+        let dir = fs::canonicalize(to).map_err(|e| format!("{to}: {e}"))?;
+        return within(&dir).ok_or_else(|| format!("no termcode open on {to}; running:\n{}", list()));
+    }
+    if let Some(s) = std::env::var_os(ENV).filter(|s| !s.is_empty()) {
+        return Ok(PathBuf::from(s));
+    }
+    if let Some(s) = std::env::current_dir().ok().and_then(|d| within(&d)) {
+        return Ok(s);
+    }
+    match running {
+        [one] => Ok(one.2.clone()),
+        [] => Err("no termcode is running".into()),
+        _ => Err(format!("which termcode? --to PID|FOLDER; running:\n{}", list())),
+    }
+}
+
 /// The folder the sockets live in: the user's runtime directory, else termcode's state.
 pub fn dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|d| d.is_absolute()).map_or_else(|| crate::data_dir(true).join("run"), |d| d.join("termcode"))
@@ -229,6 +713,43 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn the_gate_reads_freely_asks_before_changes_and_keeps_the_answers() {
+        let agent = Client { key: (42, 7), label: "agent (pid 42)".into(), own: false };
+        let mut g = Gate::default();
+        assert_eq!(g.check("ask", &agent, Tier::Read), Some(true));
+        assert_eq!(g.check("ask", &agent, Tier::Edit), None, "asked");
+        g.answers.insert(((42, 7), Tier::Edit), true);
+        g.answers.insert(((42, 7), Tier::Run), false);
+        assert_eq!(g.check("ask", &agent, Tier::Edit), Some(true));
+        assert_eq!(g.check("ask", &agent, Tier::Run), Some(false), "a no stays");
+        let same_pid_later = Client { key: (42, 8), ..agent.clone() };
+        assert_eq!(g.check("ask", &same_pid_later, Tier::Edit), None, "another process with that pid: asked again");
+        assert_eq!(g.check("read-only", &agent, Tier::Edit), Some(false));
+        assert_eq!(g.check("read-only", &agent, Tier::Read), Some(true));
+        assert_eq!(g.check("off", &agent, Tier::Read), Some(false));
+        let own = Client { key: (1, 0), label: String::new(), own: true };
+        assert_eq!(g.check("ask", &own, Tier::Run), Some(true), "the user's own terminal");
+        assert_eq!(g.check("off", &own, Tier::Read), Some(false));
+        let g = Gate { allowed: vec![Tier::Edit], ..Gate::default() };
+        assert_eq!((g.check("ask", &agent, Tier::Edit), g.check("ask", &agent, Tier::Run)), (Some(true), None));
+    }
+
+    #[test]
+    fn a_client_is_the_process_behind_shells_and_termcode_api() {
+        assert!(client_of(std::process::id() as i32).own, "this termcode itself");
+        // A shell this process started: its parent (here, this termcode) is behind it.
+        let mut sh = std::process::Command::new("sh").args(["-c", "sleep 0.5; true"]).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(client_of(sh.id() as i32).own, "a shell of termcode's own");
+        let _ = sh.wait();
+        let mut other = std::process::Command::new("sleep").arg("0.5").spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let c = client_of(other.id() as i32);
+        assert!(!c.own && c.label.starts_with("sleep 0.5 (pid "), "{c:?}");
+        let _ = other.wait(); // (both end by themselves: termcode sends no signals)
+    }
+
+    #[test]
     fn a_forwarded_open_reaches_the_event_loop_and_its_answer_comes_back() {
         let dir = std::env::temp_dir().join(format!("termcode-api-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -243,7 +764,7 @@ mod tests {
         assert_eq!(fs::metadata(dir.join("run")).unwrap().permissions().mode() & 0o777, 0o700);
         // The event loop's side: answer what comes.
         let loop_side = std::thread::spawn(move || {
-            let (req, reply) = srv.rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (req, reply, _) = srv.rx.recv_timeout(Duration::from_secs(5)).unwrap();
             assert_eq!((req["method"].as_str(), req["file"].as_str(), req["line"].as_u64()), (Some("open"), Some("/w/a.c"), Some(7)));
             reply.send(json!({"ok": true, "note": "opened /w/a.c"})).unwrap();
         });

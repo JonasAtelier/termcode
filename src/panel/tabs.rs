@@ -5,7 +5,7 @@ use super::*;
 impl App {
     // ---- documents, tabs, groups --------------------------------------------------
 
-    pub(super) fn file_doc(&mut self, rel: &str) -> String {
+    pub(crate) fn file_doc(&mut self, rel: &str) -> String {
         let key = format!("file:{rel}");
         if !self.docs.contains_key(&key) {
             self.docs.insert(key.clone(), Doc::Text(Buffer::open(&self.root.join(rel))));
@@ -357,7 +357,7 @@ impl App {
         find(self.ag).or_else(|| (0..self.groups.len()).find_map(find))
     }
 
-    pub(super) fn save_active(&mut self) {
+    pub(crate) fn save_active(&mut self) {
         let Some(tab) = self.active_tab() else { return };
         tab.preview = false;
         let key = tab.key.clone();
@@ -473,6 +473,7 @@ impl App {
             PAct::Move(rels, into) => self.move_into(&rels, &into),
             PAct::Delete(rels, forever) => self.delete_paths(&rels, forever),
             PAct::KillTerminal(i) => self.kill_terminal(i, false),
+            PAct::Api(a) => self.api_gate.answer = Some(a),
             PAct::QuitEndTerminal => {
                 self.term_quit_ok = true;
                 self.request_quit();

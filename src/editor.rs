@@ -1220,6 +1220,25 @@ impl Buffer {
         self.end(v);
     }
 
+    /// Each range (start, end) replaced by its text, as one undo step (an API edit). The
+    /// ranges must not overlap; the last goes first, so the others' positions hold.
+    pub fn replace_ranges(&mut self, v: &mut View, mut changes: Vec<(Pos, Pos, String)>) {
+        if self.readonly.is_some() {
+            return;
+        }
+        changes.sort_by_key(|c| std::cmp::Reverse(c.0));
+        self.begin(v, Kind::Other);
+        self.batch = true;
+        for (a, b, s) in changes {
+            (v.anchor, v.cursor) = (Some(self.clamp(a)), self.clamp(b));
+            self.delete_selection(v);
+            v.cursor = self.do_ins(v.cursor, &s.replace("\r\n", "\n").replace('\r', "\n"));
+        }
+        self.batch = false;
+        (v.anchor, v.want_x) = (None, None);
+        self.end(v);
+    }
+
     /// Type or paste text at the cursor, replacing the selection.
     pub fn insert(&mut self, v: &mut View, s: &str) {
         let s = s.replace("\r\n", "\n").replace('\r', "\n");

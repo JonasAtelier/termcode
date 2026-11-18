@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use unicode_width::UnicodeWidthStr;
 
 const CATEGORIES: &[&str] =
-    &["Appearance", "Layout", "Editor", "Minimap", "Indent Rainbow", "Files & Session", "Source Control", "Keys"];
+    &["Appearance", "Layout", "Editor", "Minimap", "Indent Rainbow", "Files & Session", "Source Control", "Keys", "API"];
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -211,6 +211,7 @@ const FIELDS: &[Field] = &[
     Field { category: 7, label: "Prefix", key: "termcode.prefix", kind: Text(crate::settings::DEFAULT_PREFIX) },
     Field { category: 7, label: "Quick keys", key: "termcode.prefixKeys", kind: Json(crate::settings::DEFAULT_PREFIX_KEYS) },
     Field { category: 7, label: "Keybindings (JSON)", key: "termcode.keybindings", kind: Json("{}") },
+    Field { category: 8, label: "Programs may", key: "termcode.api", kind: Choice(&["ask", "read-only", "off"]) },
 ];
 
 /// What a setting does, under its name (and what the search box also finds).
@@ -276,6 +277,7 @@ fn describe(key: &str) -> &'static str {
         "files.trimTrailingWhitespace" => "Remove spaces at the ends of lines when saving.",
         "files.insertFinalNewline" => "End the file with a newline when saving.",
         "termcode.restoreSession" => "Reopen the tabs and layout a folder had last time.",
+        "termcode.api" => "What other programs (scripts, AI agents) may do through `termcode api`: ask you before they change files or run anything, only read, or nothing.",
         "workbench.editor.restoreViewState" => "Reopened files come back where you were in them.",
         "workbench.tree.enableStickyScroll" => "Keep the folders of the top row in view while scrolling.",
         "explorer.autoReveal" => "Show the open file in the Explorer: its folders opened, it selected.",
@@ -1397,6 +1399,7 @@ fn advice(key: &str) -> &'static str {
         "indentRainbow.colors" => "rgba with alpha 0.05-0.15 keeps the text readable",
         "workbench.tree.stickyScrollMaxItemCount" => "recommended 1-3 · each sticky row is a row less of the list",
         "termcode.restoreSession" => "off: every start is a clean window",
+        "termcode.api" => "ask is safe: you approve each program once; read-only or off if no program should drive termcode",
         "git.confirmSync" => "off: Sync pulls and pushes without asking",
         "termcode.prefix" => "a key your shell rarely needs; \"\" turns it off · not ctrl+b (herdr's) or a key termcode uses",
         "termcode.prefixKeys" => "\"\" removes a default; any F1 command name works",

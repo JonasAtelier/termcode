@@ -131,6 +131,9 @@ pub struct Settings {
     pub prefix_keys: Vec<(crate::parse::Chord, String)>,
     /// `termcode.errorChecking`: shellcheck and the C/C++ compiler underline problems.
     pub error_checking: bool,
+    /// `termcode.api`: "ask" (reading free, changes and running asked of the user per
+    /// client), "read-only" or "off".
+    pub api: String,
     pub file_icons: FileIcons,
     pub rainbow: Rainbow,
     pub guides: bool,
@@ -197,6 +200,7 @@ impl Default for Settings {
             spacing: Spacing::COMFORTABLE,
             icons: None,
             error_checking: true,
+            api: "ask".into(),
             colors: None,
             keybindings: Vec::new(),
             prefix: crate::parse::parse_chord(DEFAULT_PREFIX).ok(),
@@ -405,6 +409,11 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         compact,
         spacing: Spacing::parse(base, g("termcode.spacing").unwrap_or(&Value::Null)),
         error_checking: g("termcode.errorChecking").and_then(Value::as_bool).unwrap_or(true),
+        api: match g("termcode.api").map(Value::as_str) {
+            None => "ask".into(),
+            Some(Some(m @ ("ask" | "read-only" | "off"))) => m.into(),
+            Some(_) => return Err("termcode.api: \"ask\", \"read-only\" or \"off\"".into()),
+        },
         colors: g("termcode.colors").and_then(Value::as_str).and_then(crate::colors::parse),
         keybindings: keybindings(g("termcode.keybindings"))?,
         prefix: match g("termcode.prefix").map(|v| v.as_str().ok_or("termcode.prefix: a key, as \"ctrl+t\"")) {

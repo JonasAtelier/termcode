@@ -434,6 +434,8 @@ pub enum PAct {
     /// A document and the backup file chosen for it; the backup file to drop.
     RestoreBackup(String, PathBuf),
     DiscardBackup(PathBuf),
+    /// An API client's request: 0 deny, 1 allow once, 2 allow while it runs.
+    Api(u8),
 }
 
 /// Wheel and motion frames come at most this often (herdr itself renders every 16 ms).
@@ -1050,6 +1052,8 @@ pub struct App {
     pub prog: crate::programmer::Programmer,
     /// This termcode's socket (`termcode PATH` from its terminals); a herdr tab's pane.
     pub api: Option<crate::api::Server>,
+    /// What API clients may do, as the user answered.
+    pub api_gate: crate::api::Gate,
     pub tab: bool,
     /// A switch to another folder asked for: termcode starts again there (this argument).
     pub reroot: Option<String>,
@@ -1215,6 +1219,9 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     // A termcode started in another's terminal is its own: its shells get its socket.
     std::env::remove_var(crate::api::ENV);
     let state = crate::data_dir(true);
+    let mut private: Vec<PathBuf> = vec![state.clone(), crate::data_dir(false)];
+    private.extend(["backup", "drafts", "sessions", "terminals"].map(|d| state.join(d)));
+    crate::private_dirs(&private)?;
     let mut app = App::new(root, Some(state.join("layout.json")));
     app.tab = tab;
     app.api = crate::api::start(&crate::api::dir());
@@ -1788,6 +1795,7 @@ impl App {
             trash: if cfg!(test) { std::env::temp_dir().join(format!("termcode-test-trash-{}", std::process::id())) } else { crate::data_home().join("Trash") },
             prog: Default::default(),
             api: None,
+            api_gate: crate::api::Gate::from_env(),
             tab: false,
             reroot: None,
             revealed: None,

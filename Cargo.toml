@@ -12,7 +12,7 @@ readme = "README.md"
 keywords = ["editor", "terminal", "git", "tui", "vscode"]
 categories = ["text-editors", "command-line-utilities", "development-tools"]
 # The crate: the code, what it embeds, its docs; not the screenshots or release tooling.
-include = ["src/**", "assets/**", "examples/**", "doc/termcode.1", "completions/**", "LICENSE", "README.md", "CHANGELOG.md"]
+include = ["src/**", "assets/**", "examples/**", "skills/**", "doc/termcode.1", "completions/**", "LICENSE", "README.md", "CHANGELOG.md"]
 
 # Build with scripts/deb.sh (static amd64 and arm64 binaries, no build-machine paths),
 # install with `sudo apt install ./target/deb/debian/termcode_*.deb`.

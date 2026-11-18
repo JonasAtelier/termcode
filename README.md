@@ -5,10 +5,10 @@ search across them, and see edits side by side with the last commit. You can als
 editor as a Code tab in herdr.
 
 <!-- dev -->
-**Contents** · [Run from source](#run-from-source) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
+**Contents** · [Run from source](#run-from-source) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
 <!-- /dev -->
 <!-- user
-**Contents** · [Install on Debian or Ubuntu](#install-on-debian-or-ubuntu) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
+**Contents** · [Install on Debian or Ubuntu](#install-on-debian-or-ubuntu) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
 user -->
 
 ![termcode showing the file explorer, editor and integrated terminal](doc/screenshots/editor.png)
@@ -66,6 +66,14 @@ file. Read the old and new versions side by side.
 
 When a repository’s Git settings can start external programs, Source Control asks you
 to trust the repository before enabling Git. Only grant trust if you know its origin.
+
+## Scripts and AI agents
+
+`termcode api` drives a running termcode: run any F1 command, read open files and their
+problems, edit as one undo step, type into its terminal. Reading needs no approval;
+before a program changes files or runs anything, termcode asks you (Allow, Allow once,
+Deny). `termcode api --help` lists the methods and `termcode api --skill` prints the
+guide for agents. Set `termcode.api` to `"read-only"` or `"off"` in Settings to limit it.
 
 ## Help and settings
 

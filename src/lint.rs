@@ -105,6 +105,12 @@ impl Lints {
         c.diags.iter().zip(&c.placed).filter_map(|(d, l)| Some((((*l)?), d.start, d.end, d.sev))).collect()
     }
 
+    /// Every problem shown in `key`'s editor: (line, start, end, severity, message).
+    pub fn all(&self, key: &str) -> Vec<(usize, usize, usize, Sev, &str)> {
+        let Some(c) = self.files.get(key) else { return Vec::new() };
+        c.diags.iter().zip(&c.placed).filter_map(|(d, l)| Some(((*l)?, d.start, d.end, d.sev, d.msg.as_str()))).collect()
+    }
+
     /// The problems covering byte `col` of `line`: where the worst starts, and every
     /// message, worst first.
     pub fn at(&self, key: &str, line: usize, col: usize) -> Option<(usize, Vec<(Sev, String)>)> {

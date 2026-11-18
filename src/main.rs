@@ -30,6 +30,7 @@ mod session;
 mod settings;
 mod settingsui;
 mod api;
+mod rpc;
 mod serial;
 mod settingsgraphics;
 mod programmer;
@@ -74,6 +75,7 @@ Open PATH like `code PATH`, in this terminal; quitting returns to the shell.
                 opens in that termcode: a file in place, a folder by switching to it)
   --default-config  print the default settings.json (every option, commented out)
   -V, --version     print the version
+  api METHOD [JSON] call a running termcode's API (`termcode api --help`)
 Relative paths resolve against this folder. Settings: ~/.config/termcode/settings.json.
 (`termcode panel` is the plugin's pane entrypoint.)";
 
@@ -83,10 +85,16 @@ enum Cmd {
     Version,
     DefaultConfig,
     Panel,
+    Api(Vec<String>),
     Open { tab: bool, new: bool, path: Option<String> },
 }
 
 fn parse_args(args: &[String]) -> Result<Cmd, String> {
+    if let [a, rest @ ..] = args {
+        if a == "api" {
+            return Ok(Cmd::Api(rest.to_vec()));
+        }
+    }
     if let [a] = args {
         if a == "panel" {
             return Ok(Cmd::Panel);
@@ -133,6 +141,7 @@ fn main() -> ExitCode {
             print!("{}", settingsui::template());
             Ok(())
         }
+        Cmd::Api(args) => api::cli(&args),
         // The launcher opens the pane with the workspace root as its cwd, and hands over
         // the launch folder (the session's key) when it is not the root.
         Cmd::Panel => env::current_dir().and_then(fs::canonicalize).map_err(|e| e.to_string()).and_then(|root| {
@@ -238,6 +247,27 @@ fn lock_path(scope: &str, root: &Path) -> PathBuf {
 /// and outside herdr, so settings, layout and backups are one set in every mode.
 pub fn data_dir(state: bool) -> PathBuf {
     xdg_base(state, &|k| env::var(k).ok()).join("termcode")
+}
+
+/// termcode's folders hold what is not meant for others: unsaved text (backup/), commit
+/// drafts, sessions, terminal screens across a reload, settings. Each is made the
+/// user's alone (0700), whatever the umask or an older termcode left; one that belongs to
+/// someone else (a shared /tmp without $HOME) is refused rather than written to.
+pub fn private_dirs(dirs: &[PathBuf]) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    for d in dirs {
+        let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(d);
+        let meta = fs::symlink_metadata(d).map_err(|e| format!("{}: {e}", d.display()))?;
+        if !meta.is_dir() || meta.uid() != me {
+            return Err(format!("{} is not a folder of yours: termcode keeps private files there (set HOME)", d.display()));
+        }
+        if meta.mode() & 0o077 != 0 {
+            fs::set_permissions(d, fs::Permissions::from_mode(0o700)).map_err(|e| format!("{}: {e}", d.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// `$XDG_DATA_HOME` (else ~/.local/share): where the Trash is.
@@ -609,6 +639,23 @@ mod tests {
     fn vars(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let m: std::collections::HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         move |k: &str| m.get(k).cloned()
+    }
+
+    #[test]
+    fn termcodes_folders_are_made_private_and_a_stranger_s_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = env::temp_dir().join(format!("termcode-private-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("state")).unwrap();
+        fs::set_permissions(d.join("state"), fs::Permissions::from_mode(0o775)).unwrap();
+        private_dirs(&[d.join("state"), d.join("state/backup")]).unwrap();
+        for p in ["state", "state/backup"] {
+            assert_eq!(fs::metadata(d.join(p)).unwrap().permissions().mode() & 0o777, 0o700, "{p}");
+        }
+        // Not a folder of this user's (here: not a folder at all, a link elsewhere).
+        std::os::unix::fs::symlink("/", d.join("link")).unwrap();
+        assert!(private_dirs(&[d.join("link")]).is_err());
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
