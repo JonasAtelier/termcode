@@ -288,8 +288,8 @@ impl App {
         if let Some(&(_, a)) = self.ui.scm_btns.iter().find(|(r, _)| r.contains(p)) {
             return self.scm_action(a);
         }
-        if let Some(&(_, g)) = self.ui.split_btns.iter().find(|(r, _)| r.contains(p)) {
-            return self.split_right(g);
+        if let Some(&(_, g, down)) = self.ui.split_btns.iter().find(|(r, ..)| r.contains(p)) {
+            return self.split(g, down);
         }
         if let Some(&(_, i)) = self.ui.search_folds.iter().rev().find(|(r, _)| r.contains(p)) {
             return self.toggle_search_group(i);
@@ -603,21 +603,20 @@ impl App {
     /// Where a dragged file would land: the group under the cursor and which part.
     /// `bar`: a tab bar takes the drop at a slot between its tabs (a dragged tab).
     pub(super) fn drop_target(&self, p: Position, bar: bool) -> Option<(usize, Zone)> {
-        let can_split = self.groups.len() < MAX_GROUPS;
         self.ui.groups.iter().enumerate().find(|(_, g)| g.area.contains(p)).map(|(i, g)| {
+            let can_split = self.groups.get(i).is_some_and(|x| self.groups_in(x.space) < MAX_GROUPS);
             let rx = (p.x - g.area.x) as u32 * 10 / g.area.width.max(1) as u32;
+            let ry = (p.y - g.area.y) as u32 * 10 / g.area.height.max(1) as u32;
             let tabs = g.tabbar;
+            // The nearest edge within its outer 30%: that side; else the middle.
+            let edge = [(rx, Zone::Left), (9 - rx.min(9), Zone::Right), (ry, Zone::Up), (9 - ry.min(9), Zone::Down)].into_iter().filter(|(d, _)| *d < 3).min_by_key(|(d, _)| *d).map(|(_, z)| z);
             let zone = if bar && tabs.contains(p) {
                 // Before the first drawn tab whose middle is right of the pointer.
                 Zone::Tab(g.tabs.iter().take_while(|(r, x)| p.x >= (r.x + x.right()) / 2).count())
             } else if tabs.contains(p) || !can_split {
                 Zone::Center
-            } else if rx < 3 {
-                Zone::Left
-            } else if rx >= 7 {
-                Zone::Right
             } else {
-                Zone::Center
+                edge.unwrap_or(Zone::Center)
             };
             (i, zone)
         })
@@ -789,11 +788,7 @@ impl App {
                 } else if let Some((g, zone)) = self.drop.take() {
                     let target = match zone {
                         Zone::Center | Zone::Tab(_) => g,
-                        Zone::Left | Zone::Right => {
-                            let at = if zone == Zone::Left { g } else { g + 1 };
-                            self.groups.insert(at, Group::default());
-                            at
-                        }
+                        _ => self.new_group_beside(g, zone),
                     };
                     self.open_file(target, &rel, false);
                     self.focus = Focus::Editor;
@@ -817,7 +812,7 @@ impl App {
         t == g && match zone {
             Zone::Center => true,
             Zone::Tab(k) => k == i || k == i + 1,
-            Zone::Left | Zone::Right => alone,
+            Zone::Left | Zone::Right | Zone::Up | Zone::Down => alone,
         }
     }
 
@@ -837,9 +832,8 @@ impl App {
         }
         // (target group, slot in it, the source group after an insert before it)
         let (mut dst, at, src) = match zone {
-            Zone::Left | Zone::Right => {
-                let at = if zone == Zone::Left { t } else { t + 1 };
-                self.groups.insert(at, Group::default());
+            Zone::Left | Zone::Right | Zone::Up | Zone::Down => {
+                let at = self.new_group_beside(t, zone);
                 (at, 0, if at <= g { g + 1 } else { g })
             }
             // A slot right of the tab's old place moved left by one when it left.

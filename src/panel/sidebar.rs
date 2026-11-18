@@ -286,15 +286,44 @@ impl App {
         }
     }
 
-    /// "Split Editor Right": the active file again in a new group to the right.
-    pub(super) fn split_right(&mut self, g: usize) {
-        self.split(g, false);
-    }
-
     /// The active tab of group `g` again in a new group: to its right (a new column), or
     /// (`down`) under it in its column.
+    /// How many groups space `sp` has (each space may have MAX_GROUPS).
+    pub(crate) fn groups_in(&self, sp: Space) -> usize {
+        self.groups.iter().filter(|g| g.space == sp).count()
+    }
+
+    /// A new, empty group of `t`'s space beside group `t`: left, right, above or below
+    /// (`zone`); its index.
+    pub(crate) fn new_group_beside(&mut self, t: usize, zone: Zone) -> usize {
+        let space = self.groups[t].space;
+        match zone {
+            Zone::Left => {
+                // Before t's whole column: t's column head moves right with it.
+                let head = (0..=t).rev().find(|&i| !self.groups[i].below).unwrap_or(t);
+                self.groups.insert(head, Group { space, ..Group::default() });
+                head
+            }
+            Zone::Up => {
+                let below = self.groups[t].below;
+                self.groups[t].below = true;
+                self.groups.insert(t, Group { space, below, ..Group::default() });
+                t
+            }
+            Zone::Down => {
+                self.groups.insert(t + 1, Group { space, below: true, ..Group::default() });
+                t + 1
+            }
+            _ => {
+                let at = (t + 1..self.groups.len()).find(|&i| !self.groups[i].below).unwrap_or(self.groups.len());
+                self.groups.insert(at, Group { space, ..Group::default() });
+                at
+            }
+        }
+    }
+
     pub(crate) fn split(&mut self, g: usize, down: bool) {
-        if self.groups.len() >= MAX_GROUPS {
+        if self.groups.get(g).is_none_or(|x| self.groups_in(x.space) >= MAX_GROUPS) {
             self.msg = format!("{MAX_GROUPS} editor groups at most");
             return;
         }

@@ -606,6 +606,8 @@ pub struct Icons {
     pub prog: [&'static str; 14],
     pub dirty: &'static str,
     pub split: &'static str,
+    /// Split Editor Down.
+    pub split_down: &'static str,
     /// Toggle Terminal, beside Split Editor, and Toggle Outline before it.
     pub terminal: &'static str,
     pub outline: &'static str,
@@ -668,6 +670,7 @@ const CODICONS: Icons = Icons {
     prog: ["\u{eb2b}", "\u{ead0}", "\u{ea86}", "\u{eb37}", "\u{ea81}", "\u{eb4b}", "\u{ea70}", "\u{eae8}", "\u{ead2}", "\u{eb53}", "\u{ea85}", "\u{eace}", "\u{eaf7}", "\u{ebd1}"],
     dirty: "\u{ea71}",
     split: "\u{eb56}",
+    split_down: "\u{eb57}",
     terminal: "\u{ea85}",
     outline: "\u{eb5b}",
     check: "\u{eab2}",
@@ -722,6 +725,7 @@ const SYMBOLS: Icons = Icons {
     prog: ["⇄", "⊘", "↯", "↻", "✗", "↓", "◉", "▢", "↺", "◈", "›", "▤", "▸", "➤"],
     dirty: "●",
     split: "◫",
+    split_down: "⊟",
     terminal: "❯",
     outline: "≡",
     check: "✓",
@@ -774,6 +778,7 @@ const PLAIN: Icons = Icons {
     prog: ["+", "x", "!", "r", "x", "s", "o", "f", "r", "#", ">", "=", "/", ">"],
     dirty: "*",
     split: "|",
+    split_down: "-",
     terminal: ">",
     outline: "=",
     check: "+",

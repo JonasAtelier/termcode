@@ -3743,7 +3743,7 @@ fn closing_tabs_drops_every_per_doc_cache() {
     app.open_file(0, "README.md", false);
     screen(&mut app, &mut t);
     open_big_diff(&mut app);
-    app.split_right(0);
+    app.split(0, false);
     wait(&mut app);
     screen(&mut app, &mut t);
     app.groups[0].active = 0;
@@ -5697,6 +5697,36 @@ fn code_serial_and_github_keep_their_own_editor_areas() {
 }
 
 #[test]
+fn a_serial_tab_dragged_to_an_edge_splits_in_its_own_space() {
+    use crate::panel::Space;
+    let root = repo("drag-split");
+    let mut app = App::new(root.clone(), None);
+    app.show_tab(app.ag, "serial:ttyA1".into(), false);
+    app.show_tab(app.ag, "serial:ttyB2".into(), false);
+    let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    screen(&mut app, &mut t);
+    let g = app.ag;
+    let (tab_b, area) = (app.ui.groups[g].tabs[1].0, app.ui.groups[g].area);
+    let ev = |kind, x: u16, y: u16| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+    // ttyB2's tab dragged to the group's bottom edge: a group under it, in the serial space.
+    app.on_mouse(ev(MouseEventKind::Down(MouseButton::Left), tab_b.x + 1, tab_b.y));
+    app.on_mouse(ev(MouseEventKind::Drag(MouseButton::Left), area.x + area.width / 2, area.bottom() - 2));
+    app.on_mouse(ev(MouseEventKind::Up(MouseButton::Left), area.x + area.width / 2, area.bottom() - 2));
+    let serial: Vec<usize> = (0..app.groups.len()).filter(|&i| app.groups[i].space == Space::Serial).collect();
+    assert_eq!(serial.len(), 2, "split in the serial space");
+    let lower = serial[1];
+    assert!(app.groups[lower].below && app.groups[lower].tabs[0].key == "serial:ttyB2");
+    screen(&mut app, &mut t);
+    let (a, b) = (app.ui.groups[serial[0]].area, app.ui.groups[lower].area);
+    assert!(a.x == b.x && b.y > a.y, "{a:?} {b:?}");
+    // The split-down button beside the split one does the same.
+    let (r, g2, down) = *app.ui.split_btns.iter().find(|(_, g2, down)| *g2 == lower && *down).expect("a split-down button");
+    let _ = (g2, down);
+    app.on_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x, r.y));
+    assert_eq!((0..app.groups.len()).filter(|&i| app.groups[i].space == Space::Serial).count(), 3);
+}
+
+#[test]
 fn an_editor_splits_down_as_well_as_right_into_columns() {
     let root = repo("split-down");
     fs::write(root.join("a.txt"), "alpha\n").unwrap();
@@ -5830,7 +5860,7 @@ fn the_prefix_then_a_quick_key_runs_its_command_and_shows_the_keys_meanwhile() {
     key(&mut app, ctrl_t(), KeyModifiers::CONTROL);
     assert!(!app.prefix_armed);
     // Ctrl+T →: the pane on the right; ←: back. Down to the terminal and up again.
-    app.split_right(0);
+    app.split(0, false);
     app.focus = Focus::Editor;
     screen(&mut app, &mut t);
     let start = app.ag;
@@ -5953,7 +5983,8 @@ fn the_terminal_button_opens_a_shell_under_the_editors_and_its_top_edge_resizes_
     assert!(!screen(&mut app, &mut t).contains(" Terminal "), "hidden until asked for");
     let full = app.ui.editor_area;
     let btn = app.ui.term_btns[0];
-    assert_eq!(btn.right(), app.ui.split_btns[0].0.x, "just before Split Editor");
+    let split_down = app.ui.split_btns.iter().find(|b| b.2).unwrap().0;
+    assert_eq!(btn.right(), split_down.x, "just before Split Editor Down (then Right)");
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), btn.x, btn.y);
     assert!(app.term_open && app.focus == Focus::Term);
     let s = screen(&mut app, &mut t);

@@ -355,7 +355,10 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     app.ui.editor_area = ed;
     editor_area(app, f, ed, lay);
     if let Some(r) = outline {
-        outline_panel(app, f, r);
+        // A serial channel's tab: its settings there instead (the same button).
+        if !crate::xcomm::draw_settings(app, f, r) {
+            outline_panel(app, f, r);
+        }
     }
     if let Some((g, zone)) = app.drop {
         if let Some(gh) = app.ui.groups.get(g) {
@@ -363,6 +366,8 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
             let r = match zone {
                 Zone::Left => Rect::new(a.x, a.y, a.width / 2, a.height),
                 Zone::Right => Rect::new(a.x + a.width / 2, a.y, a.width - a.width / 2, a.height),
+                Zone::Up => Rect::new(a.x, a.y, a.width, a.height / 2),
+                Zone::Down => Rect::new(a.x, a.y + a.height / 2, a.width, a.height - a.height / 2),
                 Zone::Center => a,
                 Zone::Tab(_) => Rect::default(), // the tab bar draws its insertion marker
             };
@@ -1445,10 +1450,11 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     fill(f, tabbar, P.tabs_bg);
     let focused_group = g == app.ag;
     let ic = icons();
-    // Split Editor button at the right end of the tab bar, Toggle Terminal before it.
+    // Split Editor (right, then down) at the right end of the tab bar, Toggle Terminal before them.
     let split = Rect::new(tabbar.right().saturating_sub(3), tabbar.y, 2, 1);
-    let show_split = app.groups.len() < crate::panel::MAX_GROUPS && !app.groups[g].tabs.is_empty();
-    let term_btn = Rect::new(if show_split { split.x.saturating_sub(2) } else { split.x }, tabbar.y, 2, 1);
+    let split_down = Rect::new(split.x.saturating_sub(2), tabbar.y, 2, 1);
+    let show_split = app.groups_in(app.groups[g].space) < crate::panel::MAX_GROUPS && !app.groups[g].tabs.is_empty();
+    let term_btn = Rect::new(if show_split { split_down.x.saturating_sub(2) } else { split.x }, tabbar.y, 2, 1);
     let outline_btn = Rect::new(term_btn.x.saturating_sub(2), tabbar.y, 2, 1);
     let mut x = tabbar.x;
     let hover = app.hover;
@@ -1531,14 +1537,17 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▌" }, st), Rect::new(mx, tabbar.y, 1, 1));
     }
     if show_split {
-        f.render_widget(Span::styled(ic.split, Style::new().fg(P.icon_fg)), split);
-        app.ui.split_btns.push((split, g));
+        for (r, glyph, down) in [(split, ic.split, false), (split_down, ic.split_down, true)] {
+            let hot = hover.is_some_and(|p| r.contains(p));
+            f.render_widget(Span::styled(glyph, Style::new().fg(if hot { P.tab_active_fg } else { P.icon_fg })), r);
+            app.ui.split_btns.push((r, g, down));
+        }
     }
     let lit = if app.term_open { P.tab_active_fg } else { P.icon_fg };
     f.render_widget(Span::styled(ic.terminal, Style::new().fg(lit)), term_btn);
     app.ui.term_btns.push(term_btn);
     // Off on a repository page: it shows its own outline.
-    let page = app.groups[g].tabs.get(app.groups[g].active).is_some_and(|t| t.key.starts_with("repo:") || t.key == crate::programmer::KEY || t.key.starts_with(crate::xcomm::PREFIX));
+    let page = app.groups[g].tabs.get(app.groups[g].active).is_some_and(|t| t.key.starts_with("repo:") || t.key == crate::programmer::KEY);
     let lit = if page { P.dim } else if app.outline_open { P.tab_active_fg } else { P.icon_fg };
     f.render_widget(Span::styled(ic.outline, Style::new().fg(lit)), outline_btn);
     if !page {

@@ -824,6 +824,9 @@ pub struct MiniHit {
 pub enum Zone {
     Left,
     Right,
+    /// The top or bottom edge: a new group above or below, in its column.
+    Up,
+    Down,
     Center,
     /// A dragged tab over a tab bar: inserted before tab n (n = the count: at the end).
     Tab(usize),
@@ -944,7 +947,7 @@ pub struct Hits {
     pub find_area: Rect,
     pub prompt_btns: Vec<(Rect, usize)>,
     /// "Split Editor Right" button per group.
-    pub split_btns: Vec<(Rect, usize)>,
+    pub split_btns: Vec<(Rect, usize, bool)>,
     /// The terminal: its toggle button per group, its panel's top border (the height
     /// handle) and its screen.
     pub term_btns: Vec<Rect>,
@@ -2413,8 +2416,8 @@ impl App {
             from
         } else if from + 1 < self.groups.len() {
             from + 1
-        } else if self.groups.len() < MAX_GROUPS {
-            self.groups.insert(from + 1, Group::default());
+        } else if self.groups_in(self.groups[from].space) < MAX_GROUPS {
+            self.groups.insert(from + 1, Group { space: self.groups[from].space, ..Group::default() });
             from + 1
         } else {
             from
