@@ -16,7 +16,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   it like code) and the keys typed there go to the device (all but F1, Ctrl+Q and the
   tab keys); Shift+PgUp/PgDn and the wheel scroll back. Ctrl+T W closes it (a new quick
   key, View: Close Editor, for any tab). Ports are locked and opened as xcomm does, and opened again after an
-  unplug, by the USB port. Needs Rust 1.93 to build.
+  unplug, by the USB port. Needs Rust 1.93 to build. A port another xcomm holds can be
+  shared through its control socket: read only (watch and capture, nothing disturbed)
+  or read & write (typing goes through that xcomm), asked in a small window first. Dots
+  show each port's and channel's state: green reads and writes, yellow is on hold or
+  busy (it still reads), red is disconnected.
 - An API: `termcode api METHOD [JSON]` (JSON-RPC 2.0 on termcode's private socket) runs
   any command, opens files, reads open and unsaved text, problems, Git, terminals and the
   screen, edits (versioned, one undo step) and saves, types into a terminal and waits for

@@ -438,6 +438,8 @@ pub enum PAct {
     DiscardBackup(PathBuf),
     /// An API client's request: 0 deny, 1 allow once, 2 allow while it runs.
     Api(u8),
+    /// A serial port another xcomm holds: shared with it, typed into when true.
+    Serial(String, bool),
 }
 
 /// Wheel and motion frames come at most this often (herdr itself renders every 16 ms).
