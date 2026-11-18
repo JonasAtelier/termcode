@@ -43,6 +43,10 @@ status bar shows). Paths are relative to the workspace (absolute ones must be in
 | `serial.ports` | | each serial port: `tty`, `note`, `state` (green, yellow, red), adapter, USB ID, holder, the channel open here |
 | `serial.note` | `port` (`ttyUSB0`), `note` (`""` removes it) | the note beside that port, kept per adapter |
 
+Serial ports open in termcode take `xcomm ctl` as an xcomm session does:
+`xcomm ctl ttyUSB0 run 'uname -a' --until '# $'` (status, send, read, wait, run, break,
+dtr/rts, set, capture). `serial.ports` lists them, with the user's notes.
+
 ## Recipes
 
 ```bash

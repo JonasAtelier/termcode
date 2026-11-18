@@ -25,7 +25,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   busy (it still reads), red is disconnected. A note beside each tty (`n` or ✎; kept per
   adapter, by its USB serial number); rest the pointer on a port, or press `i`, for its
   card: adapter, USB ID and serial, by-id and by-path links, holder, line settings, modem
-  lines, traffic. Agents: `serial.ports` and `serial.note` in the API.
+  lines, traffic. Agents: `serial.ports` and `serial.note` in the API, and a port opened
+  here has xcomm's control socket, so `xcomm ctl ttyUSB0 run … --until …` (and xcomm's
+  agent skill) drives it as an xcomm session, its sends shown as dim `[ctl]` lines;
+  per channel, Agents: read & write, read only or off.
 - An API: `termcode api METHOD [JSON]` (JSON-RPC 2.0 on termcode's private socket) runs
   any command, opens files, reads open and unsaved text, problems, Git, terminals and the
   screen, edits (versioned, one undo step) and saves, types into a terminal and waits for

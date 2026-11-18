@@ -4,6 +4,10 @@
 //! the device's output on a terminal screen, the keys typed there sent to it. A port is
 //! taken as xcomm takes it (a UUCP lock, then an exclusive open) and, after an unplug,
 //! opened again by the USB port it is plugged into when it comes back.
+//!
+//! A port opened here has xcomm's control socket too (`$XDG_RUNTIME_DIR/xcomm/<tty>.sock`),
+//! so `xcomm ctl ttyUSB0 run … --until …`, xcomm's agent skill and scripts drive it as
+//! they would an xcomm session; what they send shows on its screen as a dim `[ctl]` line.
 
 use crate::panel::{App, Focus};
 use ratatui::prelude::*;
@@ -24,14 +28,21 @@ const SCROLLBACK: usize = 10_000;
 const LIST_EVERY: Duration = Duration::from_secs(2);
 const RETRY_EVERY: Duration = Duration::from_secs(1);
 
+/// Device output kept for control-socket clients to read back (as xcomm's default).
+const RING: usize = 1 << 20;
+
 thread_local! {
     /// The open ports' descriptors: the event loop wakes when one has output.
     static FDS: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+    /// The control sockets' descriptors (listeners, clients), as the last pass left them.
+    static CTL_FDS: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The ports' descriptors, for the event loop's poll.
+/// The ports' and control sockets' descriptors, for the event loop's poll.
 pub fn fds() -> Vec<i32> {
-    FDS.with(|f| f.borrow().clone())
+    let mut v = FDS.with(|f| f.borrow().clone());
+    v.extend(CTL_FDS.with(|f| f.borrow().clone()));
+    v
 }
 
 /// A channel's link to its device.
@@ -84,6 +95,11 @@ pub struct Channel {
     pub note: Option<String>,
     /// Selected text on its screen: (row, column) where the drag started and where it is.
     pub sel: Option<((u16, u16), (u16, u16))>,
+    /// Output kept for control-socket clients (`xcomm ctl read`, `wait`).
+    ring: xcomm::ring::Ring,
+    /// xcomm's control socket on a port opened here; what it lets agents do.
+    ctl: Option<xcomm::ctl::server::CtlServer>,
+    pub agents: xcomm::ctl::CtlMode,
 }
 
 /// What a click in the side bar hit.
@@ -112,6 +128,8 @@ pub enum Act {
     Capture,
     /// Typing on or off (read and write, or read only).
     Write,
+    /// What agents may do through the control socket: read & write, read only, nothing.
+    Agents,
     Close,
 }
 
@@ -299,6 +317,15 @@ fn data_bits(d: xcomm::cli::DataBits) -> u8 {
     }
 }
 
+/// What a channel's control socket allows, as its button says.
+pub fn agents_name(m: xcomm::ctl::CtlMode) -> &'static str {
+    match m {
+        xcomm::ctl::CtlMode::ReadWrite => "read & write",
+        xcomm::ctl::CtlMode::ReadOnly => "read only",
+        xcomm::ctl::CtlMode::Off => "off",
+    }
+}
+
 /// Flow control as xcomm names it.
 pub fn flow_name(f: xcomm::cli::Flow) -> &'static str {
     match f {
@@ -330,7 +357,83 @@ impl Channel {
             capture: None,
             note: None,
             sel: None,
+            ring: xcomm::ring::Ring::new(RING),
+            ctl: None,
+            agents: xcomm::ctl::CtlMode::ReadWrite,
         }
+    }
+
+    /// xcomm's control socket for this port opened here, in `mode` (none for Off, or for
+    /// a shared channel: its session has one).
+    fn serve_agents(&mut self, mode: xcomm::ctl::CtlMode, env: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {
+        self.ctl = None;
+        self.agents = mode;
+        if self.shared.is_some() || mode == xcomm::ctl::CtlMode::Off {
+            return Ok(());
+        }
+        let name = xcomm::lock::lock_name(&Path::new("/dev").join(&self.tty)).ok_or("no tty name")?;
+        let dir = xcomm::ctl::path::make_socket_dir(env).map_err(|e| e.0)?;
+        self.ctl = Some(xcomm::ctl::server::CtlServer::bind(&dir, &name, mode).map_err(|e| e.0)?);
+        Ok(())
+    }
+
+    /// The control socket's turn: clients served, their requests on the line (a break,
+    /// the modem lines, settings, capture) done. Its descriptors kept for the next poll.
+    fn ctl_pass(&mut self, polled: &mut Vec<i32>) -> bool {
+        let Some(mut srv) = self.ctl.take() else { return false };
+        let mut fds = Vec::new();
+        srv.poll_fds(self.ring.end(), &mut fds);
+        // SAFETY: valid pollfds, as many as given; no wait.
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 0) };
+        let mut busy = n > 0;
+        srv.serve(&fds, self);
+        while let Some((id, a)) = srv.next_action() {
+            let r = self.ctl_action(a);
+            srv.finish_action(id, r);
+            busy = true;
+        }
+        polled.extend(fds.iter().map(|p| p.fd).filter(|&fd| fd >= 0));
+        self.ctl = Some(srv);
+        busy
+    }
+
+    /// A control client's request on the line, done on the port.
+    fn ctl_action(&mut self, a: xcomm::ctl::server::Action) -> Result<serde_json::Value, (u8, String)> {
+        use xcomm::ctl::code;
+        use xcomm::ctl::proto::{ModemLine, ModemOp};
+        use xcomm::ctl::server::Action;
+        let Some(Source::Own(p, _)) = &self.source else { return Err((code::DISCONNECTED, "the device is disconnected".into())) };
+        let fail = |e: std::io::Error| (code::FAILED, e.to_string());
+        match a {
+            Action::Break { ms } => p.send_break(ms).map_err(fail)?,
+            Action::Modem { line, op, ms } => {
+                let set = |on: bool| if line == ModemLine::Dtr { p.set_dtr(on) } else { p.set_rts(on) };
+                let now = p.modem_lines().map(|l| if line == ModemLine::Dtr { l.dtr } else { l.rts }).map_err(fail)?;
+                match op {
+                    ModemOp::On => set(true).map_err(fail)?,
+                    ModemOp::Off => set(false).map_err(fail)?,
+                    ModemOp::Toggle => set(!now).map_err(fail)?,
+                    ModemOp::Pulse => {
+                        set(!now).map_err(fail)?;
+                        std::thread::sleep(Duration::from_millis(u64::from(ms.min(5000))));
+                        set(now).map_err(fail)?;
+                    }
+                }
+            }
+            Action::Set(patch) => {
+                let s = patch.apply(self.settings).map_err(|e| (code::USAGE, e))?;
+                // (What the driver made of it: the settings read back show that.)
+                let _applied = p.configure(&s).map_err(|e| (code::FAILED, e.to_string()))?;
+                self.settings = s;
+            }
+            Action::CaptureStart(path) => {
+                let f = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(fail)?;
+                self.capture = Some((path, f));
+            }
+            Action::CaptureStop => self.capture = None,
+            Action::Xfer { .. } => return Err((code::FAILED, "file transfers are not in termcode yet: use xcomm for them".into())),
+        }
+        Ok(serde_json::json!({}))
     }
 
     /// The selection in reading order.
@@ -345,11 +448,16 @@ impl Channel {
         Some(self.screen.screen().contents_between(r0, c0, r1, c1 + 1)).filter(|t| !t.is_empty())
     }
 
-    /// `path` opened here at `settings` (8N1 at 115200 by default).
+    /// `path` opened here at `settings` (8N1 at 115200 by default), with xcomm's control
+    /// socket on it (none if that can't be made: the channel works without).
     pub fn open(path: &Path, settings: LineSettings, env: &dyn Fn(&str) -> Option<String>) -> Result<Channel, String> {
         let source = take(path, &settings, env)?;
         let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        Ok(Channel::new(tty_of(&real), xcomm::reconnect::stable_path(path), source, None, true, settings))
+        let mut c = Channel::new(tty_of(&real), xcomm::reconnect::stable_path(path), source, None, true, settings);
+        if let Err(e) = c.serve_agents(xcomm::ctl::CtlMode::ReadWrite, env) {
+            c.note = Some(format!("no control socket: {e}"));
+        }
+        Ok(c)
     }
 
     /// `tty`, held by the xcomm session on `sock` (`who` it is), shared with it: watched,
@@ -380,6 +488,10 @@ impl Channel {
                 n if n > 0 => {
                     let b = &buf[..n as usize];
                     self.screen.process(b);
+                    self.ring.push(b);
+                    if let Some(srv) = &mut self.ctl {
+                        srv.device_output(&self.ring);
+                    }
                     self.rx += b.len() as u64;
                     if let Some((_, f)) = &mut self.capture {
                         let _ = f.write_all(b);
@@ -475,6 +587,9 @@ impl Channel {
             Some(src) => {
                 if self.shared.is_none() {
                     self.tty = tty_of(&std::fs::canonicalize(&self.reopen).unwrap_or_else(|_| self.reopen.clone()));
+                    if let (Some(srv), Some(name)) = (&mut self.ctl, xcomm::lock::lock_name(&Path::new("/dev").join(&self.tty))) {
+                        let _ = srv.rename(&name);
+                    }
                 }
                 self.source = Some(src);
                 self.link = Link::Open;
@@ -569,6 +684,21 @@ impl Channel {
             }
             (Act::Break, Some(Source::Own(p, _))) => p.send_break(250).map_or_else(|e| format!("{tty}: break: {e}"), |()| format!("{tty}: break sent")),
             (Act::Break, Some(Source::Shared { ctl: Some(c), .. })) => request(c, Request::Break { ms: 250 }).map_or_else(|e| format!("{tty}: {e}"), |()| format!("{tty}: break sent")),
+            (Act::Agents, _) => {
+                use xcomm::ctl::CtlMode;
+                if self.shared.is_some() {
+                    return format!("{tty}: agents reach the xcomm session sharing it");
+                }
+                let next = match self.agents {
+                    CtlMode::ReadWrite => CtlMode::ReadOnly,
+                    CtlMode::ReadOnly => CtlMode::Off,
+                    CtlMode::Off => CtlMode::ReadWrite,
+                };
+                match self.serve_agents(next, &env) {
+                    Ok(()) => format!("{tty}: agents {}", agents_name(next)),
+                    Err(e) => format!("{tty}: {e}"),
+                }
+            }
             (Act::Capture, _) => match self.capture.take() {
                 Some((path, _)) => format!("{tty}: capture stopped ({})", path.display()),
                 None => {
@@ -587,6 +717,50 @@ impl Channel {
             (Act::Close, _) => format!("{tty}: closed"),
             _ => format!("{tty}: not connected"),
         }
+    }
+}
+
+impl xcomm::ctl::server::Session for Channel {
+    fn status(&self) -> xcomm::ctl::proto::Status {
+        use xcomm::ctl::proto::{ModemView, SettingsView, Status};
+        let open = matches!(self.source, Some(Source::Own(..)));
+        Status {
+            device: format!("/dev/{}", self.tty),
+            tty: xcomm::lock::lock_name(&Path::new("/dev").join(&self.tty)).unwrap_or_default(),
+            stable: self.reopen.display().to_string(),
+            settings: open.then(|| SettingsView::of(&self.settings)),
+            modem: self.lines().map(|l| ModemView { dtr: l.dtr, rts: l.rts, cts: l.cts, dsr: l.dsr, dcd: l.dcd, ri: l.ri }),
+            connected: open,
+            offset: self.ring.end(),
+            oldest: self.ring.oldest(),
+            capture: self.capture.as_ref().map(|(p, _)| p.display().to_string()),
+            transfer: false,
+            ctl: String::new(),
+            herdr_pane: None,
+            pid: std::process::id(),
+        }
+    }
+
+    fn ring(&self) -> &xcomm::ring::Ring {
+        &self.ring
+    }
+
+    fn send(&mut self, bytes: &[u8]) -> Result<usize, (u8, String)> {
+        let Some(Source::Own(p, _)) = &self.source else { return Err((xcomm::ctl::code::DISCONNECTED, "the device is disconnected".into())) };
+        // SAFETY: an open descriptor and a buffer of the length given.
+        let n = unsafe { libc::write(p.fd().as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) };
+        match n {
+            n if n >= 0 => Ok(n as usize),
+            _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock => Ok(0),
+            _ => Err((xcomm::ctl::code::FAILED, std::io::Error::last_os_error().to_string())),
+        }
+    }
+
+    /// What a client sent shows on the screen as a dim `[ctl]` line, as in xcomm.
+    fn sent(&mut self, bytes: &[u8]) {
+        self.tx += bytes.len() as u64;
+        let text: String = String::from_utf8_lossy(bytes).chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        self.screen.process(format!("\r\n\x1b[2m[ctl] {}\x1b[0m\r\n", text.trim_end()).as_bytes());
     }
 }
 
@@ -611,10 +785,13 @@ pub fn tick(app: &mut App) -> bool {
             Err(e) => app.serial.problem = Some(e.to_string()),
         }
     }
+    let mut polled = Vec::new();
     for ch in &mut app.serial.channels {
         changed |= ch.retry(&env);
         changed |= ch.pump();
+        changed |= ch.ctl_pass(&mut polled);
     }
+    CTL_FDS.with(|f| *f.borrow_mut() = polled);
     changed
 }
 
@@ -986,6 +1163,7 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
                 (format!(" DTR {} ", on(lines.map(|l| l.dtr))), Act::Dtr),
                 (format!(" RTS {} ", on(lines.map(|l| l.rts))), Act::Rts),
                 (" Break ".to_string(), Act::Break),
+                (format!(" Agents {} ", if c.shared.is_some() { "via xcomm" } else { agents_name(c.agents) }), Act::Agents),
                 (if c.capture.is_some() { " Stop capture ".to_string() } else { " Capture ".to_string() }, Act::Capture),
                 (" Close ".to_string(), Act::Close),
             ];
@@ -1266,11 +1444,13 @@ mod tests {
         let locks = std::env::temp_dir().join(format!("termcode-xcomm-{}", std::process::id()));
         std::fs::create_dir_all(&locks).unwrap();
         let dir = locks.to_string_lossy().into_owned();
-        let env = move |k: &str| (k == "XCOMM_LOCK_DIR").then(|| dir.clone());
+        // Locks and control sockets in the test's own folder.
+        let env = move |k: &str| matches!(k, "XCOMM_LOCK_DIR" | "XDG_RUNTIME_DIR").then(|| dir.clone());
         let (mut dev, tty) = pty();
         let mut ch = Channel::open(&tty, LineSettings::default(), &env).expect("the pty opens as a port");
         assert!(ch.tty.starts_with("pts/") && ch.link == Link::Open, "{}", ch.tty);
-        assert!(std::fs::read_dir(&locks).unwrap().count() == 1, "its UUCP lock taken");
+        let lck = |d: &Path| std::fs::read_dir(d).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("LCK")).count();
+        assert!(lck(&locks) == 1, "its UUCP lock taken");
         assert!(Channel::open(&tty, LineSettings::default(), &env).is_err(), "taken once only");
         dev.write_all(b"U-Boot 2024.01\r\n\x1b[32mlogin:\x1b[0m ").unwrap();
         std::thread::sleep(Duration::from_millis(50));
@@ -1295,8 +1475,76 @@ mod tests {
         // The tty itself changed (a pty keeps no data size or parity: no UART behind it).
         assert_eq!((applied.baud, applied.stop_bits, applied.flow), (230_400, xcomm::cli::StopBits::Two, xcomm::cli::Flow::RtsCts));
         drop(ch);
-        assert_eq!(std::fs::read_dir(&locks).unwrap().count(), 0, "its lock given back");
+        assert_eq!(lck(&locks), 0, "its lock given back");
         std::fs::remove_dir_all(&locks).unwrap();
+    }
+
+    #[test]
+    fn xcomm_ctl_drives_a_port_opened_here_as_it_would_an_xcomm_session() {
+        use std::io::{BufRead, BufReader};
+        let tmp = std::env::temp_dir().join(format!("termcode-xcomm-ctl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("locks")).unwrap();
+        std::fs::create_dir_all(tmp.join("run")).unwrap();
+        std::fs::set_permissions(tmp.join("run"), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        let (locks, run) = (tmp.join("locks").display().to_string(), tmp.join("run").display().to_string());
+        let env = move |k: &str| match k {
+            "XCOMM_LOCK_DIR" => Some(locks.clone()),
+            "XDG_RUNTIME_DIR" => Some(run.clone()),
+            _ => None,
+        };
+        let (mut dev, tty) = pty();
+        let mut ch = Channel::open(&tty, LineSettings::default(), &env).unwrap();
+        assert!(ch.note.is_none(), "{:?}", ch.note);
+        let name = xcomm::lock::lock_name(&tty).unwrap();
+        let sock = tmp.join("run/xcomm").join(format!("{name}.sock"));
+        assert!(sock.exists(), "xcomm's socket for it: {}", sock.display());
+        // A client: each request a line, each reply a line, the session turning meanwhile.
+        let mut conn = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+        let mut replies = BufReader::new(conn.try_clone().unwrap());
+        let mut ask = |ch: &mut Channel, req: &str| -> serde_json::Value {
+            conn.write_all(format!("{req}\n").as_bytes()).unwrap();
+            replies.get_ref().set_nonblocking(true).unwrap();
+            let mut line = String::new();
+            for _ in 0..200 {
+                let mut polled = Vec::new();
+                ch.pump();
+                ch.ctl_pass(&mut polled);
+                if replies.read_line(&mut line).is_ok_and(|n| n > 0) {
+                    return serde_json::from_str(&line).unwrap();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("no reply to {req}");
+        };
+        let st = ask(&mut ch, r#"{"cmd":"status"}"#);
+        assert_eq!((st["ok"].as_bool(), st["connected"].as_bool(), st["settings"]["baud"].as_u64()), (Some(true), Some(true), Some(115_200)), "{st}");
+        // send: to the device, and on the screen as a [ctl] line.
+        assert_eq!(ask(&mut ch, r#"{"cmd":"send","data_b64":"dW5hbWUgLWEN"}"#)["ok"], true);
+        let mut got = Vec::new();
+        while got.len() < 9 {
+            let mut b = [0u8; 32];
+            let n = dev.read(&mut b).unwrap();
+            got.extend_from_slice(&b[..n]);
+        }
+        assert_eq!(got, b"uname -a\r");
+        assert!(ch.screen.screen().contents().contains("[ctl] uname -a"));
+        // read: what the device said, from the ring.
+        dev.write_all(b"Linux board 6.8\r\n").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let r = ask(&mut ch, r#"{"cmd":"read","last":64}"#);
+        let data = xcomm::ctl::proto::base64_decode(r["data_b64"].as_str().unwrap_or_default()).unwrap_or_default();
+        assert!(String::from_utf8_lossy(&data).contains("Linux board 6.8"), "{r}");
+        // set: the line changed on the port.
+        assert_eq!(ask(&mut ch, r#"{"cmd":"set","baud":57600}"#)["ok"], true);
+        assert_eq!(ch.settings.baud, 57_600);
+        // Agents off: the socket gone.
+        ch.act(Act::Agents, &tmp);
+        ch.act(Act::Agents, &tmp);
+        assert_eq!(ch.agents, xcomm::ctl::CtlMode::Off);
+        assert!(!sock.exists());
+        drop(ch);
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     /// A stand-in for an xcomm session's control socket: it answers each request, streams
@@ -1419,7 +1667,8 @@ mod tests {
         let locks = std::env::temp_dir().join(format!("termcode-xcomm-ui-{}", std::process::id()));
         std::fs::create_dir_all(&locks).unwrap();
         let dir = locks.to_string_lossy().into_owned();
-        let env = move |k: &str| (k == "XCOMM_LOCK_DIR").then(|| dir.clone());
+        // Locks and control sockets in the test's own folder.
+        let env = move |k: &str| matches!(k, "XCOMM_LOCK_DIR" | "XDG_RUNTIME_DIR").then(|| dir.clone());
         let (mut dev, tty) = pty();
         let root = std::env::temp_dir().join(format!("termcode-xcomm-root-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -1471,7 +1720,8 @@ mod tests {
         // Ctrl+T w closes it (View: Close Editor): the port and its lock given back.
         app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
         app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
-        assert!(app.serial.channels.is_empty() && std::fs::read_dir(&locks).unwrap().count() == 0, "{}", app.msg);
+        let lck = std::fs::read_dir(&locks).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("LCK")).count();
+        assert!(app.serial.channels.is_empty() && lck == 0, "{}", app.msg);
         std::fs::remove_dir_all(&locks).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
     }

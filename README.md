@@ -79,7 +79,9 @@ UUCP lock, an exclusive open) and opened again after an unplug. A port another x
 holds can be shared with it, read only or read & write. Dots: green reads and writes,
 yellow is on hold (it still reads), red is disconnected. Press `n` (or click ✎) to
 write a note beside a port ("router console"); rest the pointer on it, or press `i`, for
-everything about it at a glance.
+everything about it at a glance. Agents and scripts drive a port opened here with
+`xcomm ctl` as they would an xcomm session (each channel's Agents button: read & write,
+read only or off).
 
 ## Scripts and AI agents
 
