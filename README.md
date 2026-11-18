@@ -5,9 +5,11 @@ A VS Code-style code editor and Git panel that runs **inside your terminal**.
 - Run `termcode` in a folder and it opens right there, like `vim`. Quit and you are back at your shell.
 - Inside [herdr](https://herdr.dev), `termcode --tab` opens it as a **Code** tab instead.
 
-What you get: a file Explorer, Search, Source Control with a commit graph, tabs and split
-editors, side-by-side diffs, a minimap, Go to Definition, error checking for shell and
-C/C++, and VS Code themes.
+**What you get:** Explorer, Search, Source Control with a commit graph, tabs and split
+editors, side-by-side diffs, a minimap, terminals, Go to Definition, error checking for
+shell and C/C++, VS Code themes and keys. It also shows pictures, PDFs, Markdown as
+GitHub does, patches as diffs, logs, ELF and linker-map sizes, your GitHub account, and
+programs STM32, Arduino and ESP-IDF boards.
 
 ![The editor with the Explorer, the Outline and a terminal running cargo test](doc/screenshots/editor.png)
 
@@ -17,43 +19,32 @@ C/C++, and VS Code themes.
 
 ### Is it for you?
 
-termcode is for working on code where your terminal already is: on a server over SSH, in
-tmux or herdr, or whenever a full IDE is too heavy and vim or nano too bare. It has VS
-Code's look and keys, but it is not VS Code:
+For working on code where your terminal already is: over SSH, in tmux or herdr, or when a
+full IDE is too heavy and vim too bare. It has VS Code's look and keys, but it is not VS Code:
 
 | termcode has | termcode doesn't have |
 |---|---|
-| Editing, Explorer, Search, Source Control, diffs, a terminal | Extensions |
-| Go to Definition and references, found by searching the code | A language server: no completion, no type-aware rename or navigation |
+| Editing, Explorer, Search, Source Control, diffs, terminals | Extensions |
+| Go to Definition and references, found by searching the code | A language server: no completion, no type-aware rename |
 | Error checking for shell scripts and C/C++ | A debugger, remote development |
-| VS Code themes and keys | Settings Sync; only the settings its Settings window lists |
-
-Need a language server or extensions? Use VS Code or an editor built on one. termcode is
-the quick, light one for everything else.
+| VS Code themes and keys | Settings Sync |
 
 ### How light is it?
 
-Both opening this repo and one file, fresh profiles, median of 5 runs (Linux, 12 cores):
-
 | | termcode | VS Code 1.146 |
 |---|---|---|
-| Startup | **0.1 s** | 1.0 s |
-| Memory (PSS) | **20 MB** | 800–1070 MB |
-| Processes | 1 | 11 |
-| CPU used in the first 20 s | 0.6 s | 12.4 s |
-| CPU when idle | 0.9% | 9% |
-| Install size | 8 MB | 1.9 GB |
+| Start, until a file shows | **0.1 s** | 1.0 s |
+| Memory | **19 MB** | 949 MB |
+| Installed | **12 MB**, one file | 573 MB |
 
-termcode's numbers leave out the terminal it runs in. VS Code had no extensions and its
-startup is its own timer, which leaves out the `code` launcher, so real use is heavier.
+Details, and Neovim, under [Performance](#performance).
 
 ---
 
 <!-- user
 ## 1. Install
 
-termcode runs on Linux (x86_64 or arm64). On Debian or Ubuntu, add its apt repository
-once, then install it:
+Linux, x86_64 or arm64. On Debian or Ubuntu, add the apt repository once, then install:
 
 ```sh
 sudo curl -fsSLo /usr/share/keyrings/termcode.gpg https://jonasatelier.github.io/termcode-releases/termcode.gpg
@@ -63,95 +54,62 @@ sudo apt update && sudo apt install termcode
 termcode --version
 ```
 
-(Or download the package for your machine from
+Or download the package from
 [Releases](https://github.com/JonasAtelier/termcode-releases/releases) and
-`sudo apt install ./termcode_*.deb`.)
+`sudo apt install ./termcode_*.deb`.
 
-apt also installs git, ripgrep, xclip (copy and paste) and shellcheck (checks shell
-scripts). Optional: clang, to check C/C++ files; [herdr](https://herdr.dev), for termcode
-as a Code tab; [Ghostty](https://ghostty.org), the terminal termcode is tested in.
-
-**Everything else at once:** `/usr/share/termcode/setup.sh` sets up what termcode's
-features use, as on the machine termcode is made on: clang, readelf and poppler (C/C++
-checks, ELF files, PDFs), the GitHub CLI, a Nerd Font, Ghostty, serial port access,
-and for the Programmer arduino-cli and ESP-IDF (with herdr, if you use it: the Code tab
-and its pictures). It asks before each part (`--yes` takes the defaults, `--all` says
-yes to all, `--dry-run` only shows the commands) and leaves what is there alone.
+apt also installs git, ripgrep, xclip and shellcheck. For the rest
+([What termcode uses](#what-termcode-uses)), run **`/usr/share/termcode/setup.sh`**: it
+asks before each part (`--yes` takes the defaults, `--all` everything, `--dry-run` only
+prints the commands) and leaves what is already there alone.
 
 user -->
 <!-- dev -->
 ## 1. What you need
 
-| Tool | Why | Check it |
+| Tool | Why | Check |
 |---|---|---|
 | Linux, x86_64 or arm64 | the only supported OS | `uname -m` |
 | Rust 1.88 or newer | to build termcode | `cargo --version` |
-| A C linker (`cc`) | Rust needs it to link | `cc --version` |
-| git | Source Control | `git --version` |
-| ripgrep (`rg`) | Search and Go to Definition | `rg --version` |
-| herdr 0.9.1 or newer | only for the Code tab (`--tab`) | `herdr --version` |
-| shellcheck, clang | optional: error checking for shell and C/C++ (the .deb installs shellcheck; clang is up to you) | `shellcheck --version` |
-| Any monospace font | the icons work with all common ones; a Nerd Font gives VS Code's | see step 2 |
+| A C linker (`cc`) | Rust needs it | `cc --version` |
+| git, ripgrep (`rg`) | Source Control; Search and Go to Definition | `git --version`, `rg --version` |
 
-Optional: [Ghostty](https://ghostty.org) (the terminal termcode is tested in), and
-`wl-copy` (`wl-clipboard`) or `xclip` for the clipboard: GNOME Terminal can't copy
-without one (the .deb installs `xclip`).
-
-### Install them
+The optional tools are in [What termcode uses](#what-termcode-uses).
 
 ```sh
-# git, ripgrep and a C linker: pick your distro
 sudo apt install git ripgrep build-essential shellcheck clang   # Debian / Ubuntu
 sudo dnf install git ripgrep gcc ShellCheck clang               # Fedora
 sudo pacman -S git ripgrep base-devel shellcheck clang          # Arch
-
-# Rust (press Enter for the default install, then open a new terminal)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# herdr (optional, for the Code tab)
-curl -fsSL https://herdr.dev/install.sh | sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh  # Rust (then a new terminal)
 ```
-
-Already have Rust? Run `rustup update` to get 1.88 or newer.
 <!-- /dev -->
 
 ## 2. Fonts and icons (nothing to do)
 
-termcode works with the font your terminal already uses, and picks its icons by itself:
+termcode uses your terminal's font and picks its icons by itself:
 
 | You have | Icons |
 |---|---|
-| a [Nerd Font](https://www.nerdfonts.com/font-downloads) installed (any one; the terminal falls back to it) | VS Code's icons |
-| no Nerd Font, or termcode runs over SSH | standard Unicode symbols: ❐ ⚲ ⎇ ⚙ ▸ ▾ × ● ✓ |
+| a [Nerd Font](https://www.nerdfonts.com/font-downloads) installed | VS Code's icons |
+| no Nerd Font, or termcode runs over SSH | Unicode symbols: ❐ ⚲ ⎇ ⚙ ▸ ▾ × ● ✓ (any common monospace font) |
 
-The Unicode symbols are tested with 13 common fonts: Cascadia Code, DejaVu Sans Mono,
-Fira Code, Hack, IBM Plex Mono, Inconsolata, JetBrains Mono, Liberation Mono, Noto Sans
-Mono, Roboto Mono, Source Code Pro, Space Mono and Ubuntu Mono. (Where a font lacks one,
-the terminal borrows it from DejaVu Sans, which Linux desktops have.)
-
-**Want VS Code's icons?** Install a Nerd Font, e.g. **JetBrainsMono Nerd Font** (on
-Linux: unzip into `~/.local/share/fonts/`, then run `fc-cache -f`). Over SSH, install it
-on the computer in front of you (its terminal draws the icons) and set
-`"termcode.icons": "nerd"`.
-
-To choose yourself, set `termcode.icons` (see [Settings](#settings)) to `"nerd"`,
-`"unicode"` or `"ascii"`; `"auto"` is the default.
+For VS Code's icons, install e.g. **JetBrainsMono Nerd Font** (unzip into
+`~/.local/share/fonts/`, then `fc-cache -f`); over SSH, on the computer in front of you, and
+set `"termcode.icons": "nerd"`.
 
 ### Terminals
-
-termcode uses 24-bit colour where the terminal has it, and the nearest of 256 or 16
-colours where it doesn't, picked from the terminal's environment (`termcode.colors` or
-`TERMCODE_COLORS=truecolor|256|16` overrides it).
 
 | Terminal | Colours | Status |
 |---|---|---|
 | Ghostty, alone or in herdr | 24-bit | tested |
-| tmux 3.6 | 24-bit (tmux converts for the terminal outside) | tested |
+| tmux 3.6 | 24-bit | tested |
 | GNU screen 4.9 | 256 or 16 | tested |
-| Over SSH | 256 unless `TERM` names a 24-bit terminal; Unicode icons | tested |
-| Linux console (`TERM=linux`) | 16 | tested by its environment |
-| GNOME Terminal, Ptyxis, Konsole, kitty, WezTerm, Alacritty, foot, iTerm2, Windows Terminal | 24-bit | should work, not tested here |
-| macOS Terminal | 256 | should work, not tested here |
+| Over SSH | 256 unless `TERM` names a 24-bit terminal | tested |
+| Linux console | 16 | tested by its environment |
+| GNOME Terminal, Ptyxis, Konsole, kitty, WezTerm, Alacritty, foot, iTerm2, Windows Terminal | 24-bit | should work |
+| macOS Terminal | 256 | should work |
+
+`termcode.colors` or `TERMCODE_COLORS=truecolor|256|16` overrides the colour depth.
 
 <!-- dev -->
 ## 3. Build and install
@@ -159,28 +117,11 @@ colours where it doesn't, picked from the terminal's environment (`termcode.colo
 ```sh
 git clone https://github.com/JonasAtelier/termcode.git
 cd termcode
-cargo install --path . --root ~/.local
+cargo install --path . --root ~/.local          # low on memory: add -j2
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # once; zsh: ~/.zshrc
 ```
 
-This builds termcode (a few minutes the first time) and puts it at
-`~/.local/bin/termcode`.
-
-Make sure `~/.local/bin` is on your `PATH`:
-
-```sh
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # zsh: ~/.zshrc
-```
-
-Open a new terminal and check:
-
-```sh
-termcode --version          # termcode 0.3.0
-```
-
-**Low on memory?** Add `-j2` to the `cargo install` line to build with 2 jobs.
-
-Optional, for `man termcode` and Tab completion of its options in bash (the .deb
-installs these, for zsh and fish too):
+For `man termcode` and Tab completion in bash (the .deb has them, for zsh and fish too):
 
 ```sh
 mkdir -p ~/.local/share/man/man1 ~/.local/share/bash-completion/completions
@@ -188,10 +129,7 @@ cp doc/termcode.1 ~/.local/share/man/man1/
 cp completions/termcode.bash ~/.local/share/bash-completion/completions/termcode
 ```
 
-### Or: install it as a .deb package (Debian / Ubuntu)
-
-Instead of `cargo install`, build a package and let apt install it to `/usr/bin`
-(apt also installs git and ripgrep for you):
+**Or as a .deb** (static: any Debian or Ubuntu; installs git, ripgrep, xclip, shellcheck):
 
 ```sh
 cargo install cargo-deb                             # once
@@ -199,56 +137,41 @@ scripts/deb.sh                                      # -> target/deb/debian/, amd
 sudo apt install ./target/deb/debian/termcode_*_$(dpkg --print-architecture).deb
 ```
 
-The binary inside is static, so one package installs on any Debian or Ubuntu release
-(tested on Debian 10 and Ubuntu 22.04; it even runs on Alpine). Pick one way: with both,
-the `~/.local/bin` copy usually wins.
+Pick one way: with both, the `~/.local/bin` copy usually wins.
 
 ## 4. Add it to herdr (optional)
-
-From the `termcode` folder:
 
 ```sh
 herdr plugin link "$PWD"                 # .deb install: herdr plugin link /usr/share/termcode
 herdr plugin list                        # shows jonasatelier.termcode
 ```
 
-herdr finds `termcode` through `PATH`. If herdr was already running before you changed
-`PATH`, quit herdr and start it again.
+herdr finds `termcode` on `PATH`: restart herdr after changing `PATH`.
 
 ## 5. Try it
 <!-- /dev -->
 <!-- user
-## 3. Add it to herdr (optional)
+## 2. Add it to herdr (optional)
 
 ```sh
 herdr plugin link /usr/share/termcode
 herdr plugin list                        # shows jonasatelier.termcode
 ```
 
-## 4. Try it
+## 3. Try it
 user -->
 
 ```sh
 cd ~/some/project
-termcode                 # opens this folder; Ctrl+Q quits
+termcode                 # this folder; Ctrl+Q quits
+termcode --tab           # in a herdr pane: a "Code: project" tab (click it in the tab bar)
 ```
-
-Inside a herdr pane:
-
-```sh
-termcode --tab           # opens a "Code: project" tab
-```
-
-The new tab doesn't take focus: click **Code: project** in the tab bar.
 
 ## Updating
 
 <!-- dev -->
 ```sh
-cd termcode
-git pull
-cargo install --path . --root ~/.local
-# .deb install instead: scripts/deb.sh && sudo apt install ./target/deb/debian/termcode_*.deb
+git pull && cargo install --path . --root ~/.local
 ```
 <!-- /dev -->
 <!-- user
@@ -257,9 +180,8 @@ sudo apt update && sudo apt upgrade
 ```
 user -->
 
-That's all. A termcode that is already open reloads itself a few seconds later, keeping
-its tabs and cursors. It waits while you have unsaved files. To reload by hand: F1, then
-**Developer: Reload Window**.
+An open termcode reloads itself a few seconds later, keeping its tabs, cursors and shells
+(it waits while files are unsaved). By hand: F1 **Developer: Reload Window**.
 
 ## Uninstalling
 
@@ -286,437 +208,294 @@ user -->
 ```sh
 termcode                    # this folder (its git repo if inside one)
 termcode ~/proj             # any folder
-termcode src/main.rs:120    # a file at line 120 (also :LINE:COL)
+termcode src/main.rs:120    # a file at a line (also :LINE:COL)
 termcode --tab src          # the same, as a herdr tab
 termcode --new ~/proj       # a second termcode, even inside one's terminal
 ```
 
-- **From termcode's own terminal:** `termcode PATH` there opens PATH in *this* termcode
-  instead of a second one inside it: a file of this folder opens in place; another
-  folder switches termcode over to it (your shells keep running, each folder keeps its
-  own session). `cd ~/other && termcode .` jumps folders. It waits while a Programmer
-  job or a Git write runs, or a file is unsaved. In a herdr Code tab, the folder opens
-  as its own tab. (Each termcode has a private socket for this: `$XDG_RUNTIME_DIR/termcode/`.)
+- **From termcode's terminal**, `termcode PATH` opens PATH in this termcode: a file in
+  place, another folder by switching to it (shells keep running; each folder keeps its own
+  session). It waits while a Programmer job or Git write runs or a file is unsaved.
+- **Sessions:** reopen a folder and its tabs, cursors and layout come back. Unsaved text
+  survives a crash.
+- **Subfolders:** `termcode drivers/net` shows that folder; Source Control uses the whole repo.
+- **Quitting:** Ctrl+Q or Close in the title bar (asks about unsaved files).
 
-- **Quitting:** Ctrl+Q, or Close in the title bar. You are asked about unsaved files first.
-- **Sessions:** open the same folder again and your tabs, cursors and layout come back.
-  Unsaved text survives a crash too.
-- **Subfolders:** `termcode drivers/net` shows only that folder, but Source Control still
-  uses the whole repo.
-- **Pictures and PDFs:** a PNG, JPEG, GIF, WebP, BMP or ICO opens as the picture (fitted;
-  `+` `-` zoom, `0` fits, `1` is actual size, the arrows pan); a PDF as a document, drawn
-  by poppler's `pdftoppm`: its pages one under another with a scrollbar (the wheel, the
-  arrows, PgUp/PgDn, Home/End; ‹ › go a page; Ctrl+wheel zooms around the mouse; in
-  Ghostty and kitty the pages stay in the terminal as tiles, so scrolling only moves
-  them), **2 pages** side by side while whole pages fit, its text selected with the
-  mouse and copied with Ctrl+C (Ctrl+A: the page), found with Ctrl+F (the whole
-  document; Enter goes to the next), its table of contents in the Outline (a click goes
-  there). **text** shows its text, a page a heading; `sudo apt install
-  poppler-utils` if missing. **hexdump** on the bar shows the bytes. Pictures use the Kitty graphics protocol (Ghostty, kitty),
-  half-blocks elsewhere.
-- **Keyboard shortcut for the Code tab:** none is set. In herdr, bind `plugin_action`
-  `jonasatelier.termcode.open` to a free key.
-
-### The sidebar
-
-| View | Open with | What it does |
-|---|---|---|
-| Explorer | Alt+1, Ctrl+E | Files. **Timeline** below shows the open file's commits |
-| Search | Alt+4, F4 | Search all files. **References** below shows where the symbol at the cursor is used |
-| Source Control | Alt+2, F2, Ctrl+G | Changes, commits and the commit graph |
-| Programmer | the chip icon above GitHub | STM32CubeProgrammer, Arduino sketches, ESP-IDF projects (below) |
-
-Click the active sidebar icon to hide the sidebar. Drag any divider to resize.
-
-### Common keys
+### Keys
 
 | Key | Does |
 |---|---|
-| F1 | Command palette (every command is here) |
-| Ctrl+P | Open a file by name. Type `:42` to go to a line, `@` for a function |
+| F1 | Command palette (every command) |
+| Ctrl+P | Open a file by name (`:42` a line, `@` a function) |
 | Ctrl+S / Ctrl+W / Ctrl+Q | Save / close tab / quit |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
-| Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste |
-| Ctrl+F / Ctrl+H | Find / replace in this file |
-| Ctrl+/ | Comment or uncomment lines |
+| Ctrl+F / Ctrl+H | Find / replace |
+| Ctrl+/ | Toggle comment |
 | Ctrl+Shift+Up / Down | Add a cursor above / below |
-| Alt+Up / Alt+Down | Move lines up / down |
+| Alt+Up / Down | Move lines |
 | Ctrl+Shift+[ / ] | Fold / unfold |
-| Alt+Z | Toggle word wrap |
-| Ctrl+Shift+V | Markdown: preview ↔ source; a patch: diff ↔ source; a log: log ↔ source (or the buttons on the breadcrumbs' row) |
-| `/` · F8 or `n` · End | In a log: filter · next error or warning · follow the end |
-| Ctrl+K V | Markdown preview to the side |
-| F12 or Ctrl+click | Go to Definition |
-| Shift+F12 | Find all references |
-| Alt+← / Alt+→ | Go back / forward |
+| Alt+Z | Word wrap |
+| F12 or Ctrl+click / Shift+F12 | Go to Definition / find references |
+| Alt+← / Alt+→ | Back / forward |
 | F7 / Shift+F7 | Next / previous change in a diff |
 | Ctrl+PgDn / Ctrl+PgUp | Next / previous tab |
-| Ctrl+, | Settings |
+| Ctrl+Shift+V / Ctrl+K V | A file's other look ([below](#files-and-their-looks)) / Markdown preview to the side |
 | Ctrl+` | Show / hide the terminal |
+| Ctrl+, | Settings |
 
-**Mouse:** click a file to preview it (italic tab), double-click its tab to keep it open.
-Double-click a name in the Explorer to rename it. Drag a file to an editor edge to split,
-or a file or folder onto a folder in the Explorer to move it there (asked first); hold Ctrl
-(or Alt) as you let go to copy it instead, and rest on a closed folder to open it. Ctrl+click
-adds items to the selection, Shift+click or Shift+↑↓ selects a range, Ctrl+A all; a drag,
-Ctrl+C / Ctrl+X / Ctrl+V and Delete then take them all. Ctrl+V copies or moves into the
-selected folder; a name already there becomes `name (1)`, `name (2)` …, and a big folder
-copies in the background, counting its files (Esc stops it). Delete moves the selection to the Trash (your file manager
-restores it from there; on another disk, that disk's own Trash), Shift+Delete deletes it for
-good; each asks first. In the Explorer, Ctrl+Z takes back the last move, rename, paste or
-delete (not Shift+Delete), and Ctrl+Y does it again; both survive a reload. Rest the
-pointer on a file for its MD5 (**Copy** copies it). A binary file (or a `.bin`) opens as a
-hexdump; F1 **View: Toggle Hexdump** shows it as text, or any file as a hexdump. An ELF
-file (`.so`, an executable, `.o`, `.ko`) opens as `readelf`'s report, its SONAME, needed
-libraries, symbol versions, build ID and compiler summed up first; the **readelf** and
-**hexdump** buttons on its banner switch between the two. A symlink has an arrow
-after its name (red when broken); rest the pointer on it to see where it points.
-Rest the pointer on a function to see its docs.
+**Quick keys: Ctrl+T, then one key**, wherever the keys are, the terminal too (so the
+shell keeps its own keys). The list shows while it waits; Ctrl+T twice sends Ctrl+T, Esc
+cancels.
 
-**Terminal:** Ctrl+` or the terminal button beside Split Editor opens your shell under the
-editors. Drag its top edge to resize it. While it has the keys, every key goes to the shell
-except Ctrl+`, F1 and Ctrl+Q. Drag over text to copy it (double-click: a word); Ctrl+C
-copies a selection, else interrupts. Programs that use the mouse (vim, htop) get it;
-Shift+drag still selects. Hiding it keeps the shell running; `exit` closes it. Quitting
-while something runs in it asks first. More shells: Ctrl+Shift+` or the `+` on its border
-opens another, each with a tab there; click a tab or press Ctrl+PgUp / Ctrl+PgDn to switch,
-and `×` closes the one shown (asked while a program runs). Ctrl+F (at the shell's prompt,
-not in vim or less) finds text in its scrollback: Enter goes to older matches, Shift+Enter
-newer, Esc back to the bottom. A reload (a new termcode installed) keeps the shells and
-what runs in them, with what they showed.
+| Key | | Key | |
+|---|---|---|---|
+| `t` | Show / hide the terminal | `o` | Outline |
+| `c` · `n` · `p` | New · next · previous terminal | `m` | Minimap |
+| `x` | Close the terminal (the last one: hide it) | `z` | Word wrap |
+| `f` | Go to file | `v` | A file's other look |
+| `s` | Search | `h` | Hexdump |
+| `e` | Explorer | `[` · `]` | Previous · next tab |
+| `g` | Source Control | ← ↑ ↓ → | The pane that way |
+| `b` | Side bar | `,` | Settings |
 
-**GitHub:** the GitHub item above Settings (or F1 **View: Show GitHub**), in any folder.
-Its top pane is your account: your contribution graph as on your GitHub profile (Year or
-Month, ‹ › to go back; hover a day for its count, click one for its month), all your
-repositories, review requests, your pull requests,
-issues assigned to you and unread notifications. Pick a repository there (click or Enter)
-and the bottom pane shows it: description, visibility, default branch, language, stars,
-forks, last push; its stats (a commit graph for the past year, its languages, its top
-contributors); then its Actions runs, pull requests and issues. The editor area shows the
-repository too, as github.com does. Its main page: the latest commit, the files and
-folders each with its last commit, insights (pull requests and issues open, merged and
-closed; languages; the year's commits as a heat map; commits by weekday and hour; lines
-added and removed a week; top contributors), then the README. On the right, a button back
-to the main page and the files as a tree. Click a file for its code in the middle
-(read-only; it scrolls, selects, finds and copies as any editor), its outline under the
-tree. Click the branch at the top right to switch the branch. Tab moves between the
-panes; drag the line between them to resize. It needs the [GitHub CLI](https://cli.github.com)
-(`gh`): signed out, it offers **Sign in with GitHub**, which runs `gh auth login` in the
-terminal, so termcode never sees a password or token. On a row: Enter or `o` opens it in
-the browser, `e` edits its title, `c` checks a pull request out (into this folder's
-repository), `r` re-runs a run, `x` closes an issue or cancels a run, F5 refreshes. Every
-change asks first.
-
-**Outline:** the outline button beside it (or F1 **View: Toggle Outline**) lists the
-file's functions and types on the right, nested. The one the cursor is in is lit; click one
-to go there (double-click: and type there). Click a ▾ to fold. With the keys
-(F1 **View: Focus Outline**): ↑ ↓ move, ← → fold and unfold, Enter goes there, Esc goes
-back. Drag its left edge to resize it.
-
-Some terminals (GNOME Terminal, Ptyxis) can't send Ctrl+Shift keys, Ctrl+Tab or
-Ctrl+1/2/3. Use F1 or the other key in the table instead, or bind your own.
-
-### Your own keys
-
-Any F1 command can have a key. Add `termcode.keybindings` to your settings file, the key
-on the left and the command's name as F1 shows it on the right:
+**Your own keys:** any F1 command, by its name as F1 shows it. `termcode.prefixKeys`
+changes the quick keys (`termcode.prefix` the prefix, `""` turns it off),
+`termcode.keybindings` the others:
 
 ```jsonc
-"termcode.keybindings": {
-    "ctrl+alt+p": "Git: Pull",
-    "f6": "View: Close Editor",
-    "alt+left": "Go Back",
-    "ctrl+q": ""                  // "" turns a key off
-}
+"termcode.prefixKeys": { "q": "File: Quit", "h": "" },     // "" removes one
+"termcode.keybindings": { "ctrl+alt+p": "Git: Pull", "ctrl+q": "" }
 ```
 
-Keys are `ctrl`, `alt` and `shift` joined with `+` to a letter, digit, symbol, `f1`-`f24`,
-`enter`, `tab`, `esc`, `space`, `backspace`, `delete`, `home`, `end`, `pageup`,
-`pagedown` or an arrow (`up`, `down`, `left`, `right`). Your keys come before the
-default ones, and F1 shows them next to their commands. A key or command name that
-doesn't exist is a settings error (a notification says which).
+Keys are `ctrl`, `alt`, `shift` joined with `+` to a letter, digit, symbol, `f1`-`f24`,
+`enter`, `tab`, `esc`, `space`, `backspace`, `delete`, `home`, `end`, `pageup`, `pagedown`
+or an arrow. Some terminals (GNOME Terminal, Ptyxis) can't send Ctrl+Shift keys, Ctrl+Tab
+or Ctrl+1/2/3: use F1, the quick keys or your own.
+
+### Files and their looks
+
+A file opens as text; the buttons on its bar (or Ctrl+Shift+V, Ctrl+T `v`) switch it to
+another look and back:
+
+| File | Look | In it |
+|---|---|---|
+| Markdown | **preview**, as GitHub shows a README | Pictures beside it, tables, alerts, `<p align="center">`… |
+| `.patch`, `.diff` | **diff**: each file side by side | `@@` lines, the files' own line numbers; F7 goes from change to change |
+| `.log`, `syslog`, `dmesg` | **log**: any size | Errors and warnings coloured and counted, the time between lines; `/` filters, F8 or `n` the next problem, End follows the file as it grows |
+| Linker `.map` | **usage** | Each memory region's use, sections, bytes by file and library |
+| ELF (`.so`, `.o`, executables, firmware) | readelf's report, **hexdump** | Summed up first: SONAME, libraries, build ID, Flash and RAM |
+| Binary, `.bin` | hexdump | F1 **View: Toggle Hexdump**: any file as one, or back to text |
+| PNG, JPEG, GIF, WebP, BMP, ICO | the picture | `+` `-` zoom, `0` fits, `1` actual size, arrows pan |
+| PDF | its pages | Scrollbar, wheel, PgUp/PgDn; ‹ › a page; **2 pages**; Ctrl+wheel zooms; select text and Ctrl+C; Ctrl+F finds; its contents in the Outline; **text** shows its text |
+
+Pictures, PDFs and the minimap use real pixels in Ghostty and kitty, half-blocks elsewhere.
+
+### The mouse
+
+- Click a file to preview it (italic tab); double-click the tab to keep it.
+- Drag a file to an editor's edge to split; drag any divider to resize.
+- In the Explorer: double-click a name to rename; drag onto a folder to move (hold Ctrl or
+  Alt as you let go: copy); Ctrl+click, Shift+click, Shift+↑↓, Ctrl+A select several.
+- Ctrl+C / X / V copy and move files (`name (1)` when the name is taken; Esc stops a big
+  copy). Delete moves to the Trash, Shift+Delete deletes for good (each asks). Ctrl+Z / Y
+  takes back or redoes them, even after a reload.
+- Rest the pointer on a file for its MD5, a symlink for its target, a function for its docs.
+
+### Panels
+
+| Panel | Open with | |
+|---|---|---|
+| Explorer | Alt+1, Ctrl+E | Files; **Timeline** below: the open file's commits. Follows the active editor |
+| Search | Alt+4, F4 | All files; arrows show each match as they land on it. **References** below |
+| Source Control | Alt+2, F2, Ctrl+G | Changes, commits, the graph ([below](#source-control)) |
+| GitHub | the item above Settings | Your account and repositories ([below](#github)) |
+| Programmer | the chip icon | STM32, Arduino, ESP-IDF ([below](#programmer)) |
+| Outline | the button by Split Editor | The file's functions and types; click to go there |
+| Terminal | Ctrl+` | Your shells, under the editors |
+
+**Terminal:** every key goes to the shell except Ctrl+`, F1, Ctrl+Q and the Ctrl+T quick
+keys. Drag to select (Ctrl+C copies, else interrupts); vim and htop get the mouse, Shift+drag
+still selects. Ctrl+Shift+` or `+` opens another shell as a tab; `×` closes one (asks while
+a program runs). Ctrl+F at the prompt finds in the scrollback. Hiding keeps the shells
+running, and a reload keeps them too.
+
+**Outline:** the symbol at the cursor is lit; click to go there (double-click: and type).
+With F1 **View: Focus Outline**: ↑ ↓ move, ← → fold, Enter goes, Esc back.
 
 ### Error checking
 
-Shell scripts and C/C++ files are checked as you work. A problem gets a **red** (error),
-**yellow** (warning) or **blue** (info) underline; rest the pointer on it to read why.
-The scrollbar marks where they are.
+Problems get a red (error), yellow (warning) or blue (info) underline; rest the pointer on
+one to read it. The scrollbar marks where they are.
 
 | Files | Checked by | When |
 |---|---|---|
-| `.sh`, `.bash`, scripts with a `#!/bin/sh` or `bash` line | `shellcheck` | as you type (after a short pause) |
-| `.c`, `.h`, `.cpp`, … | the project's compiler, else `clang` | when you open or save the file |
+| `.sh`, `.bash`, `#!/bin/sh` or `bash` scripts | `shellcheck` | as you type |
+| `.c`, `.h`, `.cpp`, … | the project's compiler, else `clang` | on open and save |
 
-C/C++ needs the project's include folders and flags. termcode finds them in:
-
-1. a `compile_commands.json` in the project (or its `build/` folder), or
-2. a **built Linux kernel tree**: nothing to set up, the build's `.o.cmd` files are read.
-
-If the compiler named there isn't installed (a cross-compiler such as
-`aarch64-…-gcc`), `clang` checks the file for that target instead. Other projects can
-make a `compile_commands.json` with:
-
-```sh
-cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON   # CMake projects
-bear -- make                                        # Make projects
-```
-
-Without either, termcode guesses (the file's folder and the repo's `include/`). If a
-header still can't be found, the status bar says so instead of showing false errors.
-
-A project's `compile_commands.json` never runs anything of its own: termcode runs only a
-compiler found on your `PATH` by name (gcc, clang, cc, …, else clang), and passes only
-the flags that change how code is read, never ones that load plugins or write files.
-
-Turn error checking off with `"termcode.errorChecking": false`.
+C/C++ takes its include folders and flags from a `compile_commands.json` (in the project or
+`build/`) or a built Linux kernel tree; without either, it guesses, and a header it can't
+find is reported instead of false errors. Make one with
+`cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON` or `bear -- make`. A
+`compile_commands.json` never runs anything of its own: only a compiler found on `PATH`, with
+only the flags that change how code is read. Off: `"termcode.errorChecking": false`.
 
 ### Source Control
 
-- **Changes:** `+` stages a file, `−` unstages it, `↶` discards (always asks).
-- **Commit:** click **Add commit**. Stage files, write a message, then **Commit** or
-  **Commit & Push**. Your draft is kept if you cancel. In the message, a drag selects (a
-  double-click, a word), and Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste.
-  In its diff, a drag selects one side's text (a double-click, a word) and Ctrl+C copies it.
-- **Graph:** click a commit to see its files, click a file to see its diff. Rest the pointer
-  on a commit (or press `i`) for a card with **Copy hash** and **Open changes**; drag over
-  its message to select it, Ctrl+C copies.
-- **Status bar:** click the branch to switch or create one; click `↓1 ↑2` to pull and push;
-  click `Ln, Col` to go to a line. Every item lights up under the pointer.
-- **More Git:** F1, then type `Git:` for pull, push, fetch, stash, merge, rebase and more.
-  Risky ones ask first.
-- **Merge conflicts:** click **Accept Current**, **Accept Incoming** or **Accept Both** above
-  each conflict, save, then `+` to mark it resolved.
+- **Changes:** `+` stages, `−` unstages, `↶` discards (asks).
+- **Commit:** **Add commit**, stage, write the message, **Commit** or **Commit & Push**.
+  A cancelled draft is kept.
+- **Graph:** click a commit for its files, a file for its diff; rest on a commit (or `i`)
+  for **Copy hash** and **Open changes**.
+- **Status bar:** the branch switches or creates one; `↓1 ↑2` pulls and pushes.
+- **More:** F1 `Git:` for pull, push, fetch, stash, merge, rebase…; risky ones ask first.
+- **Conflicts:** **Accept Current / Incoming / Both** above each, save, then `+`.
 
-**Repositories from elsewhere.** A repository's own git settings can make git run a
-program just by reading it (`core.fsmonitor`, `diff.external`, textconv drivers,
-filters). If the repository you open has any, termcode keeps git off and Source Control
-lists them with a **Trust Repository** button. Trusted repositories are remembered; if
-those settings change, you are asked again. Hooks, ssh, credential helpers and gpg run
-only when you commit, pull or push, as they do with git in a shell.
+A repository whose own git settings would run a program (`core.fsmonitor`, filters,
+textconv, `diff.external`) stays off until you click **Trust Repository**. Git never asks
+for a password in the panel; click the status bar's spinner to cancel a stuck command.
+F1 **Git: Show Git Output** shows what ran.
 
-Git runs in the background and never asks for a password inside the panel. If a command
-hangs, click the spinner in the status bar to cancel it. F1 **Git: Show Git Output** shows
-what ran.
+### GitHub
 
-### Programmer (STM32)
+Needs the [GitHub CLI](https://cli.github.com): signed out, **Sign in with GitHub** runs
+`gh auth login` in the terminal, so termcode never sees a password or token.
 
-The chip icon (above GitHub) does what STM32CubeProgrammer does, through ST's
-`STM32_Programmer_CLI`: pick a feature on the left, its page opens in the editor area,
-and the tool's output with a progress bar shows in the panel below (its **Programmer**
-tab, beside **Terminal**). Every page starts with the target (its name, Connect or
-Disconnect); a running job shows its progress there too, programming step by step
-(Erase › Download › Verify › Run). **F5** runs the page's main action. Fields such as
-Address and Size are typed in place: Enter takes the value (in Memory, reads there), a
-bad one says why in red. Closing the page's tab goes back to the Explorer.
+- **Top pane:** your contribution graph, repositories, review requests, pull requests,
+  issues and notifications.
+- **A repository** (click or Enter): its stats, Actions runs, pull requests and issues;
+  the editor area shows it as github.com does: files with their last commits, insights,
+  the README, any file's code (read-only); the branch switches at the top right.
+- **On a row:** Enter or `o` opens it in the browser, `e` edits its title, `c` checks a pull
+  request out, `r` re-runs, `x` closes or cancels, F5 refreshes. Every change asks first.
 
-| Feature | What it does |
+### Programmer
+
+The chip icon: pick a tool at the top, a feature on the left; its page opens in the editor
+area and the tool's output, with a progress bar, in the panel below. **F5** runs the page's
+main action; fields are typed in place (Enter takes them, a bad one says why).
+
+| Tool | Pages |
 |---|---|
-| Device | Port (SWD, JTAG), mode (Normal, Under reset, Hot plug), speed, the ST-LINK probe; **Connect** reads the target (then **Disconnect**), **Reset Target** resets it |
-| Memory | Reads an address range into a grid as CubeProgrammer's: address, 8-, 16- or 32-bit values, ASCII; **Save As…** writes it to a `.bin` |
-| Program | Writes a `.bin` (at the address given), `.hex`, `.elf`, `.srec` or `.s19`; verify, full erase first, reset and run after. Click the file (or **Browse…**) to pick it folder by folder, from your home folder |
-| Erase | The full chip, or sectors (`0-3`, `0 1 2`); each asks first |
-| Option Bytes | Shows them, read only |
-| Serial Console | The target's UART output (its `printf`) through the ST-LINK's virtual COM port, in the panel's **Serial** tab; **Send…** writes a line to it |
+| STM32Cube (`STM32_Programmer_CLI`) | **Device** (port, mode, speed, probe; Connect, Reset), **Memory** (a grid as CubeProgrammer's; Save As .bin), **Program** (.bin, .hex, .elf, .srec, .s19; verify, erase, run), **Erase** (chip or sectors), **Option Bytes** (read only), **Serial Console** |
+| Arduino (`arduino-cli`) | **Boards** (port, name, FQBN), **Sketch** (Compile, Upload), **Serial Console** |
+| ESP-IDF (`idf.py`) | **Project** (Build, Flash, Erase, set-target), **Serial Console** |
 
-The switch at the top of the view picks the tool: **STM32Cube** (above), **Arduino** or
-**ESP-IDF**. Each takes any target it knows, given what it needs:
-
-| Tool | Give it | Pages |
-|---|---|---|
-| Arduino (`arduino-cli`) | a sketch folder (its `.ino`) and the board's FQBN | **Boards** (what it sees: port, name, FQBN; pick one), **Sketch** (Compile, Upload, verify after), **Serial Console** on the board's port |
-| ESP-IDF (`idf.py`) | a project folder (`CMakeLists.txt`, `main/`) | **Project** (Build, Flash, Erase Flash, the target chip: set-target asks first), **Serial Console** |
-
-The sketch or project is found in the workspace (or above the open file), or picked
-with **Browse…**. Uploading or flashing takes the Serial Console's port for its time
-and gives it back. ESP-IDF is found through `$IDF_PATH`, Espressif's installer's record
-(`~/.espressif/idf-env.json`) or `~/esp/esp-idf`; termcode loads its `export.sh` itself.
-Without a tool, an **Install** button runs its installer in the terminal.
-
-Without the tool, the view has an **Install** button: it runs ST's installer from
-`~/Downloads/en.stm32cubeprg-lin*.zip` in the terminal, or opens ST's download page (ST
-asks you to sign in to download it). termcode finds the tool on `PATH`, in
-`~/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin` or in STM32CubeIDE.
+The sketch or project is found in the workspace or picked with **Browse…**. Uploading
+borrows the Serial Console's port and gives it back. Without a tool, an **Install** button
+runs its installer in the terminal (STM32CubeProgrammer: from
+`~/Downloads/en.stm32cubeprg-lin*.zip`, as ST asks you to sign in to download it).
 
 ---
 
+## What termcode uses
+
+| Tool | For | Debian / Ubuntu |
+|---|---|---|
+| git | Source Control, blame, diffs, Timeline | `git` (with termcode) |
+| ripgrep (`rg`) | Search, Go to Definition, references | `ripgrep` (with termcode) |
+| xclip or wl-copy | Copy and paste | `xclip` (with termcode), `wl-clipboard` |
+| shellcheck | Shell error checking | `shellcheck` (with termcode) |
+| clang, or the project's gcc | C/C++ error checking | `clang` |
+| GitHub CLI (`gh`) | The GitHub view | `gh` |
+| readelf | ELF report and size | `binutils` |
+| pdftoppm, pdfinfo, pdftotext, pdftohtml | PDF pages, text, find, contents | `poppler-utils` |
+| fontconfig (`fc-match`, `fc-list`) | Icon choice, the minimap's glyphs | `fontconfig` |
+| xdg-open | Links in the browser | `xdg-utils` |
+| herdr | The Code tab | [herdr.dev](https://herdr.dev) |
+| STM32_Programmer_CLI, arduino-cli, ESP-IDF | The Programmer | ST, Arduino, Espressif |
+
+Built in, nothing to install: syntax highlighting (syntect, VS Code's grammars), the
+terminal emulator, pictures (image), Kitty graphics, the minimap's font rendering (fontdue).
+termcode works without any optional tool: a feature that needs one says which.
+
 ## Settings
 
-Press **Ctrl+,** (or click the gear at the bottom left). Change things, then:
+**Ctrl+,** opens the Settings window: **Apply** tries, **Save** keeps.
 
-- **Apply** to try them out,
-- **Save** to keep them.
-
-Prefer a file? The first time termcode starts it writes
-**`~/.config/termcode/settings.json`**, listing every option of the Settings window at its
-default, commented out. To change one, remove the `//` in front of it and edit the value;
-saving applies it. F1 **Preferences: Open Settings (JSON)** opens the file from inside
-termcode. A broken file never crashes the panel: a notification says what is wrong, and
-the last good settings stay.
+Or edit **`~/.config/termcode/settings.json`** (F1 **Preferences: Open Settings (JSON)**).
+Every option is there by category, with what it does, the values it takes, which work best
+and which may break, commented out at its default: remove the `//` and change the value;
+saving applies it. A broken file is reported and the last good settings stay.
 
 ```jsonc
-    // "termcode.icons": "auto",                          // Icons: "auto", "nerd", "unicode", "ascii"
+    // Icon glyphs: Nerd Font, plain Unicode or ASCII (auto picks by the fonts found).
+    //   "auto", "nerd", "unicode", "ascii" · ascii or unicode if boxes show instead of icons
     "termcode.icons": "unicode",                         // <- uncommented and changed
 ```
 
-Lost track of the defaults? `termcode --default-config` prints the full list again.
-
-A few more examples:
-
-```jsonc
-{
-    "workbench.colorTheme": "Default Dark Modern",   // any VS Code theme you have installed
-    "workbench.colorCustomizations": { "statusBar.background": "#3B3B3B" },
-    "workbench.density": "compact",                  // tighter layout
-    "termcode.icons": "unicode",                   // no Nerd Font needed
-    "editor.tabSize": 8,
-}
-```
-
-<details>
-<summary>All settings</summary>
-
-| Key | Default | Meaning |
-|---|---|---|
-| `workbench.colorTheme` | "Visual Studio Dark - C++" | A VS Code theme name, or a path to a theme JSON |
-| `workbench.colorCustomizations` | `{}` | Override UI colours, also per theme (`"[Theme Name]": {…}`) |
-| `editor.tokenColorCustomizations` | `{}` | Override code colours (`comments`, `strings`, `textMateRules`, …) |
-| `termcode.followVSCode` | `false` | Take the three keys above from your VS Code settings |
-| `workbench.density` | `"comfortable"` | or `"compact"` |
-| `termcode.spacing` | per density | Fine-tune sizes, see below |
-| `termcode.icons` | `"auto"` | `"nerd"`, `"unicode"` (any font) or `"ascii"`; auto picks nerd when a Nerd Font is installed here |
-| `termcode.blocks.style` | `"cards"` | `"cards"` rounded boxes, `"lines"` shared lines, `"none"` flat |
-| `termcode.fileIcons` | `{}` | Custom file icons: `extensions`, `fileNames`, `folderNames` → `{ "glyph", "color" }` |
-| `indentRainbow.enabled` | `true` | Colour each indent level |
-| `indentRainbow.indicatorStyle` | `"classic"` | `"light"`: a thin line instead of a background |
-| `indentRainbow.colors`, `.errorColor`, `.tabmixColor` | the extension's | Rainbow colours |
-| `indentRainbow.excludedLanguages`, `.includedLanguages`, `.ignoreErrorLanguages`, `.ignoreLinePatterns` | as the extension | Where the rainbow applies |
-| `editor.tabSize` | `4` | Tab width |
-| `editor.guides.indentation` | `true` | Indent guide lines |
-| `editor.renderWhitespace` | `"boundary"` | `"none"`, `"selection"`, `"trailing"`, `"all"` |
-| `editor.occurrencesHighlight` | `"singleFile"` | Highlight the word under the cursor; `"off"` |
-| `editor.matchBrackets` | `"always"` | Highlight matching brackets; `"never"` |
-| `editor.bracketPairColorization.enabled` | `true` | Colour brackets by depth |
-| `editor.wordWrap` | Markdown only | `"on"` or `"off"` for every file |
-| `editor.autoClosingBrackets`, `editor.autoClosingQuotes` | `"always"` | Auto-close pairs; `"never"` |
-| `editor.rulers` | `[90]` | Vertical lines at these columns; `[]` for none |
-| `editor.minimap.enabled` | `true` | The code overview on the right |
-| `editor.minimap.side` | `"right"` | or `"left"` |
-| `editor.minimap.showSlider` | `"always"` | or `"mouseover"` |
-| `editor.minimap.scale` | `3` | In Ghostty and kitty (real pixels): 1, 2 or 3, a line 2, 4 or 6 px tall; the minimap widens (up to 24 cells) to fit |
-| `editor.minimap.size` | `"proportional"` | A fixed scale: a long file shows a stretch that stays put while you scroll in it, moves at its edges, and centres where you click. `"fill"`: the whole file; `"fit"`: whole while it fits |
-| `editor.minimap.renderCharacters` | `true` | `false`: blocks instead of dots |
-| `editor.minimap.maxColumn` | `120` | Columns the minimap covers |
-| `termcode.minimap.minEditorWidth` | `40` | Hide the minimap when the editor gets narrower |
-| `editor.gotoLocation.multipleDefinitions` | `"peek"` | `"gotoAndPeek"` or `"goto"` |
-| `breadcrumbs.enabled` | `true` | The path row under the tabs |
-| `files.trimTrailingWhitespace` | `true` | On save, on edited lines |
-| `files.insertFinalNewline` | `true` | On save |
-| `workbench.tree.enableStickyScroll` | `true` | Keep the current folder pinned while scrolling |
-| `explorer.autoReveal` | `true` | Show the active editor's file in the Explorer (its folders opened, it selected) |
-| `workbench.tree.stickyScrollMaxItemCount` | `1` | More than 1: nested rows, like VS Code |
-| `termcode.colors` | `"auto"` | `"truecolor"`, `"256"` or `"16"`; auto reads the terminal's environment |
-| `termcode.keybindings` | `{}` | Your own keys for F1 commands, see [Your own keys](#your-own-keys) |
-| `termcode.errorChecking` | `true` | Underline problems in shell scripts and C/C++ files |
-| `termcode.restoreSession` | `true` | Reopen last session's tabs |
-| `workbench.editor.restoreViewState` | `true` | Restore cursor and scroll per file |
-| `git.blame.statusBarItem.enabled` | `true` | Line author in the status bar |
-| `git.blame.editorDecoration.enabled` | `false` | Line author after the cursor line |
-| `git.confirmSync` | `true` | Ask before pull + push |
-
-`termcode.spacing` keys (comfortable / compact): `sidebarWidth` 36/30,
-`sidebarPadding` 2/0, `sectionGap` 1/0, `editorPadding` 0/0, `tabPadding` 2/1,
-`statusBarGap` 3/3, `statusBarPadding` 2/1, `activityBarWidth` 5/3, `listItemGap` 0/0,
-`popupPadding` [3,1]/[0,0], `iconGap` 2/1, `treeIndent` 2/2, `titleBarPadding` 2/1,
-`buttonPadding` 2/1, `findWidgetPadding` 1/0.
-
-Environment variables: `TERMCODE_ICONS=nerd|unicode|ascii` (`0`: ascii) and
-`TERMCODE_COLORS=truecolor|256|16` override their settings;
-`TERMCODE_GRAPHICS=kitty|blocks|text` picks how Settings draws its controls.
-
-</details>
+- A file from an older termcode: F1 **Preferences: Refresh Settings File** rewrites it with
+  the new options, keeping your values (the old one: `settings.json.bak`).
+- `termcode --default-config` prints the defaults.
+- VS Code's names and values work: `workbench.colorTheme` (any installed theme),
+  `workbench.colorCustomizations`, `editor.tokenColorCustomizations`, `editor.tabSize`…
+- Environment: `TERMCODE_ICONS=nerd|unicode|ascii`, `TERMCODE_COLORS=truecolor|256|16`,
+  `TERMCODE_GRAPHICS=kitty|blocks|text` override their settings.
 
 ## Where files are kept
 
 | What | Where |
 |---|---|
 | Settings | `~/.config/termcode/settings.json` |
-| Sessions, layout, unsaved-file backups, commit drafts | `~/.local/state/termcode/` |
-
-Upgrading from herdr-code? Your settings and sessions are copied to these folders the
-first time termcode starts.
+| Sessions, layout, unsaved-file backups, commit drafts, trusted repositories | `~/.local/state/termcode/` |
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| Colours look wrong (a yellow or garish background) | Set `"termcode.colors": "256"` (or `"16"`), or `COLORTERM=truecolor` if your terminal has 24-bit colour |
-| Icons show as boxes or `?` | Set `"termcode.icons": "unicode"` (a Nerd Font was found here but your terminal can't use it), or see step 2 |
-| `termcode: command not found` | Add `~/.local/bin` to `PATH` (step 3) <!--dev--> |
+| Colours look wrong | `"termcode.colors": "256"` (or `"16"`), or `COLORTERM=truecolor` if the terminal has 24-bit |
+| Icons show as boxes or `?` | `"termcode.icons": "unicode"`, or install a Nerd Font |
+| `termcode: command not found` | Add `~/.local/bin` to `PATH` <!--dev--> |
 | The Code tab doesn't open | Restart herdr after fixing `PATH`; check `herdr plugin list` |
-| Ctrl+Shift keys do nothing | Your terminal doesn't send them; use F1, the other key, or [your own key](#your-own-keys) |
+| Ctrl+Shift keys do nothing | The terminal doesn't send them: F1, Ctrl+T quick keys or your own keys |
 | Build runs out of memory | `cargo install --path . --root ~/.local -j2` <!--dev--> |
-| Source Control says "Git is off" | The repository's own settings run programs; trust it there if you know where it came from |
-| No error underlines | Install `shellcheck` / `clang` (the status bar says which, once) |
-| C/C++ says a header is not found | Build the kernel once, or add a `compile_commands.json` (see [Error checking](#error-checking)) |
-| A file opens read-only | It is over 16 MB / 500,000 lines, binary, or not UTF-8 |
+| Source Control says "Git is off" | The repository's settings run programs: trust it if you know where it came from |
+| No error underlines | Install `shellcheck` / `clang` (the status bar says which) |
+| C/C++ header not found | Add a `compile_commands.json`, or build the kernel once |
+| A file opens read-only | Over 16 MB / 500,000 lines, binary, or not UTF-8 (a log: use its **log** look) |
 
 ## Performance
 
-Measured 2026-11-17 on an Intel i5-12500 (12 threads, 16 GB RAM, Ubuntu), each editor
-opening the same copy of termcode's source and its 2,374-line `src/panel/mod.rs`. Medians
-of 5 runs (VS Code: 3), after one warm-up run.
+The same copy of termcode's source and its 2,374-line `src/panel/mod.rs`; medians of 5
+runs (VS Code: 3) after a warm-up; Intel i5-12500, 16 GB, Ubuntu, 2026-11-17.
 
 | | termcode 0.4.0 | nvim 0.12 `--clean` | nvim 0.12 + LazyVim | VS Code 1.146 |
 |---|---|---|---|---|
-| Start, until the file's text is on screen | 100 ms | 61 ms | 109 ms | 1,006 ms ¹ |
-| Memory (PSS, all its processes) | 19 MB | 11 MB | 44 MB | 949 MB (8 processes) |
+| Start, until the text shows | 100 ms | 61 ms | 109 ms | 1,006 ms ¹ |
+| Memory (PSS, all processes) | 19 MB | 11 MB | 44 MB | 949 MB |
 | CPU while idle | 0% | 0% | 1.0% | 3.1% |
-| A key to the screen changing, p50 / p95 ² | 11.7 / 14.1 ms | 11.2 / 12.1 ms | 18.7 / 29.6 ms | not measured |
-| A 200,000-line log (13 MB): open / memory | 177 ms / 54 MB | 64 ms / 25 MB | 362 ms / 52 MB | 1,276 ms ¹ / 1,359 MB |
-| Installed | 12 MB, one file | 40 MB | 40 MB + 302 MB of plugins | 573 MB (snap) |
+| A key to the screen, p50 / p95 ² | 11.7 / 14.1 ms | 11.2 / 12.1 ms | 18.7 / 29.6 ms | – |
+| A 13 MB log: open / memory | 177 ms / 54 MB | 64 ms / 25 MB | 362 ms / 52 MB | 1,276 ms ¹ / 1,359 MB |
+| Installed | 12 MB | 40 MB | 342 MB | 573 MB |
 
-- The terminal editors ran in tmux (120×40); "on screen" is the first frame tmux shows
-  with the file's text.
-- ¹ VS Code's own startup time (`--prof-append-timers`): from its main process starting
-  to its workbench being ready, without the snap's launch. It ran with a new profile and
-  no extensions, under Xwayland with software rendering (the snap could not load the GPU
-  driver here).
-- ² Down sent through tmux, until tmux's screen changes, so a few milliseconds are tmux's.
-  VS Code's GUI could not be driven from the test.
-- A file over 16 MB opens read-only and only its first 16 MB
-  (see [Troubleshooting](#troubleshooting)), so the big file is 13 MB: all of it in
-  every editor.
+¹ VS Code's own timer, from its main process to the workbench ready (no snap launch); new
+profile, no extensions, software rendering. ² Measured through tmux, which adds a few ms;
+VS Code's GUI could not be driven.
 
 ## Known limits
 
-- No language server: Go to Definition and References search the code with `rg`, so some
+- No language server: Go to Definition and references search the code with `rg`, so some
   definitions (C++ methods in a class body, macro-built names) are missed.
-- Error checking covers shell scripts and C/C++ only. A C/C++ problem's underline hides
-  once you edit its line, until the next save.
-- In files over 50,000 lines the minimap colours only the parts you have scrolled
-  through (colouring it all would keep the CPU busy).
-- Find matches inside one line only. Lines over 4000 bytes aren't syntax-coloured.
+- Error checking covers shell and C/C++ only; a C/C++ underline hides on an edited line
+  until the next save.
+- Find matches within one line; lines over 4000 bytes aren't syntax-coloured.
 - Light themes that don't set every colour get some dark panels.
-- Mouse back/forward buttons don't reach the panel (herdr drops them).
+- Mouse back/forward buttons don't reach termcode in herdr.
 
 <!-- dev -->
 ## Development
 
 ```sh
 cargo run -- .     # run from source
-cargo test         # run the tests
-scripts/deb.sh     # build the .debs (arguments go to cargo deb)
+cargo test         # the tests
+scripts/deb.sh     # the .debs (arguments go to cargo deb)
 ```
 
-To release: note the changes under the version in `CHANGELOG.md` and date its heading
-(`## [0.2.0] - 2026-12-01`), set the same version in `Cargo.toml` and `herdr-plugin.toml`,
-commit, then tag it:
-`git tag v0.2.0 && git push origin v0.2.0`. The release workflow checks the version and
-changelog, lints, tests, builds both packages, installs them on Ubuntu 22.04, 24.04 and
-Debian 12, and publishes them with that changelog section on
-[termcode-releases](https://github.com/JonasAtelier/termcode-releases/releases), whose
-front page it updates from this README. It runs
-only for tags (a dry run: Actions, release, Run workflow).
+To release: note the changes in `CHANGELOG.md` under the version and date it, set the
+version in `Cargo.toml` and `herdr-plugin.toml`, commit, then
+`git tag vX.Y.Z && git push origin vX.Y.Z`. The release workflow (tags only) lints, tests,
+builds both packages, install-tests them on Ubuntu 22.04, 24.04 and Debian 12, and
+publishes them on [termcode-releases](https://github.com/JonasAtelier/termcode-releases/releases),
+updating its front page from this README.
 
 See [AGENTS.md](AGENTS.md) for the code layout and conventions.
 
@@ -724,25 +503,20 @@ See [AGENTS.md](AGENTS.md) for the code layout and conventions.
 
 ## Reporting problems
 
-Press **F1** and run **Help: Report Issue**: it copies your termcode version, system,
-terminal and settings summary, and the last error termcode hit, if any (check it before
-you paste). Then open an issue at
-[termcode-releases](https://github.com/JonasAtelier/termcode-releases/issues/new/choose)
-and paste it.
-
-If termcode crashes, unsaved files are kept and offered back when you open them again;
-the next start reminds you to report it. Errors are logged in
-`~/.local/state/termcode/panic.log`.
+F1 **Help: Report Issue** copies your termcode version, system, terminal, settings summary
+and last error (check it before you paste), then open an issue at
+[termcode-releases](https://github.com/JonasAtelier/termcode-releases/issues/new/choose).
+After a crash, unsaved files are offered back and the next start reminds you to report it;
+errors are logged in `~/.local/state/termcode/panic.log`.
 
 ## License
 
-termcode is free to install and use, for any purpose, on any number of computers. It may
-not be modified, resold or redistributed. The license comes with it, in
-`/usr/share/doc/termcode/copyright`.
+Free to install and use, for any purpose, on any number of computers. It may not be
+modified, resold or redistributed. The license: `/usr/share/doc/termcode/copyright`.
 
 ## Credits
 
-The default colours and `assets/vscode_dark_defaults.json` come from VS Code (MIT, Microsoft);
-`assets/seti.json` from Seti UI (MIT, Jesse Weed). See `assets/vscode_LICENSE.txt`.
-The Rust crates termcode is built with, and their licenses, are listed in
-`/usr/share/doc/termcode/THIRD-PARTY-LICENSES`.
+The default colours and `assets/vscode_dark_defaults.json` come from VS Code (MIT,
+Microsoft); `assets/seti.json` from Seti UI (MIT, Jesse Weed); see
+`assets/vscode_LICENSE.txt`. The Rust crates termcode is built with, and their licenses, are
+in `/usr/share/doc/termcode/THIRD-PARTY-LICENSES`.
