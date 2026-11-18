@@ -511,8 +511,7 @@ errors are logged in `~/.local/state/termcode/panic.log`.
 
 ## License
 
-Free to install and use, for any purpose, on any number of computers. It may not be
-modified, resold or redistributed. The license: `/usr/share/doc/termcode/copyright`.
+MIT: see [LICENSE](LICENSE).
 
 ## Credits
 

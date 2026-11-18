@@ -21,6 +21,7 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   in this layout, keeping your values (the old one as settings.json.bak).
 
 ### Changed
+- termcode is open source, under the MIT license.
 - The minimap keeps a fixed scale (`editor.minimap.size` now defaults to
   `"proportional"`), so its slider stays easy to grab in a long file. It shows a stretch
   of the file that stays put while you scroll inside it and moves only when the view

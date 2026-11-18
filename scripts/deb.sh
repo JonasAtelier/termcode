@@ -36,7 +36,7 @@ text() { sed -e 's/^$/./' -e 's/^/ /' "$1"; }
     printf 'Upstream-Contact: https://github.com/JonasAtelier/termcode-releases/issues\n'
     printf 'Comment: The Rust crates built into termcode, with their copyright and\n'
     printf ' license texts, are listed in /usr/share/doc/termcode/THIRD-PARTY-LICENSES.\n\n'
-    printf 'Files: *\nCopyright: 2026 JonasAtelier\nLicense: LicenseRef-termcode\n'
+    printf 'Files: *\nCopyright: 2026 JonasAtelier\nLicense: MIT\n'
     text LICENSE
     printf '\nFiles: assets/vscode_dark_defaults.json assets/seti.json\n'
     printf 'Copyright: 2015-present Microsoft Corporation; 2014 Jesse Weed\nLicense: MIT\n'

@@ -6,7 +6,7 @@ description = "A VS Code-style code editor and Git panel in the terminal"
 repository = "https://github.com/JonasAtelier/termcode"
 # Public: releases and issues (the repository above is private).
 homepage = "https://github.com/JonasAtelier/termcode-releases"
-license-file = "LICENSE"
+license = "MIT"
 publish = false
 
 # Build with scripts/deb.sh (static amd64 and arm64 binaries, no build-machine paths),
