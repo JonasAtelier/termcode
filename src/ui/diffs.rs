@@ -202,6 +202,7 @@ pub(crate) fn diff_view(
             minimap: Some(m.cfg),
             hover: m.hover,
             mini_drag: m.drag,
+            mini_px: None,
             whitespace: editor::Whitespace::None,
             occurrences: false,
             match_brackets: false,

@@ -17,7 +17,8 @@ use syntect::highlighting::Style as SStyle;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Size {
-    /// 1 line per slot; the minimap scrolls with long files.
+    /// 1 line per slot; with a long file the minimap shows a stretch of it, which stays
+    /// put while the editor's rows are in it and moves at its edges (the default).
     Proportional,
     /// The whole file over the minimap height, at most one row of it per cell row.
     Fill,
@@ -35,6 +36,9 @@ pub struct Cfg {
     pub slider_always: bool,
     pub left: bool,
     pub size: Size,
+    /// `editor.minimap.scale` (1-3): drawn in pixels, a line is 2 × scale px tall and a
+    /// character scale px wide.
+    pub scale: u8,
     /// `termcode.minimap.minEditorWidth`: text columns the minimap must leave.
     pub min_text: u16,
 }
@@ -47,7 +51,8 @@ impl Default for Cfg {
             render_characters: true,
             slider_always: true,
             left: false,
-            size: Size::Fill,
+            size: Size::Proportional,
+            scale: 3,
             min_text: 40,
         }
     }
@@ -69,6 +74,7 @@ impl Cfg {
                 Some("fit") => Size::Fit,
                 _ => d.size,
             },
+            scale: g("scale").and_then(Value::as_u64).map_or(d.scale, |n| n.clamp(1, 3) as u8),
             min_text: user
                 .get("termcode.minimap.minEditorWidth")
                 .and_then(Value::as_u64)
@@ -91,6 +97,19 @@ pub fn width(text_w: u16, editor_w: u16, max_column: usize, min_text: u16) -> u1
     }
 }
 
+/// A pixel minimap's cells: its characters (up to `max_column`, at most 72) at `scale`
+/// px each in `cw`-px cells, plus the lane's cell; at most 24 cells and 18% of the
+/// editor, leaving `min_text` columns of text. 0: no room.
+pub fn pixel_width(text_w: u16, editor_w: u16, max_column: usize, min_text: u16, scale: u8, cw: u16) -> u16 {
+    let want = (max_column.min(72) * usize::from(scale)).div_ceil(usize::from(cw.max(1))) as u16 + 1;
+    let w = want.clamp(8, 24).min(editor_w * 18 / 100).min(text_w.saturating_sub(min_text));
+    if w < 4 {
+        0
+    } else {
+        w
+    }
+}
+
 /// Characters per sampled column (a braille dot column or a half-block cell)
 /// when `cols` of them span `max_column`.
 pub fn chars_per_col(cols: usize, max_column: usize) -> usize {
@@ -102,6 +121,9 @@ pub fn chars_per_col(cols: usize, max_column: usize) -> usize {
 /// are drawn at 50%; use 45% to keep code quieter than navigation markers.
 pub const INK: f64 = 0.45;
 
+/// A shrunk glyph's strength (its coverage is the rest): quieter than the code beside it.
+pub const GLYPH_INK: f64 = 0.7;
+
 /// A token colour as the minimap draws it: `INK` (scaled by
 /// `minimap.foregroundOpacity`'s alpha) of it over `bg`.
 pub fn ink(c: Color, opacity: u8, bg: Color) -> Color {
@@ -112,7 +134,7 @@ pub fn ink(c: Color, opacity: u8, bg: Color) -> Color {
     Rgba(r, g, b, opacity).alpha(INK).over(bg)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Mini {
     pub rows: u16,
     /// The editor's rows (buffer lines less those a fold hides) and how many it shows.
@@ -120,6 +142,11 @@ pub struct Mini {
     pub view: usize,
     pub slots: usize,
     proportional: bool,
+    /// Editor rows a cell row holds at the fixed scale: `slots`, or a fraction of them
+    /// (a pixel minimap's lines, a whole number of pixels each).
+    per_row: f64,
+    /// The first editor row shown (a long file at a fixed scale): `follow` keeps it.
+    pub first: usize,
 }
 
 impl Mini {
@@ -129,27 +156,70 @@ impl Mini {
             Size::Fill => false,
             Size::Fit => n <= rows as usize * slots,
         };
-        Mini { rows, n, view, slots, proportional }
+        Mini { rows, n, view, slots, proportional, per_row: slots as f64, first: 0 }
+    }
+
+    /// At the fixed scale, `per_row` editor rows a cell row (a fraction: each line a whole
+    /// number of pixels, however tall the cells).
+    pub fn per_row(mut self, per_row: f64) -> Mini {
+        self.per_row = per_row.max(0.5);
+        self
+    }
+
+    /// Editor rows the minimap holds at once.
+    fn cap(&self) -> usize {
+        (self.rows as f64 * self.per_row) as usize
+    }
+
+    /// Whether it shows a stretch of the file (a long file at a fixed scale).
+    fn stretch(&self) -> bool {
+        self.proportional && self.n > self.cap()
+    }
+
+    /// This minimap with its stretch for `scroll`, from the one it showed (`prev`): the
+    /// same while the editor's rows are in it, else moved just far enough to hold them.
+    pub fn follow(mut self, prev: usize, scroll: usize) -> Mini {
+        self.first = if self.stretch() {
+            let (max, end) = (self.n - self.cap(), (scroll + self.view).min(self.n));
+            let s = prev.min(max);
+            let s = if scroll < s {
+                scroll
+            } else if end > s + self.cap() {
+                end - self.cap()
+            } else {
+                s
+            };
+            s.min(max)
+        } else {
+            0
+        };
+        self
+    }
+
+    /// The stretch with the editor's rows (at `scroll`) in its middle: after a click.
+    pub fn centred(&self, scroll: usize) -> usize {
+        if !self.stretch() {
+            return 0;
+        }
+        (scroll + self.view / 2).saturating_sub(self.cap() / 2).min(self.n - self.cap())
     }
 
     /// Editor rows per minimap row: fractional, so a fill always reaches the bottom.
-    fn lines_per_row(&self) -> f64 {
+    pub fn lines_per_row(&self) -> f64 {
         if self.proportional {
-            self.slots as f64
+            self.per_row
         } else {
             (self.n as f64 / self.rows.max(1) as f64).max(1.0)
         }
     }
 
-    /// First editor row the minimap shows: a long file scrolls proportionally,
-    /// reaching its end as the editor's last screenful does (VS Code).
-    pub fn start(&self, scroll: usize) -> usize {
-        let cap = self.rows as usize * self.slots;
-        if !self.proportional || self.n <= cap {
-            return 0;
+    /// First editor row the minimap shows: its stretch's (`follow`), else the top.
+    pub fn start(&self, _scroll: usize) -> usize {
+        if self.stretch() {
+            self.first
+        } else {
+            0
         }
-        let max = self.n.saturating_sub(self.view).max(1);
-        ((scroll.min(max) as f64 * (self.n - cap) as f64) / max as f64).round() as usize
     }
 
     /// The editor rows `slot` of minimap row `row` covers: at least one, none past the end.
@@ -185,9 +255,14 @@ impl Mini {
         line.saturating_sub(self.view / 2).min(self.n.saturating_sub(1))
     }
 
-    /// Scroll that puts the slider's top at row `top` while dragging: the
-    /// largest scroll whose slider starts at or above it.
+    /// Scroll that puts the slider's top at row `top` while dragging: in a stretch, its
+    /// rows from where it was (past its edge the editor goes on, and the stretch with it);
+    /// else the largest scroll whose slider starts at or above it.
     pub fn drag_scroll(&self, top: i32) -> usize {
+        if self.stretch() {
+            let at = self.first as f64 + f64::from(top) * self.lines_per_row();
+            return (at.max(0.0) as usize).min(self.n.saturating_sub(1));
+        }
         if top <= 0 {
             return 0;
         }
@@ -202,6 +277,75 @@ impl Mini {
         }
         lo
     }
+}
+
+/// The printable ASCII characters as a pixel minimap draws them (VS Code's minimap
+/// renderer): each glyph of the monospace font drawn 4× larger, then shrunk into its
+/// `w`×`h` pixels, each pixel how much of the glyph covers it (0-255). `.` is faint, `M`
+/// solid, lowercase sits low. None without a font (characters are then solid blocks).
+pub struct Glyphs {
+    pub w: usize,
+    pub h: usize,
+    masks: Vec<Vec<u8>>,
+}
+
+impl Glyphs {
+    /// Character `c`'s pixels (row by row), when it is printable ASCII.
+    pub fn mask(&self, c: char) -> Option<&[u8]> {
+        let i = (c as usize).checked_sub(33)?;
+        self.masks.get(i).map(Vec::as_slice)
+    }
+}
+
+/// The glyphs at `scale` (a character `scale` px wide, `2 × scale` tall), made once.
+pub fn glyphs(scale: u8) -> Option<&'static Glyphs> {
+    static MADE: [std::sync::OnceLock<Option<Glyphs>>; 3] = [const { std::sync::OnceLock::new() }; 3];
+    let scale = scale.clamp(1, 3);
+    MADE[usize::from(scale) - 1].get_or_init(|| make_glyphs(&font_bytes()?, usize::from(scale), usize::from(scale) * 2)).as_ref()
+}
+
+/// The monospace font fontconfig picks (else the common ones).
+fn font_bytes() -> Option<Vec<u8>> {
+    let picked = std::process::Command::new("fc-match").args(["-f", "%{file}", "monospace"]).stderr(std::process::Stdio::null()).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    picked
+        .into_iter()
+        .chain(["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf".to_string(), "/usr/share/fonts/TTF/DejaVuSansMono.ttf".to_string()])
+        .filter(|p| p.ends_with(".ttf") || p.ends_with(".otf"))
+        .find_map(|p| std::fs::read(p).ok())
+}
+
+fn make_glyphs(font: &[u8], w: usize, h: usize) -> Option<Glyphs> {
+    const SS: usize = 4;
+    let font = fontdue::Font::from_bytes(font, fontdue::FontSettings::default()).ok()?;
+    // The size whose line fills the cell's height, SS times over.
+    let unit = font.horizontal_line_metrics(1.0)?;
+    let px = (h * SS) as f32 / unit.new_line_size.max(0.1);
+    let ascent = unit.ascent * px;
+    let (cw, ch) = (w * SS, h * SS);
+    let masks = (33u8..=126)
+        .map(|c| {
+            let (m, bits) = font.rasterize(char::from(c), px);
+            let mut big = vec![0u16; cw * ch];
+            let top = (ascent - (m.ymin as f32 + m.height as f32)).round() as i64;
+            for y in 0..m.height {
+                for x in 0..m.width {
+                    let (bx, by) = (m.xmin as i64 + x as i64, top + y as i64);
+                    if (0..cw as i64).contains(&bx) && (0..ch as i64).contains(&by) {
+                        big[by as usize * cw + bx as usize] = u16::from(bits[y * m.width + x]);
+                    }
+                }
+            }
+            // Shrunk: each pixel the mean of its SS×SS, lifted (a thin stroke still shows).
+            (0..h * w)
+                .map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    let sum: u32 = (0..SS).flat_map(|dy| (0..SS).map(move |dx| (dx, dy))).map(|(dx, dy)| u32::from(big[(y * SS + dy) * cw + x * SS + dx])).sum();
+                    ((sum / (SS * SS) as u32) * 2).min(255) as u8
+                })
+                .collect()
+        })
+        .collect();
+    Some(Glyphs { w, h, masks })
 }
 
 /// Sample `lines` (text and highlight segments) into `cols` columns of `cpc`
@@ -281,6 +425,18 @@ mod tests {
     }
 
     #[test]
+    fn glyphs_keep_their_shapes_when_shrunk() {
+        let Some(font) = font_bytes() else { return };
+        let g = make_glyphs(&font, 2, 4).expect("glyphs");
+        let ink = |c| g.mask(c).unwrap().iter().map(|&a| u32::from(a)).sum::<u32>();
+        assert!(ink('M') > 2 * ink('.'), "a dot is faint, M solid: {} {}", ink('M'), ink('.'));
+        // Lowercase sits low: 'n' has less in its top row than 'N'.
+        let top = |c| g.mask(c).unwrap()[..2].iter().map(|&a| u32::from(a)).sum::<u32>();
+        assert!(top('n') < top('N'));
+        assert!(g.mask(' ').is_none() && g.mask('é').is_none(), "no glyph: drawn otherwise");
+    }
+
+    #[test]
     fn width_rules() {
         assert_eq!(width(180, 200, 120, 40), 15, "120 columns / 8");
         assert_eq!(width(180, 200, 400, 40), 16, "at most 16");
@@ -341,12 +497,13 @@ mod tests {
 
     #[test]
     fn geometry_click_and_drag() {
-        // 300 lines, 20 rows of 2 lines: proportional, the minimap scrolls.
-        let m = Mini::new(20, 300, 30, 2, Size::Proportional);
+        // 300 lines, 20 rows of 2 lines: a stretch of 40 lines at a time.
+        let m = Mini::new(20, 300, 30, 2, Size::Proportional).follow(0, 0);
         assert_eq!(m.start(0), 0);
-        assert_eq!(m.start(299), 260, "at the end the last lines are shown");
+        let end = m.follow(0, 299);
+        assert_eq!(end.start(299), 260, "at the end the last lines are shown");
         assert_eq!(m.slider(0), (0, 15));
-        assert_eq!(m.slider(299), (19, 1), "only the last line is left");
+        assert_eq!(end.slider(299), (19, 1), "only the last line is left");
         assert_eq!(m.row_of(0, 7), Some(3));
         // A click centres the clicked line.
         assert_eq!(m.click_scroll(0, 10), 6, "row 10 = lines 20..22, centred: 21 - 15");
@@ -355,7 +512,7 @@ mod tests {
             let s = m.drag_scroll(t);
             assert_eq!(m.slider(s).0 as i32, t, "drag to {t}");
         }
-        assert_eq!(m.drag_scroll(99), 299);
+        assert_eq!((m.drag_scroll(99), m.follow(0, 299).drag_scroll(99)), (198, 299), "past the bottom: on from the stretch, to the end at most");
         // A short file: no scrolling, a line per slot from the top.
         let short = Mini::new(20, 10, 30, 2, Size::Proportional);
         assert_eq!((short.start(5), short.slider(5)), (0, (3, 3)), "5 lines left at 2 a row");
@@ -366,19 +523,40 @@ mod tests {
 
     #[test]
     fn slider_tracks_the_viewport_to_the_end_of_a_long_file() {
-        // 8000 lines, 47 rows of 4 lines, 47 lines on screen.
-        let m = Mini::new(47, 8000, 47, 4, Size::Proportional);
+        // 8000 lines, 47 rows of 4 lines (188 lines a stretch), 47 lines on screen.
+        let mut first = 0;
         for scroll in [0, 2000, 4000, 6000, 7000, 7953] {
+            let m = Mini::new(47, 8000, 47, 4, Size::Proportional).follow(first, scroll);
+            first = m.first;
             let (top, len) = m.slider(scroll);
-            let first = m.start(scroll) + top as usize * 4;
-            assert!(first.abs_diff(scroll) <= 2, "scroll {scroll}: slider starts at line {first}");
-            assert_eq!(len, 12, "47 lines at 4 a row");
+            let at = m.start(scroll) + top as usize * 4;
+            assert!(at.abs_diff(scroll) <= 2, "scroll {scroll}: slider starts at line {at}");
+            assert_eq!(len, 12, "47 lines at 4 a row, at any length: easy to grab");
         }
     }
 
     #[test]
+    fn the_stretch_stays_while_the_view_is_in_it_and_moves_at_its_edges() {
+        let m = |prev, scroll| Mini::new(47, 8000, 47, 4, Size::Proportional).follow(prev, scroll);
+        // Scrolling inside the stretch (lines 1000..1188): it stays.
+        assert_eq!([m(1000, 1000).first, m(1000, 1100).first, m(1000, 1141).first], [1000; 3]);
+        // Down past its bottom edge: moved just enough; up past its top: the same.
+        assert_eq!(m(1000, 1150).first, 1150 + 47 - 188);
+        assert_eq!(m(1000, 990).first, 990);
+        // A click: the view to the middle of the stretch.
+        let c = m(0, 0).centred(5000);
+        assert_eq!(c, 5000 + 23 - 94);
+        let (top, len) = m(c, 5000).slider(5000);
+        assert_eq!(top + len / 2, 24, "the slider's middle about half way down 47 rows");
+        assert_eq!(m(0, 0).centred(10), 0, "near the top: from the top");
+        // Dragging in a stretch: its rows from where it was; past its top edge, on up.
+        let d = m(1000, 1000);
+        assert_eq!((d.drag_scroll(10), d.drag_scroll(-5)), (1040, 980));
+    }
+
+    #[test]
     fn slider_shrinks_when_the_file_ends_inside_the_viewport() {
-        let m = Mini::new(47, 8000, 47, 4, Size::Proportional);
+        let m = Mini::new(47, 8000, 47, 4, Size::Proportional).follow(7999, 7999);
         assert_eq!(m.slider(7975).1, 6, "25 lines left at 4 a row");
         assert_eq!(m.slider(7999), (46, 1), "only the last line is left");
     }
@@ -404,9 +582,12 @@ mod tests {
     }
 
     #[test]
-    fn the_size_setting_defaults_to_the_whole_file() {
+    fn the_size_setting_defaults_to_a_fixed_scale() {
         let size = |v: Value| Cfg::parse(v.as_object().unwrap()).size;
-        assert_eq!(size(serde_json::json!({})), Size::Fill);
+        assert_eq!(size(serde_json::json!({})), Size::Proportional);
+        assert_eq!(size(serde_json::json!({ "editor.minimap.size": "fill" })), Size::Fill);
+        let scale = |v: Value| Cfg::parse(v.as_object().unwrap()).scale;
+        assert_eq!((scale(serde_json::json!({})), scale(serde_json::json!({ "editor.minimap.scale": 1 })), scale(serde_json::json!({ "editor.minimap.scale": 9 }))), (3, 1, 3));
         assert_eq!(size(serde_json::json!({ "editor.minimap.size": "proportional" })), Size::Proportional);
         assert_eq!(size(serde_json::json!({ "editor.minimap.size": "fit" })), Size::Fit);
     }

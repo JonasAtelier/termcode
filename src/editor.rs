@@ -150,6 +150,8 @@ pub struct View {
     pub(crate) visible: Vec<usize>,
     pub(crate) fold_version: Option<(u64, usize)>,
     pub(crate) fold_ids: Vec<u64>,
+    /// The first editor row the minimap shows (it stays while the view is in it).
+    pub mini_start: usize,
 }
 
 impl View {

@@ -602,7 +602,8 @@ A few more examples:
 | `editor.minimap.enabled` | `true` | The code overview on the right |
 | `editor.minimap.side` | `"right"` | or `"left"` |
 | `editor.minimap.showSlider` | `"always"` | or `"mouseover"` |
-| `editor.minimap.size` | `"fill"` | `"proportional"` or `"fit"` |
+| `editor.minimap.scale` | `3` | In Ghostty and kitty (real pixels): 1, 2 or 3, a line 2, 4 or 6 px tall; the minimap widens (up to 24 cells) to fit |
+| `editor.minimap.size` | `"proportional"` | A fixed scale: a long file shows a stretch that stays put while you scroll in it, moves at its edges, and centres where you click. `"fill"`: the whole file; `"fit"`: whole while it fits |
 | `editor.minimap.renderCharacters` | `true` | `false`: blocks instead of dots |
 | `editor.minimap.maxColumn` | `120` | Columns the minimap covers |
 | `termcode.minimap.minEditorWidth` | `40` | Hide the minimap when the editor gets narrower |

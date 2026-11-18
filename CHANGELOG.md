@@ -8,6 +8,21 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 
 ## [Unreleased]
 
+### Changed
+- The minimap keeps a fixed scale (`editor.minimap.size` now defaults to
+  `"proportional"`), so its slider stays easy to grab in a long file. It shows a stretch
+  of the file that stays put while you scroll inside it and moves only when the view
+  reaches its top or bottom edge; a click jumps there and centres the stretch on it.
+  The slider dragged to (or past) its edge, or a click held near one, keeps the editor
+  scrolling while held, faster the farther past the edge. `"fill"` brings back the
+  whole file.
+- In Ghostty and kitty the minimap is drawn in real pixels at VS Code's scale
+  (`editor.minimap.scale`, 1-3, default 3: a line 6 px tall, a character 3 px wide;
+  the minimap widens to up to 24 cells for it),
+  not braille dots: each character is its glyph in your monospace font, shrunk as VS
+  Code shrinks it, in its token's colour; it is sent only when the code
+  or its stretch changes, so scrolling stays light. Other terminals keep the dots.
+
 ## [0.4.0] - 2026-11-17
 
 ### Added

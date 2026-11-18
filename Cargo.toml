@@ -51,6 +51,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 serde_json = "1"
 # Newlines and filter text found fast in big logs (logview.rs).
 memchr = "2"
+# The minimap's glyphs: the monospace font's characters shrunk to a few pixels (minimap.rs).
+fontdue = "0.9"
 # Line alignment for the side-by-side diff editor.
 similar = "3"
 # JS-style regexes from indentRainbow.ignoreLinePatterns; already in the tree via syntect.

@@ -15,7 +15,7 @@ pub(super) fn text_editor(
 ) -> EdOut {
     b.clamp_view(v);
     let mut area = area;
-    let mut out = EdOut { text: area, sb: None, hsb: None, mini: None, marks_x: None, folds_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0, rows: Vec::new(), caret: None };
+    let mut out = EdOut { text: area, sb: None, hsb: None, mini: None, mini_img: None, marks_x: None, folds_x: None, zone: None, peek_btns: Vec::new(), peek_body: Rect::default(), peek_max: 0, rows: Vec::new(), caret: None };
     if let Some(ro) = &b.readonly {
         let banner = Rect::new(area.x, area.y, area.width, 1);
         let banner_text = format!(" {}{}{ro}", icons().lock, sp(d.icon_gap));
@@ -33,7 +33,11 @@ pub(super) fn text_editor(
     let fold_width = if v.fold_ends.iter().any(Option::is_some) { 2 } else { 0 };
     let gutter = nums + 1 + fold_width;
     let base_text = area.width.saturating_sub(gutter + 1 + blank);
-    let mw = d.minimap.map_or(0, |m| minimap::width(base_text, area.width, m.max_column, m.min_text));
+    let mw = d.minimap.map_or(0, |m| match d.mini_px {
+        // In pixels it is as wide as its scale needs (within bounds).
+        Some((cw, _)) => minimap::pixel_width(base_text, area.width, m.max_column, m.min_text, m.scale, cw),
+        None => minimap::width(base_text, area.width, m.max_column, m.min_text),
+    });
     let left = d.minimap.is_some_and(|m| m.left);
     let gx = area.x + if left { mw } else { 0 };
     let mut text = Rect::new(gx + gutter, area.y, area.width.saturating_sub(gutter + 1 + blank + mw), area.height);
@@ -276,7 +280,14 @@ pub(super) fn text_editor(
                 P.mini_slider
             }
         });
-        let mini = draw_minimap(f, b, v, mr, &cfg, d, slider);
+        let mini = match d.mini_px {
+            Some(cell) => {
+                let (mini, img, rows) = minimap_pixels(b, v, mr, &cfg, d, slider, cell);
+                out.mini_img = Some((img, rows));
+                mini
+            }
+            None => draw_minimap(f, b, v, mr, &cfg, d, slider),
+        };
         out.mini = Some((mr, mini));
     }
     // Vertical scrollbar with VS Code's overview-ruler marks under the slider.
@@ -336,7 +347,7 @@ pub(super) fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg
     let view = r.height as usize; // the editor shows as many rows as the minimap is tall
     let braille = cfg.render_characters;
     let slots = if braille { 4 } else { 2 };
-    let mini = Mini::new(r.height, n, view, slots, cfg.size);
+    let mini = Mini::new(r.height, n, view, slots, cfg.size).follow(v.mini_start, scroll);
     let end = v.line_of(mini.slot_rows(scroll, r.height.saturating_sub(1), slots - 1).end.saturating_sub(1)) + 1;
     // Request every line the minimap shows. The shared frame budget keeps this
     // incremental, and hl_pending schedules redraws until its colours are ready. A large
@@ -446,6 +457,131 @@ pub(super) fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg
         }
     }
     mini
+}
+
+/// The minimap as pixels (Kitty), at VS Code's scale (`editor.minimap.scale`): a line
+/// 2 × scale px tall, a character scale px wide; the git lane a bar in its first cell; find and selection lines tinted. Its
+/// background is clear and its code translucent over the cells' background, where the
+/// slider is drawn (its rows and colour returned): scrolling changes cells, not pixels,
+/// so the picture is sent again only as the code or the minimap's stretch changes.
+/// `(cw, ch)`: a cell's pixels.
+pub(super) fn minimap_pixels(b: &mut Buffer, v: &View, r: Rect, cfg: &minimap::Cfg, d: &Deco, slider: Option<Rgba>, (cw, ch): (u16, u16)) -> (Mini, image::RgbaImage, Option<(u16, u16, Color)>) {
+    use crate::settingsgraphics::pixel;
+    let n = v.row_of(b.lines.len().saturating_sub(1)) + 1;
+    let scroll = v.row_of(v.scroll);
+    let view = r.height as usize;
+    // Lines a cell row holds at 2 × scale px each: a fraction (every line the same height).
+    let sc = u32::from(cfg.scale.max(1));
+    let per_row = f64::from(ch) / f64::from(2 * sc);
+    let mini = Mini::new(r.height, n, view, per_row.floor().max(1.0) as usize, cfg.size).per_row(per_row).follow(v.mini_start, scroll);
+    let (w, h) = (u32::from(r.width) * u32::from(cw), u32::from(r.height) * u32::from(ch));
+    let mut img = image::RgbaImage::new(w, h);
+    let alpha = (f64::from(P.mini_fg_opacity) * minimap::INK).round() as u8;
+    let ppl = f64::from(ch) / mini.lines_per_row();
+    let start = mini.start(scroll);
+    let shown = ((f64::from(h) / ppl).ceil() as usize).min(n.saturating_sub(start));
+    if b.lines.len() <= editor::LARGE_LINES {
+        b.highlight_upto(v.line_of(start + shown) + 1);
+    }
+    let sel = v.selection();
+    let finds: Vec<usize> = d.find.map_or(Vec::new(), |fd| fd.matches.iter().map(|(a, _)| a.line).collect());
+    let tab = editor::tab();
+    let text_x = u32::from(cw);
+    let mut last_y = None;
+    for k in 0..shown {
+        let y0 = (k as f64 * ppl) as u32;
+        // Squeezed (fill): one line a pixel row at most.
+        if last_y == Some(y0) {
+            continue;
+        }
+        last_y = Some(y0);
+        let y1 = (((k + 1) as f64 * ppl) as u32).max(y0 + 1).min(h);
+        let line = v.line_of(start + k);
+        let found = finds.binary_search(&line).is_ok();
+        // A found or selected line's tint is its own (opaque); else the cells' shows.
+        let bg = if found {
+            Some(P.mini_find)
+        } else if sel.is_some_and(|(a, e)| a.line <= line && e.line >= line) {
+            Some(P.mini_sel)
+        } else {
+            None
+        };
+        if let Some(bg) = bg {
+            let bgp = pixel(bg);
+            for y in y0..y1 {
+                for x in text_x..w {
+                    img.put_pixel(x, y, bgp);
+                }
+            }
+        }
+        // The git lane: a bar in the first cell.
+        if let Some(m) = d.marks.get(line).copied().flatten() {
+            let c = pixel(match m {
+                Mark::Added => P.mini_added,
+                Mark::Modified => P.mini_modified,
+                Mark::Deleted => P.mini_deleted,
+            });
+            for y in y0..y1 {
+                for x in (text_x.saturating_sub(4))..text_x.saturating_sub(1) {
+                    img.put_pixel(x, y, c);
+                }
+            }
+        }
+        // Each character its glyph shrunk to scale px by 2 × scale (a block without a
+        // font), in its token's colour.
+        // A line's pixel rows can be one more than its glyph (cells not a multiple of a
+        // line): the glyph at their top, the spare row clear.
+        let glyphs = minimap::glyphs(cfg.scale).filter(|g| y1 - y0 >= g.h as u32);
+        // A glyph's own coverage is its ink; a block stands for one at INK's share.
+        let alpha = if glyphs.is_some() { (f64::from(P.mini_fg_opacity) * minimap::GLYPH_INK).round() as u8 } else { alpha };
+        let stride = glyphs.map_or(1, |g| g.w);
+        let segs = b.segs(line);
+        let mut seg = 0;
+        let mut col = 0usize;
+        for (at, c) in b.lines[line].char_indices() {
+            if col >= cfg.max_column || text_x + col as u32 * sc >= w {
+                break;
+            }
+            let width = if c == '\t' { tab - col % tab } else { 1 };
+            if !c.is_whitespace() {
+                let fg = segs.map_or(P.editor_fg, |s| {
+                    while seg + 1 < s.len() && s[seg + 1].0 <= at {
+                        seg += 1;
+                    }
+                    let f = s[seg].1.foreground;
+                    if f.a == 0 { P.editor_fg } else { Color::Rgb(f.r, f.g, f.b) }
+                });
+                let (r, g, bl) = match fg {
+                    Color::Rgb(r, g, b) => (r, g, b),
+                    _ => (0xcc, 0xcc, 0xcc),
+                };
+                let mask = glyphs.and_then(|gl| gl.mask(c));
+                let rows = glyphs.map_or(y1, |g| (y0 + g.h as u32).min(y1));
+                for y in y0..rows {
+                    for (k, x) in (text_x + col as u32 * sc..(text_x + (col as u32 + 1) * sc).min(w)).enumerate() {
+                        // How much of the glyph covers this pixel (all of it: a block).
+                        let cover = mask.map_or(255, |m| u32::from(m[(y - y0) as usize * stride + k]));
+                        if cover == 0 {
+                            continue;
+                        }
+                        let a = (u32::from(alpha) * cover / 255) as u8;
+                        let p = match bg {
+                            Some(bg) => pixel(minimap::ink(fg, (u32::from(P.mini_fg_opacity) * cover / 255) as u8, bg)),
+                            None => image::Rgba([r, g, bl, a]),
+                        };
+                        img.put_pixel(x, y, p);
+                    }
+                }
+            }
+            col += width;
+        }
+    }
+    // The slider: its cell rows, under the picture.
+    let slider = slider.map(|sc| {
+        let (top, len) = mini.slider(scroll);
+        (top, len, sc.over(P.mini_bg))
+    });
+    (mini, img, slider)
 }
 
 /// The git lane's cell for its lit slots: braille dot rows (4 slots), the upper or lower

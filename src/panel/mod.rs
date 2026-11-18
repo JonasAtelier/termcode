@@ -1096,6 +1096,9 @@ pub struct App {
     pub quick: Option<Quick>,
     files: Vec<String>,
     pub drag: Drag,
+    /// A minimap slider held at (or past) its edge: how far (rows, up negative) and the
+    /// last step; the editor scrolls on by itself, faster the farther (`minimap_auto`).
+    pub(crate) mini_auto: Option<(i32, Instant)>,
     pub drop: Option<(usize, Zone)>,
     pub(crate) last_click: Option<(Instant, Position)>,
     pub tip: Option<Tip>,
@@ -1819,6 +1822,7 @@ impl App {
             quick: None,
             files: Vec::new(),
             drag: Drag::None,
+            mini_auto: None,
             drop: None,
             last_click: None,
             tip: None,

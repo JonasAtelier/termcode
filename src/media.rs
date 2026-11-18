@@ -203,16 +203,32 @@ pub struct State {
     next_id: u32,
     /// Pictures kept in the terminal whole (a Markdown preview's): their image ids.
     kept: HashMap<u64, u32>,
+    /// Pictures swapped in place (a minimap): by slot, the image id shown and its pixels' digest.
+    swaps: HashMap<String, (u32, u64)>,
 }
 
 impl Default for State {
     fn default() -> Self {
         let (tx, rx) = channel();
-        State { views: HashMap::new(), gfx: None, tx, rx, hits: Vec::new(), tools: None, trash: Vec::new(), trash_old: Vec::new(), next_id: 0, kept: HashMap::new() }
+        State { views: HashMap::new(), gfx: None, tx, rx, hits: Vec::new(), tools: None, trash: Vec::new(), trash_old: Vec::new(), next_id: 0, kept: HashMap::new(), swaps: HashMap::new() }
     }
 }
 
 impl State {
+    /// A Kitty terminal with 8×16 px cells, for tests.
+    #[cfg(test)]
+    pub fn kitty_for_tests(&mut self) {
+        self.gfx = Some(crate::settingsgraphics::Graphics::kitty());
+    }
+
+    /// A Kitty terminal with `cell`-px cells (Ghostty's 8×22), for tests.
+    #[cfg(test)]
+    pub fn kitty_cells_for_tests(&mut self, cell: (u16, u16)) {
+        let mut g = crate::settingsgraphics::Graphics::kitty();
+        g.set_cell_for_tests(cell);
+        self.gfx = Some(g);
+    }
+
     pub fn clear_hits(&mut self) {
         self.hits.clear();
     }
@@ -964,6 +980,46 @@ fn draw_tiles(app: &mut App, f: &mut Frame, area: Rect, (key, path): (&str, &Pat
         }
     }
     // The new tiles go out ahead of the cells showing them.
+    if !seq.is_empty() {
+        let c = &mut buf[(area.x, area.y)];
+        let sym = format!("{seq}{}", c.symbol());
+        c.set_symbol(&sym);
+    }
+    crate::settingsgraphics::mark_drawn(area);
+}
+
+/// A cell's size in pixels where pictures go to the terminal as Kitty images; None
+/// elsewhere (their stand-ins are drawn in cells).
+pub fn pixel_cell(app: &mut App) -> Option<(u16, u16)> {
+    let gfx = app.media.gfx.get_or_insert_with(crate::settingsgraphics::Graphics::new);
+    gfx.refresh_size();
+    gfx.tiles().then(|| gfx.cell())
+}
+
+/// `img` (`area`'s cells' pixels) shown in `area` as slot `slot`'s picture: sent when its
+/// pixels changed (a new image id; the one before goes a frame later, so nothing blinks),
+/// then placeholder cells over `row_bg` (what its clear pixels show).
+pub fn show_pixels(app: &mut App, f: &mut Frame, slot: &str, area: Rect, img: &RgbaImage, row_bg: &dyn Fn(u16) -> ratatui::style::Color) {
+    let d = digest(img.as_raw());
+    let (id, seq) = match app.media.swaps.get(slot) {
+        Some(&(id, had)) if had == d => (id, String::new()),
+        old => {
+            let old = old.map(|o| o.0);
+            let id = app.media.new_id();
+            let Some(gfx) = app.media.gfx.as_ref() else { return };
+            let seq = gfx.transmit(id, img, area.width, area.height);
+            app.media.trash.extend(old);
+            app.media.swaps.insert(slot.to_string(), (id, d));
+            (id, seq)
+        }
+    };
+    let buf = f.buffer_mut();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let (sym, fg) = crate::settingsgraphics::placeholder(id, y, x);
+            buf[(area.x + x, area.y + y)].set_symbol(&sym).set_fg(fg).set_bg(row_bg(y));
+        }
+    }
     if !seq.is_empty() {
         let c = &mut buf[(area.x, area.y)];
         let sym = format!("{seq}{}", c.symbol());

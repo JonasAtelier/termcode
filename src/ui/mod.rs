@@ -1533,6 +1533,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     let slider_c = slider_color(app, track, target);
     let hrow = body.bottom().saturating_sub(u16::from(border_y.is_none()));
     let hcolor = slider_color(app, Rect::new(body.x, hrow, body.width, 1), ScrollTarget::EditorHorizontal(g));
+    // The minimap as pixels where the terminal has Kitty graphics.
+    let mini_px = if app.minimap_on { crate::media::pixel_cell(app) } else { None };
     // A picture or a PDF's pages: media.rs draws the tab (its bar, its buttons).
     if let Some(Doc::Text(b)) = app.docs.get(&key) {
         if let (Some(kind), Some(path)) = (b.media, b.path.clone()) {
@@ -1564,6 +1566,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             let view = &mut app.groups[g].tabs[active].view;
             let (sb, mm, texts, hsb) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group, app.diff_syntax.entry(key.clone()).or_default(), app.find.as_ref().filter(|_| focused_group), border_y.is_some());
             if let Some((area, mini)) = mm {
+                view.mini_start = mini.first;
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.row_of(view.scroll) });
             }
             gh.text = body;
@@ -1608,6 +1611,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 minimap: app.minimap_on.then_some(app.settings.minimap),
                 hover: app.hover,
                 mini_drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
+                mini_px,
                 whitespace: app.settings.render_whitespace,
                 occurrences: app.settings.occurrences,
                 match_brackets: app.settings.match_brackets,
@@ -1645,7 +1649,13 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 app.ui.scrollbars.push(hsb);
             }
             if let Some((area, mini)) = out.mini {
+                view.mini_start = mini.first;
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.row_of(view.scroll) });
+                if let Some((img, slider)) = out.mini_img {
+                    // The slider's rows in its colour under the clear picture, the rest the minimap's.
+                    let bg = |row: u16| slider.filter(|(t, l, _)| (*t..t + l).contains(&row)).map_or(P.mini_bg, |s| s.2);
+                    crate::media::show_pixels(app, f, &format!("minimap:{g}"), area, &img, &bg);
+                }
             }
             if let Some(z) = out.zone {
                 app.ui.peek_zone = z;
@@ -1820,6 +1830,8 @@ struct Deco<'a> {
     hover: Option<Position>,
     /// This editor's minimap slider is being dragged.
     mini_drag: bool,
+    /// A cell's pixels where the minimap is drawn as an image (Kitty); else braille.
+    mini_px: Option<(u16, u16)>,
     whitespace: editor::Whitespace,
     occurrences: bool,
     match_brackets: bool,
@@ -1859,12 +1871,17 @@ struct PeekDraw<'a> {
     scroll: usize,
 }
 
+/// A pixel minimap's slider: its first row, rows, colour (drawn as the cells' background).
+type MiniSlider = (u16, u16, Color);
+
 /// What `text_editor` laid out, for hit-testing.
 struct EdOut {
     text: Rect,
     sb: Option<ScrollHit>,
     hsb: Option<ScrollHit>,
     mini: Option<(Rect, Mini)>,
+    /// The minimap as pixels, for the terminal to show (Kitty: `media::show_pixels`).
+    mini_img: Option<(image::RgbaImage, Option<MiniSlider>)>,
     marks_x: Option<u16>,
     folds_x: Option<u16>,
     zone: Option<Rect>,

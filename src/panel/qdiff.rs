@@ -402,6 +402,7 @@ impl App {
         *dirty |= self.auto_reveal();
         *dirty |= crate::media::tick(self);
         *dirty |= crate::logview::tick(self);
+        *dirty |= self.minimap_auto();
         *dirty |= crate::api::tick(self);
         *dirty |= self.file_job_tick();
         if let Some((path, _)) = self.tree_spring.take_if(|(_, t)| Instant::now() >= *t) {
@@ -450,6 +451,10 @@ impl App {
             || self.logs.busy()
             || self.tip.as_ref().is_some_and(|t| t.md5_rx.is_some());
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
+        // A minimap slider held at its edge: the editor stepping on.
+        if self.mini_auto.is_some() {
+            wait = wait.min(super::mouse::MINI_STEP);
+        }
         // A log in a tab: its file looked at for new lines twice a second.
         if self.logs.watching() {
             wait = wait.min(Duration::from_millis(500));

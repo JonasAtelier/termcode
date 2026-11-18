@@ -391,11 +391,21 @@ impl App {
         if (top..top + len).contains(&row) {
             self.drag = Drag::Minimap(m, row - top);
         } else {
-            self.set_scroll(ScrollTarget::Editor(m.group), m.mini.click_scroll(m.scroll, row));
-            // Keep dragging from here, as VS Code does after a jump.
-            let view = &self.groups[m.group].tabs[self.groups[m.group].active].view;
-            let (top, _) = m.mini.slider(view.row_of(view.scroll));
-            self.drag = Drag::Minimap(m, row.saturating_sub(top));
+            // A jump to the clicked line, the minimap's stretch then round it (the slider
+            // about half way down).
+            let to = m.mini.click_scroll(m.scroll, row);
+            self.set_scroll(ScrollTarget::Editor(m.group), to);
+            let grp = &mut self.groups[m.group];
+            let view = &mut grp.tabs[grp.active].view;
+            let at = view.row_of(view.scroll);
+            view.mini_start = m.mini.centred(at);
+            // Held, it drags the slider by its middle; held near an edge, on by itself.
+            let mut now = m;
+            (now.scroll, now.mini.first) = (at, m.mini.centred(at));
+            let grab = len / 2;
+            let over = mini_over(&now, row as i32 - grab as i32);
+            self.mini_auto = (over != 0).then(|| (over, Instant::now()));
+            self.drag = Drag::Minimap(now, grab);
         }
     }
 
@@ -661,8 +671,15 @@ impl App {
             }
             Drag::Minimap(m, grab) => {
                 let (m, grab) = (*m, *grab);
-                let off = m.mini.drag_scroll(p.y as i32 - m.area.y as i32 - grab as i32);
-                self.set_scroll(ScrollTarget::Editor(m.group), off);
+                // The minimap as last drawn: its stretch moves while the editor scrolls on.
+                let live = self.ui.minimaps.iter().find(|h| h.group == m.group).copied().unwrap_or(m);
+                let top = p.y as i32 - live.area.y as i32 - grab as i32;
+                let len = i32::from(live.mini.slider(live.scroll).1);
+                let over = mini_over(&live, top);
+                // At an edge the slider stays there; the editor goes on by itself (`minimap_auto`).
+                let t = top.clamp(0, (i32::from(live.area.height) - len).max(0));
+                self.set_scroll(ScrollTarget::Editor(m.group), live.mini.drag_scroll(t));
+                self.mini_auto = (over != 0).then(|| (over, self.mini_auto.map_or_else(Instant::now, |a| a.1)));
             }
             Drag::Scroll(sb, grab) => {
                 let (sb, grab) = (*sb, *grab);
@@ -717,12 +734,41 @@ impl App {
         }
     }
 
+    /// A minimap slider held at (or past) its edge: the editor a step further every 30 ms,
+    /// 4 × distance² lines (touching: ~130 lines a second; 3 rows past: ~1200).
+    pub fn minimap_auto(&mut self) -> bool {
+        let (Some((over, last)), Drag::Minimap(m, _)) = (self.mini_auto, &self.drag) else {
+            self.mini_auto = None;
+            return false;
+        };
+        if last.elapsed() < MINI_STEP {
+            return false;
+        }
+        let g = m.group;
+        let d = over.unsigned_abs() as usize;
+        let cur = self.scroll_of(ScrollTarget::Editor(g));
+        let to = if over < 0 { cur.saturating_sub(4 * d * d) } else { cur + 4 * d * d };
+        self.set_scroll(ScrollTarget::Editor(g), to);
+        self.mini_auto = Some((over, Instant::now()));
+        true
+    }
+
     pub(super) fn release(&mut self) {
+        self.mini_auto = None;
         if crate::scm::release(self) {
             return;
         }
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Divider | Drag::TermSash | Drag::OutlineSash | Drag::GhSash => self.save_layout(),
+            // A minimap slider let go: its stretch centred on it (the slider to the middle).
+            Drag::Minimap(m, _) => {
+                let live = self.ui.minimaps.iter().find(|h| h.group == m.group).copied().unwrap_or(m);
+                if let Some(grp) = self.groups.get_mut(m.group) {
+                    if let Some(tab) = grp.tabs.get_mut(grp.active) {
+                        tab.view.mini_start = live.mini.centred(tab.view.row_of(tab.view.scroll));
+                    }
+                }
+            }
             Drag::File { active: false, keep: false, .. } => self.tree_unmark(self.sel[Side::Explorer as usize]),
             Drag::File { rel, active: true, .. } => {
                 self.tree_spring = None;
@@ -923,4 +969,21 @@ pub(crate) fn diff_pos_in(d: &DiffDoc, v: &View, p: Position, texts: [Rect; 2], 
     let past = p.x >= r.right();
     let col = diff_cell(d, row, side).map_or(0, |t| if past { t.len() } else { editor::byte_at_display(t, x) });
     Some(Pos::new(row, col))
+}
+
+/// How often a held minimap slider steps the editor on.
+pub(crate) const MINI_STEP: Duration = Duration::from_millis(30);
+
+/// How far a minimap slider wanted at row `top` is past (or touching) the edge it can
+/// still move toward: rows, up negative; 0 inside, or where the file ends anyway.
+fn mini_over(live: &MiniHit, top: i32) -> i32 {
+    let len = i32::from(live.mini.slider(live.scroll).1);
+    let rows = i32::from(live.area.height);
+    if top <= 0 && live.scroll > 0 {
+        top - 1
+    } else if top + len >= rows && live.scroll + live.mini.view < live.mini.n {
+        top + len - rows + 1
+    } else {
+        0
+    }
 }

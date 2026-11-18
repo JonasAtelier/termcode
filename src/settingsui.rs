@@ -130,11 +130,12 @@ const FIELDS: &[Field] = &[
         kind: Choice(&["always", "mouseover"]),
     },
     Field { category: 3, label: "Minimap side", key: "editor.minimap.side", kind: Choice(&["right", "left"]) },
+    Field { category: 3, label: "Minimap scale", key: "editor.minimap.scale", kind: Number(1, 3, 3) },
     Field {
         category: 3,
         label: "Minimap size",
         key: "editor.minimap.size",
-        kind: Choice(&["fill", "proportional", "fit"]),
+        kind: Choice(&["proportional", "fill", "fit"]),
     },
     Field {
         category: 3,
@@ -257,6 +258,7 @@ fn describe(key: &str) -> &'static str {
         "editor.minimap.showSlider" => "When the visible part shows on the minimap.",
         "editor.minimap.side" => "Which side of the editor the minimap is on.",
         "editor.minimap.size" => "How the minimap fits the file: proportional, fill or fit.",
+        "editor.minimap.scale" => "How large the minimap draws code in Ghostty and kitty: 1, 2 or 3 (a line 2, 4 or 6 pixels tall).",
         "termcode.minimap.minEditorWidth" => "Hide the minimap when the editor is narrower than this.",
         "indentRainbow.enabled" => "Colour each indentation level.",
         "indentRainbow.indicatorStyle" => "Colour whole indents (classic) or a light line (light).",

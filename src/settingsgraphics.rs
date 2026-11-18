@@ -100,6 +100,11 @@ impl Graphics {
         }
     }
 
+    #[cfg(test)]
+    pub fn set_cell_for_tests(&mut self, cell: (u16, u16)) {
+        self.cell = cell;
+    }
+
     /// A Kitty terminal with 8×16 cells, for tests.
     #[cfg(test)]
     pub fn kitty() -> Self {
@@ -127,7 +132,8 @@ impl Graphics {
     }
 
     pub fn refresh_size(&mut self) {
-        if self.mode == Mode::Kitty {
+        // Tests set the cell they draw for.
+        if self.mode == Mode::Kitty && !cfg!(test) {
             let cell = cell_size();
             if cell != self.cell {
                 self.cell = cell;

@@ -5515,6 +5515,166 @@ fn a_log_reads_by_level_filters_jumps_to_problems_and_follows_its_end() {
 }
 
 #[test]
+fn a_minimap_slider_held_at_its_edge_scrolls_on_faster_the_farther() {
+    let root = repo("mini-auto");
+    let body: String = (0..2000).map(|i| format!("let v{i} = {i};\n")).collect();
+    fs::write(root.join("long.rs"), body).unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "long.rs", false);
+    app.focus = Focus::Editor;
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    app.set_scroll(ScrollTarget::Editor(0), 1000);
+    screen(&mut app, &mut t);
+    let m = app.ui.minimaps[0];
+    let (top, _) = m.mini.slider(m.scroll);
+    let x = m.area.x + 1;
+    let row = |app: &App| { let g = &app.groups[0]; g.tabs[g.active].view.scroll };
+    // The slider by its top row, to the minimap's top edge: touching, a slow step.
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, m.area.y + top);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, m.area.y);
+    screen(&mut app, &mut t);
+    let at = row(&app);
+    std::thread::sleep(crate::panel::mouse::MINI_STEP + Duration::from_millis(5));
+    assert!(app.minimap_auto());
+    screen(&mut app, &mut t);
+    let slow = at - row(&app);
+    assert_eq!(slow, 4, "touching the edge: 4 lines a step");
+    // Two rows past it: 4 × 3² a step; held still, it goes on.
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, m.area.y - 2);
+    screen(&mut app, &mut t);
+    for _ in 0..2 {
+        let at = row(&app);
+        std::thread::sleep(crate::panel::mouse::MINI_STEP + Duration::from_millis(5));
+        assert!(app.minimap_auto());
+        screen(&mut app, &mut t);
+        assert_eq!(at - row(&app), 36, "farther, faster; held still, on");
+    }
+    // Let go: it stops, and the slider goes to the middle.
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, m.area.y - 2);
+    std::thread::sleep(crate::panel::mouse::MINI_STEP + Duration::from_millis(5));
+    assert!(!app.minimap_auto() && app.mini_auto.is_none());
+    screen(&mut app, &mut t);
+    let h = app.ui.minimaps[0];
+    let (top, len) = h.mini.slider(h.scroll);
+    assert!((top + len / 2).abs_diff(h.area.height / 2) <= 1, "middle: {top}+{len} of {}", h.area.height);
+    // A click held at the bottom edge (off the slider): after its jump, on down.
+    screen(&mut app, &mut t);
+    let m = app.ui.minimaps[0];
+    let bottom = m.area.y + m.area.height - 1;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, bottom);
+    screen(&mut app, &mut t);
+    let at = row(&app);
+    std::thread::sleep(crate::panel::mouse::MINI_STEP + Duration::from_millis(5));
+    assert!(app.minimap_auto());
+    assert!(row(&app) > at, "held: on down");
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, bottom);
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// The pictures a frame sends (Kitty), decoded: their PNGs' pixels.
+fn sent_pictures(t: &Terminal<TestBackend>) -> Vec<image::RgbaImage> {
+    let b64 = |s: &str| -> Vec<u8> {
+        let v = |c: u8| match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            _ => 63,
+        };
+        let s: Vec<u8> = s.bytes().filter(|&c| c != b'=').collect();
+        s.chunks(4).flat_map(|c| {
+            let n = c.iter().enumerate().fold(0u32, |n, (i, &c)| n | u32::from(v(c)) << (18 - 6 * i));
+            (0..c.len() - 1).map(move |i| (n >> (16 - 8 * i)) as u8)
+        }).collect()
+    };
+    let mut out = Vec::new();
+    for cell in t.backend().buffer().content.iter().filter(|c| c.symbol().contains("a=T")) {
+        let payload: String = cell.symbol().split("\x1b_G").filter_map(|c| Some(c.split_once(';')?.1.split('\x1b').next()?.to_string())).collect();
+        out.push(image::load_from_memory(&b64(&payload)).unwrap().to_rgba8());
+    }
+    out
+}
+
+/// Frames drawn until highlighting settles, and the pictures they sent (each frame's).
+fn frames(app: &mut App, t: &mut Terminal<TestBackend>) -> Vec<image::RgbaImage> {
+    let mut pics = Vec::new();
+    for _ in 0..10_000 {
+        t.draw(|f| crate::ui::draw(app, f)).unwrap();
+        pics.extend(sent_pictures(t));
+        if !app.hl_pending() {
+            return pics;
+        }
+    }
+    panic!("highlighting never settled");
+}
+
+#[test]
+fn the_minimap_in_kitty_is_pixels_at_vscodes_scales() {
+    let root = repo("mini-pixels");
+    let body: String = (0..300).map(|i| format!("{}\n", "x".repeat(i % 40 + 1))).collect();
+    fs::write(root.join("p.rs"), body).unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.media.kitty_for_tests();
+    app.open_file(0, "p.rs", false);
+    app.focus = Focus::Editor;
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let pics = frames(&mut app, &mut t);
+    let m = app.ui.minimaps[0];
+    // The last picture sent (one a frame at most, as its colours came) is what shows.
+    let img = pics.last().expect("the minimap sent as a picture");
+    // 8×16 px cells: a line 2 px tall, a character 1 px wide, after the lane's cell.
+    assert_eq!(img.dimensions(), (u32::from(m.area.width) * 8, u32::from(m.area.height) * 16));
+    // Clear where there is no code; at scale 3 (the default) each character its glyph
+    // shrunk to 3×6 px (some of it lit), a line 6 px tall.
+    let lit = |x: u32, y: u32| img.get_pixel(x, y)[3] > 0;
+    let char_lit = |c: u32, line: u32| (0..3).any(|dx| (0..6).any(|dy| lit(8 + c * 3 + dx, line * 6 + dy)));
+    assert!((0..6).all(|c| char_lit(c, 5)) && !char_lit(6, 5), "line 5: 6 characters");
+    assert!((0..11).all(|c| char_lit(c, 50)) && !char_lit(11, 50), "line 50: 11 characters");
+    assert!((0..6).any(|dy| (8..26).any(|x| !lit(x, 30 + dy))), "clear between strokes: the slider shows through");
+    // The slider: cell backgrounds under the picture.
+    let p = &crate::theme::P;
+    let buf = t.backend().buffer();
+    assert!(buf[(m.area.x + 3, m.area.y + 2)].symbol().starts_with('\u{10EEEE}'), "placeholder cells");
+    assert_ne!(buf[(m.area.x + 3, m.area.y)].bg, p.mini_bg, "the slider's rows");
+    assert_eq!(buf[(m.area.x + 3, m.area.y + m.area.height - 1)].bg, p.mini_bg);
+    // Scrolled inside the stretch: cells change, the picture is not sent again.
+    app.set_scroll(ScrollTarget::Editor(0), 3);
+    assert!(frames(&mut app, &mut t).is_empty(), "scrolling sends no pixels");
+    // An edit: the picture again, the one before deleted a frame later.
+    app.set_scroll(ScrollTarget::Editor(0), 0);
+    key(&mut app, KeyCode::Char('Z'), KeyModifiers::NONE);
+    assert!(!frames(&mut app, &mut t).is_empty());
+    t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+    assert!(t.backend().buffer().content.iter().any(|c| c.symbol().contains("a=d")), "the one before deleted");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn ghosttys_22_px_cells_keep_every_minimap_line_a_glyph_6_px_apart() {
+    let root = repo("mini-ghostty");
+    // 'l' over and over: a glyph with clear columns, never a full 3×6 block.
+    let body: String = (0..200).map(|_| "llll llll\n".to_string()).collect();
+    fs::write(root.join("g.rs"), body).unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.media.kitty_cells_for_tests((8, 22));
+    app.open_file(0, "g.rs", false);
+    app.focus = Focus::Editor;
+    let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let img = frames(&mut app, &mut t).pop().expect("the minimap's picture");
+    if crate::minimap::glyphs(3).is_none() {
+        return; // no font here: blocks by design
+    }
+    // Every line the same: 6 px apart, its glyph's pixels not all lit (no block).
+    let row = |line: u32| (0..6).map(|dy| (8..20).map(|x| img.get_pixel(x, line * 6 + dy)[3]).collect::<Vec<_>>()).collect::<Vec<_>>();
+    let first = row(0);
+    for line in 1..60 {
+        assert_eq!(row(line), first, "line {line}: the same as line 0, 6 px on");
+    }
+    assert!(first.iter().flatten().any(|&a| a == 0) && first.iter().flatten().any(|&a| a > 0), "a glyph, not a block");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn brackets_are_coloured_by_depth_and_a_stray_closer_stands_out() {
     let root = repo("brackets");
     fs::write(root.join("b.c"), "f(a[1]);\n)\n").unwrap();
@@ -5676,6 +5836,8 @@ fn minimap_git_lane_lights_only_the_dot_rows_of_changed_lines() {
     lines.remove(171); // marked on the line above: index 170
     fs::write(root.join("f.rs"), lines.join("\n") + "\n").unwrap();
     let mut app = App::new(root.clone(), None);
+    // The whole file in the minimap ("fill"): all three changes in view.
+    app.settings.minimap.size = crate::minimap::Size::Fill;
     app.open_file(0, "f.rs", false);
     wait(&mut app);
     app.update_qdiff();
@@ -7089,3 +7251,4 @@ fn the_explorer_shows_the_active_editors_file() {
     assert!(!app.auto_reveal() && at(&app, "drivers/net").is_none());
     fs::remove_dir_all(&root).unwrap();
 }
+
