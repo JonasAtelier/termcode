@@ -67,6 +67,11 @@ impl App {
         if self.focus == Focus::Term && !self.replaying {
             return self.term_key(k);
         }
+        // So does a serial channel's tab (its board's line editing needs Ctrl+W, Ctrl+H,
+        // Ctrl+K…): all but F1, Ctrl+Q, the terminal's key and the tab keys.
+        if self.focus == Focus::Editor && !self.replaying && crate::xcomm::takes(self, k) {
+            return;
+        }
         // The user's keybindings come before the default keys ("" turns a key off).
         if !self.replaying {
             let key = crate::parse::chord(&k);

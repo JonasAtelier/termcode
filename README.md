@@ -72,8 +72,9 @@ to trust the repository before enabling Git. Only grant trust if you know its or
 The **Serial** view (the plug above the Programmer) lists the serial ports with their
 adapter, USB ID and who holds each, and the channels open here with their state. Click a
 port to open it: its output streams in an editor tab you can split like code, and what
-you type there goes to the device. Baud, DTR, RTS, break, capture and close are under
-each channel. Ports are taken as [xcomm](https://crates.io/crates/xcomm) takes them (a
+you type there goes to the device (every key but F1, Ctrl+Q and the tab keys).
+**Ctrl+T W** closes the tab, and the port with it; baud, DTR, RTS, break, capture and
+close are also under each channel. Ports are taken as [xcomm](https://crates.io/crates/xcomm) takes them (a
 UUCP lock, an exclusive open) and opened again after an unplug.
 
 ## Scripts and AI agents

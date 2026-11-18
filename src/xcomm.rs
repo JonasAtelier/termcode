@@ -356,6 +356,21 @@ pub fn page_key(app: &mut App, k: ratatui::crossterm::event::KeyEvent) -> bool {
     true
 }
 
+/// A key for a channel's tab, as the terminal takes keys: everything but F1, Ctrl+Q,
+/// the terminal's key and the tab keys (Ctrl+PgUp/PgDn, Ctrl+Tab) goes to the device.
+/// False when the active tab is not a channel's, or the key is termcode's.
+pub fn takes(app: &mut App, k: ratatui::crossterm::event::KeyEvent) -> bool {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    if active_key(app).is_none() {
+        return false;
+    }
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    let termcodes = matches!(k.code, KeyCode::F(1))
+        || (ctrl && matches!(k.code, KeyCode::Char('q' | 'Q') | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Tab | KeyCode::BackTab))
+        || crate::term::toggle_key(&k);
+    !termcodes && page_key(app, k)
+}
+
 /// Pasted text in a channel's tab goes to the device.
 pub fn paste(app: &mut App, text: &str) -> bool {
     let Some(key) = active_key(app) else { return false };
@@ -660,9 +675,16 @@ mod tests {
             got.extend_from_slice(&b[..n]);
         }
         assert_eq!(got, b"root\r");
-        // Its tab closed: the port and its lock given back.
-        app.close_tab(0, app.groups[0].active, true);
-        assert!(app.serial.channels.is_empty() && std::fs::read_dir(&locks).unwrap().count() == 0);
+        // Its board's line editing gets termcode's own keys (Ctrl+W, Ctrl+H, Ctrl+S).
+        app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        let mut b = [0u8; 4];
+        let n = dev.read(&mut b).unwrap();
+        assert_eq!(&b[..n], [0x17], "Ctrl+W to the device, the tab still open");
+        assert!(!app.serial.channels.is_empty());
+        // Ctrl+T w closes it (View: Close Editor): the port and its lock given back.
+        app.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert!(app.serial.channels.is_empty() && std::fs::read_dir(&locks).unwrap().count() == 0, "{}", app.msg);
         std::fs::remove_dir_all(&locks).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
     }

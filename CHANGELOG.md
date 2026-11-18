@@ -13,8 +13,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   who holds each (another xcomm, in which herdr pane); the channels open here with their
   line settings, state and bytes in and out; per channel the baud (‹ ›), DTR, RTS, a
   break, capture to a file and close. A channel's output streams in an editor tab (split
-  it like code) and the keys typed there go to the device; Shift+PgUp/PgDn and the wheel
-  scroll back. Ports are locked and opened as xcomm does, and opened again after an
+  it like code) and the keys typed there go to the device (all but F1, Ctrl+Q and the
+  tab keys); Shift+PgUp/PgDn and the wheel scroll back. Ctrl+T W closes it (a new quick
+  key, View: Close Editor, for any tab). Ports are locked and opened as xcomm does, and opened again after an
   unplug, by the USB port. Needs Rust 1.93 to build.
 - An API: `termcode api METHOD [JSON]` (JSON-RPC 2.0 on termcode's private socket) runs
   any command, opens files, reads open and unsaved text, problems, Git, terminals and the
