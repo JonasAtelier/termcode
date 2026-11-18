@@ -11,7 +11,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ### Added
 - A Serial view, on xcomm: the serial ports with their adapter, USB ID, by-id link and
   who holds each (another xcomm, in which herdr pane); the channels open here with their
-  line settings, state and bytes in and out; per channel the baud (‹ ›), DTR, RTS, a
+  line settings, state and bytes in and out; per channel the baud (‹ ›), data bits,
+  parity, stop bits and flow control (each click the next), DTR, RTS, a
   break, capture to a file and close. A channel's output streams in an editor tab (split
   it like code) and the keys typed there go to the device (all but F1, Ctrl+Q and the
   tab keys); Shift+PgUp/PgDn and the wheel scroll back. Ctrl+T W closes it (a new quick

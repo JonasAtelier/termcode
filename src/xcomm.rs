@@ -99,6 +99,11 @@ pub enum Hit {
 pub enum Act {
     BaudDown,
     BaudUp,
+    /// The next data bits (8, 7, 6, 5), parity (none, even, odd), stop bits, flow control.
+    DataBits,
+    Parity,
+    StopBits,
+    Flow,
     Dtr,
     Rts,
     Break,
@@ -277,6 +282,25 @@ fn attach(sock: &Path, write: bool) -> Result<Source, String> {
     };
     FDS.with(|f| f.borrow_mut().push(out.as_raw_fd()));
     Ok(Source::Shared { out, ctl })
+}
+
+fn data_bits(d: xcomm::cli::DataBits) -> u8 {
+    use xcomm::cli::DataBits;
+    match d {
+        DataBits::Five => 5,
+        DataBits::Six => 6,
+        DataBits::Seven => 7,
+        DataBits::Eight => 8,
+    }
+}
+
+/// Flow control as xcomm names it.
+pub fn flow_name(f: xcomm::cli::Flow) -> &'static str {
+    match f {
+        xcomm::cli::Flow::None => "none",
+        xcomm::cli::Flow::RtsCts => "rts",
+        xcomm::cli::Flow::XonXoff => "xon",
+    }
 }
 
 /// `tty` as /dev names it (`pts/3` for /dev/pts/3).
@@ -461,7 +485,7 @@ impl Channel {
             if up { bauds[(i + 1).min(bauds.len() - 1)] } else { bauds[i.saturating_sub(1)] }
         };
         let tty = self.tty.clone();
-        let line_change = matches!(a, Act::BaudDown | Act::BaudUp | Act::Dtr | Act::Rts | Act::Break);
+        let line_change = matches!(a, Act::BaudDown | Act::BaudUp | Act::DataBits | Act::Parity | Act::StopBits | Act::Flow | Act::Dtr | Act::Rts | Act::Break);
         if line_change && !self.write {
             return format!("{tty}: read only (Typing turns writing on)");
         }
@@ -482,9 +506,16 @@ impl Channel {
                 self.note = None;
                 format!("{tty}: {}", if self.write { "read and write: typing goes to the device" } else { "read only" })
             }
-            (Act::BaudDown | Act::BaudUp, src) => {
+            (Act::BaudDown | Act::BaudUp | Act::DataBits | Act::Parity | Act::StopBits | Act::Flow, src) => {
+                use xcomm::cli::{DataBits, Flow, Parity, StopBits};
                 let mut s = self.settings;
-                s.baud = step(s.baud, a == Act::BaudUp);
+                match a {
+                    Act::DataBits => s.data_bits = match s.data_bits { DataBits::Eight => DataBits::Seven, DataBits::Seven => DataBits::Six, DataBits::Six => DataBits::Five, DataBits::Five => DataBits::Eight },
+                    Act::Parity => s.parity = match s.parity { Parity::None => Parity::Even, Parity::Even => Parity::Odd, Parity::Odd => Parity::None },
+                    Act::StopBits => s.stop_bits = match s.stop_bits { StopBits::One => StopBits::Two, StopBits::Two => StopBits::One },
+                    Act::Flow => s.flow = match s.flow { Flow::None => Flow::RtsCts, Flow::RtsCts => Flow::XonXoff, Flow::XonXoff => Flow::None },
+                    _ => s.baud = step(s.baud, a == Act::BaudUp),
+                }
                 match src {
                     Some(Source::Own(p, _)) => {
                         if let Err(e) = p.configure(&s) {
@@ -492,7 +523,13 @@ impl Channel {
                         }
                     }
                     Some(Source::Shared { ctl: Some(c), .. }) => {
-                        let patch = SettingsPatch { baud: Some(s.baud), ..SettingsPatch::default() };
+                        let patch = SettingsPatch {
+                            baud: Some(s.baud),
+                            data_bits: Some(data_bits(s.data_bits)),
+                            parity: Some(format!("{:?}", s.parity).to_lowercase()),
+                            stop_bits: Some(if s.stop_bits == StopBits::Two { 2 } else { 1 }),
+                            flow: Some(flow_name(s.flow).into()),
+                        };
                         if let Err(e) = request(c, Request::Set { patch }) {
                             return format!("{tty}: {e}");
                         }
@@ -851,6 +888,10 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
                 ("‹".to_string(), Act::BaudDown),
                 (format!(" {} ", c.settings.baud), Act::BaudUp),
                 ("›".to_string(), Act::BaudUp),
+                (format!(" {} ", data_bits(c.settings.data_bits)), Act::DataBits),
+                (format!(" {} ", format!("{:?}", c.settings.parity).chars().next().unwrap_or('N')), Act::Parity),
+                (format!(" {} ", if c.settings.stop_bits == xcomm::cli::StopBits::Two { 2 } else { 1 }), Act::StopBits),
+                (format!(" flow {} ", flow_name(c.settings.flow)), Act::Flow),
                 (format!(" DTR {} ", on(lines.map(|l| l.dtr))), Act::Dtr),
                 (format!(" RTS {} ", on(lines.map(|l| l.rts))), Act::Rts),
                 (" Break ".to_string(), Act::Break),
@@ -930,7 +971,7 @@ pub fn draw_peek(app: &mut App, f: &mut Frame) {
     }
     if let Some(c) = chan {
         let st = c.settings;
-        lines.push(row("Line", format!("{} · flow {:?}", xcomm::port::describe(&st), st.flow).to_lowercase()));
+        lines.push(row("Line", xcomm::port::describe(&st)));
         if let Some(l) = c.lines() {
             let o = |b: bool| if b { "on" } else { "off" };
             lines.push(row("Modem", format!("DTR {} RTS {} · CTS {} DSR {} DCD {}", o(l.dtr), o(l.rts), o(l.cts), o(l.dsr), o(l.dcd))));
@@ -1152,6 +1193,16 @@ mod tests {
         assert_eq!(ch.tx, 5);
         let msg = ch.act(Act::BaudUp, &locks);
         assert!(msg.contains("230400") && ch.settings.baud == 230_400, "{msg}");
+        // Data bits, parity, stop bits, flow: each its next, applied to the port.
+        for a in [Act::DataBits, Act::Parity, Act::StopBits, Act::Flow] {
+            ch.act(a, &locks);
+        }
+        let msg = xcomm::port::describe(&ch.settings);
+        assert_eq!(msg, "230400 7E2 rts/cts", "xcomm names flow control when there is one");
+        let (Some(Source::Own(p, _)), true) = (&ch.source, true) else { panic!() };
+        let applied = p.read_settings().unwrap();
+        // The tty itself changed (a pty keeps no data size or parity: no UART behind it).
+        assert_eq!((applied.baud, applied.stop_bits, applied.flow), (230_400, xcomm::cli::StopBits::Two, xcomm::cli::Flow::RtsCts));
         drop(ch);
         assert_eq!(std::fs::read_dir(&locks).unwrap().count(), 0, "its lock given back");
         std::fs::remove_dir_all(&locks).unwrap();
