@@ -1619,6 +1619,61 @@ enum Input {
 
 /// Wait up to `wait` for input on `fd`, or for the integrated terminal's shell. A signal
 /// ends the wait early, as `Idle`.
+/// termcode with no terminal (`--headless`): the same App and event loop, its frames
+/// drawn offscreen (120 × 40: `/ui/screen` reads them), driven through the API alone: its
+/// socket, and (`stdio`) JSON-RPC on stdin and stdout. Ends on File: Quit
+/// (`command.run file.quit`), stdin closed (with `stdio`), a hang-up or TERM.
+pub fn run_headless(root: PathBuf, stdio: bool) -> Result<(), String> {
+    HEADLESS.store(true, Ordering::SeqCst);
+    std::env::remove_var(crate::api::ENV);
+    let state = crate::data_dir(true);
+    let mut private: Vec<PathBuf> = vec![state.clone(), crate::data_dir(false)];
+    private.extend(["backup", "drafts", "sessions", "terminals"].map(|d| state.join(d)));
+    crate::private_dirs(&private)?;
+    let mut app = App::new(root, None);
+    app.api = crate::api::start(&crate::api::dir());
+    let Some(srv) = &app.api else { return Err("the API's socket could not be made".into()) };
+    crate::api::arm(srv);
+    if stdio {
+        crate::api::serve_stdio(srv);
+    }
+    // (stderr: stdout is the API's, with stdio.)
+    let _ = writeln!(io::stderr(), "termcode headless: pid {} on {} (termcode api --to {} …)", std::process::id(), app.root.display(), std::process::id());
+    app.settings_file = Some(settings::path());
+    app.check_settings();
+    app.poll_status = true;
+    for sig in [libc::SIGHUP, libc::SIGTERM] {
+        // SAFETY: the handler only stores to an atomic.
+        unsafe {
+            libc::signal(sig, on_term as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        }
+    }
+    let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 40)).map_err(|e| e.to_string())?;
+    let mut dirty = true;
+    while !app.quit && !SIGNALED.load(Ordering::SeqCst) && !crate::api::END.load(Ordering::SeqCst) {
+        app.step(&mut t, &mut dirty, |wait| {
+            wait_fds(wait);
+            Ok(None)
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    finish(&mut app);
+    crate::api::remove();
+    Ok(())
+}
+
+/// No terminal here (`--headless`): nothing may be written to stdout but the API's
+/// replies (no terminal escapes, no clipboard by OSC 52), and no one answers windows.
+pub static HEADLESS: AtomicBool = AtomicBool::new(false);
+
+/// Headless's wait: for a terminal's or a port's output, a request, or `wait`.
+fn wait_fds(wait: Duration) {
+    let mut polls: Vec<libc::pollfd> = crate::term::fds().into_iter().chain(crate::xcomm::fds()).chain(crate::api::wake_fd()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
+    let ms = wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
+    // SAFETY: valid pollfds, as many as given.
+    unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, ms) };
+}
+
 fn wait_input(fd: libc::c_int, wait: Duration) -> Input {
     // The input, then every terminal's PTY.
     // (The socket's wake-up pipe counts as a shell's output: the loop turns at once.)
@@ -1697,6 +1752,9 @@ pub(crate) fn clipboard_set(text: &str) -> &'static str {
         if c.wait().is_ok_and(|s| s.success()) {
             return argv[0];
         }
+    }
+    if HEADLESS.load(Ordering::SeqCst) {
+        return "nothing (headless)";
     }
     let mut out = io::stdout();
     let _ = write!(out, "\x1b]52;c;{}\x07", parse::base64(text.as_bytes()));

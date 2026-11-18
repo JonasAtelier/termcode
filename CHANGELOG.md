@@ -41,7 +41,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   cursor, problems, Git, terminal and serial output (`termcode api events.watch` prints
   them, a JSON line each). `ui.notify` (the status bar), `ui.prompt` (a question with
   buttons, the one clicked the answer), `ui.decorate` / `ui.clear` (marks on lines,
-  shown as problems with a note).
+  shown as problems with a note). `termcode mcp`: the API as an MCP server for agents.
+  `termcode --headless [--api-stdio] FOLDER`: termcode with no terminal, driven through
+  the API alone (on stdin and stdout with `--api-stdio`); it asks no one, so it does
+  only what TERMCODE_API_ALLOW lets it.
 - GitHub sign-in by QR code: next to Sign in with GitHub, Sign in with a QR code shows
   GitHub's device page as a QR code for your phone, with gh's one-time code to enter
   there (Q in the view). gh keeps the token either way.

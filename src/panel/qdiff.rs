@@ -417,7 +417,7 @@ impl App {
         if std::mem::take(dirty) {
             // The terminal shows the frame whole (synchronized output), not half drawn.
             let sync = |on: bool| {
-                if !cfg!(test) {
+                if !cfg!(test) && !HEADLESS.load(Ordering::SeqCst) {
                     let mut out = io::stdout();
                     let _ = out.write_all(if on { b"\x1b[?2026h" } else { b"\x1b[?2026l" }).and_then(|()| out.flush());
                 }

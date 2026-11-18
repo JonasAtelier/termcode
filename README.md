@@ -88,6 +88,8 @@ problems, edit as one undo step, type into its terminal. Reading needs no approv
 before a program changes files or runs anything, termcode asks you (Allow, Allow once,
 Deny). `termcode api --help` lists the methods and `termcode api --skill` prints the
 guide for agents. Set `termcode.api` to `"read-only"` or `"off"` in Settings to limit it.
+`termcode mcp` serves the same as MCP tools; `termcode --headless` runs one with no
+terminal (`--api-stdio`: the API on stdin and stdout).
 
 ## Help and settings
 

@@ -20,6 +20,11 @@ termcode api --to ~/proj hello   # pick one by folder (or pid)
 
 Without `--to`: `$TERMCODE_SOCKET`, else the termcode open on this folder, else the only one.
 
+Speak MCP instead? `termcode mcp` is an MCP server (stdio) whose tools are these methods
+(`state_get`, `serial_send`, …). No termcode open? `TERMCODE_API_ALLOW=edit,run termcode
+--headless --api-stdio FOLDER` runs one with no terminal, JSON-RPC on its stdin and stdout
+(a headless termcode can't ask the user: it does only what its starter allowed).
+
 ## Call it
 
 ```bash

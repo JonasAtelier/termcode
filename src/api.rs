@@ -60,6 +60,9 @@ pub struct Server {
     path: PathBuf,
     /// Connections watching events, and the state they were last told of.
     watchers: Vec<(Vec<String>, Sender<Value>)>,
+    /// To hand requests in from elsewhere (stdin): the queue and the loop's wake-up.
+    tx: Sender<Request>,
+    poke: std::io::PipeWriter,
     last: Option<Snapshot>,
     /// Requests answered later: when the next frame is drawn, a terminal prints a match,
     /// the user answers whether a client may.
@@ -299,6 +302,7 @@ pub fn start(dir: &Path) -> Option<Server> {
     fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).ok()?;
     let (tx, rx) = channel();
     let (wake, poke) = std::io::pipe().ok()?;
+    let (keep_tx, keep_poke) = (tx.clone(), poke.try_clone().ok()?);
     // SAFETY: the pipe's read end is open; reads from it must not block the loop.
     unsafe {
         let fd = wake.as_raw_fd();
@@ -334,7 +338,7 @@ pub fn start(dir: &Path) -> Option<Server> {
             drop(poke);
         })
         .ok()?;
-    Some(Server { rx, wake, path: p, waits: Vec::new(), watchers: Vec::new(), last: None })
+    Some(Server { rx, wake, path: p, waits: Vec::new(), watchers: Vec::new(), last: None, tx: keep_tx, poke: keep_poke })
 }
 
 /// The connecting process: its pid and uid (SO_PEERCRED).
@@ -387,11 +391,25 @@ pub fn client_of(pid: i32) -> Client {
 fn serve(s: UnixStream, tx: &Sender<Request>, poke: &mut std::io::PipeWriter, client: &Client) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
-    let mut lines = BufReader::new(&s);
+    // Gone: its end closed (looked at without waiting).
+    let gone = || {
+        let _ = s.set_nonblocking(true);
+        let mut b = [0u8; 1];
+        let closed = matches!((&s).read(&mut b), Ok(0));
+        let _ = s.set_nonblocking(false);
+        closed
+    };
+    serve_io(&mut BufReader::new(&s), &mut &s, &gone, tx, poke, client);
+}
+
+/// Request lines from `input`, each answered on `out` in turn; a watching one (events.watch)
+/// then only carries its events, until `gone` or a write fails.
+fn serve_io(input: &mut dyn BufRead, out: &mut dyn Write, gone: &dyn Fn() -> bool, tx: &Sender<Request>, poke: &mut std::io::PipeWriter, client: &Client) {
     loop {
         let mut line = String::new();
-        let reply = match (&mut lines).take(MAX).read_line(&mut line) {
+        let reply = match input.take(MAX).read_line(&mut line) {
             Ok(0) | Err(_) => return,
+            Ok(_) if line.trim().is_empty() => continue,
             Ok(_) => match serde_json::from_str::<Value>(&line) {
                 Ok(req) => {
                     // A wait's own timeout, the user's answer, and some to spare.
@@ -402,28 +420,19 @@ fn serve(s: UnixStream, tx: &Sender<Request>, poke: &mut std::io::PipeWriter, cl
                     let reply = rrx.recv_timeout(Duration::from_secs_f64(secs)).unwrap_or_else(|_| failure(&req, "termcode did not answer"));
                     // Watching: from now on this connection only carries the events.
                     if req["method"] == "events.watch" && reply.get("result").is_some() {
-                        if (&s).write_all(format!("{reply}\n").as_bytes()).is_err() {
+                        if writeln!(out, "{reply}").and_then(|()| out.flush()).is_err() {
                             return;
                         }
-                        let _ = s.set_nonblocking(true);
                         loop {
                             match rrx.recv_timeout(Duration::from_secs(1)) {
                                 Ok(ev) => {
-                                    let _ = s.set_nonblocking(false);
-                                    let ok = (&s).write_all(format!("{ev}\n").as_bytes()).is_ok();
-                                    let _ = s.set_nonblocking(true);
-                                    if !ok {
+                                    if writeln!(out, "{ev}").and_then(|()| out.flush()).is_err() {
                                         return;
                                     }
                                 }
                                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                    // The client gone (its end closed): stop.
-                                    let mut b = [0u8; 1];
-                                    if matches!((&s).read(&mut b), Ok(0)) {
-                                        return;
-                                    }
-                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if gone() => return,
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                             }
                         }
                     }
@@ -432,11 +441,28 @@ fn serve(s: UnixStream, tx: &Sender<Request>, poke: &mut std::io::PipeWriter, cl
                 Err(e) => json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("not JSON: {e}")}}),
             },
         };
-        if (&s).write_all(format!("{reply}\n").as_bytes()).is_err() {
+        if writeln!(out, "{reply}").and_then(|()| out.flush()).is_err() {
             return;
         }
     }
 }
+
+/// The API on this process's stdin and stdout too (`--headless --api-stdio`), for the
+/// program that started it: trusted as its own terminal is.
+pub fn serve_stdio(srv: &Server) {
+    let (tx, poke) = (srv.tx.clone(), srv.poke.try_clone());
+    let Ok(mut poke) = poke else { return };
+    let me = Client { key: (std::process::id() as i32, 0), label: "stdin".into(), own: true };
+    let _ = std::thread::Builder::new().name("api-stdio".into()).spawn(move || {
+        let stdin = std::io::stdin();
+        serve_io(&mut stdin.lock(), &mut std::io::stdout(), &|| false, &tx, &mut poke, &me);
+        // stdin closed: the starter is gone, termcode with it.
+        END.store(true, Ordering::SeqCst);
+    });
+}
+
+/// Set when the stdio client closed stdin (`--api-stdio`): headless ends.
+pub static END: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// How long a client waits for the user's answer.
 const ASK: Duration = Duration::from_secs(120);
@@ -683,6 +709,10 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
             Some(false) if app.settings.api == "off" => return Reply::Now(envelope(&id, Err("the API is off (termcode.api in settings)".into()))),
             Some(false) if app.settings.api == "read-only" => return Reply::Now(envelope(&id, Err(format!("{method} refused: the API is read-only (termcode.api in settings)")))),
             Some(false) => return Reply::Now(envelope(&id, Err(format!("{method} refused: the user said no")))),
+            // Headless: no one to ask; only what its starter allowed (TERMCODE_API_ALLOW).
+            None if crate::panel::HEADLESS.load(Ordering::SeqCst) => {
+                return Reply::Now(envelope(&id, Err(format!("{method} refused: a headless termcode has no one to ask; start it with TERMCODE_API_ALLOW=edit,run"))));
+            }
             None => return Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + ASK, what: Waiting::Grant { client: client.clone(), tier, req: req.clone(), shown: false, once: false } })),
         }
     }
@@ -912,7 +942,7 @@ pub fn rpc(sock: &Path, req: &Value) -> Result<Value, String> {
 }
 
 /// The termcodes running (that answer): pid, folder, socket.
-fn running() -> Vec<(u32, PathBuf, PathBuf)> {
+pub(crate) fn running() -> Vec<(u32, PathBuf, PathBuf)> {
     let mut out: Vec<_> = fs::read_dir(dir())
         .into_iter()
         .flatten()
@@ -928,7 +958,7 @@ fn running() -> Vec<(u32, PathBuf, PathBuf)> {
 }
 
 /// The socket to talk to (see CLI_HELP).
-fn pick(running: &[(u32, PathBuf, PathBuf)], to: Option<&str>) -> Result<PathBuf, String> {
+pub(crate) fn pick(running: &[(u32, PathBuf, PathBuf)], to: Option<&str>) -> Result<PathBuf, String> {
     let list = || running.iter().map(|(pid, root, _)| format!("  {pid}  {}", root.display())).collect::<Vec<_>>().join("\n");
     let within = |dir: &Path| running.iter().filter(|(_, root, _)| dir.starts_with(root)).max_by_key(|(_, root, _)| root.as_os_str().len()).map(|r| r.2.clone());
     if let Some(to) = to {

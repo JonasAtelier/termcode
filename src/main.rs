@@ -31,6 +31,7 @@ mod settings;
 mod settingsui;
 mod api;
 mod rpc;
+mod mcp;
 mod xcomm;
 mod serial;
 mod settingsgraphics;
@@ -77,6 +78,8 @@ Open PATH like `code PATH`, in this terminal; quitting returns to the shell.
   --default-config  print the default settings.json (every option, commented out)
   -V, --version     print the version
   api METHOD [JSON] call a running termcode's API (`termcode api --help`)
+  mcp               the API as an MCP server on stdio, for agents (`termcode mcp --help`)
+  --headless        no terminal: driven through the API alone (--api-stdio: on stdio too)
 Relative paths resolve against this folder. Settings: ~/.config/termcode/settings.json.
 (`termcode panel` is the plugin's pane entrypoint.)";
 
@@ -87,6 +90,8 @@ enum Cmd {
     DefaultConfig,
     Panel,
     Api(Vec<String>),
+    Mcp(Vec<String>),
+    Headless { path: Option<String>, stdio: bool },
     Open { tab: bool, new: bool, path: Option<String> },
 }
 
@@ -95,6 +100,9 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
         if a == "api" {
             return Ok(Cmd::Api(rest.to_vec()));
         }
+        if a == "mcp" {
+            return Ok(Cmd::Mcp(rest.to_vec()));
+        }
     }
     if let [a] = args {
         if a == "panel" {
@@ -102,8 +110,11 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
         }
     }
     let (mut tab, mut new, mut path) = (false, false, None);
+    let (mut headless, mut stdio) = (false, false);
     for a in args {
         match a.as_str() {
+            "--headless" => headless = true,
+            "--api-stdio" => stdio = true,
             "-h" | "--help" => return Ok(Cmd::Help),
             "-V" | "--version" => return Ok(Cmd::Version),
             "--default-config" => return Ok(Cmd::DefaultConfig),
@@ -113,6 +124,9 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
             s if path.is_none() => path = Some(s.to_string()),
             s => return Err(format!("unexpected argument {s:?}\n{USAGE}")),
         }
+    }
+    if headless || stdio {
+        return Ok(Cmd::Headless { path, stdio });
     }
     Ok(Cmd::Open { tab, new, path })
 }
@@ -143,6 +157,12 @@ fn main() -> ExitCode {
             Ok(())
         }
         Cmd::Api(args) => api::cli(&args),
+        Cmd::Mcp(args) => mcp::run(&args),
+        Cmd::Headless { path, stdio } => {
+            let cwd = env::current_dir().map_err(|e| e.to_string())?;
+            let (root, _) = target(path.as_deref(), &cwd)?;
+            panel::run_headless(root, stdio)
+        }
         // The launcher opens the pane with the workspace root as its cwd, and hands over
         // the launch folder (the session's key) when it is not the root.
         Cmd::Panel => env::current_dir().and_then(fs::canonicalize).map_err(|e| e.to_string()).and_then(|root| {
@@ -640,6 +660,14 @@ mod tests {
     fn vars(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let m: std::collections::HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         move |k: &str| m.get(k).cloned()
+    }
+
+    #[test]
+    fn headless_and_mcp_are_parsed() {
+        let a = |v: &[&str]| parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(a(&["--headless", "src"]), Ok(Cmd::Headless { path: Some("src".into()), stdio: false }));
+        assert_eq!(a(&["--api-stdio"]), Ok(Cmd::Headless { path: None, stdio: true }), "stdio implies headless");
+        assert_eq!(a(&["mcp", "--to", "12"]), Ok(Cmd::Mcp(vec!["--to".into(), "12".into()])));
     }
 
     #[test]
