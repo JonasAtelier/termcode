@@ -6,7 +6,7 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
-## [Unreleased]
+## [0.5.0] - 2026-11-18
 
 ### Added
 - A prefix key, Ctrl+T (`termcode.prefix`), then one quick key runs a command, wherever
