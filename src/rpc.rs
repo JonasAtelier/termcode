@@ -13,6 +13,8 @@ pub enum Out {
     Now(Value),
     Screen,
     Output { term: usize, re: fancy_regex::Regex, mark: u64, timeout: Duration },
+    /// Serial channel `tty`'s output matching `re` after offset `mark`.
+    Serial { tty: String, re: fancy_regex::Regex, mark: u64, timeout: Duration },
 }
 
 pub const METHODS: &[&str] = &[
@@ -27,6 +29,13 @@ pub const METHODS: &[&str] = &[
     "events.wait",
     "serial.ports",
     "serial.note",
+    "serial.monitor",
+    "serial.read",
+    "serial.wait",
+    "serial.attach",
+    "serial.send",
+    "serial.set",
+    "serial.close",
 ];
 
 /// What `method` may do (`api::Gate` asks the user before `Edit` and `Run`): reading
@@ -35,8 +44,8 @@ pub const METHODS: &[&str] = &[
 pub fn tier(method: &str, p: &Value) -> crate::api::Tier {
     use crate::api::Tier;
     match method {
-        "editor.open" | "buffer.edit" | "buffer.save" | "serial.note" => Tier::Edit,
-        "command.run" | "terminal.send" | "events.wait" => Tier::Run,
+        "editor.open" | "buffer.edit" | "buffer.save" | "serial.note" | "serial.monitor" | "serial.close" => Tier::Edit,
+        "command.run" | "terminal.send" | "events.wait" | "serial.attach" | "serial.send" | "serial.set" => Tier::Run,
         "state.get" if matches!(p["path"].as_str(), Some("/terminals" | "/ui/screen")) => Tier::Run,
         _ => Tier::Read,
     }
@@ -106,6 +115,34 @@ pub fn call(app: &mut App, method: &str, p: &Value) -> Result<Out, String> {
             Ok(Out::Output { term, re, mark, timeout })
         }
         "serial.ports" => now(crate::xcomm::ports_json(app)),
+        "serial.monitor" => crate::xcomm::api_monitor(app, port(p)?).map(Out::Now),
+        "serial.attach" => crate::xcomm::api_attach(app, port(p)?).map(Out::Now),
+        "serial.send" => {
+            let text = p["text"].as_str().ok_or("serial.send: give \"text\" (end it with \\r to enter it)")?;
+            crate::xcomm::api_send(app, port(p)?, text).map(Out::Now)
+        }
+        "serial.set" => crate::xcomm::api_set(app, port(p)?, p).map(Out::Now),
+        "serial.close" => crate::xcomm::api_close(app, port(p)?).map(Out::Now),
+        "serial.read" => {
+            let tty = port(p)?;
+            let c = app.serial.channels.iter().find(|c| c.tty == tty).ok_or_else(|| format!("{tty} is not open: serial.monitor first"))?;
+            // From `since`, else the last 4 KB.
+            let since = p["since"].as_u64().unwrap_or_else(|| crate::xcomm::output_end(c).saturating_sub(4096));
+            let (text, next) = crate::xcomm::output_since(c, since, 1 << 20);
+            now(json!({"port": tty, "text": text, "next": next}))
+        }
+        "serial.wait" => {
+            let tty = port(p)?.to_string();
+            let pat = p["match"].as_str().ok_or("serial.wait: give \"match\", a regex")?;
+            if pat.len() > 1000 {
+                return Err("match: 1000 characters at most".into());
+            }
+            let re = fancy_regex::RegexBuilder::new(pat).backtrack_limit(100_000).build().map_err(|e| format!("match: {e}"))?;
+            let c = app.serial.channels.iter().find(|c| c.tty == tty).ok_or_else(|| format!("{tty} is not open: serial.monitor first"))?;
+            let mark = p["since"].as_u64().unwrap_or_else(|| crate::xcomm::output_end(c));
+            let timeout = Duration::from_secs_f64(p["timeout"].as_f64().unwrap_or(30.0).clamp(0.0, 3600.0));
+            Ok(Out::Serial { tty, re, mark, timeout })
+        }
         "serial.note" => {
             let tty = p["port"].as_str().ok_or("serial.note: give \"port\" (ttyUSB0) and \"note\" (\"\" removes it)")?;
             let id = crate::xcomm::note_by_tty(app, tty, p["note"].as_str().unwrap_or_default())?;
@@ -113,6 +150,12 @@ pub fn call(app: &mut App, method: &str, p: &Value) -> Result<Out, String> {
         }
         m => Err(format!("unknown method {m:?}: one of {}", METHODS.join(", "))),
     }
+}
+
+/// `p["port"]`: a tty (`ttyUSB0`, or `/dev/ttyUSB0`).
+fn port(p: &Value) -> Result<&str, String> {
+    let s = p["port"].as_str().ok_or("give a \"port\" (ttyUSB0)")?;
+    Ok(s.strip_prefix("/dev/").unwrap_or(s))
 }
 
 /// Every command: its id (from its title: "View: Toggle Minimap" → view.toggleMinimap),

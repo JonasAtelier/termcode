@@ -42,8 +42,19 @@ status bar shows). Paths are relative to the workspace (absolute ones must be in
 | `events.wait` | `topic: "terminal.output"`, `match` (regex), `timeout` (s, 30), `since`?, `index`? | `matched`, `output` |
 | `serial.ports` | | each serial port: `tty`, `note`, `state` (green, yellow, red), adapter, USB ID, holder, the channel open here |
 | `serial.note` | `port` (`ttyUSB0`), `note` (`""` removes it) | the note beside that port, kept per adapter |
+| `serial.monitor` | `port` | opens it here, read only (as the Monitor button) |
+| `serial.read` | `port`, `since`? (offset; else the last 4 KB) | `text` (escapes dropped), `next` |
+| `serial.wait` | `port`, `match` (regex), `timeout` (s, 30), `since`? | `matched`, `output`, `next` |
+| `serial.attach` | `port` | writing on (a port another xcomm holds: the user confirms in termcode) |
+| `serial.send` | `port`, `text` (end with `\r` to enter it) | `sent`, `mark` (pass to `serial.wait` as `since`) |
+| `serial.set` | `port`, `baud`?, `data_bits`?, `parity`?, `stop_bits`?, `flow`? | the line now |
+| `serial.close` | `port` | closes the channel |
 
-Serial ports open in termcode take `xcomm ctl` as an xcomm session does:
+A board's console through termcode: `serial.ports` (with the user's notes: which board
+is which), `serial.monitor`, then `serial.read` / `serial.wait`; to type, `serial.attach`,
+then `serial.send` and `serial.wait` with `since` = the send's `mark`. What you send shows
+in the user's tab as a dim `[api]` line. Serial ports open in termcode also take `xcomm ctl`
+as an xcomm session does:
 `xcomm ctl ttyUSB0 run 'uname -a' --until '# $'` (status, send, read, wait, run, break,
 dtr/rts, set, capture). `serial.ports` lists them, with the user's notes.
 
@@ -87,6 +98,7 @@ to two minutes for the answer.
   `buffer.edit` is one undo step for the user (Ctrl+Z).
 - An edit opens the file's tab behind the active one; it stays unsaved until
   `buffer.save` or the user saves. Don't save unless asked.
-- Don't type into a terminal, commit or run Git writes unless the user asked for that.
+- Don't type into a terminal or a serial console, commit or run Git writes unless the
+  user asked for that. A channel stays read only until `serial.attach`.
 - `editor.open` moves the user's cursor and focus: use it when showing is the point.
 - Pass `since` (the `mark` from `terminal.send`) to `events.wait`, or earlier output may match.

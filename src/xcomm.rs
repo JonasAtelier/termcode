@@ -203,6 +203,101 @@ pub fn ports_json(app: &mut App) -> serde_json::Value {
     serde_json::Value::Array(list)
 }
 
+/// A channel's output as plain text (escapes dropped) from `since` (clamped to what the
+/// ring keeps), and the offset after it.
+pub fn output_since(c: &Channel, since: u64, max: usize) -> (String, u64) {
+    let from = since.max(c.ring.oldest());
+    let mut bytes = Vec::new();
+    let next = c.ring.read(from, max, &mut bytes).unwrap_or(from);
+    let mut log = crate::term::OutLog::default();
+    log.push(&bytes);
+    (log.since(0).to_string(), next)
+}
+
+/// The offset after a channel's last byte (`serial.wait` waits from there).
+pub fn output_end(c: &Channel) -> u64 {
+    c.ring.end()
+}
+
+/// The API's `serial.monitor`: `tty` watched here, read only (as Monitor).
+pub fn api_monitor(app: &mut App, tty: &str) -> Result<serde_json::Value, String> {
+    if !app.serial.channels.iter().any(|c| c.tty == tty) {
+        app.serial.ports = xcomm::list::enumerate(&env).map_err(|e| e.to_string())?;
+        app.serial.listed = Some(Instant::now());
+        let i = app.serial.ports.iter().position(|p| p.tty == tty).ok_or_else(|| format!("no port {tty}"))?;
+        monitor(app, i);
+    }
+    let c = app.serial.channels.iter().find(|c| c.tty == tty).ok_or_else(|| std::mem::take(&mut app.msg))?;
+    Ok(serde_json::json!({"port": tty, "write": c.write, "shared": c.shared.is_some(), "status": status(c)}))
+}
+
+/// The API's `serial.attach`: typing on. A port someone else holds asks the user in
+/// termcode first (as Attach does); a gone one is said.
+pub fn api_attach(app: &mut App, tty: &str) -> Result<serde_json::Value, String> {
+    let i = app.serial.channels.iter().position(|c| c.tty == tty).ok_or_else(|| format!("{tty} is not open: serial.monitor first"))?;
+    let c = &app.serial.channels[i];
+    if c.write {
+        return Ok(serde_json::json!({"port": tty, "write": true}));
+    }
+    if c.link != Link::Open {
+        return Err(format!("{tty} is not available (unplugged?)"));
+    }
+    if c.shared.is_some() {
+        activate(app, Hit::Act(i, Act::Write));
+        return Err(format!("{tty} is held by another xcomm: the user is asked in termcode; serial.ports shows when it is attached"));
+    }
+    activate(app, Hit::Act(i, Act::Write));
+    Ok(serde_json::json!({"port": tty, "write": app.serial.channels[i].write}))
+}
+
+/// The API's `serial.send`: `text` to the device, on an attached channel.
+pub fn api_send(app: &mut App, tty: &str, text: &str) -> Result<serde_json::Value, String> {
+    let c = app.serial.channels.iter_mut().find(|c| c.tty == tty).ok_or_else(|| format!("{tty} is not open: serial.monitor first"))?;
+    if !c.write {
+        return Err(format!("{tty} is read only: serial.attach first"));
+    }
+    let mark = c.ring.end();
+    c.send(text.as_bytes());
+    // Shown as an agent's, as xcomm shows a control client's sends.
+    let shown: String = text.chars().map(|ch| if ch.is_control() { ' ' } else { ch }).collect();
+    c.screen.process(format!("\x1b[2m[api] {}\x1b[0m\r\n", shown.trim_end()).as_bytes());
+    Ok(serde_json::json!({"port": tty, "sent": text.len(), "mark": mark}))
+}
+
+/// The API's `serial.set`: line settings (baud, data_bits, parity, stop_bits, flow), on an
+/// attached channel.
+pub fn api_set(app: &mut App, tty: &str, p: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use xcomm::ctl::proto::{Request, SettingsPatch};
+    let c = app.serial.channels.iter_mut().find(|c| c.tty == tty).ok_or_else(|| format!("{tty} is not open: serial.monitor first"))?;
+    if !c.write {
+        return Err(format!("{tty} is read only: serial.attach first"));
+    }
+    let patch = SettingsPatch {
+        baud: p["baud"].as_u64().map(|b| b as u32),
+        data_bits: p["data_bits"].as_u64().map(|b| b as u8),
+        parity: p["parity"].as_str().map(str::to_string),
+        stop_bits: p["stop_bits"].as_u64().map(|b| b as u8),
+        flow: p["flow"].as_str().map(str::to_string),
+    };
+    let s = patch.apply(c.settings)?;
+    match &mut c.source {
+        Some(Source::Own(port, _)) => {
+            let _applied = port.configure(&s).map_err(|e| e.to_string())?;
+        }
+        Some(Source::Shared { ctl: Some(ctl), .. }) => request(ctl, Request::Set { patch }).map_err(|e| e.to_string())?,
+        _ => return Err(format!("{tty} is not connected")),
+    }
+    c.settings = s;
+    Ok(serde_json::json!({"port": tty, "line": xcomm::port::describe(&s)}))
+}
+
+/// The API's `serial.close`: the channel closed, its tabs too.
+pub fn api_close(app: &mut App, tty: &str) -> Result<serde_json::Value, String> {
+    let i = app.serial.channels.iter().position(|c| c.tty == tty).ok_or_else(|| format!("{tty} is not open"))?;
+    activate(app, Hit::Act(i, Act::Close));
+    Ok(serde_json::json!({"port": tty, "closed": true}))
+}
+
 /// The API's `serial.note`: `note` ("" removes it) on the port named `tty`.
 pub fn note_by_tty(app: &mut App, tty: &str, note: &str) -> Result<String, String> {
     let ports = xcomm::list::enumerate(&env).map_err(|e| e.to_string())?;
@@ -779,6 +874,9 @@ impl xcomm::ctl::server::Session for Channel {
 
     /// What a client sent shows on the screen as a dim `[ctl]` line, as in xcomm.
     fn sent(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
         self.tx += bytes.len() as u64;
         let text: String = String::from_utf8_lossy(bytes).chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
         self.screen.process(format!("\r\n\x1b[2m[ctl] {}\x1b[0m\r\n", text.trim_end()).as_bytes());
@@ -1808,6 +1906,69 @@ mod tests {
         let many = [vec![Dot::Green; 4], vec![Dot::Yellow; 2], vec![Dot::Red]].concat();
         assert_eq!(text(state_dots(&many, "●")), "●4 ●2 ●1 ");
         assert_eq!(text(state_dots(&[Dot::Green; 6], "●")), "●6 ", "states with none left out");
+    }
+
+    #[test]
+    fn termcodes_api_monitors_attaches_sends_reads_and_waits_on_a_port() {
+        use std::io::{BufRead, BufReader};
+        let tmp = std::env::temp_dir().join(format!("termcode-xcomm-api-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("run")).unwrap();
+        std::fs::set_permissions(tmp.join("run"), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        let (mut dev, tty) = pty();
+        let mut app = App::new(tmp.clone(), None);
+        app.serial.channels.push(Channel::open(&tty, LineSettings::default(), &env).unwrap());
+        let port = app.serial.channels[0].tty.clone();
+        let call = |app: &mut App, m: &str, p: serde_json::Value| match crate::rpc::call(app, m, &p) {
+            Ok(crate::rpc::Out::Now(v)) => Ok(v),
+            Ok(_) => Err("waits".to_string()),
+            Err(e) => Err(e),
+        };
+        // Read only: nothing sent until attached.
+        let e = call(&mut app, "serial.send", serde_json::json!({"port": port, "text": "ls\r"})).unwrap_err();
+        assert!(e.contains("serial.attach first"), "{e}");
+        assert_eq!(call(&mut app, "serial.attach", serde_json::json!({"port": port})).unwrap()["write"], true);
+        call(&mut app, "serial.send", serde_json::json!({"port": port, "text": "uname -a\r"})).unwrap();
+        let mut got = Vec::new();
+        while got.len() < 9 {
+            let mut b = [0u8; 32];
+            let n = dev.read(&mut b).unwrap();
+            got.extend_from_slice(&b[..n]);
+        }
+        assert_eq!(got, b"uname -a\r");
+        assert!(app.serial.channels[0].screen.screen().contents().contains("[api] uname -a"), "shown as the agent's");
+        // read: the device's answer, as text.
+        dev.write_all(b"\x1b[1mLinux\x1b[0m board 6.8\r\n").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        tick(&mut app);
+        let r = call(&mut app, "serial.read", serde_json::json!({"port": port})).unwrap();
+        assert!(r["text"].as_str().unwrap().contains("Linux board 6.8"), "{r}");
+        assert_eq!(call(&mut app, "serial.set", serde_json::json!({"port": port, "baud": 57600})).unwrap()["line"], "57600 8N1");
+        // wait, through the API's socket: answered when the device prints a match.
+        app.api = crate::api::start(&tmp.join("run"));
+        let sock = std::fs::read_dir(tmp.join("run")).unwrap().flatten().find(|e| e.file_name().to_string_lossy().ends_with(".sock")).unwrap().path();
+        let mut conn = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+        conn.write_all(format!("{{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"serial.wait\",\"params\":{{\"port\":\"{port}\",\"match\":\"login:\",\"timeout\":10}}}}\n").as_bytes()).unwrap();
+        let mut replies = BufReader::new(conn.try_clone().unwrap());
+        replies.get_ref().set_nonblocking(true).unwrap();
+        let mut line = String::new();
+        for k in 0..300 {
+            if k == 20 {
+                dev.write_all(b"board login: ").unwrap();
+            }
+            crate::api::tick(&mut app);
+            tick(&mut app);
+            if replies.read_line(&mut line).is_ok_and(|n| n > 0) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+        assert_eq!(v["result"]["matched"], "login:", "{line}");
+        assert_eq!(call(&mut app, "serial.close", serde_json::json!({"port": port})).unwrap()["closed"], true);
+        assert!(app.serial.channels.is_empty());
+        drop(app);
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     /// A stand-in for an xcomm session's control socket: it answers each request, streams

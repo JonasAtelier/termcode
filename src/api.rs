@@ -128,6 +128,8 @@ enum Waiting {
     /// Terminal `term` printing a match of `re` after byte `mark` of its output (looked
     /// at again only when it printed more than `seen`).
     Output { term: usize, re: fancy_regex::Regex, mark: u64, seen: Option<u64> },
+    /// Serial channel `tty` the same, its output by its ring's offsets.
+    Serial { tty: String, re: fancy_regex::Regex, mark: u64, seen: Option<u64> },
     /// The user's answer: may `client` do `tier` (`req`, done once allowed)? `shown`:
     /// the prompt is up for it; `once`: allowed for this request only.
     Grant { client: Client, tier: Tier, req: Value, shown: bool, once: bool },
@@ -136,7 +138,8 @@ enum Waiting {
 /// A request's answer: now, or later (see `Wait`).
 pub enum Reply {
     Now(Value),
-    Later(Wait),
+    /// Boxed: a wait is large next to a reply.
+    Later(Box<Wait>),
 }
 
 /// The running termcode's server: its socket for its shells, its pipe for the event loop.
@@ -332,6 +335,15 @@ pub fn tick(app: &mut App) -> bool {
                     re.find(text).ok().flatten().map(|m| Ok(json!({"matched": m.as_str(), "output": tail(text, 4096)})))
                 }
             },
+            Waiting::Serial { tty, re, mark, seen } => match app.serial.channels.iter().find(|c| c.tty == *tty) {
+                None => Some(Err(format!("{tty} closed"))),
+                Some(c) if *seen == Some(crate::xcomm::output_end(c)) => None,
+                Some(c) => {
+                    *seen = Some(crate::xcomm::output_end(c));
+                    let (text, next) = crate::xcomm::output_since(c, *mark, 1 << 20);
+                    re.find(&text).ok().flatten().map(|m| Ok(json!({"matched": m.as_str(), "output": tail(&text, 4096), "next": next})))
+                }
+            },
             Waiting::Screen => None,
             Waiting::Grant { client, tier, req, once, .. } => {
                 match app.api_gate.check(&app.settings.api, client, *tier) {
@@ -359,7 +371,7 @@ pub fn tick(app: &mut App) -> bool {
     for (req, client, reply) in later {
         match respond(app, &req, &client, true) {
             Reply::Now(v) => drop(reply.send(v)),
-            Reply::Later(w) => waits.push((w, reply)),
+            Reply::Later(w) => waits.push((*w, reply)),
         }
         changed = true;
     }
@@ -404,7 +416,7 @@ fn admit(app: &mut App, req: &Value, client: &Client, reply: &Sender<Value>) -> 
             let _ = reply.send(v);
             None
         }
-        Reply::Later(w) => Some(w),
+        Reply::Later(w) => Some(*w),
     }
 }
 
@@ -465,7 +477,7 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
             Some(false) if app.settings.api == "off" => return Reply::Now(envelope(&id, Err("the API is off (termcode.api in settings)".into()))),
             Some(false) if app.settings.api == "read-only" => return Reply::Now(envelope(&id, Err(format!("{method} refused: the API is read-only (termcode.api in settings)")))),
             Some(false) => return Reply::Now(envelope(&id, Err(format!("{method} refused: the user said no")))),
-            None => return Reply::Later(Wait { id, until: std::time::Instant::now() + ASK, what: Waiting::Grant { client: client.clone(), tier, req: req.clone(), shown: false, once: false } }),
+            None => return Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + ASK, what: Waiting::Grant { client: client.clone(), tier, req: req.clone(), shown: false, once: false } })),
         }
     }
     if tier != Tier::Read && !client.own {
@@ -473,9 +485,12 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
     }
     match crate::rpc::call(app, method, &req["params"]) {
         Ok(crate::rpc::Out::Now(v)) => Reply::Now(envelope(&id, Ok(v))),
-        Ok(crate::rpc::Out::Screen) => Reply::Later(Wait { id, until: std::time::Instant::now() + Duration::from_secs(5), what: Waiting::Screen }),
+        Ok(crate::rpc::Out::Screen) => Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + Duration::from_secs(5), what: Waiting::Screen })),
         Ok(crate::rpc::Out::Output { term, re, mark, timeout }) => {
-            Reply::Later(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Output { term, re, mark, seen: None } })
+            Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Output { term, re, mark, seen: None } }))
+        }
+        Ok(crate::rpc::Out::Serial { tty, re, mark, timeout }) => {
+            Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Serial { tty, re, mark, seen: None } }))
         }
         Err(e) => Reply::Now(envelope(&id, Err(e))),
     }
