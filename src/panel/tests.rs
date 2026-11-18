@@ -5666,6 +5666,37 @@ fn github_sign_in_offers_a_qr_code_for_a_phone() {
 }
 
 #[test]
+fn code_serial_and_github_keep_their_own_editor_areas() {
+    use crate::panel::Space;
+    let root = repo("spaces");
+    fs::write(root.join("a.txt"), "alpha\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "a.txt", false);
+    app.focus = Focus::Editor;
+    app.toggle_terminal();
+    let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("alpha") && app.term_open);
+    // A serial tab: the Serial view, its own group; the code and the terminal out of sight.
+    app.show_tab(app.ag, "serial:ttyX9".into(), false);
+    assert_eq!((app.side, app.space(), app.groups.len()), (Side::Serial, Space::Serial, 2));
+    let s = screen(&mut app, &mut t);
+    assert!(!s.contains("alpha") && s.contains("ttyX9"), "{s}");
+    assert!(app.ui.groups[0].area.is_empty() && app.ui.term.is_empty(), "the code group and the terminal hidden");
+    // Back to the Explorer: the code tab, its group active again, the terminal back.
+    app.show_side(Side::Explorer, false);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("alpha") && !s.contains("ttyX9"));
+    assert_eq!((app.ag, app.groups[app.ag].space), (0, Space::Code));
+    assert!(!app.ui.term.is_empty());
+    // Opening a file from anywhere goes back to the code space.
+    app.show_side(Side::Serial, false);
+    app.open_file(app.ag, "a.txt", false);
+    assert_eq!(app.space(), Space::Code);
+    assert_eq!(app.groups.iter().filter(|g| g.space == Space::Code).count(), 1, "into the code group, not a new one");
+}
+
+#[test]
 fn an_editor_splits_down_as_well_as_right_into_columns() {
     let root = repo("split-down");
     fs::write(root.join("a.txt"), "alpha\n").unwrap();
@@ -7244,7 +7275,7 @@ fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch(
     app.gh.sel[TOP] = crate::github::rows(&app.gh, TOP).iter().position(|r| matches!(r, Row::Repo(_))).unwrap();
     app.focus = Focus::Side;
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    let tab = &app.groups[0].tabs[app.groups[0].active];
+    let tab = &app.groups[app.ag].tabs[app.groups[app.ag].active];
     assert!(tab.key == "repo:tester/proj" && tab.preview, "{}", tab.key);
     gh_settle(&mut app, &|a| a.gh.pages.get("tester/proj").is_some_and(|p| p.dirs.contains_key("")));
     let s = screen(&mut app, &mut t);
@@ -7254,7 +7285,7 @@ fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch(
     assert!(app.ui.outline.is_empty() && app.ui.outline_btns.is_empty(), "the page has its own outline");
     let hit = |app: &App, want: &Target| app.gh.hits.page.iter().rev().find(|(_, t)| t == want).map(|(r, _)| *r).unwrap_or_else(|| panic!("{want:?}"));
     let press = |app: &mut App, r: Rect| mouse(app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
-    let text = app.ui.groups[0].text;
+    let text = app.ui.groups[app.ag].text;
     let (list_src, tree_src) = (hit(&app, &Target::Into("src".into())), hit(&app, &Target::Folder("src".into())));
     assert!(list_src.x < text.right() && tree_src.x > text.right(), "the list in the middle, the tree on the right");
     // Under the files, the insights: counts, the year's commits, when they land, churn.
@@ -7280,7 +7311,7 @@ fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch(
     assert_eq!(app.clip, "fn main() {}");
     let r = hit(&app, &Target::Symbol(0));
     press(&mut app, r);
-    assert_eq!(app.groups[0].tabs[app.groups[0].active].view.cursor, Pos::new(0, 0));
+    assert_eq!(app.groups[app.ag].tabs[app.groups[app.ag].active].view.cursor, Pos::new(0, 0));
     // The button over FILES: the main page again.
     let button = app.gh.hits.page.iter().find(|(r, t)| *t == Target::Main && r.x > text.right()).map(|(r, _)| *r).expect("the main page button");
     press(&mut app, button);

@@ -342,7 +342,12 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     }
     // The terminal panel under the editor groups, their width; its height dragged, the
     // groups keeping at least a tab bar and a few lines.
-    if app.term_open && ed.height >= 12 {
+    let panel_here = match app.space() {
+        crate::panel::Space::Code => true,
+        crate::panel::Space::Programmer => true, // its log is a tab there
+        _ => false,
+    };
+    if app.term_open && panel_here && ed.height >= 12 {
         let h = app.term_h.unwrap_or(ed.height / 3).clamp(5, ed.height - 7);
         ed.height -= h;
         terminal_panel(app, f, Rect::new(ed.x, ed.bottom(), ed.width, h));
@@ -1345,13 +1350,38 @@ pub(crate) fn input_marked(f: &mut Frame, r: Rect, text: &str, placeholder: &str
     }
 }
 
+/// Group `g`'s hit areas, at its index (groups of other spaces keep empty ones).
+fn put_hit(app: &mut App, g: usize, gh: GroupHit) {
+    if app.ui.groups.len() <= g {
+        app.ui.groups.resize_with(g + 1, GroupHit::default);
+    }
+    app.ui.groups[g] = gh;
+}
+
 fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
+    app.ui.groups.clear();
+    app.ui.groups.resize_with(app.groups.len(), GroupHit::default);
+    let space = app.space();
+    if !app.groups.iter().any(|g| g.space == space) {
+        // A space with nothing open yet: one word on what opens something here.
+        let hint = match space {
+            crate::panel::Space::Serial => "Open a port from the side bar",
+            crate::panel::Space::GitHub => "Choose a repository",
+            _ => "",
+        };
+        fill(f, r, P.editor_bg);
+        if r.height > 2 && !hint.is_empty() {
+            let w = hint.chars().count() as u16;
+            f.render_widget(Span::styled(hint, Style::new().fg(P.dim)), Rect::new(r.x + r.width.saturating_sub(w) / 2, r.y + r.height / 2, w.min(r.width), 1));
+        }
+        return;
+    }
     let st = app.settings.blocks;
     // Cards sit border to border; the other styles draw a 1-cell line between groups.
     let sep = u16::from(st != BlockStyle::Cards);
     // Columns: a group `below` sits under the one before it, in its column.
     let mut cols: Vec<Vec<usize>> = Vec::new();
-    for g in 0..app.groups.len() {
+    for g in (0..app.groups.len()).filter(|&g| app.groups[g].space == space) {
         match cols.last_mut() {
             Some(c) if app.groups[g].below => c.push(g),
             _ => cols.push(vec![g]),
@@ -1532,7 +1562,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             app.ui.welcome.push((r, g, side));
         }
         gh.text = body;
-        app.ui.groups.push(gh);
+        put_hit(app, g, gh);
         return;
     };
     // A Markdown file (a patch): its preview (diff) and source buttons, on the breadcrumbs'
@@ -1563,12 +1593,12 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     }
     if let Some(rel) = key.strip_prefix("preview:") {
         markdown_preview(app, f, g, rel, body, &mut gh);
-        app.ui.groups.push(gh);
+        put_hit(app, g, gh);
         return;
     }
     if let Some(rel) = key.strip_prefix("log:") {
         crate::logview::draw(app, f, g, &key, rel, body, &mut gh);
-        app.ui.groups.push(gh);
+        put_hit(app, g, gh);
         return;
     }
     // A patch as a diff: made again as the patch changes.
@@ -1585,14 +1615,14 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     if key == crate::programmer::KEY {
         gh.text = body;
         crate::programmer::draw_page(app, f, body);
-        app.ui.groups.push(gh);
+        put_hit(app, g, gh);
         return;
     }
     // A serial channel's stream: its status, then its screen (xcomm.rs).
     if key.starts_with(crate::xcomm::PREFIX) {
         gh.text = body;
         crate::xcomm::draw_page(app, f, body, &key, focused_group && app.focus == Focus::Editor);
-        app.ui.groups.push(gh);
+        put_hit(app, g, gh);
         return;
     }
     if let Some(repo) = key.strip_prefix("repo:") {
@@ -1600,7 +1630,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         if !app.docs.contains_key(&key) {
             gh.text = body;
             gh.preview_rows = crate::github::page::draw_main(app, f, g, repo, body);
-            app.ui.groups.push(gh);
+            put_hit(app, g, gh);
             return;
         }
     }
@@ -1626,7 +1656,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         if let (Some(kind), Some(path)) = (b.media, b.path.clone()) {
             gh.text = body;
             crate::media::draw(app, f, g, &key, &path, kind, body);
-            app.ui.groups.push(gh);
+            put_hit(app, g, gh);
             // Find, under the bar (a PDF's text).
             if focused_group && app.find.is_some() && kind == crate::media::Kind::Pdf {
                 find_widget(app, f, Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1)), lay);
@@ -1762,7 +1792,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         sb.target = target;
         app.ui.scrollbars.push(sb);
     }
-    app.ui.groups.push(gh);
+    put_hit(app, g, gh);
     // Conflict colours and actions, blame ghost text.
     crate::gitcmds::editor_overlay(app, f, g);
     if focused_group && app.find.is_some() {

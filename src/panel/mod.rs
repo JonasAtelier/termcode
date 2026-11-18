@@ -361,6 +361,44 @@ pub struct Group {
     pub active: usize,
     /// Under the group before it, in its column (Split Editor Down); else a column of its own.
     pub below: bool,
+    /// The space it belongs to: only the current view's groups show.
+    pub space: Space,
+}
+
+/// What the editor area is for: code (the Explorer, Search, Source Control), serial
+/// streams, GitHub's pages, the Programmer's. Each keeps its own groups and tabs; a view
+/// shows its space's, and a tab opens in its own space (switching to it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Space {
+    #[default]
+    Code,
+    Serial,
+    GitHub,
+    Programmer,
+}
+
+impl Space {
+    pub fn of_side(s: Side) -> Space {
+        match s {
+            Side::Serial => Space::Serial,
+            Side::GitHub => Space::GitHub,
+            Side::Programmer => Space::Programmer,
+            Side::Explorer | Side::Search | Side::Scm => Space::Code,
+        }
+    }
+
+    /// The space a tab belongs to, by its key.
+    pub fn of_key(key: &str) -> Space {
+        if key.starts_with(crate::xcomm::PREFIX) {
+            Space::Serial
+        } else if key.starts_with("repo:") {
+            Space::GitHub
+        } else if key == crate::programmer::KEY {
+            Space::Programmer
+        } else {
+            Space::Code
+        }
+    }
 }
 
 pub struct Find {
@@ -1067,6 +1105,10 @@ pub struct App {
     pub api: Option<crate::api::Server>,
     /// What API clients may do, as the user answered.
     pub api_gate: crate::api::Gate,
+    /// Each space's active group when last left (by Space as usize); the code view last
+    /// shown (to go back to).
+    space_ag: [usize; 4],
+    code_side: Side,
     pub tab: bool,
     /// A switch to another folder asked for: termcode starts again there (this argument).
     pub reroot: Option<String>,
@@ -1809,6 +1851,8 @@ impl App {
             prog: Default::default(),
             api: None,
             api_gate: crate::api::Gate::from_env(),
+            space_ag: [0; 4],
+            code_side: Side::Explorer,
             serial: crate::xcomm::Serial::default(),
             tab: false,
             reroot: None,

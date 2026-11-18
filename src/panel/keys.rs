@@ -301,7 +301,7 @@ impl App {
         if self.side_visible && !self.ui.side_list.is_empty() {
             panes.push((Pane::Side, self.ui.side_list));
         }
-        for (g, gh) in self.ui.groups.iter().enumerate() {
+        for (g, gh) in self.ui.groups.iter().enumerate().filter(|(_, gh)| !gh.area.is_empty()) {
             panes.push((Pane::Group(g), gh.area));
         }
         if self.outline_open && !self.ui.outline.is_empty() {

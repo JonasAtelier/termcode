@@ -40,6 +40,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   there (Q in the view). gh keeps the token either way.
 
 ### Changed
+- Code, Serial, GitHub and the Programmer each have their own editor area: a view shows
+  only its own tabs and groups (Serial its streams, no terminal panel), and going back
+  to the Explorer brings the code back as it was. A tab opens in its own area.
 - Split Editor Down (Ctrl+T -) as well as Right (Ctrl+T \\): groups in columns, up to
   four (2 × 2); Ctrl+T and the arrows move between them.
 - The side-by-side diff's minimap is the editor's: pixels in Ghostty and kitty, and each

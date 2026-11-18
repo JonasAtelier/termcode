@@ -1687,7 +1687,7 @@ mod tests {
         assert!(text.contains("115200 8N1 · read & write") && text.contains("board login:"), "{text}");
         // A drag over its screen selects; Ctrl+C copies that (not sent), then goes again.
         use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-        let gh = app.ui.groups[0].text;
+        let gh = app.ui.groups[app.ag].text;
         let row = (0..gh.height).find(|&y| crate::api::screen_text(t.backend().buffer()).lines().nth(usize::from(gh.y + y)).is_some_and(|l| l.contains("board login:"))).unwrap();
         let line = crate::api::screen_text(t.backend().buffer()).lines().nth(usize::from(gh.y + row)).unwrap().to_string();
         let col = line[..line.find("board").unwrap()].chars().count() as u16;

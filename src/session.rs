@@ -176,8 +176,10 @@ fn side_name(s: Side) -> &'static str {
 }
 
 pub fn snapshot(app: &App) -> Value {
-    let groups: Vec<Value> = app
-        .groups
+    // The code space's groups only: serial channels and pages are not reopened.
+    let code: Vec<&Group> = app.groups.iter().filter(|g| g.space == crate::panel::Space::Code).collect();
+    let active_group = code.iter().position(|g| std::ptr::eq(*g, &app.groups[app.ag.min(app.groups.len().saturating_sub(1))])).unwrap_or(0);
+    let groups: Vec<Value> = code
         .iter()
         .map(|g| {
             let tabs: Vec<Value> = g.tabs.iter().filter(|t| restorable(&t.key)).map(|t| json!({ "key": t.key, "preview": t.preview, "view": view_json(&t.view) })).collect();
@@ -195,7 +197,7 @@ pub fn snapshot(app: &App) -> Value {
         "search": { "query": app.query, "case": app.s_opts.0, "word": app.s_opts.1, "regex": app.s_opts.2 },
         "scm": app.gitui.layout(),
         "groups": groups,
-        "active_group": app.ag,
+        "active_group": active_group,
         "views": views,
     })
 }
@@ -372,7 +374,7 @@ pub fn restore(app: &mut App) {
         }
         app.session.pending.extend(tabs.iter().map(|t| t.key.clone()));
         // The first group heads a column whatever was saved.
-        groups.push(Group { tabs, active, below: g["below"] == true && !groups.is_empty() });
+        groups.push(Group { tabs, active, below: g["below"] == true && !groups.is_empty(), space: crate::panel::Space::Code });
     }
     if !groups.is_empty() {
         app.groups = groups;

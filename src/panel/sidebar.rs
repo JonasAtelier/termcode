@@ -143,7 +143,51 @@ impl App {
         }
     }
 
+    /// The space the editor area shows now (the side bar's view's).
+    pub fn space(&self) -> Space {
+        Space::of_side(self.side)
+    }
+
+    /// Switches the editor area to `to`'s groups: the active one as it was left, else
+    /// its first. With none, the keys stay in the side bar.
+    fn enter_space(&mut self, to: Space) {
+        let from = self.space();
+        if from == to {
+            return;
+        }
+        if from == Space::Code {
+            self.code_side = self.side;
+        }
+        self.space_ag[from as usize] = self.ag;
+        let back = self.space_ag[to as usize];
+        let g = if self.groups.get(back).is_some_and(|g| g.space == to) { Some(back) } else { self.groups.iter().position(|g| g.space == to) };
+        if let Some(g) = g {
+            self.ag = g;
+        }
+        if matches!(self.focus, Focus::Term | Focus::Editor | Focus::Outline | Focus::Find) && (g.is_none() || to != Space::Code) {
+            self.focus = Focus::Side;
+        }
+    }
+
+    /// A group of space `sp` to open a tab in: `g` if it is one, else the one last
+    /// active there, else its first, else a new one.
+    pub(crate) fn group_in(&mut self, g: usize, sp: Space) -> usize {
+        if self.groups.get(g).is_some_and(|x| x.space == sp) {
+            return g;
+        }
+        let back = self.space_ag[sp as usize];
+        if self.groups.get(back).is_some_and(|x| x.space == sp) {
+            return back;
+        }
+        if let Some(i) = self.groups.iter().position(|x| x.space == sp) {
+            return i;
+        }
+        self.groups.push(Group { space: sp, ..Group::default() });
+        self.groups.len() - 1
+    }
+
     pub fn show_side(&mut self, s: Side, input: bool) {
+        self.enter_space(Space::of_side(s));
         self.side = s;
         self.side_visible = true;
         self.focus = match s {
@@ -258,7 +302,9 @@ impl App {
         let tab = Tab { key: t.key.clone(), preview: false, view: t.view.clone() };
         // To the right: after the whole column `g` is in.
         let at = if down { g + 1 } else { (g + 1..self.groups.len()).find(|&i| !self.groups[i].below).unwrap_or(self.groups.len()) };
-        self.groups.insert(at, Group { tabs: vec![tab], active: 0, below: down });
+        let space = self.groups[g].space;
+        // (Groups of other spaces between: a new column goes after this space's column.)
+        self.groups.insert(at, Group { tabs: vec![tab], active: 0, below: down, space });
         self.ag = at;
         self.focus = Focus::Editor;
     }

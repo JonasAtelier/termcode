@@ -16,6 +16,20 @@ impl App {
     /// Show `key` in group `g`: reuse its tab, else replace the group's preview
     /// tab (preview), else add a tab after the active one.
     pub(crate) fn show_tab(&mut self, g: usize, key: String, preview: bool) {
+        // A tab opens in its own space: its view shown, one of its groups taken.
+        let sp = Space::of_key(&key);
+        if self.space() != sp {
+            let side = match sp {
+                Space::Code => self.code_side,
+                Space::Serial => Side::Serial,
+                Space::GitHub => Side::GitHub,
+                Space::Programmer => Side::Programmer,
+            };
+            let visible = self.side_visible;
+            self.show_side(side, false);
+            self.side_visible = visible;
+        }
+        let g = self.group_in(g, sp);
         if let Some(i) = self.groups[g].tabs.iter().position(|t| t.key == key) {
             let grp = &mut self.groups[g];
             grp.active = i;
