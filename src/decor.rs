@@ -326,6 +326,22 @@ pub fn slider(track: u16, total: usize, view: usize, off: usize, max_off: usize)
     (start.min(track - len), len)
 }
 
+/// The track row for content row `at` (an overview-ruler mark) with the view at `off`:
+/// under the slider exactly when that row is on screen (its place among the rows shown),
+/// else where it falls in the whole, above or below the slider as it is.
+pub fn mark_row(track: u16, total: usize, view: usize, at: usize, off: usize, max_off: usize) -> u16 {
+    let (top, len) = slider(track, total, view, off, max_off);
+    let (top, len, last) = (top as usize, len as usize, track.saturating_sub(1) as usize);
+    let off = off.min(max_off);
+    let r = if (off..off + view).contains(&at) {
+        top + (at - off) * len / view.max(1)
+    } else {
+        let whole = at * track as usize / total.max(1);
+        if at < off { whole.min(top.saturating_sub(1)) } else { whole.max(top + len) }
+    };
+    r.min(last) as u16
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TrackHit {
     PageUp,
@@ -358,6 +374,28 @@ pub fn drag_offset(y: i32, grab: u16, track: u16, len: u16, max_off: usize) -> u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ruler_mark_is_under_the_slider_whenever_its_row_shows() {
+        for (track, n, view) in [(43u16, 602usize, 43usize), (40, 5000, 38), (30, 45, 30), (12, 3, 12)] {
+            let (total, max_off) = (n + view - 1, n - 1);
+            for off in 0..=max_off {
+                let (top, len) = slider(track, total, view, off, max_off);
+                let mut last = 0;
+                for at in 0..n {
+                    let m = mark_row(track, total, view, at, off, max_off);
+                    let shown = (off..off + view).contains(&at);
+                    // Off screen: outside the slider, where there is room for it.
+                    let room = if at < off { top > 0 } else { top + len < track };
+                    if shown || room {
+                        assert_eq!((top..top + len).contains(&m), shown, "track {track}, {n} rows, at {off}: row {at} marked at {m}, slider {top}+{len}");
+                    }
+                    assert!(m >= last, "in order");
+                    last = m;
+                }
+            }
+        }
+    }
 
     /// arch/{sh/{boards/{a,b,c,e,f}, g}, d}, block/{h, i}, z: the expanded tree's depths.
     const TREE: [usize; 14] = [

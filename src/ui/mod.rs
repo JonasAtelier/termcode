@@ -1601,12 +1601,17 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 cfg: app.settings.minimap,
                 hover: app.hover,
                 drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
+                px: mini_px,
             });
             let view = &mut app.groups[g].tabs[active].view;
-            let (sb, mm, texts, hsb) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group, app.diff_syntax.entry(key.clone()).or_default(), app.find.as_ref().filter(|_| focused_group), border_y.is_some());
+            let (sb, mm, texts, hsb, img) = diff_view(f, d, view, body, slider_c, u16::from(lay.comfy), lay.s.editor_padding, &rulers, mini, focused_group, app.diff_syntax.entry(key.clone()).or_default(), app.find.as_ref().filter(|_| focused_group), border_y.is_some());
             if let Some((area, mini)) = mm {
                 view.mini_start = mini.first;
                 app.ui.minimaps.push(MiniHit { area, group: g, mini, scroll: view.row_of(view.scroll) });
+                if let Some((img, slider)) = img {
+                    let bg = |row: u16| slider.filter(|(t, l, _)| (*t..t + l).contains(&row)).map_or(P.mini_bg, |s| s.2);
+                    crate::media::show_pixels(app, f, &format!("minimap:{g}"), area, &img, &bg);
+                }
             }
             gh.text = body;
             gh.text.height = texts.map_or(body.height, |r| r[0].height);
@@ -1651,6 +1656,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 hover: app.hover,
                 mini_drag: matches!(app.drag, Drag::Minimap(m, _) if m.group == g),
                 mini_px,
+                mini_rows: false,
                 whitespace: app.settings.render_whitespace,
                 occurrences: app.settings.occurrences,
                 match_brackets: app.settings.match_brackets,
@@ -1871,6 +1877,8 @@ struct Deco<'a> {
     mini_drag: bool,
     /// A cell's pixels where the minimap is drawn as an image (Kitty); else braille.
     mini_px: Option<(u16, u16)>,
+    /// The marks tint their lines' whole rows in the minimap (a diff's changes).
+    mini_rows: bool,
     whitespace: editor::Whitespace,
     occurrences: bool,
     match_brackets: bool,

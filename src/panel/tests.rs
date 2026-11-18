@@ -3640,8 +3640,9 @@ fn diff_tabs_scroll_like_the_editor() {
     let (th, text) = (sb.track.height, app.ui.groups[0].text);
     assert_eq!(sb.track.right(), text.right(), "the right edge");
     assert_eq!((sb.slider, sb.max_off, sb.page), (decor::slider(th, n + th as usize - 1, th as usize, 0, n - 1), n - 1, th as usize));
-    // The overview ruler: removed in the left half, inserted in the right, both split.
-    let row_of = |i: usize| sb.track.y + (i * th as usize / n).min(th as usize - 1) as u16;
+    // The overview ruler: removed in the left half, inserted in the right, both split;
+    // each where the slider is when its row shows (scrolled to the top here).
+    let row_of = |i: usize| sb.track.y + decor::mark_row(th, n + th as usize - 1, th as usize, i, 0, n - 1);
     let buf = t.backend().buffer();
     let ic = crate::theme::icons();
     let first = |k: diff::Kind| rows.iter().position(|r| r.kind == k).unwrap();
@@ -5606,6 +5607,33 @@ fn frames(app: &mut App, t: &mut Terminal<TestBackend>) -> Vec<image::RgbaImage>
         }
     }
     panic!("highlighting never settled");
+}
+
+#[test]
+fn a_diffs_minimap_in_kitty_is_pixels_with_its_changes_tinted() {
+    let root = repo("diff-mini-pixels");
+    let mut app = App::new(root.clone(), None);
+    app.media.kitty_for_tests();
+    let old: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let new = old.replace("line 5\n", "line 5 changed\n").replace("line 9\n", "");
+    let rows = diff::align(&old, &new);
+    let changed = rows.iter().position(|r| r.kind != crate::diff::Kind::Same).unwrap();
+    let key = "cdiff:abc:p.txt".to_string();
+    let file = ScmFile { section: Section::Changes, path: "p.txt".into(), orig: None, letter: 'M' };
+    app.docs.insert(key.clone(), Doc::Diff(DiffDoc { title: "p.txt".into(), rows, note: None, file, id: Default::default(), patch: None }));
+    app.show_tab(0, key, false);
+    (app.focus, app.side_visible) = (Focus::Editor, false); // room for the minimap
+    let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let pics = frames(&mut app, &mut t);
+    let img = pics.last().expect("the diff's minimap sent as a picture, as the editor's");
+    let m = app.ui.minimaps[0];
+    let buf = t.backend().buffer();
+    assert!(buf[(m.area.x + 3, m.area.y + 1)].symbol().starts_with('\u{10EEEE}'), "placeholder cells");
+    // 8×16 px cells at scale 3: a line 6 px tall. The changed line's row is tinted
+    // across the text (opaque), a line the same is clear between its glyphs.
+    let opaque = |line: usize| (8..img.width()).all(|x| img.get_pixel(x, line as u32 * 6 + 2)[3] == 255);
+    assert!(opaque(changed), "the change's row tinted");
+    assert!(!opaque(0), "an unchanged row clear");
 }
 
 #[test]

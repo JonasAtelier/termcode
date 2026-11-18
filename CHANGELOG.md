@@ -17,6 +17,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   `termcode.api` makes it read-only or turns it off.
 
 ### Changed
+- The side-by-side diff's minimap is the editor's: pixels in Ghostty and kitty, and each
+  changed line tinted (green inserted or changed, red removed).
+- The change, problem and find marks beside the scrollbar sit under its slider exactly
+  when their lines are on screen (they drifted down the file).
 - termcode's own folders (unsaved-file backups, commit drafts, sessions, settings) are
   made readable by you alone, whatever made them before.
 - The .deb's binary is built with link-time optimisation: about a fifth smaller.

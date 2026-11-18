@@ -302,7 +302,8 @@ pub(super) fn text_editor(
     paint_slider(f, track, s, d.slider);
     if d.ruler {
         let th = track.height as usize;
-        let row_of = |line: usize| (v.row_of(line) * th / total.max(1)).min(th - 1);
+        // Where the slider is when that line shows (the slider counts a page past the end).
+        let row_of = |line: usize| usize::from(decor::mark_row(track.height, total + h.saturating_sub(1), h, v.row_of(line), v.row_of(v.scroll), max_off)).min(th - 1);
         let mut lanes: Vec<Option<(u8, &str, Color)>> = vec![None; th];
         let mut put = |r: usize, prio: u8, g: &'static str, c: Color| {
             if lanes[r].is_none_or(|(p, _, _)| p <= prio) {
@@ -378,6 +379,8 @@ pub(super) fn draw_minimap(f: &mut Frame, b: &mut Buffer, v: &View, r: Rect, cfg
             P.mini_find
         } else if sel.is_some_and(|(a, e)| a.line <= l1 && e.line >= l0) {
             P.mini_sel
+        } else if let Some(m) = d.mini_rows.then(|| (l0..=l1).find_map(|l| d.marks.get(l).copied().flatten())).flatten() {
+            change_tint(m).over(P.mini_bg)
         } else {
             P.mini_bg
         }
@@ -504,7 +507,7 @@ pub(super) fn minimap_pixels(b: &mut Buffer, v: &View, r: Rect, cfg: &minimap::C
         } else if sel.is_some_and(|(a, e)| a.line <= line && e.line >= line) {
             Some(P.mini_sel)
         } else {
-            None
+            d.marks.get(line).copied().flatten().filter(|_| d.mini_rows).map(|m| change_tint(m).over(P.mini_bg))
         };
         if let Some(bg) = bg {
             let bgp = pixel(bg);
@@ -709,4 +712,15 @@ pub(crate) struct DiffMini<'a> {
     pub cfg: minimap::Cfg,
     pub hover: Option<Position>,
     pub drag: bool,
+    /// A cell's pixels when the minimap is a picture (Kitty), as the editor's.
+    pub px: Option<(u16, u16)>,
+}
+
+/// A change's tint for its minimap row (a diff's): inserted and changed lines as the
+/// modified side shows them, removed ones as the original does.
+fn change_tint(m: Mark) -> Rgba {
+    match m {
+        Mark::Added | Mark::Modified => P.diff_ins_text,
+        Mark::Deleted => P.diff_del_text,
+    }
 }

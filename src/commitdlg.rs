@@ -938,7 +938,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         d.hits.diff = body;
         fill(f, body, P.editor_bg);
         if let Some(doc) = &d.diff {
-            let (_, _, texts, hsb) = diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), gap, &[], None, true, &mut d.diff_syntax, None, false);
+            let (_, _, texts, hsb, _) = diff_view(f, doc, &mut d.diff_view, body, P.slider, u16::from(comfy), gap, &[], None, true, &mut d.diff_syntax, None, false);
             (d.hits.hscroll, d.hits.diff_text) = (hsb, texts);
             if let Some(sb) = hsb {
                 let color = if d.hdrag.is_some() { P.slider_active } else if hover.is_some_and(|p| sb.track.contains(p)) { P.slider_hover } else { P.slider };

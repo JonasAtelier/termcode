@@ -31,7 +31,10 @@ pub(crate) fn diff_mini<'a>(cache: &'a mut std::collections::HashMap<String, (Di
 pub(crate) type DiffSyntax = Option<(DiffId, [Buffer; 2])>;
 
 /// What a diff view laid out: its scrollbar, its minimap, each side's text area.
-pub(crate) type DiffHits = (Option<ScrollHit>, Option<(Rect, Mini)>, Option<[Rect; 2]>, Option<ScrollHit>);
+pub(crate) type DiffHits = (Option<ScrollHit>, Option<(Rect, Mini)>, Option<[Rect; 2]>, Option<ScrollHit>, Option<MiniPicture>);
+
+/// The minimap as a picture and its slider (rows, colour), for `media::show_pixels`.
+pub(crate) type MiniPicture = (image::RgbaImage, Option<(u16, u16, Color)>);
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn diff_view(
@@ -52,7 +55,7 @@ pub(crate) fn diff_view(
     if let Some(note) = &d.note {
         *syntax = None;
         f.render_widget(Paragraph::new(note.as_str()).style(Style::new().fg(P.dim)), area);
-        return (None, None, None, None);
+        return (None, None, None, None, None);
     }
     let n = d.rows.len();
     v.scroll = v.scroll.min(n.saturating_sub(1));
@@ -177,7 +180,7 @@ pub(crate) fn diff_view(
             }
         }
     }
-    let mut out_mini = None;
+    let (mut out_mini, mut out_img) = (None, None);
     if let Some(m) = mini.filter(|_| mw > 0) {
         let mr = Rect::new(text_area.right(), area.y, mw, area.height);
         let hovered = m.hover.is_some_and(|p| mr.contains(p));
@@ -202,7 +205,8 @@ pub(crate) fn diff_view(
             minimap: Some(m.cfg),
             hover: m.hover,
             mini_drag: m.drag,
-            mini_px: None,
+            mini_px: m.px,
+            mini_rows: true,
             whitespace: editor::Whitespace::None,
             occurrences: false,
             match_brackets: false,
@@ -213,16 +217,24 @@ pub(crate) fn diff_view(
             problems: &[],
         };
         // App::hl_pending counts this buffer (by its MiniHit) while it catches up.
-        out_mini = Some((mr, draw_minimap(f, m.buf, v, mr, &m.cfg, &deco, ms)));
+        let mini = match m.px {
+            Some(cell) => {
+                let (mini, img, rows) = minimap_pixels(m.buf, v, mr, &m.cfg, &deco, ms, cell);
+                out_img = Some((img, rows));
+                mini
+            }
+            None => draw_minimap(f, m.buf, v, mr, &m.cfg, &deco, ms),
+        };
+        out_mini = Some((mr, mini));
     }
     let h = track.height as usize;
     if h == 0 {
-        return (None, out_mini, Some(texts), hsb);
+        return (None, out_mini, Some(texts), hsb, out_img);
     }
     let s = decor::slider(track.height, n + h - 1, h, v.scroll, n.saturating_sub(1));
     paint_slider(f, track, s, slider);
     diff_overview(f, &d.rows, v, track);
-    (Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h }), out_mini, Some(texts), hsb)
+    (Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h }), out_mini, Some(texts), hsb, out_img)
 }
 
 /// A stable word span without diff work on the render path. Multiple edits on
@@ -256,7 +268,8 @@ pub(super) fn diff_overview(f: &mut Frame, rows: &[crate::diff::Row], v: &View, 
     if n == 0 || th == 0 {
         return;
     }
-    let row_of = |i: usize| (i * th / n).min(th - 1);
+    // Where the slider is when that row shows, as `diff_view` sizes it.
+    let row_of = |i: usize| usize::from(decor::mark_row(track.height, n + th - 1, th, i, v.scroll, n.saturating_sub(1))).min(th - 1);
     let mut lanes = vec![(false, false); th];
     for (i, r) in rows.iter().enumerate() {
         let (del, ins) = match r.kind {
