@@ -77,7 +77,9 @@ you type there goes to the device (every key but F1, Ctrl+Q and the tab keys).
 close are also under each channel. Ports are taken as [xcomm](https://crates.io/crates/xcomm) takes them (a
 UUCP lock, an exclusive open) and opened again after an unplug. A port another xcomm
 holds can be shared with it, read only or read & write. Dots: green reads and writes,
-yellow is on hold (it still reads), red is disconnected.
+yellow is on hold (it still reads), red is disconnected. Press `n` (or click ✎) to
+write a note beside a port ("router console"); rest the pointer on it, or press `i`, for
+everything about it at a glance.
 
 ## Scripts and AI agents
 

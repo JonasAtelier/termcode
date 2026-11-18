@@ -20,7 +20,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   shared through its control socket: read only (watch and capture, nothing disturbed)
   or read & write (typing goes through that xcomm), asked in a small window first. Dots
   show each port's and channel's state: green reads and writes, yellow is on hold or
-  busy (it still reads), red is disconnected.
+  busy (it still reads), red is disconnected. A note beside each tty (`n` or ✎; kept per
+  adapter, by its USB serial number); rest the pointer on a port, or press `i`, for its
+  card: adapter, USB ID and serial, by-id and by-path links, holder, line settings, modem
+  lines, traffic. Agents: `serial.ports` and `serial.note` in the API.
 - An API: `termcode api METHOD [JSON]` (JSON-RPC 2.0 on termcode's private socket) runs
   any command, opens files, reads open and unsaved text, problems, Git, terminals and the
   screen, edits (versioned, one undo step) and saves, types into a terminal and waits for

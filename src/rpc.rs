@@ -25,6 +25,8 @@ pub const METHODS: &[&str] = &[
     "buffer.save",
     "terminal.send",
     "events.wait",
+    "serial.ports",
+    "serial.note",
 ];
 
 /// What `method` may do (`api::Gate` asks the user before `Edit` and `Run`): reading
@@ -33,7 +35,7 @@ pub const METHODS: &[&str] = &[
 pub fn tier(method: &str, p: &Value) -> crate::api::Tier {
     use crate::api::Tier;
     match method {
-        "editor.open" | "buffer.edit" | "buffer.save" => Tier::Edit,
+        "editor.open" | "buffer.edit" | "buffer.save" | "serial.note" => Tier::Edit,
         "command.run" | "terminal.send" | "events.wait" => Tier::Run,
         "state.get" if matches!(p["path"].as_str(), Some("/terminals" | "/ui/screen")) => Tier::Run,
         _ => Tier::Read,
@@ -102,6 +104,12 @@ pub fn call(app: &mut App, method: &str, p: &Value) -> Result<Out, String> {
             let mark = p["since"].as_u64().unwrap_or_else(|| t.log.end());
             let timeout = Duration::from_secs_f64(p["timeout"].as_f64().unwrap_or(30.0).clamp(0.0, 3600.0));
             Ok(Out::Output { term, re, mark, timeout })
+        }
+        "serial.ports" => now(crate::xcomm::ports_json(app)),
+        "serial.note" => {
+            let tty = p["port"].as_str().ok_or("serial.note: give \"port\" (ttyUSB0) and \"note\" (\"\" removes it)")?;
+            let id = crate::xcomm::note_by_tty(app, tty, p["note"].as_str().unwrap_or_default())?;
+            now(json!({"port": tty, "id": id}))
         }
         m => Err(format!("unknown method {m:?}: one of {}", METHODS.join(", "))),
     }

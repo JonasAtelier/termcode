@@ -90,6 +90,8 @@ pub enum Hit {
     Port(usize),
     Channel(usize),
     Act(usize, Act),
+    /// A port's note, to write.
+    Note(usize),
 }
 
 /// A channel's controls.
@@ -116,6 +118,96 @@ pub struct Serial {
     /// The selected row: the ports, then the channels.
     pub sel: usize,
     pub hits: Vec<(Rect, Hit)>,
+    /// Notes on ports (`port_id` to text), as saved; loaded on first use.
+    notes: Option<std::collections::BTreeMap<String, String>>,
+    /// A note being written: its port's id and the text so far.
+    pub editing: Option<(String, String)>,
+    /// `i`: the selected row's card shows (the pointer resting on a row shows its own).
+    pub peek: bool,
+}
+
+/// Where the notes are kept: termcode's state folder (private).
+fn notes_file() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("termcode-serial-notes-{}.json", std::process::id()));
+    }
+    crate::data_dir(true).join("serial-notes.json")
+}
+
+/// The ports for the API: each with its note, its state (as its dot) and who holds it,
+/// and the channel open on it here.
+pub fn ports_json(app: &mut App) -> serde_json::Value {
+    let ports = xcomm::list::enumerate(&env).unwrap_or_default();
+    let me = std::process::id() as i32;
+    let notes = app.serial.notes().clone();
+    let list: Vec<serde_json::Value> = ports
+        .iter()
+        .map(|p| {
+            let ch = app.serial.channels.iter().find(|c| c.tty == p.tty);
+            let shareable = p.lock_pid.is_some_and(|pid| pid != me) && session_socket(&p.tty, &env).is_some();
+            let dot = ch.map_or_else(|| port_dot(p, shareable), channel_dot);
+            serde_json::json!({
+                "tty": p.tty,
+                "note": notes.get(&port_id(p)),
+                "state": format!("{dot:?}").to_lowercase(),
+                "adapter": p.product,
+                "usb": p.vid_pid,
+                "serial": p.serial,
+                "by_id": p.by_id,
+                "holder": p.lock_pid.map(|pid| serde_json::json!({"pid": pid, "here": pid == me, "herdr_pane": p.herdr_pane, "xcomm": shareable})),
+                "channel": ch.map(|c| serde_json::json!({"line": xcomm::port::describe(&c.settings), "write": c.write, "in": c.rx, "out": c.tx, "connected": c.link == Link::Open})),
+            })
+        })
+        .collect();
+    serde_json::Value::Array(list)
+}
+
+/// The API's `serial.note`: `note` ("" removes it) on the port named `tty`.
+pub fn note_by_tty(app: &mut App, tty: &str, note: &str) -> Result<String, String> {
+    let ports = xcomm::list::enumerate(&env).map_err(|e| e.to_string())?;
+    let p = ports.iter().find(|p| p.tty == tty || format!("/dev/{}", p.tty) == tty).ok_or_else(|| format!("no port {tty}"))?;
+    let id = port_id(p);
+    app.serial.set_note(&id, note)?;
+    app.serial.ports = ports;
+    Ok(id)
+}
+
+/// A port's lasting name for its note: its adapter's USB ID and serial number (the
+/// note follows the adapter to any USB port), else its USB port (by-path), else its tty.
+pub fn port_id(p: &PortInfo) -> String {
+    match (&p.vid_pid, &p.serial) {
+        (Some(v), Some(sn)) => format!("usb:{v}:{sn}"),
+        _ => {
+            let stable = xcomm::reconnect::stable_path(Path::new(&p.path));
+            if stable.starts_with("/dev/serial/by-path") { format!("path:{}", stable.display()) } else { format!("tty:{}", p.tty) }
+        }
+    }
+}
+
+impl Serial {
+    pub fn notes(&mut self) -> &mut std::collections::BTreeMap<String, String> {
+        self.notes.get_or_insert_with(|| std::fs::read(notes_file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default())
+    }
+
+    /// The note on `p`, if any.
+    pub fn note_of(&mut self, p: &PortInfo) -> Option<String> {
+        self.notes().get(&port_id(p)).cloned()
+    }
+
+    /// `text` as the note on port `id` ("" removes it), saved.
+    pub fn set_note(&mut self, id: &str, text: &str) -> Result<(), String> {
+        let text = text.trim().chars().take(80).collect::<String>();
+        let notes = self.notes();
+        if text.is_empty() {
+            notes.remove(id);
+        } else {
+            notes.insert(id.to_string(), text);
+        }
+        let json = serde_json::to_vec_pretty(notes).map_err(|e| e.to_string())?;
+        let f = notes_file();
+        let tmp = f.with_extension("json.tmp");
+        std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &f)).map_err(|e| format!("{}: {e}", f.display()))
+    }
 }
 
 fn env(k: &str) -> Option<String> {
@@ -671,6 +763,7 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
     }
     let ascii = crate::theme::ascii();
     let (tee, elbow, dot_ch) = if ascii { ("|-", "`-", "*") } else { ("├─", "└─", "●") };
+    let notes = app.serial.notes().clone();
     let s = &mut app.serial;
     s.hits.clear();
     let dim = Style::new().fg(P.dim);
@@ -701,17 +794,30 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
         let shareable = p.lock_pid.is_some_and(|pid| pid != me) && session_socket(&p.tty, &env).is_some();
         let dot = ours.map_or_else(|| port_dot(p, shareable), channel_dot);
         let product = p.product.clone().unwrap_or_else(|| "serial port".into());
-        line(f, &mut y, Line::from(vec![
-            Span::styled(format!("{dot_ch} "), Style::new().fg(dot.color())),
-            Span::styled(p.tty.clone(), fg.bold()),
-            Span::styled(" ⇄ ".replace('⇄', if ascii { "<>" } else { "⇄" }), dim),
-            Span::styled(product, fg),
-        ]).style(Style::new().bg(sel_bg(i))));
+        // The note beside the tty (or, writing it, the text so far); ✎ to write one.
+        let id = port_id(p);
+        let note = notes.get(&id).cloned();
+        let mut first = vec![Span::styled(format!("{dot_ch} "), Style::new().fg(dot.color())), Span::styled(p.tty.clone(), fg.bold()), Span::raw(" ")];
+        match s.editing.as_ref().filter(|(e, _)| *e == id) {
+            Some((_, text)) => first.push(Span::styled(format!("{text}▏"), Style::new().fg(P.sidebar_fg).bg(P.widget_bg))),
+            None => match &note {
+                Some(n) => first.push(Span::styled(n.clone(), Style::new().fg(P.tab_active_fg).bold())),
+                None => first.push(Span::styled(product.clone(), fg)),
+            },
+        }
+        let pen = if ascii { "e" } else { "✎" };
+        let pen_x = r.right().saturating_sub(2);
+        line(f, &mut y, Line::from(first).style(Style::new().bg(sel_bg(i))));
+        if s.editing.is_none() && y - 1 < r.bottom() {
+            f.render_widget(Span::styled(pen, dim), Rect::new(pen_x, y - 1, 1, 1));
+            hits.push((Rect::new(pen_x, y - 1, 2, 1), Hit::Note(i)));
+        }
         let usb = match (&p.vid_pid, &p.serial) {
             (Some(v), Some(sn)) => format!("USB {v} · sn {sn}"),
             (Some(v), None) => format!("USB {v}"),
             _ => "not USB".into(),
         };
+        let usb = if note.is_some() { format!("{product} · {usb}") } else { usb };
         line(f, &mut y, Line::from(vec![Span::styled(format!("  {tee} "), dim), Span::styled(usb, dim)]));
         let held = match (ours, p.lock_pid, &p.herdr_pane) {
             (Some(c), ..) => format!("this termcode, {}", if c.write { "read & write" } else { "read only" }),
@@ -772,6 +878,84 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
     s.hits = hits;
 }
 
+/// The card of the row the pointer rests on (or, with `i`, the selected one): everything
+/// about the port at a glance, its channel's line settings and modem lines when open.
+pub fn draw_peek(app: &mut App, f: &mut Frame) {
+    use crate::theme::P;
+    if app.side != crate::panel::Side::Serial || !app.side_visible {
+        return;
+    }
+    let s = &app.serial;
+    let hovered = app.hover.and_then(|p| s.hits.iter().find(|(r, h)| r.contains(p) && matches!(h, Hit::Port(_) | Hit::Channel(_))).copied());
+    let (anchor, hit) = match hovered {
+        Some(x) => x,
+        None if s.peek => {
+            let want = if s.sel < s.ports.len() { Hit::Port(s.sel) } else { Hit::Channel(s.sel - s.ports.len()) };
+            match s.hits.iter().find(|(_, h)| *h == want) {
+                Some(&x) => x,
+                None => return,
+            }
+        }
+        None => return,
+    };
+    let (port, chan) = match hit {
+        Hit::Port(i) => {
+            let p = s.ports.get(i);
+            (p, p.and_then(|p| s.channels.iter().find(|c| c.tty == p.tty)))
+        }
+        Hit::Channel(i) => {
+            let c = s.channels.get(i);
+            (c.and_then(|c| s.ports.iter().find(|p| p.tty == c.tty)), c)
+        }
+        _ => return,
+    };
+    let row = |k: &str, v: String| Line::from(vec![Span::styled(format!("{k:<9}"), Style::new().fg(P.dim)), Span::styled(v, Style::new().fg(P.editor_fg))]);
+    let mut lines = Vec::new();
+    let note = port.and_then(|p| app.serial.notes.as_ref().and_then(|n| n.get(&port_id(p)).cloned()));
+    let tty = port.map(|p| p.tty.clone()).or(chan.map(|c| c.tty.clone())).unwrap_or_default();
+    lines.push(Line::from(vec![Span::styled(tty, Style::new().fg(P.editor_fg).bold()), Span::styled(note.map_or(String::new(), |n| format!("  {n}")), Style::new().fg(P.tab_active_fg))]));
+    if let Some(p) = port {
+        lines.push(row("Adapter", p.product.clone().unwrap_or_else(|| "-".into())));
+        lines.push(row("USB", format!("{}  serial {}", p.vid_pid.as_deref().unwrap_or("-"), p.serial.as_deref().unwrap_or("-"))));
+        lines.push(row("by-id", p.by_id.as_deref().and_then(|b| b.rsplit('/').next()).unwrap_or("-").to_string()));
+        let by_path = xcomm::reconnect::stable_path(Path::new(&p.path));
+        lines.push(row("by-path", if by_path.starts_with("/dev/serial/by-path") { by_path.file_name().map_or("-".into(), |n| n.to_string_lossy().into_owned()) } else { "-".into() }));
+        let holder = match (p.lock_pid, &p.herdr_pane) {
+            (None, _) => "free".to_string(),
+            (Some(pid), _) if pid == std::process::id() as i32 => "this termcode".into(),
+            (Some(pid), Some(pane)) => format!("xcomm in herdr {pane} (pid {pid})"),
+            (Some(pid), None) => format!("pid {pid}"),
+        };
+        lines.push(row("Holder", holder));
+    }
+    if let Some(c) = chan {
+        let st = c.settings;
+        lines.push(row("Line", format!("{} · flow {:?}", xcomm::port::describe(&st), st.flow).to_lowercase()));
+        if let Some(l) = c.lines() {
+            let o = |b: bool| if b { "on" } else { "off" };
+            lines.push(row("Modem", format!("DTR {} RTS {} · CTS {} DSR {} DCD {}", o(l.dtr), o(l.rts), o(l.cts), o(l.dsr), o(l.dcd))));
+        }
+        lines.push(row("Traffic", format!("in {} · out {}", human(c.rx), human(c.tx))));
+        lines.push(row("Mode", match (&c.link, c.write) {
+            (Link::Waiting(w), _) => format!("disconnected: {w}"),
+            (_, true) => "read & write".into(),
+            (_, false) => "read only".into(),
+        }));
+        if let Some((path, _)) = &c.capture {
+            lines.push(row("Capture", path.display().to_string()));
+        }
+    }
+    let area = f.area();
+    let w = lines.iter().map(Line::width).max().unwrap_or(10).min(70) as u16 + 4;
+    let h = lines.len() as u16 + 2;
+    let x = (anchor.right() + 1).min(area.right().saturating_sub(w));
+    let y = anchor.y.min(area.bottom().saturating_sub(h));
+    let card = Rect::new(x, y, w.min(area.width), h.min(area.height));
+    f.render_widget(ratatui::widgets::Clear, card);
+    let block = ratatui::widgets::Block::bordered().border_set(crate::blocks::border_set()).border_style(Style::new().fg(P.focus_border)).style(Style::new().bg(P.widget_bg));
+    f.render_widget(ratatui::widgets::Paragraph::new(lines).block(block.padding(ratatui::widgets::Padding::horizontal(1))), card);
+}
+
 /// A click in the side bar: a port opens (or shows) its channel; a channel shows its
 /// tab; a control acts on its channel.
 pub fn click(app: &mut App, p: Position) -> bool {
@@ -794,6 +978,10 @@ fn activate(app: &mut App, hit: Hit) {
                 Some(_) if app.serial.channels.iter().any(|c| c.tty == p.tty) => open(app, Path::new(&p.path)),
                 Some(pid) => app.prompt = Some(held_prompt(&p, pid)),
             }
+        }
+        Hit::Note(i) => {
+            app.serial.sel = i;
+            start_note(app);
         }
         Hit::Channel(i) => {
             app.serial.sel = app.serial.ports.len() + i;
@@ -875,9 +1063,42 @@ pub fn share(app: &mut App, tty: &str, write: bool) {
     }
 }
 
-/// Keys in the side bar: ↑ ↓ choose, Enter opens a port or shows a channel.
+/// Writing the selected port's note (`n`, or its ✎): its text so far to start with.
+fn start_note(app: &mut App) {
+    let Some(p) = app.serial.ports.get(app.serial.sel).cloned() else { return };
+    let text = app.serial.note_of(&p).unwrap_or_default();
+    app.serial.editing = Some((port_id(&p), text));
+    app.focus = Focus::Side;
+}
+
+/// Keys in the side bar: ↑ ↓ choose, Enter opens a port or shows a channel, `n` writes
+/// the port's note (Enter keeps it, Esc drops it), `i` shows the row's card.
 pub fn key(app: &mut App, k: ratatui::crossterm::event::KeyEvent) -> bool {
     use ratatui::crossterm::event::KeyCode;
+    if let Some((id, mut text)) = app.serial.editing.take() {
+        match k.code {
+            KeyCode::Enter => {
+                if let Err(e) = app.serial.set_note(&id, &text) {
+                    app.msg = e;
+                }
+                return true;
+            }
+            KeyCode::Esc => return true,
+            KeyCode::Backspace => drop(text.pop()),
+            KeyCode::Char(c) if !c.is_control() && text.chars().count() < 80 => text.push(c),
+            _ => {}
+        }
+        app.serial.editing = Some((id, text));
+        return true;
+    }
+    if k.code == KeyCode::Char('n') && app.serial.sel < app.serial.ports.len() {
+        start_note(app);
+        return true;
+    }
+    if k.code == KeyCode::Char('i') {
+        app.serial.peek = !app.serial.peek;
+        return true;
+    }
     let (sel, ports) = (app.serial.sel, app.serial.ports.len());
     let total = ports + app.serial.channels.len();
     match k.code {
@@ -994,6 +1215,60 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         rw.drop_port("the xcomm session ended".into());
         assert_eq!(channel_dot(&rw), Dot::Red);
+    }
+
+    fn fake_port(tty: &str, serial: &str, held: Option<i32>) -> PortInfo {
+        PortInfo {
+            tty: tty.into(),
+            path: format!("/dev/{tty}"),
+            by_id: Some(format!("/dev/serial/by-id/usb-FTDI_FT230X_{serial}-if00-port0")),
+            vid_pid: Some("0403:6015".into()),
+            product: Some("FT230X Basic UART".into()),
+            serial: Some(serial.into()),
+            lock_pid: held,
+            lock_error: None,
+            herdr_pane: held.map(|_| "w8:p1".into()),
+        }
+    }
+
+    #[test]
+    fn a_ports_note_shows_beside_it_and_its_card_tells_the_rest() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let _ = std::fs::remove_file(notes_file());
+        let root = std::env::temp_dir().join(format!("termcode-xcomm-notes-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.show_side(crate::panel::Side::Serial, false);
+        app.side_w = Some(60); // whole rows
+        app.serial.listed = Some(Instant::now() + Duration::from_secs(3600)); // no real listing
+        app.serial.ports = vec![fake_port("ttyUSB7", "A1B2C3D4", None), fake_port("ttyUSB8", "E5F6G7H8", Some(1))];
+        // `n` on the first port: its note written, kept by the adapter's serial number.
+        app.focus = Focus::Side;
+        app.serial.sel = 0;
+        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        for c in "router console".chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let saved = std::fs::read_to_string(notes_file()).unwrap();
+        assert!(saved.contains("usb:0403:6015:A1B2C3D4") && saved.contains("router console"), "{saved}");
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+        let text = crate::api::screen_text(t.backend().buffer());
+        assert!(text.contains("ttyUSB7 router console") && text.contains("FT230X Basic UART · USB 0403:6015"), "{text}");
+        assert!(text.contains("xcomm in herdr w8:p1 (pid 1)"), "the second's holder: {text}");
+        // `i`: the selected port's card, everything at a glance.
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+        let text = crate::api::screen_text(t.backend().buffer());
+        for want in ["Adapter  FT230X Basic UART", "USB      0403:6015  serial A1B2C3D4", "by-id    usb-FTDI_FT230X_A1B2C3D4-if00-port0", "Holder   free"] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
+        // A note removed with "".
+        app.serial.set_note("usb:0403:6015:A1B2C3D4", "").unwrap();
+        assert!(!std::fs::read_to_string(notes_file()).unwrap().contains("router"));
+        let _ = std::fs::remove_file(notes_file());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

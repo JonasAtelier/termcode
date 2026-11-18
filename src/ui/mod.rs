@@ -215,6 +215,7 @@ pub fn lang_id(name: &str) -> String {
 
 pub fn draw(app: &mut App, f: &mut Frame) {
     draw_frame(app, f);
+    crate::xcomm::draw_peek(app, f);
     if app.prefix_armed {
         prefix_hint(app, f);
     }

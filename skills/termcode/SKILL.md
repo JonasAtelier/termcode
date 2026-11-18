@@ -40,6 +40,8 @@ status bar shows). Paths are relative to the workspace (absolute ones must be in
 | `buffer.save` | `path` | `saved`, `dirty` |
 | `terminal.send` | `text`, `index`? | `index`, `mark` (output position before it) |
 | `events.wait` | `topic: "terminal.output"`, `match` (regex), `timeout` (s, 30), `since`?, `index`? | `matched`, `output` |
+| `serial.ports` | | each serial port: `tty`, `note`, `state` (green, yellow, red), adapter, USB ID, holder, the channel open here |
+| `serial.note` | `port` (`ttyUSB0`), `note` (`""` removes it) | the note beside that port, kept per adapter |
 
 ## Recipes
 
