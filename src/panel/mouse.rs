@@ -17,6 +17,9 @@ impl App {
             if let Some(redraw) = self.term_mouse(m) {
                 return redraw;
             }
+            if let Some(redraw) = crate::xcomm::mouse(self, m) {
+                return redraw;
+            }
         }
         let p = Position::new(m.column, m.row);
         let shift = m.modifiers.contains(KeyModifiers::SHIFT);

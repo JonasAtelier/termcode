@@ -15,7 +15,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   parity, stop bits and flow control (each click the next), DTR, RTS, a
   break, capture to a file and close. A channel's output streams in an editor tab (split
   it like code) and the keys typed there go to the device (all but F1, Ctrl+Q and the
-  tab keys); Shift+PgUp/PgDn and the wheel scroll back. Ctrl+T W closes it (a new quick
+  tab keys); Shift+PgUp/PgDn and the wheel scroll back; a drag selects (a double click,
+  a word) and Ctrl+C copies it. Ctrl+T W closes it (a new quick
   key, View: Close Editor, for any tab). Ports are locked and opened as xcomm does, and opened again after an
   unplug, by the USB port. Needs Rust 1.93 to build. A port another xcomm holds can be
   shared through its control socket: read only (watch and capture, nothing disturbed)

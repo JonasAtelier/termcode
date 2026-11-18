@@ -82,6 +82,8 @@ pub struct Channel {
     pub capture: Option<(PathBuf, std::fs::File)>,
     /// The last thing a shared session refused, shown in the status.
     pub note: Option<String>,
+    /// Selected text on its screen: (row, column) where the drag started and where it is.
+    pub sel: Option<((u16, u16), (u16, u16))>,
 }
 
 /// What a click in the side bar hit.
@@ -129,6 +131,9 @@ pub struct Serial {
     pub editing: Option<(String, String)>,
     /// `i`: the selected row's card shows (the pointer resting on a row shows its own).
     pub peek: bool,
+    /// A selection is being dragged on a channel's screen.
+    dragging: bool,
+    last_click: Option<(Instant, Position)>,
 }
 
 /// Where the notes are kept: termcode's state folder (private).
@@ -324,7 +329,20 @@ impl Channel {
             retry: Instant::now(),
             capture: None,
             note: None,
+            sel: None,
         }
+    }
+
+    /// The selection in reading order.
+    fn sel_range(&self) -> Option<((u16, u16), (u16, u16))> {
+        let (a, b) = self.sel?;
+        Some(if a <= b { (a, b) } else { (b, a) })
+    }
+
+    /// The selected text, None when nothing is.
+    pub fn selected(&self) -> Option<String> {
+        let ((r0, c0), (r1, c1)) = self.sel_range()?;
+        Some(self.screen.screen().contents_between(r0, c0, r1, c1 + 1)).filter(|t| !t.is_empty())
     }
 
     /// `path` opened here at `settings` (8N1 at 115200 by default).
@@ -670,10 +688,83 @@ pub fn takes(app: &mut App, k: ratatui::crossterm::event::KeyEvent) -> bool {
         return false;
     }
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    // Ctrl+C with text selected copies it, as in the terminal; else it goes to the device.
+    if ctrl && matches!(k.code, KeyCode::Char('c' | 'C')) {
+        let key = active_key(app).unwrap_or_default();
+        if let Some(text) = channel_mut(app, &key).and_then(|c| {
+            let t = c.selected();
+            c.sel = None;
+            t
+        }) {
+            app.msg = format!("copied via {}", crate::panel::clipboard_set(&text));
+            app.clip = text;
+            return true;
+        }
+    }
     let termcodes = matches!(k.code, KeyCode::F(1))
         || (ctrl && matches!(k.code, KeyCode::Char('q' | 'Q') | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Tab | KeyCode::BackTab))
         || crate::term::toggle_key(&k);
     !termcodes && page_key(app, k)
+}
+
+/// A mouse event over a channel's screen: a press starts a selection (a double click, a
+/// word), a drag extends it; Ctrl+C then copies it. None when it is not over one.
+pub fn mouse(app: &mut App, m: ratatui::crossterm::event::MouseEvent) -> Option<bool> {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let p = Position::new(m.column, m.row);
+    let over = |app: &App| {
+        app.ui.groups.iter().enumerate().find_map(|(g, gh)| {
+            let t = app.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).filter(|t| t.key.starts_with(PREFIX))?;
+            let body = Rect::new(gh.text.x, gh.text.y + 1, gh.text.width, gh.text.height.saturating_sub(1));
+            body.contains(p).then(|| (g, t.key.clone(), (p.y - body.y, p.x - body.x)))
+        })
+    };
+    match m.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            let (g, key, at) = over(app)?;
+            (app.ag, app.focus) = (g, Focus::Editor);
+            let double = app.serial.last_click.is_some_and(|(t, q)| t.elapsed() < Duration::from_millis(400) && q == p);
+            app.serial.last_click = Some((Instant::now(), p));
+            let ch = channel_mut(app, &key)?;
+            ch.sel = if double { word_at(ch, at) } else { Some((at, at)) };
+            app.serial.dragging = !double;
+            Some(true)
+        }
+        MouseEventKind::Drag(MouseButton::Left) if app.serial.dragging => {
+            let key = active_key(app)?;
+            let gh = app.ui.groups.get(app.ag)?;
+            let body = Rect::new(gh.text.x, gh.text.y + 1, gh.text.width, gh.text.height.saturating_sub(1));
+            let at = (p.y.clamp(body.y, body.bottom().saturating_sub(1)) - body.y, p.x.clamp(body.x, body.right().saturating_sub(1)) - body.x);
+            let ch = channel_mut(app, &key)?;
+            ch.sel = ch.sel.map(|(a, _)| (a, at));
+            Some(true)
+        }
+        MouseEventKind::Up(MouseButton::Left) if app.serial.dragging => {
+            app.serial.dragging = false;
+            let key = active_key(app)?;
+            // A click without a drag selects nothing.
+            if let Some(ch) = channel_mut(app, &key) {
+                if ch.sel.is_some_and(|(a, b)| a == b) {
+                    ch.sel = None;
+                }
+            }
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
+/// The word (a run of non-blank cells) at `at` on a channel's screen.
+fn word_at(ch: &Channel, at: (u16, u16)) -> Option<((u16, u16), (u16, u16))> {
+    let s = ch.screen.screen();
+    let blank = |c: u16| s.cell(at.0, c).is_none_or(|c| c.contents().trim().is_empty());
+    if blank(at.1) {
+        return None;
+    }
+    let cols = s.size().1;
+    let a = (0..=at.1).rev().take_while(|&c| !blank(c)).last().unwrap_or(at.1);
+    let b = (at.1..cols).take_while(|&c| !blank(c)).last().unwrap_or(at.1);
+    Some(((at.0, a), (at.0, b)))
 }
 
 /// Pasted text in a channel's tab goes to the device.
@@ -782,7 +873,7 @@ pub fn draw_page(app: &mut App, f: &mut Frame, r: Rect, key: &str, focused: bool
         ch.screen.screen_mut().set_size(body.height.max(2), body.width.max(2));
     }
     let live = ch.screen.screen().scrollback() == 0;
-    crate::term::draw_screen(ch.screen.screen(), None, f.buffer_mut(), body, (P.editor_fg, P.editor_bg, P.selection), focused && live);
+    crate::term::draw_screen(ch.screen.screen(), ch.sel_range(), f.buffer_mut(), body, (P.editor_fg, P.editor_bg, P.selection), focused && live);
 }
 
 /// The side bar: PORTS, the mapping (each tty, a dot for whether it can be used, its
@@ -1345,6 +1436,19 @@ mod tests {
         t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
         let text = crate::api::screen_text(t.backend().buffer());
         assert!(text.contains("115200 8N1 · read & write") && text.contains("board login:"), "{text}");
+        // A drag over its screen selects; Ctrl+C copies that (not sent), then goes again.
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let gh = app.ui.groups[0].text;
+        let row = (0..gh.height).find(|&y| crate::api::screen_text(t.backend().buffer()).lines().nth(usize::from(gh.y + y)).is_some_and(|l| l.contains("board login:"))).unwrap();
+        let line = crate::api::screen_text(t.backend().buffer()).lines().nth(usize::from(gh.y + row)).unwrap().to_string();
+        let col = line[..line.find("board").unwrap()].chars().count() as u16;
+        let ev = |kind, x: u16| MouseEvent { kind, column: x, row: gh.y + row, modifiers: KeyModifiers::NONE };
+        app.on_mouse(ev(MouseEventKind::Down(MouseButton::Left), col));
+        app.on_mouse(ev(MouseEventKind::Drag(MouseButton::Left), col + 10));
+        app.on_mouse(ev(MouseEventKind::Up(MouseButton::Left), col + 10));
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(app.clip, "board login");
+        assert!(app.serial.channels[0].sel.is_none());
         // Typing in the tab goes to the device, as a terminal sends it.
         for c in "root".chars() {
             app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
