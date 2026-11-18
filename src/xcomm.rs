@@ -1197,10 +1197,15 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
             f.render_widget(ratatui::widgets::Paragraph::new(vec![Line::from(first), second]), inner);
             // Monitor (or Show, when open here), right on the second row; none when it can't be.
             let can = ours.is_some() || p.lock_pid.is_none_or(|pid| pid == me) || shareable;
-            let label = if ours.is_some() { "Show" } else { "Monitor" };
+            // The block's main button: filled, with its icon.
+            let label = match (ours.is_some(), ascii) {
+                (true, _) => "Show",
+                (false, true) => "> Monitor",
+                (false, false) => "▶ Monitor",
+            };
             let w = label.chars().count() as u16 + 2;
             if can && inner.height >= 2 && inner.width > w {
-                button(f, &mut hits, Rect::new(inner.right() - w, inner.y + 1, w, 1), label, false, Hit::Monitor(i));
+                button(f, &mut hits, Rect::new(inner.right() - w, inner.y + 1, w, 1), label, ours.is_none(), Hit::Monitor(i));
             }
             // ✎ on the top border, right: the note.
             let pen = Rect::new(inner.right().saturating_sub(2), a.y, 2, 1);
