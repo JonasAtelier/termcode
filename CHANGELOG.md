@@ -41,7 +41,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 
 ### Changed
 - Serial view: a ports pane and a channels pane, the line between dragged to resize (as
-  GitHub's), each scrolling; blocks and buttons light up under the pointer, a port's
+  GitHub's, CHANNELS on it with a dot per channel in its state's colour, or past five
+  a count per state), each scrolling; blocks and buttons light up under the pointer, a port's
   card shows while the pointer rests on it. Monitor on a port watches it, read only,
   no questions; Attach on a channel turns typing on (asked only when someone else holds
   the port, or said when it is gone). Its settings (baud, format,

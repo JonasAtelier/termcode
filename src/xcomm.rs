@@ -1053,6 +1053,29 @@ pub fn port_dot(p: &PortInfo, shareable: bool) -> Dot {
     }
 }
 
+/// How many there are and in what state, without a word: a dot each (up to five), else
+/// a count per state (green, yellow, red), each in its colour.
+pub fn state_dots(dots: &[Dot], dot_ch: &str) -> Vec<Span<'static>> {
+    if dots.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<Span> = if dots.len() <= 5 {
+        dots.iter().map(|d| Span::styled(dot_ch.to_string(), Style::new().fg(d.color()))).collect()
+    } else {
+        [Dot::Green, Dot::Yellow, Dot::Red]
+            .into_iter()
+            .filter_map(|d| {
+                let n = dots.iter().filter(|x| **x == d).count();
+                (n > 0).then(|| Span::styled(format!("{dot_ch}{n} "), Style::new().fg(d.color())))
+            })
+            .collect()
+    };
+    if dots.len() <= 5 {
+        out.push(Span::raw(" "));
+    }
+    out
+}
+
 fn status(c: &Channel) -> String {
     let link = match (&c.link, &c.shared, c.write) {
         (Link::Waiting(why), ..) => why.clone(),
@@ -1128,14 +1151,13 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
     let sash = Rect::new(r.x, r.y + top_h, r.width, 1);
     f.render_widget(Span::styled(format!("PORTS {}", s.ports.len()), dim.bold()), Rect::new(r.x, r.y, r.width, 1));
     let hot = dragging || hover.is_some_and(|p| sash.contains(p));
-    let label = format!(" CHANNELS {} ", s.channels.len());
-    let rest = usize::from(r.width).saturating_sub(label.chars().count() + 1);
     let hl = if ascii { "-" } else { "─" };
-    f.render_widget(Line::from(vec![
-        Span::styled(hl, Style::new().fg(if hot { P.sash_hover } else { P.group_border })),
-        Span::styled(label, dim.bold()),
-        Span::styled(hl.repeat(rest), Style::new().fg(if hot { P.sash_hover } else { P.group_border })),
-    ]), sash);
+    let line_st = Style::new().fg(if hot { P.sash_hover } else { P.group_border });
+    let mut label = vec![Span::styled(hl, line_st), Span::styled(" CHANNELS ", dim.bold())];
+    label.extend(state_dots(&s.channels.iter().map(channel_dot).collect::<Vec<_>>(), dot_ch));
+    let used: usize = label.iter().map(|sp| sp.content.chars().count()).sum();
+    label.push(Span::styled(hl.repeat(usize::from(r.width).saturating_sub(used)), line_st));
+    f.render_widget(Line::from(label), sash);
     // Each block laid out from its pane's top, drawn where it falls inside after its scroll.
     let at = |pane: Rect, y: i32, h: u16| -> Option<Rect> {
         let top = (i32::from(pane.y) + y).max(i32::from(pane.y));
@@ -1743,7 +1765,7 @@ mod tests {
             crate::api::screen_text(t.backend().buffer())
         };
         let text = draw(&mut app, &mut t);
-        assert!(text.contains("PORTS 2") && text.contains("CHANNELS 0") && text.contains("Monitor"), "{text}");
+        assert!(text.contains("PORTS 2") && text.contains("CHANNELS ─") && text.contains("Monitor"), "none: no dots {text}");
         assert_eq!(app.serial.hits.iter().filter(|(_, h)| matches!(h, Hit::Monitor(_))).count(), 1, "the one held by a program that can't share: no Monitor");
         // Monitor: open, read only, no window asked.
         let m = app.serial.hits.iter().find(|(_, h)| *h == Hit::Monitor(0)).unwrap().0;
@@ -1751,7 +1773,7 @@ mod tests {
         assert!(app.prompt.is_none() && app.serial.channels.len() == 1 && !app.serial.channels[0].write);
         // Attach on its channel block: writing, its own port asking nothing.
         let text = draw(&mut app, &mut t);
-        assert!(text.contains("CHANNELS 1") && text.contains("Attach"), "{text}");
+        assert!(text.contains("CHANNELS ● ") && text.contains("Attach"), "one: one dot {text}");
         let a = app.serial.hits.iter().find(|(_, h)| *h == Hit::Act(0, Act::Write)).unwrap().0;
         assert!(click(&mut app, Position::new(a.x + 1, a.y)));
         assert!(app.prompt.is_none() && app.serial.channels[0].write);
@@ -1774,6 +1796,18 @@ mod tests {
         assert_eq!(app.serial.panes[0].height, before + 5);
         drop(app);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn channel_dots_are_one_each_up_to_five_then_counts_by_state() {
+        let text = |v: Vec<Span>| v.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(text(state_dots(&[], "●")), "");
+        let few = state_dots(&[Dot::Green, Dot::Yellow, Dot::Red], "●");
+        assert_eq!(text(few.clone()), "●●● ");
+        assert_eq!(few[2].style.fg, Some(Dot::Red.color()), "each in its state's colour");
+        let many = [vec![Dot::Green; 4], vec![Dot::Yellow; 2], vec![Dot::Red]].concat();
+        assert_eq!(text(state_dots(&many, "●")), "●4 ●2 ●1 ");
+        assert_eq!(text(state_dots(&[Dot::Green; 6], "●")), "●6 ", "states with none left out");
     }
 
     /// A stand-in for an xcomm session's control socket: it answers each request, streams
