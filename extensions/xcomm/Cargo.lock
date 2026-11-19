@@ -182,6 +182,7 @@ name = "termcode-xcomm"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "regex",
  "serde_json",
  "vt100",
  "xcomm",

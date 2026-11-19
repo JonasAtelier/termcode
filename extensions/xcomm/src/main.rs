@@ -6,7 +6,9 @@
 //!   right   the channel in front's settings, or the port picked's details
 //!
 //! and takes what the user does there: clicks, keys and pastes (to the device), the
-//! tab in front, its size, its closing. JSON-RPC on stdin and stdout, a message a line.
+//! tab in front, its size, its closing. It serves termcode's `serial.*` API methods for
+//! other clients (agents), and publishes `serial.output`. JSON-RPC on stdin and stdout,
+//! a message a line.
 
 mod channel;
 
@@ -33,6 +35,18 @@ enum Asked {
     Note(String),
     /// `ui.pick` of a port to open (the ttys offered).
     Open(Vec<String>),
+    /// `serial.attach` from an API client (its call's id) on a shared port: the user's
+    /// answer is the call's.
+    ApiAttach(Value, String),
+}
+
+/// A `serial.wait` waiting: its call, the channel, what to match from where, until when.
+struct ApiWait {
+    id: Value,
+    tty: String,
+    re: regex::Regex,
+    mark: u64,
+    until: Instant,
 }
 
 struct View {
@@ -51,11 +65,14 @@ struct View {
     side: bool,
     right: bool,
     notes: BTreeMap<String, String>,
+    waits: Vec<ApiWait>,
+    /// Each channel's output published so far (`serial.output`), by offset.
+    emitted: HashMap<String, u64>,
 }
 
 fn main() {
     let rx = stdin_lines();
-    let mut v = View { next: 0, asked: HashMap::new(), visible: false, ports: Vec::new(), listed: None, channels: Vec::new(), picked: None, front: None, dirty: Vec::new(), sent: HashMap::new(), side: true, right: true, notes: load_notes() };
+    let mut v = View { next: 0, asked: HashMap::new(), visible: false, ports: Vec::new(), listed: None, channels: Vec::new(), picked: None, front: None, dirty: Vec::new(), sent: HashMap::new(), side: true, right: true, notes: load_notes(), waits: Vec::new(), emitted: HashMap::new() };
     loop {
         let wait = if v.channels.is_empty() { Duration::from_millis(500) } else { Duration::from_millis(10) };
         match rx.recv_timeout(wait) {
@@ -103,7 +120,25 @@ impl View {
         self.call("ui.notify", json!({"text": text}));
     }
 
+    /// The answer to an API call termcode passed on.
+    fn reply(&mut self, id: &Value, r: Result<Value, String>) {
+        let msg = match r {
+            Ok(v) => json!({"jsonrpc": "2.0", "id": id, "result": v}),
+            Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": e}}),
+        };
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{msg}").and_then(|()| out.flush());
+    }
+
     fn message(&mut self, m: &Value) {
+        if m["method"] == "api.call" {
+            let id = m["id"].clone();
+            let p = &m["params"];
+            if let Some(r) = self.api(&id, p["method"].as_str().unwrap_or(""), &p["params"]) {
+                self.reply(&id, r);
+            }
+            return;
+        }
         if let Some(id) = m["id"].as_u64() {
             if let Some(e) = m.get("error") {
                 eprintln!("termcode refused request {id}: {e}");
@@ -124,6 +159,8 @@ impl View {
             "view.key" => {
                 let bytes = key_bytes(p["key"].as_str().unwrap_or(""), p["ctrl"] == true, p["alt"] == true, p["shift"] == true);
                 if let (Some(b), Some(c)) = (bytes, self.channels.iter_mut().find(|c| c.tty == tab)) {
+                    // Typing goes back to the bottom, as in a terminal.
+                    c.screen.screen_mut().set_scrollback(0);
                     c.send(&b);
                     self.dirty.push(tab);
                 }
@@ -139,6 +176,15 @@ impl View {
                 if let Some(c) = self.channels.iter_mut().find(|c| c.tty == tab) {
                     // The first row is the channel's line.
                     c.screen.screen_mut().set_size(h.saturating_sub(1).max(1), w.max(1));
+                    self.dirty.push(tab);
+                }
+            }
+            // The wheel over a channel's tab: through its scrollback.
+            "view.wheel" => {
+                if let Some(c) = self.channels.iter_mut().find(|c| c.tty == tab) {
+                    let now = c.screen.screen().scrollback() as i64;
+                    let to = (now - p["lines"].as_i64().unwrap_or(0)).max(0) as usize;
+                    c.screen.screen_mut().set_scrollback(to);
                     self.dirty.push(tab);
                 }
             }
@@ -185,6 +231,15 @@ impl View {
                     self.side = true;
                     self.right = true;
                 }
+            }
+            Asked::ApiAttach(id, tty) => {
+                let r = if r["button"] == "Attach" {
+                    self.act(&tty, Act::Write);
+                    Ok(json!({"port": tty, "write": true}))
+                } else {
+                    Err(format!("serial.attach {tty}: the user said no"))
+                };
+                self.reply(&id, r);
             }
             Asked::Open(ttys) => {
                 if let Some(tty) = r["index"].as_u64().and_then(|i| ttys.get(i as usize)).cloned() {
@@ -260,8 +315,14 @@ impl View {
 
     /// `tty` opened here (free), shared with its xcomm session (held by one), or not.
     fn monitor(&mut self, tty: &str) {
+        if let Err(e) = self.open(tty) {
+            self.notify(format!("{tty}: {e}"));
+        }
+    }
+
+    fn open(&mut self, tty: &str) -> Result<(), String> {
         if !self.channels.iter().any(|c| c.tty == tty) {
-            let Some(p) = self.ports.iter().find(|p| p.tty == tty).cloned() else { return };
+            let Some(p) = self.ports.iter().find(|p| p.tty == tty).cloned() else { return Err("no such port".into()) };
             let me = std::process::id() as i32;
             let opened = match p.lock_pid.filter(|&pid| pid != me) {
                 None => Channel::open(Path::new(&p.path), LineSettings::default(), &env),
@@ -270,21 +331,205 @@ impl View {
                     None => Err(format!("held by {} (pid {pid}), which can't share it", comm(pid))),
                 },
             };
-            match opened {
-                Ok(c) => self.channels.push(c),
-                Err(e) => return self.notify(format!("{tty}: {e}")),
-            }
+            self.channels.push(opened?);
         }
         self.front = Some(tty.to_string());
         self.dirty.push(tty.to_string());
         self.draw();
         self.call("view.open", json!({"tab": tty}));
         self.side = true;
+        Ok(())
+    }
+
+    fn list_ports(&mut self) {
+        let mut ports = xcomm::list::enumerate(&env).unwrap_or_default();
+        ports.extend(extra_ports());
+        if ports.iter().map(|p| (&p.tty, p.lock_pid)).ne(self.ports.iter().map(|p| (&p.tty, p.lock_pid))) {
+            self.ports = ports;
+            self.side = true;
+            self.right = true;
+        }
+    }
+
+    /// An API call (termcode's `serial.*`): its answer, or None while it waits (a match,
+    /// the user's answer).
+    fn api(&mut self, id: &Value, method: &str, q: &Value) -> Option<Result<Value, String>> {
+        let port = q["port"].as_str().map(|s| s.trim_start_matches("/dev/").to_string());
+        let need = || format!("{method}: give \"port\" (ttyUSB0)");
+        let not_open = |t: &str| format!("{t} is not open: serial.monitor first");
+        Some(match method {
+            "serial.ports" => {
+                self.list_ports();
+                Ok(self.ports_json())
+            }
+            "serial.note" => (|| {
+                let tty = port.ok_or_else(need)?;
+                self.list_ports();
+                let p = self.ports.iter().find(|p| p.tty == tty).ok_or_else(|| format!("no port {tty}"))?;
+                let pid = port_id(p);
+                let note: String = q["note"].as_str().unwrap_or("").trim().chars().take(80).collect();
+                if note.is_empty() {
+                    self.notes.remove(&pid);
+                } else {
+                    self.notes.insert(pid.clone(), note);
+                }
+                save_notes(&self.notes);
+                self.side = true;
+                Ok(json!({"port": tty, "id": pid}))
+            })(),
+            "serial.monitor" => (|| {
+                let tty = port.ok_or_else(need)?;
+                self.list_ports();
+                self.open(&tty)?;
+                let c = self.channels.iter().find(|c| c.tty == tty).ok_or("gone")?;
+                Ok(json!({"port": tty, "write": c.write, "shared": c.shared.is_some(), "status": status(c)}))
+            })(),
+            "serial.read" => (|| {
+                let tty = port.ok_or_else(need)?;
+                let c = self.channels.iter().find(|c| c.tty == tty).ok_or_else(|| not_open(&tty))?;
+                let since = q["since"].as_u64().unwrap_or_else(|| c.output_end().saturating_sub(4096));
+                let (text, next) = c.output_since(since, 1 << 20);
+                Ok(json!({"port": tty, "text": text, "next": next}))
+            })(),
+            "serial.wait" => {
+                let r = (|| {
+                    let tty = port.ok_or_else(need)?;
+                    let pat = q["match"].as_str().ok_or("serial.wait: give \"match\", a regex")?;
+                    if pat.len() > 1000 {
+                        return Err("match: 1000 characters at most".to_string());
+                    }
+                    let re = regex::RegexBuilder::new(pat).size_limit(1 << 20).build().map_err(|e| format!("match: {e}"))?;
+                    let c = self.channels.iter().find(|c| c.tty == tty).ok_or_else(|| not_open(&tty))?;
+                    let mark = q["since"].as_u64().unwrap_or_else(|| c.output_end());
+                    let secs = q["timeout"].as_f64().unwrap_or(30.0).clamp(0.0, 3600.0);
+                    Ok(ApiWait { id: id.clone(), tty, re, mark, until: Instant::now() + Duration::from_secs_f64(secs) })
+                })();
+                match r {
+                    Ok(w) => {
+                        self.waits.push(w);
+                        return None;
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            "serial.attach" => {
+                let Some(tty) = port else { return Some(Err(need())) };
+                let Some(c) = self.channels.iter().find(|c| c.tty == tty) else { return Some(Err(not_open(&tty))) };
+                if c.write {
+                    Ok(json!({"port": tty, "write": true}))
+                } else if c.link != Link::Open {
+                    Err(format!("{tty} is not available (unplugged?)"))
+                } else if let Some((_, who)) = &c.shared {
+                    // Someone else's port: the user says, in termcode.
+                    let text = format!("An agent asks to type into {tty}, held by {who}.");
+                    let n = self.call("ui.prompt", json!({"text": text, "buttons": ["Attach", "Cancel"]}));
+                    self.asked.insert(n, Asked::ApiAttach(id.clone(), tty));
+                    return None;
+                } else {
+                    self.act(&tty, Act::Write);
+                    Ok(json!({"port": tty, "write": true}))
+                }
+            }
+            "serial.send" => (|| {
+                let tty = port.ok_or_else(need)?;
+                let text = q["text"].as_str().ok_or("serial.send: give \"text\" (end it with \\r to enter it)")?;
+                let c = self.channels.iter_mut().find(|c| c.tty == tty).ok_or_else(|| not_open(&tty))?;
+                if !c.write {
+                    return Err(format!("{tty} is read only: serial.attach first"));
+                }
+                let mark = c.output_end();
+                c.send(text.as_bytes());
+                // Shown as an agent's, as xcomm shows a control client's sends.
+                let shown: String = text.chars().map(|ch| if ch.is_control() { ' ' } else { ch }).collect();
+                c.screen.process(format!("\x1b[2m[api] {}\x1b[0m\r\n", shown.trim_end()).as_bytes());
+                self.dirty.push(tty.clone());
+                Ok(json!({"port": tty, "sent": text.len(), "mark": mark}))
+            })(),
+            "serial.set" => (|| {
+                let tty = port.ok_or_else(need)?;
+                let c = self.channels.iter_mut().find(|c| c.tty == tty).ok_or_else(|| not_open(&tty))?;
+                let line = c.set_line(q)?;
+                self.right = true;
+                Ok(json!({"port": tty, "line": line}))
+            })(),
+            "serial.close" => (|| {
+                let tty = port.ok_or_else(need)?;
+                if !self.channels.iter().any(|c| c.tty == tty) {
+                    return Err(format!("{tty} is not open"));
+                }
+                self.close(&tty);
+                Ok(json!({"port": tty, "closed": true}))
+            })(),
+            m => Err(format!("unknown method {m:?}")),
+        })
+    }
+
+    /// The ports for the API: each with its note, its state (as its dot), who holds it,
+    /// and the channel open on it here.
+    fn ports_json(&self) -> Value {
+        let me = std::process::id() as i32;
+        let list: Vec<Value> = self
+            .ports
+            .iter()
+            .map(|p| {
+                let ch = self.channels.iter().find(|c| c.tty == p.tty);
+                let shareable = p.lock_pid.is_some_and(|pid| pid != me) && session_socket(&p.tty, &env).is_some();
+                let state = match (ch, p.lock_pid) {
+                    (Some(c), _) if c.link != Link::Open => "red",
+                    (Some(c), _) if !c.write => "yellow",
+                    (Some(_), _) | (None, None) => "green",
+                    (None, Some(pid)) if pid == me => "green",
+                    (None, _) if shareable => "yellow",
+                    (None, _) => "red",
+                };
+                json!({
+                    "tty": p.tty,
+                    "note": self.notes.get(&port_id(p)),
+                    "state": state,
+                    "adapter": p.product,
+                    "usb": p.vid_pid,
+                    "serial": p.serial,
+                    "by_id": p.by_id,
+                    "holder": p.lock_pid.map(|pid| json!({"pid": pid, "here": pid == me, "herdr_pane": p.herdr_pane, "xcomm": shareable})),
+                    "channel": ch.map(|c| json!({"line": xcomm::port::describe(&c.settings), "write": c.write, "in": c.rx, "out": c.tx, "connected": c.link == Link::Open})),
+                })
+            })
+            .collect();
+        Value::Array(list)
+    }
+
+    /// `serial.wait`s matched, or out of time: answered.
+    fn answer_waits(&mut self) {
+        let now = Instant::now();
+        let mut done = Vec::new();
+        self.waits.retain(|w| {
+            let Some(c) = self.channels.iter().find(|c| c.tty == w.tty) else {
+                done.push((w.id.clone(), Err(format!("{} was closed", w.tty))));
+                return false;
+            };
+            let (text, next) = c.output_since(w.mark, 1 << 20);
+            if let Some(m) = w.re.find(&text) {
+                let tail: String = text.chars().rev().take(4096).collect::<Vec<_>>().into_iter().rev().collect();
+                done.push((w.id.clone(), Ok(json!({"matched": m.as_str(), "output": tail, "next": next}))));
+                return false;
+            }
+            if now >= w.until {
+                done.push((w.id.clone(), Err("timed out".into())));
+                return false;
+            }
+            true
+        });
+        for (id, r) in done {
+            self.reply(&id, r);
+        }
     }
 
     fn close(&mut self, tty: &str) {
         let before = self.channels.len();
         self.channels.retain(|c| c.tty != tty);
+        // A channel opened again starts its output from 0: nothing of this one's kept.
+        self.emitted.remove(tty);
+        self.sent.remove(tty);
         if self.channels.len() != before {
             self.call("view.clear", json!({"slot": "main", "tab": tty}));
             self.side = true;
@@ -296,13 +541,7 @@ impl View {
     fn work(&mut self) {
         if self.visible && self.listed.is_none_or(|t| t.elapsed() >= LIST_EVERY) {
             self.listed = Some(Instant::now());
-            let mut ports = xcomm::list::enumerate(&env).unwrap_or_default();
-            ports.extend(extra_ports());
-            if ports.iter().map(|p| (&p.tty, p.lock_pid)).ne(self.ports.iter().map(|p| (&p.tty, p.lock_pid))) {
-                self.ports = ports;
-                self.side = true;
-                self.right = true;
-            }
+            self.list_ports();
         }
         let mut polled = Vec::new();
         for c in &mut self.channels {
@@ -313,6 +552,9 @@ impl View {
                 self.dirty.push(c.tty.clone());
                 self.side |= back;
             }
+        }
+        if !self.waits.is_empty() {
+            self.answer_waits();
         }
     }
 
@@ -335,10 +577,19 @@ impl View {
         for tty in due {
             self.dirty.retain(|t| *t != tty);
             let Some(c) = self.channels.iter().find(|c| c.tty == tty) else { continue };
-            let mut rows = vec![json!({"text": status(c), "dim": true})];
-            rows.extend(screen_rows(c, c.write && self.front.as_deref() == Some(&tty)));
+            let back = c.screen.screen().scrollback();
+            let line = if back > 0 { format!("{} · ↑ {back} lines back (type to return)", status(c)) } else { status(c) };
+            let mut rows = vec![json!({"text": line, "dim": true})];
+            rows.extend(screen_rows(c, back == 0 && c.write && self.front.as_deref() == Some(&tty)));
+            // What came since last time, to whoever watches serial.output.
+            let from = *self.emitted.get(&tty).unwrap_or(&c.output_end());
+            let (text, next) = c.output_since(from, 64 << 10);
+            self.emitted.insert(tty.clone(), next);
             self.sent.insert(tty.clone(), now);
-            self.call("view.set", json!({"slot": "main", "tab": tty, "title": tty, "rows": rows}));
+            self.call("view.set", json!({"slot": "main", "tab": tty, "title": tty, "rows": rows, "scroll": "self"}));
+            if !text.is_empty() {
+                self.call("events.emit", json!({"topic": "serial.output", "port": tty, "text": text}));
+            }
         }
     }
 
@@ -357,7 +608,7 @@ impl View {
             };
             let picked = self.picked.as_deref() == Some(&p.tty);
             let what = p.product.clone().or_else(|| p.vid_pid.clone()).unwrap_or_default();
-            rows.push(json!({"cells": [{"text": "● ", "fg": dot}, {"text": p.tty, "bold": true, "fg": if picked { "accent" } else { "fg" }}, {"text": format!("  {what}"), "dim": true}], "action": format!("pick:{}", p.tty)}));
+            rows.push(json!({"cells": [{"text": "● ", "fg": dot}, {"text": p.tty, "bold": true, "fg": if picked { "accent" } else { "fg" }}, {"text": format!("  {what}"), "dim": true}], "action": format!("pick:{}", p.tty), "hint": self.card(p)}));
             let mut line = vec![json!("  "), json!({"text": "Monitor", "button": true, "action": format!("monitor:{}", p.tty)}), json!(" ")];
             match self.notes.get(&port_id(p)) {
                 Some(n) => line.push(json!({"text": n, "fg": "info", "action": format!("note:{}", p.tty)})),
@@ -366,6 +617,23 @@ impl View {
             rows.push(Value::Array(line));
         }
         rows
+    }
+
+    /// A port's card on hover: what it is, who holds it, its note.
+    fn card(&self, p: &PortInfo) -> String {
+        let mut l = vec![format!("{}  {}", p.tty, p.path)];
+        let mut add = |k: &str, v: Option<String>| {
+            if let Some(v) = v {
+                l.push(format!("{k:<8} {v}"));
+            }
+        };
+        add("Adapter", p.product.clone());
+        add("USB ID", p.vid_pid.clone());
+        add("Serial", p.serial.clone());
+        add("By id", p.by_id.clone());
+        add("Held by", p.lock_pid.map(|pid| format!("{} (pid {pid})", comm(pid))));
+        add("Note", self.notes.get(&port_id(p)).cloned());
+        l.join("\n")
     }
 
     fn channel_rows(&self) -> Vec<Value> {

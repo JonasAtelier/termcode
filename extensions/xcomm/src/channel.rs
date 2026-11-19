@@ -415,6 +415,46 @@ impl Channel {
         }
     }
 
+    /// Output as plain text (escapes dropped) from `since` (clamped to what the ring
+    /// keeps), and the offset after it.
+    pub fn output_since(&self, since: u64, max: usize) -> (String, u64) {
+        let from = since.max(self.ring.oldest());
+        let mut bytes = Vec::new();
+        let next = self.ring.read(from, max, &mut bytes).unwrap_or(from);
+        (plain(&bytes), next)
+    }
+
+    /// The offset after the last byte (waits start there).
+    pub fn output_end(&self) -> u64 {
+        self.ring.end()
+    }
+
+    /// Line settings from an API call (baud, data_bits, parity, stop_bits, flow), on a
+    /// channel typed into: what the line is now.
+    pub fn set_line(&mut self, p: &serde_json::Value) -> Result<String, String> {
+        use xcomm::ctl::proto::{Request, SettingsPatch};
+        if !self.write {
+            return Err(format!("{} is read only: serial.attach first", self.tty));
+        }
+        let patch = SettingsPatch {
+            baud: p["baud"].as_u64().map(|b| b as u32),
+            data_bits: p["data_bits"].as_u64().map(|b| b as u8),
+            parity: p["parity"].as_str().map(str::to_string),
+            stop_bits: p["stop_bits"].as_u64().map(|b| b as u8),
+            flow: p["flow"].as_str().map(str::to_string),
+        };
+        let s = patch.apply(self.settings)?;
+        match &mut self.source {
+            Some(Source::Own(port, _)) => {
+                let _applied = port.configure(&s).map_err(|e| e.to_string())?;
+            }
+            Some(Source::Shared { ctl: Some(ctl), .. }) => request(ctl, Request::Set { patch }).map_err(|e| e.to_string())?,
+            _ => return Err(format!("{} is not connected", self.tty)),
+        }
+        self.settings = s;
+        Ok(xcomm::port::describe(&s))
+    }
+
     /// A lost port (or a shared session gone) looked for again, its time come: true
     /// when it is back.
     pub fn retry(&mut self, env: &dyn Fn(&str) -> Option<String>) -> bool {
@@ -642,3 +682,26 @@ pub fn status(c: &Channel) -> String {
     format!("{} · {link} · ↓{} ↑{}{cap}{note}", xcomm::port::describe(&c.settings), human(c.rx), human(c.tx))
 }
 
+
+/// Device bytes as text: escape sequences dropped, newlines and tabs kept.
+pub fn plain(bytes: &[u8]) -> String {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut esc = 0u8;
+    for &c in bytes {
+        esc = match (esc, c) {
+            (0, 0x1b) => 1,
+            (0, b'\n' | b'\t') | (0, 0x20..=0x7e | 0x80..) => {
+                out.push(c);
+                0
+            }
+            (1, b'[') => 2,
+            (1, b']' | b'P' | b'_' | b'^') => 3,
+            (2, 0x20..=0x3f) | (3, _) if c != 0x07 && c != 0x1b => esc,
+            (3, 0x1b) => 4,
+            (4, b'\\') => 0,
+            (4, _) => 3,
+            _ => 0,
+        };
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
