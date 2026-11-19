@@ -21,9 +21,7 @@ impl App {
         if self.space() != sp {
             let side = match sp {
                 Space::Code => self.code_side,
-                Space::Serial => Side::Serial,
-                Space::GitHub => Side::GitHub,
-                Space::Programmer => Side::Programmer,
+                Space::View(n) => Side::View(n),
             };
             let visible = self.side_visible;
             self.show_side(side, false);
@@ -172,6 +170,7 @@ impl App {
     pub fn tab_title(&self, key: &str) -> String {
         match self.docs.get(key) {
             Some(Doc::Diff(d)) => d.title.clone(),
+            _ if key.starts_with(crate::ext::PREFIX) => crate::ext::main_title(self, key).unwrap_or_default(),
             _ => match key.split_once(':') {
                 Some(("preview", rel)) => format!("Preview {}", base(rel)),
                 Some(("usage", rel)) => format!("Usage {}", base(rel)),
@@ -362,12 +361,9 @@ impl App {
             self.drop_doc(&key);
             self.sync_backups();
         }
-        if refs == 1 && key == crate::programmer::KEY {
-            crate::programmer::closed(self);
-        }
-        // A channel's last tab closed: its port given back.
-        if let Some(tty) = key.strip_prefix(crate::xcomm::PREFIX).filter(|_| refs == 1) {
-            crate::xcomm::close(self, tty);
+        // Its driver told its last copy closed (a serial channel's port given back).
+        if refs == 1 {
+            crate::ext::closed(self, &key);
         }
         // A preview's (a patch diff's) source shown nowhere goes with it.
         if let Some((rel, _)) = other_look(&key).filter(|_| !key.starts_with("file:")) {
@@ -501,6 +497,8 @@ impl App {
             PAct::Api(a) => self.api_gate.answer = Some(a),
             PAct::ApiPick(n, b) => self.api_gate.picked = Some((n, b)),
             PAct::RustCheck(root, yes) => self.lints.set_cargo_allowed(&root, yes),
+            PAct::ExtInstall(yes) => crate::ext::decided(self, yes),
+            PAct::ExtRemove(id) => crate::ext::removed(self, &id),
             PAct::Serial(tty, write) => crate::xcomm::share(self, &tty, write),
             PAct::QuitEndTerminal => {
                 self.term_quit_ok = true;

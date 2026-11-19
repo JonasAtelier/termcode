@@ -21,6 +21,9 @@ pub enum Out {
     Notify(String),
     /// `ui.prompt`: the user asked in termcode; the button picked is the answer.
     Ask { text: String, buttons: Vec<String>, timeout: Duration },
+    /// `ui.input` (no items: a line typed, `value` to start with) or `ui.pick` (one of
+    /// `items`: label, detail): the user's answer.
+    Input { text: String, value: String, items: Option<Vec<(String, String)>>, timeout: Duration },
 }
 
 /// What `events.watch` sends, each as `{"method": "event", "params": {"topic", …}}`.
@@ -48,6 +51,8 @@ pub const METHODS: &[&str] = &[
     "serial.close",
     "ui.notify",
     "ui.prompt",
+    "ui.input",
+    "ui.pick",
     "ui.decorate",
     "ui.clear",
 ];
@@ -60,7 +65,9 @@ pub fn tier(method: &str, p: &Value) -> crate::api::Tier {
     match method {
         "editor.open" | "buffer.edit" | "buffer.save" | "serial.note" | "serial.monitor" | "serial.close" => Tier::Edit,
         // Showing things in termcode, asking the user: as changing what is open.
-        "ui.notify" | "ui.prompt" | "ui.decorate" | "ui.clear" => Tier::Edit,
+        "ui.notify" | "ui.prompt" | "ui.input" | "ui.pick" | "ui.decorate" | "ui.clear" => Tier::Edit,
+        // An extension bringing its view to the front (its panes are its own: reading).
+        "view.open" => Tier::Edit,
         "command.run" | "terminal.send" | "events.wait" | "serial.attach" | "serial.send" | "serial.set" => Tier::Run,
         "state.get" if matches!(p["path"].as_str(), Some("/terminals" | "/ui/screen")) => Tier::Run,
         // Output (a terminal's, a serial port's) is what running reads; the rest is reading.
@@ -154,6 +161,30 @@ pub fn call(app: &mut App, method: &str, p: &Value) -> Result<Out, String> {
             }
             let timeout = Duration::from_secs_f64(p["timeout"].as_f64().unwrap_or(120.0).clamp(1.0, 3600.0));
             Ok(Out::Ask { text, buttons, timeout })
+        }
+        "ui.input" | "ui.pick" => {
+            let text = p["text"].as_str().ok_or_else(|| format!("{method}: give \"text\" (what is asked)"))?.chars().take(120).collect();
+            let timeout = Duration::from_secs_f64(p["timeout"].as_f64().unwrap_or(120.0).clamp(1.0, 3600.0));
+            let items = if method == "ui.pick" {
+                let items: Vec<(String, String)> = p["items"]
+                    .as_array()
+                    .ok_or("ui.pick: give \"items\": [\"label\", or {\"label\", \"detail\"}]")?
+                    .iter()
+                    .take(1000)
+                    .filter_map(|v| match v {
+                        Value::String(s) => Some((s.chars().take(200).collect(), String::new())),
+                        _ => Some((v["label"].as_str()?.chars().take(200).collect(), v["detail"].as_str().unwrap_or("").chars().take(200).collect())),
+                    })
+                    .collect();
+                if items.is_empty() {
+                    return Err("ui.pick: no items".into());
+                }
+                Some(items)
+            } else {
+                None
+            };
+            let value = p["value"].as_str().unwrap_or("").chars().take(1000).collect();
+            Ok(Out::Input { text, value, items, timeout })
         }
         "ui.decorate" => {
             let rel = rel_path(app, p)?;

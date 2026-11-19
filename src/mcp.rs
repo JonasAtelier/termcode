@@ -30,6 +30,8 @@ const TOOLS: &[(&str, &str)] = &[
     ("serial.close", "Close a serial channel: {port}."),
     ("ui.notify", "Show a message on termcode's status bar: {text}."),
     ("ui.prompt", "Ask the user in termcode: {text, buttons? (up to 4)}; returns the button picked."),
+    ("ui.input", "Ask the user for a line of text in termcode: {text, value? (to start with)}; returns the text (null: closed)."),
+    ("ui.pick", "Ask the user to pick one in termcode: {text, items: [label or {label, detail}]}; returns index and label (null: closed)."),
     ("ui.decorate", "Mark lines of a file as problems with a note: {path, marks: [{line, severity? (info, warning, error), note}]}."),
     ("ui.clear", "Remove your marks: {path?}."),
 ];

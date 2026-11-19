@@ -69,7 +69,9 @@ impl App {
         }
         // So does a serial channel's tab (its board's line editing needs Ctrl+W, Ctrl+H,
         // Ctrl+K…): all but F1, Ctrl+Q, the terminal's key and the tab keys.
-        if self.focus == Focus::Editor && !self.replaying && crate::xcomm::takes(self, k) {
+        // A driver's keys before termcode's (ext.rs): a serial channel's tab takes all
+        // but F1, Ctrl+Q, the terminal's key and the tab keys; an extension its own.
+        if !self.replaying && crate::ext::takes(self, k) {
             return;
         }
         // The user's keybindings come before the default keys ("" turns a key off).
@@ -190,7 +192,7 @@ impl App {
             Focus::Editor => {
                 // The STM32 Programmer's page scrolls by keys too (it has no text).
                 // So do a picture and a PDF's pages (zoom, pan, pages).
-                if !crate::xcomm::page_key(self, k) && !crate::programmer::page_key(self, k) && !crate::media::key(self, k) && !crate::logview::key(self, k) {
+                if !crate::ext::tab_key(self, k) && !crate::media::key(self, k) && !crate::logview::key(self, k) {
                     self.editor_key(k, ctrl, alt, shift);
                 }
             }
@@ -436,20 +438,8 @@ impl App {
         if self.side == Side::Scm && crate::scm::key(self, k) {
             return;
         }
-        if self.side == Side::Serial {
-            if !crate::xcomm::key(self, k) && k.code == KeyCode::Esc {
-                self.focus = Focus::Editor;
-            }
-            return;
-        }
-        if self.side == Side::Programmer {
-            if !crate::programmer::key(self, k) && k.code == KeyCode::Esc {
-                self.focus = Focus::Editor;
-            }
-            return;
-        }
-        if self.side == Side::GitHub {
-            if !crate::github::key(self, k) && k.code == KeyCode::Esc {
+        if let Side::View(n) = self.side {
+            if !crate::ext::key(self, n, k) && k.code == KeyCode::Esc {
                 self.focus = Focus::Editor;
             }
             return;
@@ -478,7 +468,7 @@ impl App {
             }
         }
         if self.side == Side::Explorer {
-            let e = Side::Explorer as usize;
+            let e = Side::Explorer.idx();
             match k.code {
                 // Shift+↑↓: the selection grows from the anchor.
                 KeyCode::Up | KeyCode::Down if k.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -502,7 +492,7 @@ impl App {
             }
         }
         let page = self.ui.side_rows.max(1) as isize;
-        let s = self.side as usize;
+        let s = self.side.idx();
         match k.code {
             KeyCode::Up => self.step_side(-1),
             KeyCode::Down => self.step_side(1),
@@ -824,7 +814,7 @@ impl App {
         if self.gitui.cmds.picker.is_some() {
             return crate::gitcmds::picker_paste(self, text);
         }
-        if self.focus == Focus::Editor && (crate::xcomm::paste(self, text) || crate::programmer::paste(self, text)) {
+        if crate::ext::paste(self, text) {
             return;
         }
         match self.focus {
@@ -848,9 +838,7 @@ impl App {
             }
             // A paste while a list has focus is dropped, never redirected into a file (a
             // GitHub title being edited takes it).
-            Focus::Side => {
-                crate::github::paste(self, text);
-            }
+            Focus::Side => {}
             Focus::Term if self.term_find.is_some() => self.term_find_paste(text),
             Focus::Term => {
                 if let Some(t) = self.terms.get_mut(self.term_at) {

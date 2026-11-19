@@ -22,6 +22,37 @@ use xcomm::port::Port;
 
 /// A channel's editor tab: `serial:<tty>`.
 pub const PREFIX: &str = "serial:";
+
+/// The Serial view: an in-tree driver of the view subsystem (ext/mod.rs).
+pub const OPS: crate::ext::Ops = crate::ext::Ops {
+    id: "serial",
+    name: "Serial",
+    title: "SERIAL (XCOMM)",
+    about: "Serial ports and their streams, on xcomm",
+    hint: "Open a port from the side bar",
+    icon: || crate::theme::icons().serial,
+    side: draw_side,
+    owns: |k| k.starts_with(PREFIX),
+    tab: |app, f, _, r, key, focused| {
+        draw_page(app, f, r, key, focused);
+        crate::ext::Drawn::Whole
+    },
+    // A channel's last tab closed: its port given back.
+    closed: |app, key| close(app, key.strip_prefix(PREFIX).unwrap_or(key)),
+    right: draw_settings,
+    click: |app, p, _| click(app, p),
+    wheel,
+    mouse,
+    drag_to,
+    key,
+    tab_key: page_key,
+    takes: |app, k| app.focus == crate::panel::Focus::Editor && takes(app, k),
+    paste: |app, t| app.focus == crate::panel::Focus::Editor && paste(app, t),
+    tick,
+    fds,
+    overlay: draw_peek,
+    ..crate::ext::Ops::NONE
+};
 /// Lines of a channel's output kept to scroll back through.
 const SCROLLBACK: usize = 10_000;
 /// How often the ports are listed while the view shows, and a lost port looked for.
@@ -893,7 +924,7 @@ impl Drop for Channel {
 /// True when something on screen changed.
 pub fn tick(app: &mut App) -> bool {
     let mut changed = false;
-    let shown = app.side == crate::panel::Side::Serial && app.side_visible;
+    let shown = app.side == crate::panel::Side::SERIAL && app.side_visible;
     if shown && app.serial.listed.is_none_or(|t| t.elapsed() >= LIST_EVERY) {
         app.serial.listed = Some(Instant::now());
         match xcomm::list::enumerate(&env) {
@@ -1084,7 +1115,7 @@ pub fn paste(app: &mut App, text: &str) -> bool {
 /// The wheel over a channel's tab scrolls its output back.
 pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
     // Over the side bar's blocks: they scroll.
-    if app.side == crate::panel::Side::Serial && app.side_visible {
+    if app.side == crate::panel::Side::SERIAL && app.side_visible {
         if let Some(k) = app.serial.panes.iter().position(|r| r.contains(p)) {
             let s = &mut app.serial.scrolls[k];
             *s = if d < 0 { s.saturating_sub(3) } else { s.saturating_add(3) };
@@ -1235,7 +1266,7 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect) {
     }
     let notes = app.serial.notes().clone();
     let (hover, focused) = (app.hover, app.focus == Focus::Side);
-    let dragging = matches!(app.drag, crate::panel::Drag::SerialSash);
+    let dragging = matches!(app.drag, crate::panel::Drag::View(crate::ext::SERIAL));
     let ascii = crate::theme::ascii();
     let dot_ch = if ascii { "*" } else { "●" };
     let me = std::process::id() as i32;
@@ -1441,7 +1472,7 @@ pub fn draw_settings(app: &mut App, f: &mut Frame, r: Rect) -> bool {
 /// about the port at a glance, its channel's line settings and modem lines when open.
 pub fn draw_peek(app: &mut App, f: &mut Frame) {
     use crate::theme::P;
-    if app.side != crate::panel::Side::Serial || !app.side_visible {
+    if app.side != crate::panel::Side::SERIAL || !app.side_visible {
         return;
     }
     let s = &app.serial;
@@ -1515,11 +1546,11 @@ pub fn click(app: &mut App, p: Position) -> bool {
             return true;
         }
     }
-    if app.side != crate::panel::Side::Serial || !app.side_visible {
+    if app.side != crate::panel::Side::SERIAL || !app.side_visible {
         return false;
     }
     if app.serial.sash.contains(p) {
-        app.drag = crate::panel::Drag::SerialSash;
+        app.drag = crate::panel::Drag::View(crate::ext::SERIAL);
         return true;
     }
     let Some(&(_, hit)) = app.serial.hits.iter().rev().find(|(r, _)| r.contains(p)) else { return false };
@@ -1850,7 +1881,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("termcode-xcomm-monitor-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let mut app = App::new(root.clone(), None);
-        app.show_side(crate::panel::Side::Serial, false);
+        app.show_side(crate::panel::Side::SERIAL, false);
         app.serial.listed = Some(Instant::now() + Duration::from_secs(3600)); // no real listing
         let (_dev, tty) = pty();
         let name = tty_of(&tty);
@@ -2052,7 +2083,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("termcode-xcomm-notes-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let mut app = App::new(root.clone(), None);
-        app.show_side(crate::panel::Side::Serial, false);
+        app.show_side(crate::panel::Side::SERIAL, false);
         app.side_w = Some(60); // whole rows
         app.serial.listed = Some(Instant::now() + Duration::from_secs(3600)); // no real listing
         app.serial.ports = vec![fake_port("ttyUSB7", "A1B2C3D4", None), fake_port("ttyUSB8", "E5F6G7H8", Some(1))];

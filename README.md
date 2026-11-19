@@ -91,6 +91,24 @@ guide for agents. Set `termcode.api` to `"read-only"` or `"off"` in Settings to 
 `termcode mcp` serves the same as MCP tools; `termcode --headless` runs one with no
 terminal (`--api-stdio`: the API on stdin and stdout).
 
+## Extensions
+
+An extension adds its own view: an activity bar icon, side bar sections, a tab, right
+and bottom panels. termcode draws and lays them out; the extension, a program in any
+language, fills them with rows and handles clicks and keys.
+
+Click **+** above Settings to install one (a git URL or a folder), turn any view off,
+or remove one. From a shell:
+
+```bash
+termcode ext install https://github.com/someone/termcode-thing   # shows what it may do, asks
+termcode ext list
+termcode ext remove thing
+termcode ext new mine                                             # a start for your own
+```
+
+Writing one: [doc/extensions.md](doc/extensions.md); for agents, `termcode ext --skill`.
+
 ## Help and settings
 
 **Ctrl+,** opens Settings. The Debian package includes `man termcode`. The

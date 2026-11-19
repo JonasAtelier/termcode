@@ -25,7 +25,7 @@ impl App {
     }
 
     pub(crate) fn open_palette(&mut self) {
-        let items = filter_commands_recent("", &self.recent_cmds);
+        let items = filter_commands_recent("", &self.recent_cmds, &crate::ext::command_titles(self));
         self.quick = Some(Quick { query: String::new(), items, sel: 0, off: 0, commands: true, goto: Vec::new() });
     }
 
@@ -112,8 +112,12 @@ impl App {
             self.recent_cmds.insert(0, item.clone());
             self.recent_cmds.truncate(MAX_RECENT);
             self.save_layout();
-            if let Some(c) = all_commands().find(|c| c.0 == item) {
-                self.run_command(c.1);
+            // termcode's, else an extension's (ext.rs).
+            match all_commands().find(|c| c.0 == item) {
+                Some(c) => self.run_command(c.1),
+                None => {
+                    crate::ext::run_command(self, &item);
+                }
             }
         } else {
             self.open_file(self.ag, &item, false);
@@ -140,7 +144,7 @@ impl App {
                     _ => return,
                 }
                 let (query, commands) = (q.query.clone(), q.commands);
-                let (items, goto) = if commands { (filter_commands_recent(&query, &self.recent_cmds), Vec::new()) } else { self.quick_rows(&query) };
+                let (items, goto) = if commands { (filter_commands_recent(&query, &self.recent_cmds, &crate::ext::command_titles(self)), Vec::new()) } else { self.quick_rows(&query) };
                 if let Some(q) = self.quick.as_mut() {
                     (q.items, q.goto, q.sel) = (items, goto, 0);
                 }

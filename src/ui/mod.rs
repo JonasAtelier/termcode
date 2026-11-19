@@ -214,8 +214,9 @@ pub fn lang_id(name: &str) -> String {
 }
 
 pub fn draw(app: &mut App, f: &mut Frame) {
+    app.exts.begin();
     draw_frame(app, f);
-    crate::xcomm::draw_peek(app, f);
+    crate::ext::overlay(app, f);
     if app.prefix_armed {
         prefix_hint(app, f);
     }
@@ -335,28 +336,31 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     // keep 30 columns. Drawn after them: a restored tab's document is read as it shows.
     let mut outline = None;
     // (A repository page has its own outline beside its tree.)
-    if app.outline_open && ed.width >= 50 && !crate::github::page::active(app) && !crate::programmer::active(app) {
+    // An extension's right panel takes the Outline's place in its view.
+    if (app.outline_open || crate::ext::right_here(app)) && ed.width >= 50 && !crate::ext::page(app) {
         let w = app.outline_w.unwrap_or(30).clamp(16, ed.width - 30);
         ed.width -= w;
         outline = Some(Rect::new(ed.right(), ed.y, w, ed.height));
     }
     // The terminal panel under the editor groups, their width; its height dragged, the
     // groups keeping at least a tab bar and a few lines.
-    let panel_here = match app.space() {
-        crate::panel::Space::Code => true,
-        crate::panel::Space::Programmer => true, // its log is a tab there
-        _ => false,
-    };
-    if app.term_open && panel_here && ed.height >= 12 {
+    let panel_here = crate::ext::terminal_here(app);
+    // An extension's bottom panel takes the terminal's place in its view.
+    let ext_bottom = crate::ext::bottom_here(app);
+    if ((app.term_open && panel_here) || ext_bottom) && ed.height >= 12 {
         let h = app.term_h.unwrap_or(ed.height / 3).clamp(5, ed.height - 7);
         ed.height -= h;
-        terminal_panel(app, f, Rect::new(ed.x, ed.bottom(), ed.width, h));
+        let pr = Rect::new(ed.x, ed.bottom(), ed.width, h);
+        if !(ext_bottom && crate::ext::draw_panel(app, f, pr, crate::ext::Slot::Bottom)) {
+            terminal_panel(app, f, pr);
+        }
     }
     app.ui.editor_area = ed;
     editor_area(app, f, ed, lay);
     if let Some(r) = outline {
         // A serial channel's tab: its settings there instead (the same button).
-        if !crate::xcomm::draw_settings(app, f, r) {
+        // A driver's right panel there instead (a serial channel's settings, an extension's).
+        if !crate::ext::right(app, f, r) {
             outline_panel(app, f, r);
         }
     }
@@ -560,31 +564,23 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     if r.width > 0 && r.height > 0 {
         item(f, siy, settings_open, app.hover.is_some_and(|p| bottom.contains(p)), ic.settings, r.bottom());
     }
-    // GitHub right above Settings (VS Code's Accounts place), where the views leave room.
-    let gh_r = Rect::new(r.x, bottom.y.saturating_sub(ih), r.width, ih);
-    // The STM32 Programmer right above GitHub, Serial above it.
-    let st_r = Rect::new(r.x, gh_r.y.saturating_sub(ih), r.width, ih);
-    let se_r = Rect::new(r.x, st_r.y.saturating_sub(ih), r.width, ih);
+    // Upward from Settings, where the views leave room: the Extensions view (+), then the
+    // built-in views (GitHub, the Programmer, Serial); each lit down to the icon below it.
     let fits = |q: Rect| q.y >= r.y + ih * SIDES.len() as u16 && r.width > 0;
     let mut views_end = bottom.y;
-    if fits(gh_r) {
-        let active = app.side == Side::GitHub && app.side_visible && !settings_open;
-        let hot = app.hover.is_some_and(|p| gh_r.contains(p));
-        // Lit like the views: its lower half on the blank row above Settings' icon.
-        item(f, gh_r.y + off, active, hot, ic.gh[0], siy);
-        views_end = gh_r.y;
-        if fits(st_r) && st_r.y < gh_r.y {
-            let active = app.side == Side::Programmer && app.side_visible && !settings_open;
-            let hot = app.hover.is_some_and(|p| st_r.contains(p));
-            item(f, st_r.y + off, active, hot, ic.chip, gh_r.y + off);
-            views_end = st_r.y;
-            if fits(se_r) && se_r.y < st_r.y {
-                let active = app.side == Side::Serial && app.side_visible && !settings_open;
-                let hot = app.hover.is_some_and(|p| se_r.contains(p));
-                item(f, se_r.y + off, active, hot, ic.serial, st_r.y + off);
-                views_end = se_r.y;
-            }
+    let mut below = siy;
+    let mut low = Vec::new();
+    for (n, icon) in crate::ext::bottom_items(app) {
+        let q = Rect::new(r.x, views_end.saturating_sub(ih), r.width, ih);
+        if !fits(q) || q.y >= views_end {
+            break;
         }
+        let active = app.side == Side::View(n) && app.side_visible && !settings_open;
+        let hot = app.hover.is_some_and(|p| q.contains(p));
+        item(f, q.y + off, active, hot, &icon, below);
+        below = q.y + off;
+        views_end = q.y;
+        low.push((q, Side::View(n)));
     }
     for (i, s) in SIDES.iter().enumerate() {
         let y = r.y + i as u16 * ih;
@@ -598,7 +594,7 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             Side::Explorer => ic.files,
             Side::Search => ic.search,
             Side::Scm => ic.scm,
-            Side::GitHub | Side::Programmer | Side::Serial => continue, // above Settings
+            Side::View(_) => continue,
         };
         let iy = y + off;
         item(f, iy, active, hot, icon, bottom.y);
@@ -607,16 +603,19 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
         }
         app.ui.activity.push((item_r, *s));
     }
-    // GitHub's after the views (hit-tested the same way).
-    if views_end < bottom.y {
-        app.ui.activity.push((gh_r, Side::GitHub));
+    // Installed extensions after the code views, where room is left.
+    for (k, (n, icon)) in crate::ext::top_items(app).into_iter().enumerate() {
+        let y = r.y + (SIDES.len() + k) as u16 * ih;
+        if y + ih > views_end || r.width == 0 {
+            break;
+        }
+        let item_r = Rect::new(r.x, y, r.width, ih);
+        let active = app.side == Side::View(n) && app.side_visible && !settings_open;
+        let hot = app.hover.is_some_and(|p| item_r.contains(p));
+        item(f, y + off, active, hot, &icon, bottom.y);
+        app.ui.activity.push((item_r, Side::View(n)));
     }
-    if views_end <= st_r.y && st_r.y < gh_r.y {
-        app.ui.activity.push((st_r, Side::Programmer));
-    }
-    if views_end == se_r.y && se_r.y < st_r.y {
-        app.ui.activity.push((se_r, Side::Serial));
-    }
+    app.ui.activity.extend(low);
 }
 
 /// The SCM count on its activity item, Dock / VS Code style: a pill (at most "99+") off
@@ -716,29 +715,19 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         Side::Explorer => "EXPLORER",
         Side::Search => "SEARCH",
         Side::Scm => "SOURCE CONTROL",
-        Side::GitHub => "GITHUB",
-        Side::Programmer => "PROGRAMMER",
-        Side::Serial => "SERIAL (XCOMM)",
+        Side::View(_) => "",
     };
     let title_row = Rect::new(col.x, col.y, col.width, 1);
     let top = col.y + if st == BlockStyle::Cards { 0 } else { 1 + lay.s.section_gap };
+    // A driver's view (ext.rs): its side bar, its title.
+    if let Side::View(n) = app.side {
+        crate::ext::side(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)), n);
+        let t = crate::ext::title(app, n);
+        side_title(app, f, title_row, &t, lay, bg);
+        return;
+    }
     if app.side == Side::Scm {
         crate::scm::draw_scm(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
-        side_title(app, f, title_row, title, lay, bg);
-        return;
-    }
-    if app.side == Side::GitHub {
-        crate::github::draw(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
-        side_title(app, f, title_row, title, lay, bg);
-        return;
-    }
-    if app.side == Side::Serial {
-        crate::xcomm::draw_side(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
-        side_title(app, f, title_row, title, lay, bg);
-        return;
-    }
-    if app.side == Side::Programmer {
-        crate::programmer::draw_side(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
         side_title(app, f, title_row, title, lay, bg);
         return;
     }
@@ -804,11 +793,11 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             }
         }
         Side::Scm => {}
-        Side::GitHub | Side::Programmer | Side::Serial => {}
+        Side::View(_) => {}
     }
     let list = Rect::new(r.x, y, r.width, r.bottom().saturating_sub(y));
     app.ui.side_list = list;
-    let s = app.side as usize;
+    let s = app.side.idx();
     let n = app.side_count();
     // Item k sits on row k * step; the rows between are blank (listItemGap).
     let step = 1 + lay.s.list_gap;
@@ -859,7 +848,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
             }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => {}
-            Side::GitHub | Side::Programmer | Side::Serial => {}
+            Side::View(_) => {}
         }
     }
     sticky_rows(app, f, list, lay.pad, lay.s.list_gap, &[], &search_rows);
@@ -890,7 +879,7 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
     let step = 1 + gap;
     let room = (list.height as usize * 2 / 5) / step as usize;
     let cap = if app.settings.sticky { app.settings.sticky_max.min(room) } else { 0 };
-    let s = app.side as usize;
+    let s = app.side.idx();
     let pinned = app.pinned(app.off[s], cap, search_rows, scm_rows);
     app.ui.sticky_cap = cap;
     app.ui.sticky = pinned.clone();
@@ -934,7 +923,7 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
             }
             Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
             Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
-            Side::GitHub | Side::Programmer | Side::Serial => {}
+            Side::View(_) => {}
         }
     }
     // Share the last header's row rather than reserving an empty separator row.
@@ -1369,11 +1358,7 @@ fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let space = app.space();
     if !app.groups.iter().any(|g| g.space == space) {
         // A space with nothing open yet: one word on what opens something here.
-        let hint = match space {
-            crate::panel::Space::Serial => "Open a port from the side bar",
-            crate::panel::Space::GitHub => "Choose a repository",
-            _ => "",
-        };
+        let hint = crate::ext::hint(space);
         fill(f, r, P.editor_bg);
         if r.height > 2 && !hint.is_empty() {
             let w = hint.chars().count() as u16;
@@ -1547,7 +1532,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     f.render_widget(Span::styled(ic.terminal, Style::new().fg(lit)), term_btn);
     app.ui.term_btns.push(term_btn);
     // Off on a repository page: it shows its own outline.
-    let page = app.groups[g].tabs.get(app.groups[g].active).is_some_and(|t| t.key.starts_with("repo:") || t.key == crate::programmer::KEY);
+    let page = app.groups[g].tabs.get(app.groups[g].active).is_some_and(|t| crate::ext::page_key(&t.key));
     let lit = if page { P.dim } else if app.outline_open { P.tab_active_fg } else { P.icon_fg };
     f.render_widget(Span::styled(ic.outline, Style::new().fg(lit)), outline_btn);
     if !page {
@@ -1618,30 +1603,23 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     if let Some(rel) = key.strip_prefix("usage:") {
         crate::size::ensure(app, &key, rel);
     }
-    // A repository page: its frame (header, tree, outline), then in the middle the README
-    // or, while a file shows, that file as an editor (the tab's document).
-    // The Programmer's page: drawn whole by programmer.rs (it has no text of its own).
-    if key == crate::programmer::KEY {
-        gh.text = body;
-        crate::programmer::draw_page(app, f, body);
-        put_hit(app, g, gh);
-        return;
-    }
-    // A serial channel's stream: its status, then its screen (xcomm.rs).
-    if key.starts_with(crate::xcomm::PREFIX) {
-        gh.text = body;
-        crate::xcomm::draw_page(app, f, body, &key, focused_group && app.focus == Focus::Editor);
-        put_hit(app, g, gh);
-        return;
-    }
-    if let Some(repo) = key.strip_prefix("repo:") {
-        body = crate::github::page::draw_frame(app, f, g, repo, body);
-        if !app.docs.contains_key(&key) {
+    // A driver's tab (ext.rs): drawn whole (a serial stream, the Programmer's page, an
+    // extension's), a page (a repository's README), or its frame around the tab's
+    // document, drawn below as an editor (a repository's file).
+    match crate::ext::tab(app, f, g, body, &key, focused_group && app.focus == Focus::Editor) {
+        Some(crate::ext::Drawn::Whole) => {
             gh.text = body;
-            gh.preview_rows = crate::github::page::draw_main(app, f, g, repo, body);
             put_hit(app, g, gh);
             return;
         }
+        Some(crate::ext::Drawn::Page(text, rows)) => {
+            gh.text = text;
+            gh.preview_rows = rows;
+            put_hit(app, g, gh);
+            return;
+        }
+        Some(crate::ext::Drawn::Rest(rest)) => body = rest,
+        None => {}
     }
     let wrap = app.wraps(&key);
     let editor_focus = focused_group && app.focus == Focus::Editor;

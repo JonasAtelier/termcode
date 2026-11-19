@@ -601,6 +601,8 @@ pub struct Icons {
     pub chip: &'static str,
     /// The Serial view (xcomm).
     pub serial: &'static str,
+    /// The Extensions view (+, above Settings).
+    pub plus: &'static str,
     /// The Programmer's buttons and rows: connect, disconnect, program, refresh, erase,
     /// save, read, file, reset, option bytes, terminal, memory, folder, send.
     pub prog: [&'static str; 14],
@@ -667,6 +669,7 @@ const CODICONS: Icons = Icons {
     settings: "\u{eb51}",
     chip: "\u{ec19}",
     serial: "\u{f1e6}",
+    plus: "\u{f067}",
     prog: ["\u{eb2b}", "\u{ead0}", "\u{ea86}", "\u{eb37}", "\u{ea81}", "\u{eb4b}", "\u{ea70}", "\u{eae8}", "\u{ead2}", "\u{eb53}", "\u{ea85}", "\u{eace}", "\u{eaf7}", "\u{ebd1}"],
     dirty: "\u{ea71}",
     split: "\u{eb56}",
@@ -722,6 +725,7 @@ const SYMBOLS: Icons = Icons {
     settings: "⚙",
     chip: "▣",
     serial: "⇄",
+    plus: "+",
     prog: ["⇄", "⊘", "↯", "↻", "✗", "↓", "◉", "▢", "↺", "◈", "›", "▤", "▸", "➤"],
     dirty: "●",
     split: "◫",
@@ -775,6 +779,7 @@ const PLAIN: Icons = Icons {
     settings: "*",
     chip: "M",
     serial: "S",
+    plus: "+",
     prog: ["+", "x", "!", "r", "x", "s", "o", "f", "r", "#", ">", "=", "/", ">"],
     dirty: "*",
     split: "|",

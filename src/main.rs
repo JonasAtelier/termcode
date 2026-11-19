@@ -32,6 +32,7 @@ mod settingsui;
 mod api;
 mod rpc;
 mod mcp;
+mod ext;
 mod xcomm;
 mod serial;
 mod settingsgraphics;
@@ -79,6 +80,7 @@ Open PATH like `code PATH`, in this terminal; quitting returns to the shell.
   -V, --version     print the version
   api METHOD [JSON] call a running termcode's API (`termcode api --help`)
   mcp               the API as an MCP server on stdio, for agents (`termcode mcp --help`)
+  ext COMMAND       install, list, remove or start an extension (`termcode ext --help`)
   --headless        no terminal: driven through the API alone (--api-stdio: on stdio too)
 Relative paths resolve against this folder. Settings: ~/.config/termcode/settings.json.
 (`termcode panel` is the plugin's pane entrypoint.)";
@@ -91,6 +93,7 @@ enum Cmd {
     Panel,
     Api(Vec<String>),
     Mcp(Vec<String>),
+    Ext(Vec<String>),
     Headless { path: Option<String>, stdio: bool },
     Open { tab: bool, new: bool, path: Option<String> },
 }
@@ -102,6 +105,9 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
         }
         if a == "mcp" {
             return Ok(Cmd::Mcp(rest.to_vec()));
+        }
+        if a == "ext" {
+            return Ok(Cmd::Ext(rest.to_vec()));
         }
     }
     if let [a] = args {
@@ -158,6 +164,7 @@ fn main() -> ExitCode {
         }
         Cmd::Api(args) => api::cli(&args),
         Cmd::Mcp(args) => mcp::run(&args),
+        Cmd::Ext(args) => ext::cli(&args),
         Cmd::Headless { path, stdio } => {
             let cwd = env::current_dir().map_err(|e| e.to_string())?;
             let (root, _) = target(path.as_deref(), &cwd)?;

@@ -139,7 +139,7 @@ impl App {
             Side::Search => self.search_rows().len(),
             Side::Scm => self.scm_rows().len(),
             // Its own list (github.rs, programmer.rs).
-            Side::GitHub | Side::Programmer | Side::Serial => 0,
+            Side::View(_) => 0,
         }
     }
 
@@ -158,8 +158,8 @@ impl App {
         if from == Space::Code {
             self.code_side = self.side;
         }
-        self.space_ag[from as usize] = self.ag;
-        let back = self.space_ag[to as usize];
+        self.space_ag.insert(from, self.ag);
+        let back = self.space_ag.get(&to).copied().unwrap_or(0);
         let g = if self.groups.get(back).is_some_and(|g| g.space == to) { Some(back) } else { self.groups.iter().position(|g| g.space == to) };
         if let Some(g) = g {
             self.ag = g;
@@ -175,7 +175,7 @@ impl App {
         if self.groups.get(g).is_some_and(|x| x.space == sp) {
             return g;
         }
-        let back = self.space_ag[sp as usize];
+        let back = self.space_ag.get(&sp).copied().unwrap_or(0);
         if self.groups.get(back).is_some_and(|x| x.space == sp) {
             return back;
         }
@@ -197,9 +197,7 @@ impl App {
         self.query_all = false;
         self.refresh();
         self.save_layout();
-        if s == Side::Programmer {
-            crate::programmer::shown(self);
-        }
+        crate::ext::shown(self, s);
     }
 
     pub(crate) fn save_layout(&self) {
@@ -235,7 +233,7 @@ impl App {
     /// shows at once (as a preview tab; the keys stay in the list).
     pub(super) fn step_side(&mut self, by: isize) {
         self.move_side(by);
-        let i = self.sel[Side::Search as usize];
+        let i = self.sel[Side::Search.idx()];
         if self.side == Side::Search && matches!(self.search_rows().get(i), Some(HRow::Hit(_))) {
             self.activate_side(i, false);
             self.focus = Focus::Side;
@@ -282,7 +280,7 @@ impl App {
                 Some(r) if Self::scm_group(r).is_some() => self.fold_scm(i, None),
                 _ => {}
             },
-            Side::GitHub | Side::Programmer | Side::Serial => {}
+            Side::View(_) => {}
         }
     }
 
@@ -381,7 +379,7 @@ impl App {
             Side::Explorer => decor::sticky(|i, k| self.tree_ancestor(i, k), off, cap, sep),
             Side::Search => decor::sticky(|i, k| decor::walk_back(|j| search.get(j).map(|r| matches!(r, HRow::Hit(_)) as usize), i, k), off, cap, sep),
             Side::Scm => decor::sticky(|i, k| decor::walk_back(|j| scm.get(j).map(|r| matches!(r, SRow::File(_)) as usize), i, k), off, cap, sep),
-            Side::GitHub | Side::Programmer | Side::Serial => Vec::new(),
+            Side::View(_) => Vec::new(),
         }
     }
 
@@ -403,7 +401,7 @@ impl App {
     /// `pinned` for key handling, which has no rows built.
     pub(super) fn pinned_now(&self, off: usize) -> Vec<usize> {
         let (search, scm) = match self.side {
-            Side::Explorer | Side::GitHub | Side::Programmer | Side::Serial => (Vec::new(), Vec::new()),
+            Side::Explorer | Side::View(_) => (Vec::new(), Vec::new()),
             Side::Search => (self.search_rows(), Vec::new()),
             Side::Scm => (Vec::new(), self.scm_rows()),
         };
@@ -417,7 +415,7 @@ impl App {
             Side::Explorer => self.tree.get(i).map_or(0, |n| n.depth),
             Side::Search => matches!(self.search_rows().get(i), Some(HRow::Hit(_))) as usize,
             Side::Scm => matches!(self.scm_rows().get(i), Some(SRow::File(_))) as usize,
-            Side::GitHub | Side::Programmer | Side::Serial => 0,
+            Side::View(_) => 0,
         };
         let pinned = depth.min(self.ui.sticky_cap);
         if pinned == 0 {
@@ -428,7 +426,7 @@ impl App {
 
     /// A click on a sticky row: that folder (header) scrolls to the top and is selected.
     pub(super) fn reveal_pinned(&mut self, i: usize) {
-        let s = self.side as usize;
+        let s = self.side.idx();
         self.off[s] = self.under_pinned(i);
         self.sel[s] = i;
         self.focus = Focus::Side;
@@ -463,7 +461,7 @@ impl App {
             }
         }
         let Some(i) = self.tree.iter().position(|n| n.path == rel) else { return false };
-        let s = Side::Explorer as usize;
+        let s = Side::Explorer.idx();
         if self.sel[s] == i && self.side != Side::Explorer {
             return false;
         }
@@ -481,7 +479,7 @@ impl App {
         if n == 0 {
             return;
         }
-        let s = self.side as usize;
+        let s = self.side.idx();
         self.sel[s] = (self.sel[s] as isize + d).clamp(0, n as isize - 1) as usize;
         if self.side == Side::Scm {
             let rows = self.scm_rows();

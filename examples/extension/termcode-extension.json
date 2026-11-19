@@ -1,0 +1,9 @@
+{
+  "id": "hello",
+  "name": "Hello",
+  "version": "0.1.0",
+  "description": "Every slot filled: a start for your own extension.",
+  "icon": "◆",
+  "run": ["python3", "main.py"],
+  "permissions": []
+}

@@ -17,7 +17,7 @@ impl App {
             if let Some(redraw) = self.term_mouse(m) {
                 return redraw;
             }
-            if let Some(redraw) = crate::xcomm::mouse(self, m) {
+            if let Some(redraw) = crate::ext::mouse(self, m) {
                 return redraw;
             }
         }
@@ -89,7 +89,7 @@ impl App {
     /// sticky one), a GRAPH or TIMELINE row, a tab, a scrollbar, a minimap, a peek
     /// button, a commit-dialog splitter.
     pub(super) fn hover_key(&self, p: Position) -> HoverKey {
-        let s = self.side as usize;
+        let s = self.side.idx();
         let side = self.ui.side_list.contains(p);
         let g = &self.gitui.hits;
         HoverKey {
@@ -180,7 +180,7 @@ impl App {
             }
             return;
         }
-        if crate::xcomm::click(self, p) || crate::scm::click(self, p, double) || crate::github::click(self, p, double) || crate::github::page::click(self, p, double) || crate::programmer::click(self, p) || crate::media::click(self, p) || crate::logview::click(self, p) {
+        if crate::ext::click(self, p, double) || crate::scm::click(self, p, double) || crate::media::click(self, p) || crate::logview::click(self, p) {
             return;
         }
         if self.ui.close.contains(p) {
@@ -301,7 +301,7 @@ impl App {
             return self.reveal_pinned(i);
         }
         if self.ui.side_list.contains(p) {
-            let s = self.side as usize;
+            let s = self.side.idx();
             // A blank row between items selects nothing.
             let Some(i) = self.ui.side_item(p.y, self.off[s]) else { return };
             if i < self.side_count() {
@@ -430,7 +430,7 @@ impl App {
         match t {
             ScrollTarget::Editor(g) => self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map_or(0, |t| t.view.row_of(t.view.scroll)),
             ScrollTarget::EditorHorizontal(g) => self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)).map_or(0, |t| t.view.hscroll),
-            ScrollTarget::Side => self.off[self.side as usize],
+            ScrollTarget::Side => self.off[self.side.idx()],
             ScrollTarget::Quick => self.quick.as_ref().map_or(0, |q| q.off),
             ScrollTarget::Git(w) => crate::scm::scroll_of(self, w),
             ScrollTarget::Media(g) => crate::media::scroll_of(self, g),
@@ -461,7 +461,7 @@ impl App {
             ScrollTarget::Side => {
                 let n = self.side_count();
                 let h = self.ui.side_rows;
-                self.off[self.side as usize] = off.min(n.saturating_sub(h));
+                self.off[self.side.idx()] = off.min(n.saturating_sub(h));
             }
             ScrollTarget::Git(w) => crate::scm::set_scroll(self, w, off),
             ScrollTarget::Media(g) => crate::media::set_scroll(self, g, off),
@@ -626,6 +626,10 @@ impl App {
         if crate::scm::drag(self, p) {
             return;
         }
+        // A line in a driver's view (ext.rs): its own drag.
+        if let Drag::View(n) = self.drag {
+            return crate::ext::drag_to(self, n, p.y);
+        }
         match &mut self.drag {
             // The terminal's own (term_mouse) never get here.
             Drag::None | Drag::TermSelect(_) | Drag::TermMouse => {}
@@ -640,8 +644,7 @@ impl App {
             Drag::TermSash => self.term_h = Some((self.ui.term.bottom() + 1).saturating_sub(p.y).max(3)),
             // The panel's right edge stays; its left border follows the pointer.
             Drag::OutlineSash => self.outline_w = Some((self.ui.outline.right() + 1).saturating_sub(p.x).max(16)),
-            Drag::GhSash => crate::github::drag_to(self, p.y),
-            Drag::SerialSash => crate::xcomm::drag_to(self, p.y),
+            Drag::View(_) => {}
             Drag::File { rel, from, active, dir, .. } => {
                 if !*active && (from.x.abs_diff(p.x) + from.y.abs_diff(p.y)) >= 2 {
                     *active = true;
@@ -657,7 +660,7 @@ impl App {
                     self.drop = if over_tree || dir || rels.len() > 1 { None } else { self.drop_target(p, false) };
                     // Resting on a closed folder opens it (VS Code's spring-loaded folders).
                     let closed = over_tree
-                        .then(|| self.ui.side_item(p.y, self.off[Side::Explorer as usize]))
+                        .then(|| self.ui.side_item(p.y, self.off[Side::Explorer.idx()]))
                         .flatten()
                         .and_then(|i| self.tree.get(i))
                         .filter(|n| n.dir && !n.open)
@@ -766,7 +769,7 @@ impl App {
             return;
         }
         match std::mem::replace(&mut self.drag, Drag::None) {
-            Drag::Divider | Drag::TermSash | Drag::OutlineSash | Drag::GhSash => self.save_layout(),
+            Drag::Divider | Drag::TermSash | Drag::OutlineSash | Drag::View(_) => self.save_layout(),
             // A minimap slider let go: its stretch centred on it (the slider to the middle).
             Drag::Minimap(m, _) => {
                 let live = self.ui.minimaps.iter().find(|h| h.group == m.group).copied().unwrap_or(m);
@@ -776,7 +779,7 @@ impl App {
                     }
                 }
             }
-            Drag::File { active: false, keep: false, .. } => self.tree_unmark(self.sel[Side::Explorer as usize]),
+            Drag::File { active: false, keep: false, .. } => self.tree_unmark(self.sel[Side::Explorer.idx()]),
             Drag::File { rel, active: true, .. } => {
                 self.tree_spring = None;
                 if let Some(into) = self.tree_drop.take() {
@@ -886,7 +889,7 @@ impl App {
             q.sel = (q.sel as isize + d).clamp(0, (q.items.len() as isize - 1).max(0)) as usize;
             return q.sel != old;
         }
-        if crate::xcomm::wheel(self, p, d) || crate::scm::wheel(self, p, d) || crate::github::wheel(self, p, d) || crate::github::page::wheel(self, p, d) || crate::programmer::wheel(self, p, d) || crate::media::wheel(self, p, d, self.mouse_mods.contains(KeyModifiers::CONTROL)) {
+        if crate::ext::wheel(self, p, d) || crate::scm::wheel(self, p, d) || crate::media::wheel(self, p, d, self.mouse_mods.contains(KeyModifiers::CONTROL)) {
             return true;
         }
         if self.ui.outline.contains(p) {
@@ -914,7 +917,7 @@ impl App {
             }
         }
         if self.ui.side_list.contains(p) {
-            let s = self.side as usize;
+            let s = self.side.idx();
             let n = self.side_count();
             let h = self.ui.side_rows;
             let old = self.off[s];

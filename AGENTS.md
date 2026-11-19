@@ -8,6 +8,7 @@
 - `src/panel/`: application state (`mod.rs`: the `App`, commands, startup) and its behaviour by topic: `keys.rs`, `mouse.rs`, `tabs.rs`, `qdiff.rs`, `find.rs`, `search.rs`, `quick.rs`, `rename.rs`, `sidebar.rs`, `gitfs.rs`; its tests in `tests.rs`.
 - `src/ui/` (`mod.rs`; `text.rs` the editor body, `diffs.rs`, `panels.rs` the terminal, Outline and previews), `src/editor.rs`: rendering and editing.
 - `src/xcomm.rs`: the Serial view (ports, channels, a channel's stream as an editor tab) on the xcomm crate.
+- `src/ext/`: the view subsystem (DSA-like). `mod.rs`: `Ops` (a driver's ops table), `DRIVERS` (in-tree: Serial, Programmer, GitHub, the + view), dispatch the frame calls; `process.rs`: extensions (programs filling slots over JSON-RPC on stdio; `api::host` serves them); `manager.rs`: the + view (install, on/off, remove); `install.rs`: `termcode ext`. A built-in view adds an `OPS` const and an entry in `DRIVERS`, never a special case in the frame. Guides: doc/extensions.md, skills/termcode-extension/SKILL.md, examples/extension/ (small), extensions/xcomm/ (the Serial view out of tree: its own crate, built by its manifest at install).
 - `src/term.rs`: the integrated terminals; `src/github/` (`mod.rs` data and events, `draw.rs`): the GitHub view.
 - `src/git.rs`, `src/gitops.rs`, `src/scm/` (its UI tests in `ui_tests.rs`), `src/commitdlg.rs`, `src/gitcmds.rs`: Git backend and Source Control interactions.
 - `src/parse.rs`: pure parsers; `src/settings.rs`, `src/theme.rs`, `src/session.rs`: configuration, appearance, and persistence.

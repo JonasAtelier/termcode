@@ -9,6 +9,19 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ## [Unreleased]
 
 ### Added
+- Extensions: a program adds its own view, as Serial and GitHub are views. termcode
+  draws the frame (an activity bar icon, side bar sections split by draggable lines, a
+  tab, the right and bottom panels); the extension fills them with rows and answers
+  clicks and keys over JSON-RPC on stdio, with the whole API. `termcode ext install`
+  (a folder or a git URL; shows the command and permissions, asks), `list`, `remove`,
+  `new`. Guides: doc/extensions.md, `termcode ext --skill`.
+- The + view, right above Settings: install an extension from a git URL or a folder
+  (shown at once, no reload), turn any view off or on, remove an extension.
+- Extensions can have several tabs, their own F1 commands, ask the user for a line or a
+  pick (`ui.input`, `ui.pick`, also in the API), hear pastes, their tab's size and closing,
+  and build at install. The Serial view runs out of tree too: `extensions/xcomm/`.
+- Serial, the Programmer and GitHub are built-in drivers of the same view subsystem as
+  extensions (one table of ops each, as Linux DSA's in-tree drivers); each can be turned off.
 - Mistakes underlined as you type, no language server: C/C++ through the compiler after a
   short pause (not only on save), Rust's syntax in-process. Saving a Rust file runs
   `cargo check` in the background for type and borrow errors: asked once per project (it

@@ -1572,7 +1572,7 @@ fn changes_list(app: &mut App, f: &mut Frame, list: Rect) {
     let mut lay = app.settings.spacing;
     lay.sidebar_padding = lay.sidebar_padding.saturating_sub(1) / 2;
     app.ui.side_list = list;
-    let s = Side::Scm as usize;
+    let s = Side::Scm.idx();
     let rows = app.scm_rows();
     let n = rows.len();
     let step = 1 + lay.list_gap;

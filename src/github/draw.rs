@@ -187,7 +187,7 @@ pub(super) fn ready(app: &mut App, f: &mut Frame, area: Rect, focused: bool) {
     let top = activity(app, f, top, &d);
     list(app, f, top, TOP, focused);
     // The line between: the chosen repository's name in it, lit while dragged or hovered.
-    let hot = matches!(app.drag, Drag::GhSash) || app.hover.is_some_and(|p| sash.contains(p));
+    let hot = matches!(app.drag, Drag::View(crate::ext::GITHUB)) || app.hover.is_some_and(|p| sash.contains(p));
     let line_fg = if hot { P.sash_hover } else { P.group_border };
     let name = app.gh.chosen.as_deref().map(|n| format!(" {} {} ", ic(REPO), n)).unwrap_or_default();
     let h = if crate::theme::ascii() { "-" } else { "─" };

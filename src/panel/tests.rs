@@ -622,7 +622,7 @@ fn activity_items_are_tall_with_the_active_one_marked_and_hover_lit() {
         let (ih, off) = if compact { (2, 0) } else { (2, 1) };
         let (items, b) = (app.ui.activity.clone(), t.backend().buffer().clone());
         assert!(items.iter().all(|(r, _)| r.height == ih), "{compact}: one {ih}-row cell per item");
-        let views: Vec<_> = items.iter().filter(|(_, s)| !matches!(s, Side::GitHub | Side::Programmer | Side::Serial)).collect();
+        let views: Vec<_> = items.iter().filter(|(_, s)| !matches!(s, Side::View(_))).collect();
         assert!(views.windows(2).all(|w| w[1].0.y == w[0].0.bottom()), "the views stacked without gaps");
         // The icon, a blank kept after it (its 2-cell slot).
         let (scm, _) = items[2];
@@ -4089,7 +4089,7 @@ fn frame_time_with_big_lists() {
             eprintln!("{label}, sticky {}: {:?}/frame", if on { "on " } else { "off" }, start.elapsed() / 40);
         }
         // As a frame does it: the rows are built for drawing anyway.
-        let (search, off) = (app.search_rows(), app.off[app.side as usize]);
+        let (search, off) = (app.search_rows(), app.off[app.side.idx()]);
         app.tree_parents.get_mut().clear(); // as after a tree change
         let start = Instant::now();
         std::hint::black_box(app.pinned(off, 1, &search, &[]));
@@ -5644,7 +5644,7 @@ fn github_sign_in_offers_a_qr_code_for_a_phone() {
     let root = repo("gh-qr");
     let mut app = App::new(root.clone(), None);
     app.side_w = Some(40);
-    app.show_side(Side::GitHub, false);
+    app.show_side(Side::GITHUB, false);
     app.gh.state = State::SignedOut;
     let mut t = Terminal::new(TestBackend::new(120, 50)).unwrap();
     let s = screen(&mut app, &mut t);
@@ -5679,7 +5679,7 @@ fn code_serial_and_github_keep_their_own_editor_areas() {
     assert!(s.contains("alpha") && app.term_open);
     // A serial tab: the Serial view, its own group; the code and the terminal out of sight.
     app.show_tab(app.ag, "serial:ttyX9".into(), false);
-    assert_eq!((app.side, app.space(), app.groups.len()), (Side::Serial, Space::Serial, 2));
+    assert_eq!((app.side, app.space(), app.groups.len()), (Side::SERIAL, Space::SERIAL, 2));
     let s = screen(&mut app, &mut t);
     assert!(!s.contains("alpha") && s.contains("ttyX9"), "{s}");
     assert!(app.ui.groups[0].area.is_empty() && app.ui.term.is_empty(), "the code group and the terminal hidden");
@@ -5690,7 +5690,7 @@ fn code_serial_and_github_keep_their_own_editor_areas() {
     assert_eq!((app.ag, app.groups[app.ag].space), (0, Space::Code));
     assert!(!app.ui.term.is_empty());
     // Opening a file from anywhere goes back to the code space.
-    app.show_side(Side::Serial, false);
+    app.show_side(Side::SERIAL, false);
     app.open_file(app.ag, "a.txt", false);
     assert_eq!(app.space(), Space::Code);
     assert_eq!(app.groups.iter().filter(|g| g.space == Space::Code).count(), 1, "into the code group, not a new one");
@@ -5712,7 +5712,7 @@ fn a_serial_tab_dragged_to_an_edge_splits_in_its_own_space() {
     app.on_mouse(ev(MouseEventKind::Down(MouseButton::Left), tab_b.x + 1, tab_b.y));
     app.on_mouse(ev(MouseEventKind::Drag(MouseButton::Left), area.x + area.width / 2, area.bottom() - 2));
     app.on_mouse(ev(MouseEventKind::Up(MouseButton::Left), area.x + area.width / 2, area.bottom() - 2));
-    let serial: Vec<usize> = (0..app.groups.len()).filter(|&i| app.groups[i].space == Space::Serial).collect();
+    let serial: Vec<usize> = (0..app.groups.len()).filter(|&i| app.groups[i].space == Space::SERIAL).collect();
     assert_eq!(serial.len(), 2, "split in the serial space");
     let lower = serial[1];
     assert!(app.groups[lower].below && app.groups[lower].tabs[0].key == "serial:ttyB2");
@@ -5723,7 +5723,7 @@ fn a_serial_tab_dragged_to_an_edge_splits_in_its_own_space() {
     let (r, g2, down) = *app.ui.split_btns.iter().find(|(_, g2, down)| *g2 == lower && *down).expect("a split-down button");
     let _ = (g2, down);
     app.on_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x, r.y));
-    assert_eq!((0..app.groups.len()).filter(|&i| app.groups[i].space == Space::Serial).count(), 3);
+    assert_eq!((0..app.groups.len()).filter(|&i| app.groups[i].space == Space::SERIAL).count(), 3);
 }
 
 #[test]
@@ -6517,7 +6517,7 @@ fn the_github_view_signs_in_first_then_lists_and_edits_a_title_only_once_confirm
     wait(&mut app);
     let mut t = Terminal::new(TestBackend::new(160, 76)).unwrap();
     // Signed out: only the sign-in shows.
-    app.show_side(Side::GitHub, false);
+    app.show_side(Side::GITHUB, false);
     crate::github::tick(&mut app);
     gh_settle(&mut app, &|a| !a.gh.loading);
     let s = screen(&mut app, &mut t);
@@ -6641,9 +6641,11 @@ fn the_github_item_sits_above_settings_and_shows_the_account_in_any_repository()
     app.side_w = Some(70);
     let mut t = Terminal::new(TestBackend::new(160, 56)).unwrap();
     screen(&mut app, &mut t);
-    let gh = app.ui.activity.iter().find(|(_, s)| *s == Side::GitHub).map(|(r, _)| *r).expect("always there");
-    assert_eq!(gh.bottom(), app.ui.settings_btn.y, "right above Settings");
-    assert!(app.ui.activity.iter().filter(|(_, s)| *s != Side::GitHub).all(|(r, _)| r.bottom() <= gh.y), "the views above it");
+    let gh = app.ui.activity.iter().find(|(_, s)| *s == Side::GITHUB).map(|(r, _)| *r).expect("always there");
+    // Settings, the Extensions view's + right above it, then GitHub.
+    let plus = app.ui.activity.iter().find(|(_, s)| *s == Side::View(crate::ext::EXTENSIONS)).map(|(r, _)| *r).expect("+ always there");
+    assert_eq!((plus.bottom(), gh.bottom()), (app.ui.settings_btn.y, plus.y), "+ right above Settings, GitHub above it");
+    assert!(app.ui.activity.iter().filter(|(_, s)| !matches!(s, Side::View(crate::ext::GITHUB | crate::ext::EXTENSIONS))).all(|(r, _)| r.bottom() <= gh.y), "the views above it");
     // Lit exactly as a view is: the same rows around its icon, in both spacings.
     for compact in [false, true] {
         app.settings.compact = compact;
@@ -6655,7 +6657,7 @@ fn the_github_item_sits_above_settings_and_shows_the_account_in_any_repository()
             let b = t.backend().buffer();
             (icon.saturating_sub(2)..icon + 3).map(|y| (b[(r.x + 2, y)].symbol().to_string(), b[(r.x + 2, y)].bg)).collect::<Vec<_>>()
         };
-        let (explorer, github) = (shape(&mut app, &mut t, Side::Explorer), shape(&mut app, &mut t, Side::GitHub));
+        let (explorer, github) = (shape(&mut app, &mut t, Side::Explorer), shape(&mut app, &mut t, Side::GITHUB));
         let lit = |v: &[(String, ratatui::style::Color)]| v.iter().map(|(s, bg)| (s.as_str() == "▄" || s.as_str() == "▀" || *bg != crate::theme::P.activity_bg) as u8).collect::<Vec<_>>();
         // Comfortable: half a row above, the icon's, half below; compact: the icon's and below.
         let rows = if compact { 2..4 } else { 1..4 };
@@ -6667,7 +6669,7 @@ fn the_github_item_sits_above_settings_and_shows_the_account_in_any_repository()
     let fake = std::env::temp_dir().join(format!("termcode-fake-gh2-{}", std::process::id()));
     fs::create_dir_all(&fake).unwrap();
     app.gh.bin = fake_gh(&fake);
-    app.show_side(Side::GitHub, false);
+    app.show_side(Side::GITHUB, false);
     crate::github::tick(&mut app);
     gh_settle(&mut app, &|a| !a.gh.loading);
     let s = screen(&mut app, &mut t);
@@ -6740,7 +6742,7 @@ esac
     let root = repo("gh-wheel");
     let mut app = App::new(root.clone(), None);
     app.gh.bin = bin;
-    app.show_side(Side::GitHub, false);
+    app.show_side(Side::GITHUB, false);
     crate::github::fetch(&mut app);
     gh_settle(&mut app, &|a| !a.gh.loading);
     let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
@@ -6772,7 +6774,7 @@ fn dragging_the_github_divider_follows_the_pointer_and_keeps_the_stats_header() 
     let mut app = App::new(root.clone(), None);
     app.gh.bin = fake_gh(&fake);
     app.side_w = Some(70);
-    app.show_side(Side::GitHub, false);
+    app.show_side(Side::GITHUB, false);
     crate::github::fetch(&mut app);
     gh_settle(&mut app, &|a| !a.gh.loading && !a.gh.repo_loading && !a.gh.busy());
     let mut t = Terminal::new(TestBackend::new(160, 46)).unwrap();
@@ -7299,7 +7301,7 @@ fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch(
     app.side_w = Some(50);
     app.outline_open = true;
     let mut t = Terminal::new(TestBackend::new(170, 90)).unwrap();
-    app.show_side(Side::GitHub, false);
+    app.show_side(Side::GITHUB, false);
     crate::github::tick(&mut app);
     gh_settle(&mut app, &|a| a.gh.data.is_some());
     // Enter on a repository: its page opens beside, as a preview tab, on its main page.

@@ -23,7 +23,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -71,12 +71,16 @@ pub struct Server {
 
 /// Who asks: the first process behind the connection that is not a shell or `termcode
 /// api` (an agent, a script, an editor), as (pid, its start time) and how it shows.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Client {
     pub key: (i32, u64),
     pub label: String,
     /// A shell of this termcode's own terminal, typed in by the user.
     pub own: bool,
+    /// An extension termcode started (its id): its own views (`view.*`), and what the
+    /// user granted when installing it.
+    pub ext: Option<String>,
+    pub granted: Vec<Tier>,
 }
 
 /// What a request may do: read, change files (`Edit`), run things (`Run`).
@@ -99,6 +103,8 @@ pub struct Gate {
     pub asking: bool,
     /// A `ui.prompt` answered: its number, the button picked.
     pub picked: Option<(u64, usize)>,
+    /// A `ui.input` / `ui.pick` answered: its number, the row picked (pick), the text.
+    pub typed: Option<(u64, Option<usize>, String)>,
     /// The `ui.prompt` up, by number (another prompt over it, or Esc: no answer).
     asked: Option<u64>,
     next_ask: u64,
@@ -117,6 +123,8 @@ impl Gate {
     /// Whether `c` may do `t` now: yes, no, or (None) the user is to be asked.
     pub fn check(&self, mode: &str, c: &Client, t: Tier) -> Option<bool> {
         match (mode, t) {
+            // An extension: reading, and what its install granted, whatever the API's mode.
+            _ if c.ext.is_some() && (t == Tier::Read || c.granted.contains(&t)) => Some(true),
             ("off", _) => Some(false),
             (_, Tier::Read) => Some(true),
             ("read-only", _) => Some(false),
@@ -146,6 +154,8 @@ enum Waiting {
     Grant { client: Client, tier: Tier, req: Value, shown: bool, once: bool },
     /// `ui.prompt` number `n`, from `who`: its question and buttons; `shown` once up.
     Ask { n: u64, who: String, text: String, buttons: Vec<String>, shown: bool },
+    /// `ui.input` / `ui.pick` number `n` the same: a picker's box, or its rows.
+    Input { n: u64, who: String, text: String, value: String, items: Option<Vec<(String, String)>>, shown: bool },
 }
 
 /// A request's answer: now, or later (see `Wait`), or (events.watch) now and then events
@@ -369,7 +379,7 @@ pub fn client_of(pid: i32) -> Client {
     let mut p = pid;
     for _ in 0..32 {
         if p == me {
-            return Client { key: (me, 0), label: "this termcode's terminal".into(), own: true };
+            return Client { key: (me, 0), label: "this termcode's terminal".into(), own: true, ..Client::default() };
         }
         let Some((comm, parent, start)) = proc_stat(p) else { break };
         let args = cmdline(p);
@@ -380,11 +390,11 @@ pub fn client_of(pid: i32) -> Client {
             if label.chars().count() > 80 {
                 label = label.chars().take(79).collect::<String>() + "…";
             }
-            return Client { key: (p, start), label: format!("{} (pid {p})", if label.is_empty() { comm } else { label }), own: false };
+            return Client { key: (p, start), label: format!("{} (pid {p})", if label.is_empty() { comm } else { label }), ..Client::default() };
         }
         p = parent;
     }
-    Client { key: (pid, 0), label: format!("pid {pid}"), own: false }
+    Client { key: (pid, 0), label: format!("pid {pid}"), ..Client::default() }
 }
 
 /// One connection: request lines in, each answered in turn, until it closes or idles 5 s.
@@ -399,12 +409,14 @@ fn serve(s: UnixStream, tx: &Sender<Request>, poke: &mut std::io::PipeWriter, cl
         let _ = s.set_nonblocking(false);
         closed
     };
-    serve_io(&mut BufReader::new(&s), &mut &s, &gone, tx, poke, client);
+    serve_io(&mut BufReader::new(&s), &mut &s, &gone, tx, poke, client, None);
 }
 
 /// Request lines from `input`, each answered on `out` in turn; a watching one (events.watch)
-/// then only carries its events, until `gone` or a write fails.
-fn serve_io(input: &mut dyn BufRead, out: &mut dyn Write, gone: &dyn Fn() -> bool, tx: &Sender<Request>, poke: &mut std::io::PipeWriter, client: &Client) {
+/// then only carries its events, until `gone` or a write fails. With `events` (an
+/// extension's stdin, shared), the events go there instead and requests go on.
+#[allow(clippy::too_many_arguments)]
+fn serve_io(input: &mut dyn BufRead, out: &mut dyn Write, gone: &dyn Fn() -> bool, tx: &Sender<Request>, poke: &mut std::io::PipeWriter, client: &Client, events: Option<&Sender<String>>) {
     loop {
         let mut line = String::new();
         let reply = match input.take(MAX).read_line(&mut line) {
@@ -418,8 +430,17 @@ fn serve_io(input: &mut dyn BufRead, out: &mut dyn Write, gone: &dyn Fn() -> boo
                     let _ = tx.send((req.clone(), rtx, client.clone()));
                     let _ = poke.write_all(b"!");
                     let reply = rrx.recv_timeout(Duration::from_secs_f64(secs)).unwrap_or_else(|_| failure(&req, "termcode did not answer"));
+                    if let Some(ev_out) = events.filter(|_| req["method"] == "events.watch" && reply.get("result").is_some()) {
+                        let ev_out = ev_out.clone();
+                        std::thread::spawn(move || {
+                            while let Ok(ev) = rrx.recv() {
+                                if ev_out.send(ev.to_string()).is_err() {
+                                    break;
+                                }
+                            }
+                        });
                     // Watching: from now on this connection only carries the events.
-                    if req["method"] == "events.watch" && reply.get("result").is_some() {
+                    } else if req["method"] == "events.watch" && reply.get("result").is_some() {
                         if writeln!(out, "{reply}").and_then(|()| out.flush()).is_err() {
                             return;
                         }
@@ -452,13 +473,66 @@ fn serve_io(input: &mut dyn BufRead, out: &mut dyn Write, gone: &dyn Fn() -> boo
 pub fn serve_stdio(srv: &Server) {
     let (tx, poke) = (srv.tx.clone(), srv.poke.try_clone());
     let Ok(mut poke) = poke else { return };
-    let me = Client { key: (std::process::id() as i32, 0), label: "stdin".into(), own: true };
+    let me = Client { key: (std::process::id() as i32, 0), label: "stdin".into(), own: true, ..Client::default() };
     let _ = std::thread::Builder::new().name("api-stdio".into()).spawn(move || {
         let stdin = std::io::stdin();
-        serve_io(&mut stdin.lock(), &mut std::io::stdout(), &|| false, &tx, &mut poke, &me);
+        serve_io(&mut stdin.lock(), &mut std::io::stdout(), &|| false, &tx, &mut poke, &me, None);
         // stdin closed: the starter is gone, termcode with it.
         END.store(true, Ordering::SeqCst);
     });
+}
+
+/// An extension: `cmd` started, its stdout's requests answered as a connection's (as
+/// `client`, keyed by the child's pid), its stdin fed by the Sender returned (whole
+/// lines: the replies, its events, what termcode tells it). `done` is set when it ends.
+pub fn host(app: &App, mut cmd: std::process::Command, mut client: Client, done: std::sync::Arc<AtomicBool>) -> Result<(Sender<String>, u32), String> {
+    use std::process::Stdio;
+    let srv = app.api.as_ref().ok_or("termcode's API is not running")?;
+    let (tx, mut poke) = (srv.tx.clone(), srv.poke.try_clone().map_err(|e| e.to_string())?);
+    let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let pid = child.id();
+    client.key = (pid as i32, proc_stat(pid as i32).map_or(0, |s| s.2));
+    let (otx, orx) = channel::<String>();
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    // Its stdin from one thread: lines whole, in order, never blocking the screen.
+    std::thread::Builder::new().name("ext-out".into()).spawn(move || {
+        for line in orx {
+            if writeln!(stdin, "{line}").and_then(|()| stdin.flush()).is_err() {
+                break;
+            }
+        }
+    }).map_err(|e| e.to_string())?;
+    let events = otx.clone();
+    std::thread::Builder::new().name("ext-in".into()).spawn(move || {
+        let mut out = Lines { buf: Vec::new(), to: events.clone() };
+        serve_io(&mut BufReader::new(stdout), &mut out, &|| false, &tx, &mut poke, &client, Some(&events));
+        let _ = child.wait();
+        done.store(true, Ordering::SeqCst);
+        let _ = poke.write_all(b"!");
+    }).map_err(|e| e.to_string())?;
+    Ok((otx, pid))
+}
+
+/// A writer whose flushed text goes, as lines, to an extension's stdin thread.
+struct Lines {
+    buf: Vec<u8>,
+    to: Sender<String>,
+}
+
+impl Write for Lines {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.buf.extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        let text = String::from_utf8_lossy(&self.buf).into_owned();
+        self.buf.clear();
+        for l in text.lines().filter(|l| !l.is_empty()) {
+            self.to.send(l.to_string()).map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        }
+        Ok(())
+    }
 }
 
 /// Set when the stdio client closed stdin (`--api-stdio`): headless ends.
@@ -527,6 +601,20 @@ pub fn tick(app: &mut App) -> bool {
                 }
             },
             Waiting::Screen => None,
+            Waiting::Input { n, items, shown, .. } => match app.api_gate.typed.take() {
+                Some((tn, row, text)) if tn == *n => {
+                    app.api_gate.asked = None;
+                    Some(Ok(if items.is_some() { json!({"index": row, "label": text}) } else { json!({"text": text}) }))
+                }
+                other => {
+                    app.api_gate.typed = other;
+                    // Closed without an answer (Esc, a click outside it): null.
+                    (*shown && app.api_gate.asked == Some(*n) && app.gitui.cmds.picker.is_none()).then(|| {
+                        app.api_gate.asked = None;
+                        Ok(if items.is_some() { json!({"index": null, "label": null}) } else { json!({"text": null}) })
+                    })
+                }
+            },
             Waiting::Ask { n, buttons, shown, .. } => match app.api_gate.picked {
                 Some((pn, b)) if pn == *n => {
                     app.api_gate.picked = None;
@@ -557,10 +645,11 @@ pub fn tick(app: &mut App) -> bool {
         };
         let done = done.or_else(|| (now >= w.until).then(|| Err(if matches!(w.what, Waiting::Grant { .. }) { "the user did not answer".to_string() } else { "timed out".to_string() })));
         // A question given up on while up: its window goes with it.
-        if let (Some(Err(_)), Waiting::Ask { n, .. }) = (&done, &w.what) {
+        if let (Some(Err(_)), Waiting::Ask { n, .. } | Waiting::Input { n, .. }) = (&done, &w.what) {
             if app.api_gate.asked == Some(*n) {
                 app.api_gate.asked = None;
                 app.prompt = None;
+                app.gitui.cmds.picker = None;
             }
         }
         let keep = done.is_none();
@@ -589,6 +678,29 @@ pub fn tick(app: &mut App) -> bool {
                     buttons: buttons.iter().enumerate().map(|(i, b)| (b.clone(), crate::panel::PAct::ApiPick(*n, i))).collect(),
                     sel: 0,
                 });
+                changed = true;
+            }
+        }
+    }
+    // A client's line to type or row to pick, when nothing else is up.
+    if !app.api_gate.asking && app.api_gate.asked.is_none() && app.prompt.is_none() && app.gitui.cmds.picker.is_none() {
+        if let Some((w, _)) = waits.iter_mut().find(|(w, _)| matches!(w.what, Waiting::Input { shown: false, .. })) {
+            if let Waiting::Input { n, who, text, value, items, shown } = &mut w.what {
+                *shown = true;
+                app.api_gate.asked = Some(*n);
+                let title = format!("{who}: {text}");
+                match items {
+                    Some(items) => {
+                        let rows = items.iter().enumerate().map(|(i, (label, detail))| crate::gitcmds::Item { label: label.clone(), detail: detail.clone(), pick: crate::gitcmds::Pick::Api(*n, i) }).collect();
+                        crate::gitcmds::open_picker(app, &title, rows, None);
+                    }
+                    None => {
+                        crate::gitcmds::open_picker(app, &title, Vec::new(), Some(crate::gitcmds::Input::Api(*n)));
+                        if let Some(p) = app.gitui.cmds.picker.as_mut() {
+                            p.query = value.clone();
+                        }
+                    }
+                }
                 changed = true;
             }
         }
@@ -716,8 +828,12 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
             None => return Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + ASK, what: Waiting::Grant { client: client.clone(), tier, req: req.clone(), shown: false, once: false } })),
         }
     }
-    if tier != Tier::Read && !client.own {
+    if tier != Tier::Read && !client.own && client.ext.is_none() {
         app.msg = format!("API: {} — {method}", client.label);
+    }
+    // An extension's own panes.
+    if method.starts_with("view.") {
+        return Reply::Now(envelope(&id, crate::ext::call(app, client, method, &req["params"])));
     }
     match crate::rpc::call(app, method, &req["params"]) {
         Ok(crate::rpc::Out::Now(v)) => Reply::Now(envelope(&id, Ok(v))),
@@ -730,6 +846,12 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
             let who = client.label.split(" (pid").next().unwrap_or(&client.label).to_string();
             app.msg = format!("{who}: {text}");
             Reply::Now(envelope(&id, Ok(json!({"shown": true}))))
+        }
+        Ok(crate::rpc::Out::Input { text, value, items, timeout }) => {
+            let n = app.api_gate.next_ask;
+            app.api_gate.next_ask += 1;
+            let who = client.label.split(" (pid").next().unwrap_or(&client.label).to_string();
+            Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Input { n, who, text, value, items, shown: false } }))
         }
         Ok(crate::rpc::Out::Ask { text, buttons, timeout }) => {
             let n = app.api_gate.next_ask;
@@ -1118,7 +1240,7 @@ mod tests {
 
     #[test]
     fn the_gate_reads_freely_asks_before_changes_and_keeps_the_answers() {
-        let agent = Client { key: (42, 7), label: "agent (pid 42)".into(), own: false };
+        let agent = Client { key: (42, 7), label: "agent (pid 42)".into(), ..Client::default() };
         let mut g = Gate::default();
         assert_eq!(g.check("ask", &agent, Tier::Read), Some(true));
         assert_eq!(g.check("ask", &agent, Tier::Edit), None, "asked");
@@ -1131,7 +1253,7 @@ mod tests {
         assert_eq!(g.check("read-only", &agent, Tier::Edit), Some(false));
         assert_eq!(g.check("read-only", &agent, Tier::Read), Some(true));
         assert_eq!(g.check("off", &agent, Tier::Read), Some(false));
-        let own = Client { key: (1, 0), label: String::new(), own: true };
+        let own = Client { key: (1, 0), label: String::new(), own: true, ..Client::default() };
         assert_eq!(g.check("ask", &own, Tier::Run), Some(true), "the user's own terminal");
         assert_eq!(g.check("off", &own, Tier::Read), Some(false));
         let g = Gate { allowed: vec![Tier::Edit], ..Gate::default() };

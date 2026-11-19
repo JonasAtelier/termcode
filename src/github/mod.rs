@@ -1034,7 +1034,7 @@ pub fn tick(app: &mut App) -> bool {
             }
         }
     }
-    let shown = app.side == Side::GitHub && app.side_visible;
+    let shown = app.side == Side::GITHUB && app.side_visible;
     let gh = &mut app.gh;
     for (loading, started, fetched, data) in [(&mut gh.loading, &gh.started, &mut gh.fetched, gh.data.is_some()), (&mut gh.repo_loading, &gh.repo_started, &mut gh.repo_fetched, true)] {
         if *loading && started.is_some_and(|t| t.elapsed() >= GIVE_UP) {
@@ -1333,7 +1333,7 @@ pub fn rows(gh: &GitHub, pane: usize) -> Vec<Row> {
 /// Keys while the view has them; false for keys it leaves to the rest of termcode. Tab
 /// moves between the panes.
 pub fn key(app: &mut App, k: KeyEvent) -> bool {
-    if app.side != Side::GitHub {
+    if app.side != Side::GITHUB {
         return false;
     }
     if app.gh.edit.is_some() {
@@ -1441,7 +1441,7 @@ fn enter(app: &mut App, row: Row) {
 
 /// A paste while a title is edited goes into it.
 pub fn paste(app: &mut App, text: &str) -> bool {
-    match app.gh.edit.as_mut().filter(|_| app.side == Side::GitHub) {
+    match app.gh.edit.as_mut().filter(|_| app.side == Side::GITHUB) {
         Some(e) => {
             e.field.paste(text);
             true
@@ -1453,7 +1453,7 @@ pub fn paste(app: &mut App, text: &str) -> bool {
 /// Mouse down: true when the view took it. A click selects a row (a repository: chooses
 /// it), a header folds, a double-click opens; the line between the panes drags.
 pub fn click(app: &mut App, p: Position, double: bool) -> bool {
-    if app.side != Side::GitHub || !app.side_visible || !app.gh.hits.area.contains(p) {
+    if app.side != Side::GITHUB || !app.side_visible || !app.gh.hits.area.contains(p) {
         return false;
     }
     app.focus = Focus::Side;
@@ -1461,7 +1461,7 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
         return true;
     }
     if app.gh.hits.sash.contains(p) {
-        app.drag = Drag::GhSash;
+        app.drag = Drag::View(crate::ext::GITHUB);
         return true;
     }
     // A day of the year graph: its month.
@@ -1522,7 +1522,7 @@ pub fn drag_to(app: &mut App, y: u16) {
 }
 
 pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
-    if app.side != Side::GitHub {
+    if app.side != Side::GITHUB {
         return false;
     }
     // Over the year graph: back (up) and forth in weeks.
@@ -1538,6 +1538,38 @@ pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
 mod draw;
 pub mod page;
 pub use draw::*;
+
+/// GitHub: an in-tree driver of the view subsystem (ext/mod.rs). A repository's page is
+/// its tab: its frame (header, tree, outline), the README in the middle, or a file there
+/// as an editor (the tab's document).
+pub const OPS: crate::ext::Ops = crate::ext::Ops {
+    id: "github",
+    name: "GitHub",
+    title: "GITHUB",
+    about: "Your repositories, issues and pull requests, through gh",
+    hint: "Choose a repository",
+    icon: || crate::theme::icons().gh[0],
+    side: draw,
+    owns: |k| k.starts_with("repo:"),
+    tab: |app, f, g, r, key, _| {
+        let repo = key.strip_prefix("repo:").unwrap_or(key);
+        let body = page::draw_frame(app, f, g, repo, r);
+        if app.docs.contains_key(key) {
+            crate::ext::Drawn::Rest(body)
+        } else {
+            crate::ext::Drawn::Page(body, page::draw_main(app, f, g, repo, body))
+        }
+    },
+    page: |k| k.starts_with("repo:"),
+    click: |app, p, d| click(app, p, d) || page::click(app, p, d),
+    wheel: |app, p, d| wheel(app, p, d) || page::wheel(app, p, d),
+    drag_to,
+    key,
+    // A title being edited takes a paste; else, in the side bar, it is dropped.
+    paste: |app, t| app.focus == crate::panel::Focus::Side && paste(app, t),
+    tick,
+    ..crate::ext::Ops::NONE
+};
 
 #[cfg(test)]
 mod tests {

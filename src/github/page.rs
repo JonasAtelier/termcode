@@ -672,12 +672,6 @@ pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
     true
 }
 
-/// Is the active group's tab a repository page (the editors' Outline then stays off: the
-/// page has its own).
-pub fn active(app: &App) -> bool {
-    active_repo(app).is_some()
-}
-
 /// The page's frame in `body`: the header over the middle (the repository, the path, the
 /// branch; then the last commit) and the right pane (the main page button, the tree, the
 /// file's outline under it). Returns the middle, for the main page or the file's code.

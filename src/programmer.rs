@@ -29,6 +29,33 @@ use unicode_width::UnicodeWidthStr;
 /// The page's tab.
 pub const KEY: &str = "programmer:page";
 
+/// The Programmer: an in-tree driver of the view subsystem (ext/mod.rs).
+pub const OPS: crate::ext::Ops = crate::ext::Ops {
+    id: "programmer",
+    name: "Programmer",
+    title: "PROGRAMMER",
+    about: "STM32 chips and Arduino boards: connect, program, reset",
+    icon: || crate::theme::icons().chip,
+    side: draw_side,
+    shown,
+    owns: |k| k == KEY,
+    tab: |app, f, _, r, _, _| {
+        draw_page(app, f, r);
+        crate::ext::Drawn::Whole
+    },
+    closed: |app, _| closed(app),
+    page: |k| k == KEY,
+    // Its log is a tab of the terminal panel.
+    terminal: true,
+    click: |app, p, _| click(app, p),
+    wheel,
+    key,
+    tab_key: page_key,
+    paste: |app, t| app.focus == crate::panel::Focus::Editor && paste(app, t),
+    tick,
+    ..crate::ext::Ops::NONE
+};
+
 mod arduino;
 mod idf;
 
@@ -1047,7 +1074,7 @@ pub fn shown(app: &mut App) {
 /// it (a job still running goes on; its log stays in the panel).
 pub fn closed(app: &mut App) {
     app.prog.editing = None;
-    if app.side == crate::panel::Side::Programmer {
+    if app.side == crate::panel::Side::PROGRAMMER {
         app.side = crate::panel::Side::Explorer;
         if app.focus == Focus::Side {
             app.focus = Focus::Editor;
@@ -1063,7 +1090,7 @@ pub fn closed(app: &mut App) {
 }
 
 fn show(app: &mut App) {
-    app.show_side(crate::panel::Side::Programmer, false);
+    app.show_side(crate::panel::Side::PROGRAMMER, false);
 }
 
 fn open_page(app: &mut App) {
@@ -2655,7 +2682,7 @@ mod tests {
     #[test]
     fn device_page_lists_the_probe_connects_and_shows_the_log_below() {
         let (mut app, mut t, dir) = setup("device");
-        app.show_side(Side::Programmer, false);
+        app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);
         let s = screen(&mut app, &mut t);
         assert!(s.contains("PROGRAMMER") && s.contains("Option Bytes") && s.contains("NUCLEO-TEST · ST-LINK V2J45M31 · SN 0001TEST"), "{s}");
@@ -2685,7 +2712,7 @@ mod tests {
     fn program_shows_progress_then_the_result_and_erase_asks_first() {
         let (mut app, mut t, dir) = setup("program");
         fs::write(dir.join("build/fw.bin"), [0u8; 64]).unwrap();
-        app.show_side(Side::Programmer, false);
+        app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);
         press(&mut app, &mut t, "Program");
         assert!(screen(&mut app, &mut t).contains("No file chosen"), "no file yet");
@@ -2733,7 +2760,7 @@ mod tests {
     #[test]
     fn memory_reads_into_a_hex_dump_and_option_bytes_into_a_table() {
         let (mut app, mut t, dir) = setup("memory");
-        app.show_side(Side::Programmer, false);
+        app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);
         press(&mut app, &mut t, "Memory");
         let typed = |app: &mut App, text: &str| {
@@ -2805,7 +2832,7 @@ mod tests {
         // SAFETY: openpty opened both; each File owns one.
         let (mut board, _slave) = unsafe { (<fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(m), <fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(sl)) };
         app.prog.tty = Some(fs::read_link(format!("/proc/self/fd/{sl}")).unwrap());
-        app.show_side(Side::Programmer, false);
+        app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);
         press(&mut app, &mut t, "Serial Console");
         assert!(entered(&mut app, Field::Baud, "12345").is_err());
@@ -2882,7 +2909,7 @@ mod tests {
         fs::write(&bin, format!("#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/ard.log\"\nprintf '%s\\n' '{json}'\n")).unwrap();
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
         (app.prog.ard.cli, app.prog.ard.checked) = (Some(bin), true);
-        app.show_side(Side::Programmer, false);
+        app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);
         press(&mut app, &mut t, "Arduino");
         settle(&mut app);
@@ -2938,7 +2965,7 @@ mod tests {
         let bin = dir.join("tool/arduino-cli");
         script(&bin, &format!("echo \"$*\" >> \"$(dirname \"$0\")/ard.log\"\ncase \"$1\" in board) printf '%s\\n' '{json}'; exit 0 ;; esac\necho 'Sketch uses 924 bytes (2%) of program storage space. Maximum is 32256 bytes.'\ncase \"$*\" in *--upload*) echo 'Writing | ################################################## | 100% 0.20s' ;; esac\n"));
         (app.prog.ard.cli, app.prog.ard.checked, app.prog.family) = (Some(bin), true, Family::Arduino);
-        app.show_side(Side::Programmer, false);
+        app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);
         press(&mut app, &mut t, "Sketch");
         let s = screen(&mut app, &mut t);
@@ -2988,7 +3015,7 @@ mod tests {
         let _board = unsafe { (<fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(m), <fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(sl)) };
         let tty = fs::read_link(format!("/proc/self/fd/{sl}")).unwrap();
         (app.prog.idf.root, app.prog.idf.checked, app.prog.tty) = (Some(fw.clone()), true, Some(tty.clone()));
-        app.show_side(Side::Programmer, false);
+        app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);
         press(&mut app, &mut t, "ESP-IDF");
         let s = screen(&mut app, &mut t);
@@ -3024,12 +3051,12 @@ mod tests {
     fn without_the_tool_the_view_offers_to_install_it() {
         let (mut app, mut t, dir) = setup("install");
         app.prog.cli = None;
-        app.show_side(Side::Programmer, false);
+        app.show_side(Side::PROGRAMMER, false);
         let s = screen(&mut app, &mut t);
         assert!(s.contains("STM32CubeProgrammer is not") && s.contains(" Install ") && s.contains("Check Again"), "{s}");
         assert!(!app.groups.iter().any(|g| g.tabs.iter().any(|t| t.key == KEY)), "no page");
         command(&mut app, Op::Connect);
-        assert!(app.prog.job.is_none() && app.side == Side::Programmer);
+        assert!(app.prog.job.is_none() && app.side == Side::PROGRAMMER);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

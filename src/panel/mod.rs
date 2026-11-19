@@ -250,17 +250,29 @@ impl Drop for Tip {
 /// backups are its own.
 const PANEL_COMM: &[&str] = &["termcode", "herdr-code"];
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
     Explorer,
     Search,
     Scm,
-    /// Only for a repository on GitHub (github.rs).
-    GitHub,
-    /// The Programmer: STM32 chips, Arduino boards (programmer.rs).
-    Programmer,
-    /// Serial ports and their streams, on xcomm (xcomm.rs).
-    Serial,
+    /// A driver's view (ext.rs), by its number: Serial, the Programmer, GitHub, the
+    /// Extensions view (in-tree), then the installed extensions.
+    View(u16),
+}
+impl Side {
+    pub const SERIAL: Side = Side::View(crate::ext::SERIAL);
+    pub const PROGRAMMER: Side = Side::View(crate::ext::PROGRAMMER);
+    pub const GITHUB: Side = Side::View(crate::ext::GITHUB);
+
+    /// Its place in the per-view arrays (`sel`, `off`, which only the first three use).
+    pub fn idx(self) -> usize {
+        match self {
+            Side::Explorer => 0,
+            Side::Search => 1,
+            Side::Scm => 2,
+            Side::View(_) => 3,
+        }
+    }
 }
 /// Activity bar order (VS Code's).
 pub const SIDES: [Side; 3] = [Side::Explorer, Side::Search, Side::Scm];
@@ -368,36 +380,28 @@ pub struct Group {
 /// What the editor area is for: code (the Explorer, Search, Source Control), serial
 /// streams, GitHub's pages, the Programmer's. Each keeps its own groups and tabs; a view
 /// shows its space's, and a tab opens in its own space (switching to it).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Space {
     #[default]
     Code,
-    Serial,
-    GitHub,
-    Programmer,
+    /// A driver's view's (ext.rs).
+    View(u16),
 }
 
 impl Space {
+    #[cfg(test)]
+    pub const SERIAL: Space = Space::View(crate::ext::SERIAL);
+
     pub fn of_side(s: Side) -> Space {
         match s {
-            Side::Serial => Space::Serial,
-            Side::GitHub => Space::GitHub,
-            Side::Programmer => Space::Programmer,
+            Side::View(n) => Space::View(n),
             Side::Explorer | Side::Search | Side::Scm => Space::Code,
         }
     }
 
-    /// The space a tab belongs to, by its key.
+    /// The space a tab belongs to, by its key: its driver's, else code's.
     pub fn of_key(key: &str) -> Space {
-        if key.starts_with(crate::xcomm::PREFIX) {
-            Space::Serial
-        } else if key.starts_with("repo:") {
-            Space::GitHub
-        } else if key == crate::programmer::KEY {
-            Space::Programmer
-        } else {
-            Space::Code
-        }
+        crate::ext::owner(key).map_or(Space::Code, Space::View)
     }
 }
 
@@ -484,6 +488,10 @@ pub enum PAct {
     ApiPick(u64, usize),
     /// A Rust workspace: checked with cargo on save (true), or its syntax only.
     RustCheck(PathBuf, bool),
+    /// The extension fetched in the Extensions view: installed (true), or not.
+    ExtInstall(bool),
+    /// An extension removed (the Extensions view), by id.
+    ExtRemove(String),
 }
 
 /// Wheel and motion frames come at most this often (herdr itself renders every 16 ms).
@@ -706,9 +714,9 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Show Explorer", Cmd::ShowSide(Side::Explorer), "Alt+1, Ctrl+E"),
     ("View: Show Search", Cmd::ShowSide(Side::Search), "Alt+4, F4"),
     ("View: Show Source Control", Cmd::ShowSide(Side::Scm), "Alt+2, F2, Ctrl+G"),
-    ("View: Show GitHub", Cmd::ShowSide(Side::GitHub), ""),
-    ("View: Show Programmer", Cmd::ShowSide(Side::Programmer), ""),
-    ("View: Show Serial", Cmd::ShowSide(Side::Serial), ""),
+    ("View: Show GitHub", Cmd::ShowSide(Side::GITHUB), ""),
+    ("View: Show Programmer", Cmd::ShowSide(Side::PROGRAMMER), ""),
+    ("View: Show Serial", Cmd::ShowSide(Side::SERIAL), ""),
     ("View: Split Editor Right", Cmd::Split(false), "Ctrl+T \\"),
     ("View: Split Editor Down", Cmd::Split(true), "Ctrl+T -"),
     ("STM32: Connect", Cmd::Prog(crate::programmer::Op::Connect), ""),
@@ -739,14 +747,14 @@ pub fn all_commands() -> impl Iterator<Item = (&'static str, Cmd)> {
 /// Commands matching `q`, best tier first, palette order within a tier.
 #[cfg(test)]
 pub fn filter_commands(q: &str) -> Vec<String> {
-    filter_commands_recent(q, &[])
+    filter_commands_recent(q, &[], &[])
 }
 
 /// `filter_commands`, with the recently used ones first (newest first) while nothing is
 /// typed, as VS Code lists them.
-pub fn filter_commands_recent(q: &str, recent: &[String]) -> Vec<String> {
+pub fn filter_commands_recent(q: &str, recent: &[String], extra: &[String]) -> Vec<String> {
     let mut v: Vec<(usize, usize, &str)> =
-        all_commands().enumerate().filter_map(|(i, c)| parse::match_score(c.0, q).map(|s| (s / 100_000, i, c.0))).collect();
+        all_commands().map(|c| c.0).chain(extra.iter().map(String::as_str)).enumerate().filter_map(|(i, c)| parse::match_score(c, q).map(|s| (s / 100_000, i, c))).collect();
     v.sort();
     let mut out: Vec<String> = v.into_iter().map(|(_, _, l)| l.to_string()).collect();
     if q.is_empty() {
@@ -850,10 +858,9 @@ pub enum Drag {
     TermMouse,
     /// The Outline's left border, its width's handle.
     OutlineSash,
-    /// The line between the GitHub view's panes.
-    GhSash,
-    /// The line between the Serial view's ports and channels.
-    SerialSash,
+    /// A line in a driver's view (between the Serial view's ports and channels, GitHub's
+    /// panes, an extension's sections): its `drag_to` follows the pointer.
+    View(u16),
     /// An Explorer item (`dir`: a folder): onto an editor (a file), or into a folder.
     File { rel: String, from: Position, active: bool, dir: bool, keep: bool },
     /// Tab `i` of group `g` (VS Code's tab drag and drop); active once moved 2 cells.
@@ -1110,13 +1117,14 @@ pub struct App {
     pub prog: crate::programmer::Programmer,
     /// The Serial view's ports and open channels.
     pub serial: crate::xcomm::Serial,
+    /// The extensions installed (ext.rs).
+    pub exts: crate::ext::Exts,
     /// This termcode's socket (`termcode PATH` from its terminals); a herdr tab's pane.
     pub api: Option<crate::api::Server>,
     /// What API clients may do, as the user answered.
     pub api_gate: crate::api::Gate,
-    /// Each space's active group when last left (by Space as usize); the code view last
-    /// shown (to go back to).
-    space_ag: [usize; 4],
+    /// Each space's active group when last left; the code view last shown (to go back to).
+    space_ag: std::collections::HashMap<Space, usize>,
     code_side: Side,
     pub tab: bool,
     /// A switch to another folder asked for: termcode starts again there (this argument).
@@ -1681,7 +1689,7 @@ pub static HEADLESS: AtomicBool = AtomicBool::new(false);
 
 /// Headless's wait: for a terminal's or a port's output, a request, or `wait`.
 fn wait_fds(wait: Duration) {
-    let mut polls: Vec<libc::pollfd> = crate::term::fds().into_iter().chain(crate::xcomm::fds()).chain(crate::api::wake_fd()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
+    let mut polls: Vec<libc::pollfd> = crate::term::fds().into_iter().chain(crate::ext::fds()).chain(crate::api::wake_fd()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
     let ms = wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
     // SAFETY: valid pollfds, as many as given.
     unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, ms) };
@@ -1690,7 +1698,7 @@ fn wait_fds(wait: Duration) {
 fn wait_input(fd: libc::c_int, wait: Duration) -> Input {
     // The input, then every terminal's PTY.
     // (The socket's wake-up pipe counts as a shell's output: the loop turns at once.)
-    let mut polls: Vec<libc::pollfd> = std::iter::once(fd).chain(crate::term::fds()).chain(crate::xcomm::fds()).chain(crate::api::wake_fd()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
+    let mut polls: Vec<libc::pollfd> = std::iter::once(fd).chain(crate::term::fds()).chain(crate::ext::fds()).chain(crate::api::wake_fd()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
     let ms = wait.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
     // SAFETY: valid pollfds, as many as given.
     if unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, ms) } <= 0 {
@@ -1929,9 +1937,10 @@ impl App {
             prog: Default::default(),
             api: None,
             api_gate: crate::api::Gate::from_env(),
-            space_ag: [0; 4],
+            space_ag: std::collections::HashMap::new(),
             code_side: Side::Explorer,
             serial: crate::xcomm::Serial::default(),
+            exts: crate::ext::Exts::load(),
             tab: false,
             reroot: None,
             revealed: None,

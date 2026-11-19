@@ -169,9 +169,9 @@ fn side_name(s: Side) -> &'static str {
         Side::Explorer => "explorer",
         Side::Search => "search",
         Side::Scm => "scm",
-        Side::GitHub => "github",
-        Side::Programmer => "programmer",
-        Side::Serial => "serial",
+        // A built-in view by its id; an extension's is not reopened (its program would
+        // start with termcode).
+        Side::View(n) => crate::ext::DRIVERS.get(n as usize).map_or("explorer", |o| o.id),
     }
 }
 
@@ -193,7 +193,7 @@ pub fn snapshot(app: &App) -> Value {
         "side": side_name(app.side),
         "sidebar_visible": app.side_visible,
         "sidebar_width": app.side_w,
-        "explorer": { "open": open, "scroll": app.off[Side::Explorer as usize], "sel": app.sel[Side::Explorer as usize] },
+        "explorer": { "open": open, "scroll": app.off[Side::Explorer.idx()], "sel": app.sel[Side::Explorer.idx()] },
         "search": { "query": app.query, "case": app.s_opts.0, "word": app.s_opts.1, "regex": app.s_opts.2 },
         "scm": app.gitui.layout(),
         "groups": groups,
@@ -314,9 +314,7 @@ pub fn restore(app: &mut App) {
     app.side = match v["side"].as_str() {
         Some("search") => Side::Search,
         Some("scm") => Side::Scm,
-        Some("github") => Side::GitHub,
-        Some("programmer") => Side::Programmer,
-        Some("serial") => Side::Serial,
+        Some(id) => crate::ext::DRIVERS.iter().position(|o| o.id == id).map_or(Side::Explorer, |i| Side::View(i as u16)),
         _ => Side::Explorer,
     };
     app.side_visible = v["sidebar_visible"].as_bool().unwrap_or(app.side_visible);
@@ -332,7 +330,7 @@ pub fn restore(app: &mut App) {
             app.toggle(i);
         }
     }
-    let e = Side::Explorer as usize;
+    let e = Side::Explorer.idx();
     let last = app.tree.len().saturating_sub(1);
     app.off[e] = (v["explorer"]["scroll"].as_u64().unwrap_or(0) as usize).min(last);
     app.sel[e] = (v["explorer"]["sel"].as_u64().unwrap_or(0) as usize).min(last);

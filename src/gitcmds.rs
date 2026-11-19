@@ -209,6 +209,8 @@ pub enum Pick {
     GitHubBranch(String, String),
     /// The STM32 Programmer's file browser: a folder, a file, or type a path.
     Prog(crate::programmer::Browse),
+    /// An API client's `ui.pick` (its number): this row.
+    Api(u64, usize),
 }
 
 /// What Enter does with the typed text in an input box.
@@ -218,6 +220,8 @@ pub enum Input {
     Stash(StashOpts),
     /// A value of the STM32 Programmer's page.
     Prog(crate::programmer::Field),
+    /// An API client's `ui.input` (its number).
+    Api(u64),
 }
 
 pub struct Item {
@@ -696,6 +700,7 @@ pub(crate) fn pick(app: &mut App, i: usize) {
                     app.gitui.cmds.picker = Some(Picker { query: text, input: Some(Input::Prog(f)), ..p });
                 }
             }
+            Input::Api(n) => app.api_gate.typed = Some((n, None, p.query)),
         };
     }
     let Some(&k) = p.shown().get(i) else { return };
@@ -706,6 +711,7 @@ pub(crate) fn pick(app: &mut App, i: usize) {
         Pick::Confirm(text, button, op) => confirm(app, text, &button, op, true),
         Pick::GitHubBranch(repo, branch) => crate::github::page::switch_branch(app, &repo, &branch),
         Pick::Prog(b) => crate::programmer::picked(app, b),
+        Pick::Api(n, i) => app.api_gate.typed = Some((n, Some(i), p.items[k].label.clone())),
     }
 }
 

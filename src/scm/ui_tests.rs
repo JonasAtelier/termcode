@@ -165,7 +165,7 @@ fn one_view_changes_over_graph_collapsible_and_split_persisted() {
     settle(&mut app);
     let s = screen(&mut app, &mut tm);
     assert!(s.contains("WORKING TREE") && s.contains("GRAPH") && s.contains("Add commit") && s.contains("first"), "{s}");
-    assert_eq!(app.ui.activity.iter().filter(|(_, s)| !matches!(s, Side::GitHub | Side::Programmer | Side::Serial)).count(), 3, "no separate History item");
+    assert_eq!(app.ui.activity.iter().filter(|(_, s)| !matches!(s, Side::View(_))).count(), 3, "no separate History item");
     assert!(!s.contains("HISTORY"));
     // CHANGES collapses and expands from its header.
     click(&mut app, at(&tm, "WORKING TREE"));
@@ -333,7 +333,7 @@ fn keyboard_cycles_panes_and_end_reaches_view_more() {
     assert_eq!(edge(&tm, cy), crate::blocks::border(true), "the focused pane's card");
     assert_eq!(tm.backend().buffer()[(cx, cy)].fg, P.section_fg, "no second focus colour");
     key(&mut app, KeyCode::End, KeyModifiers::NONE);
-    assert_eq!(app.sel[Side::Scm as usize], app.scm_rows().len() - 1, "End in CHANGES");
+    assert_eq!(app.sel[Side::Scm.idx()], app.scm_rows().len() - 1, "End in CHANGES");
     key(&mut app, KeyCode::BackTab, KeyModifiers::NONE);
     assert!(app.gitui.graph_focus && app.focus == Focus::Side, "Shift+Tab cycles too");
     screen(&mut app, &mut tm);
