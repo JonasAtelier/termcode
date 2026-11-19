@@ -538,8 +538,7 @@ fn set(st: &Shared, stage: &'static str, p: u8) {
 
 /// Ten cells, filled as far as `p` percent.
 fn bar(p: u8) -> String {
-    let n = usize::from(p.min(100)) / 10;
-    "█".repeat(n) + &"░".repeat(10 - n)
+    crate::ui::kit::progress_bar(p, 10)
 }
 
 /// The step going on, as the status bar and the view show it.

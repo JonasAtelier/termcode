@@ -6,7 +6,7 @@
 
 use crate::panel::{App, Focus, GroupHit};
 use crate::theme::P;
-use crate::ui::{button_style, fill, fit, row};
+use crate::ui::{fill, fit, row};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -519,7 +519,7 @@ pub fn draw(app: &mut App, f: &mut Frame, g: usize, key: &str, rel: &str, body: 
     if body.height < 3 {
         return;
     }
-    let (focused, hover) = (g == app.ag && app.focus == Focus::Editor, app.hover);
+    let focused = g == app.ag && app.focus == Focus::Editor;
     let scroll = app.groups[g].tabs[app.groups[g].active].view.scroll;
     let v = view(app, key, rel);
     let bar = Rect::new(body.x, body.y, body.width, 1);
@@ -556,19 +556,17 @@ pub fn draw(app: &mut App, f: &mut Frame, g: usize, key: &str, rel: &str, body: 
         }
         let r = Rect::new(x, bar.y, w, 1);
         let on = v.shown[lv as usize];
-        let hot = hover.is_some_and(|p| r.contains(p));
-        let base = button_style(false, hot);
+        let base = crate::ui::kit::look_at(crate::ui::kit::Look::Secondary, r);
         f.render_widget(Line::from(vec![Span::styled(" ●", base.fg(if on { colors[lv as usize] } else { P.dim })), Span::styled(t[4..].to_string(), if on { base } else { base.fg(P.dim).add_modifier(Modifier::CROSSED_OUT) })]), r);
         hits.push((r, Hit::Level(lv)));
         x += w + 1;
     }
-    for (label, hit) in [(" ‹ ", Hit::Prev), (" › ", Hit::Next)] {
+    for (label, hit) in [("‹", Hit::Prev), ("›", Hit::Next)] {
         if x + 3 >= room {
             break;
         }
         let r = Rect::new(x, bar.y, 3, 1);
-        let hot = hover.is_some_and(|p| r.contains(p));
-        f.render_widget(Span::styled(label, button_style(false, hot)), r);
+        crate::ui::kit::icon_button(f, r, label, P.widget_bg, false);
         hits.push((r, hit));
         x += 4;
     }

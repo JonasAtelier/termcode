@@ -722,6 +722,8 @@ struct HoverKey {
     /// A tab bar's button under the pointer (its cell): a scroll arrow (lit white), split,
     /// terminal, outline.
     bar_btn: Option<(u16, u16)>,
+    /// A kit button under the pointer (ui/kit.rs: every view's buttons).
+    kit_btn: Option<(u16, u16)>,
 }
 
 /// Events the loop batches before one frame: wheel ticks and plain pointer motion.
@@ -971,6 +973,10 @@ pub enum ScrollTarget {
     Git(u8),
     /// A PDF's pages in group `g` (in points).
     Media(usize),
+    /// A commit's hover card's text; a GitHub pane's list; the Programmer's page.
+    Card,
+    Gh(usize),
+    Prog,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1155,6 +1161,8 @@ pub struct Hits {
     pub prompt_btns: Vec<(Rect, usize)>,
     /// "Split Editor Right" button per group.
     pub split_btns: Vec<(Rect, usize, bool)>,
+    /// Every kit button drawn this frame (ui/kit.rs): hover redraws, the pressed look.
+    pub btns: Vec<Rect>,
     /// A drop's preview as drawn (where the split it makes goes).
     pub drop_preview: Rect,
     /// The terminal: its toggle button per group, its panel's top border (the height
@@ -1394,7 +1402,7 @@ pub struct App {
     /// Clicks in a row on one spot (2: a word, 3: a line, in a diff).
     clicks: u8,
     pub hover: Option<Position>,
-    /// A button held down (a tab bar's arrow): drawn pressed until the mouse is let go.
+    /// A button held down: drawn pressed until the mouse is let go.
     pub pressed: Option<Rect>,
     pending_k: bool,
     /// Running a `Cmd::Keys`: its key does what it does by default, past the keybindings.

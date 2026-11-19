@@ -6,6 +6,7 @@
 //! status bar items (branch, sync / Publish Branch, blame), the editor's
 //! conflict actions and blame ghost text, and the quick-diff hunk API.
 
+use crate::ui::kit::Look;
 use crate::diff;
 use crate::editor::{self, Buffer, Pos};
 use crate::gitops::{self, BlameLine, ConflictRegion, Head, RefKind, StashOpts, SyncStatus};
@@ -1122,16 +1123,10 @@ fn draw_toast(app: &mut App, f: &mut Frame, area: Rect) {
     let mut text = vec![Line::from(vec![Span::styled(format!("{icon} "), Style::new().fg(P.error_fg)), Span::styled("Git: the command failed", Style::new().fg(P.widget_fg).bold())])];
     text.extend(lines.iter().map(|l| Line::styled(fit(l, inner.width as usize), Style::new().fg(P.widget_fg))));
     f.render_widget(ratatui::widgets::Paragraph::new(text), inner);
-    let by = inner.bottom() - 1;
-    let bp = sp(app.settings.spacing.button_padding.min(1));
-    let mut x = inner.x;
-    for (label, hit, primary) in [("Show Git Output", Hit::ToastOutput, true), ("Close", Hit::ToastClose, false)] {
-        let t = format!("{bp}{label}{bp}");
-        let br = Rect::new(x, by, t.width() as u16, 1).intersection(inner);
-        let st = crate::ui::button_style(primary, app.hover.is_some_and(|p| br.contains(p)));
-        f.render_widget(Span::styled(t.clone(), st), br);
+    let by = Rect::new(inner.x, inner.bottom() - 1, inner.width, 1);
+    let items = [("Show Git Output", Look::Primary), ("Close", Look::Secondary)];
+    for (br, hit) in crate::ui::kit::button_row(f, by, &items, P.widget_bg).into_iter().zip([Hit::ToastOutput, Hit::ToastClose]) {
         app.gitui.hits.cmds.push((br, hit));
-        x += t.width() as u16 + 1;
     }
     app.gitui.hits.toast = r;
 }

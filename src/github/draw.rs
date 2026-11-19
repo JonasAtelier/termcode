@@ -2,6 +2,7 @@
 //! the repository pane (status, stats, lists). Split from `github` (data, fetching,
 //! keys and clicks), no behaviour change.
 
+use crate::ui::kit::{self, Look};
 use super::*;
 use crate::ui::{fit, inset, row};
 use image::RgbaImage;
@@ -14,14 +15,19 @@ pub(super) fn ic(i: usize) -> &'static str {
     icons().gh[i]
 }
 
-/// A button, lit under the pointer.
+/// A button (the kit's) at `at`'s start; its width.
 pub(super) fn button(app: &mut App, f: &mut Frame, at: Rect, label: &str, primary: bool, b: Btn) -> u16 {
-    let w = (label.width() as u16).min(at.width);
-    let r = Rect::new(at.x, at.y, w, 1);
-    let hot = app.hover.is_some_and(|p| r.contains(p));
-    f.render_widget(Span::styled(fit(label, w as usize), crate::ui::button_style(primary, hot)), r);
+    let label = label.trim();
+    let r = Rect::new(at.x, at.y, kit::button_w(label).min(at.width), 1);
+    kit::button(f, r, label, if primary { Look::Primary } else { Look::Secondary }, P.sidebar_bg, false);
     app.gh.hits.btns.push((r, b));
-    w
+    r.width
+}
+
+/// An icon button (the kit's) filling `r`.
+fn icon(app: &mut App, f: &mut Frame, r: Rect, glyph: &str, b: Btn) {
+    kit::icon_button(f, r, glyph, P.sidebar_bg, false);
+    app.gh.hits.btns.push((r, b));
 }
 
 /// A message (with buttons under it, one a row, the first the main one) in the view;
@@ -169,7 +175,7 @@ pub(super) fn ready(app: &mut App, f: &mut Frame, area: Rect, focused: bool) {
     if area.height > 1 {
         f.render_widget(Span::styled(fit(&second.0, (area.right() - tx) as usize), second.1), Rect::new(tx, area.y + 1, area.right() - tx, 1));
     }
-    button(app, f, Rect::new(area.right() - rw, area.y, rw, 1), &refresh, false, Btn::Refresh);
+    icon(app, f, Rect::new(area.right() - rw, area.y, rw, 1), &refresh, Btn::Refresh);
     // The panes share what is left: the top one's height dragged (half by default), each
     // keeping a few rows.
     let y0 = area.y + 3;
@@ -368,9 +374,9 @@ pub(super) fn activity(app: &mut App, f: &mut Frame, r: Rect, d: &Data) -> Rect 
     let step = format!(" {} ", when.strip_prefix("the ").unwrap_or(&when));
     let sx = r.right().saturating_sub(step.width() as u16 + 4);
     if sx > x {
-        button(app, f, Rect::new(sx, cy, 2, 1), "‹ ", false, Btn::ActStep(-1));
+        icon(app, f, Rect::new(sx, cy, 2, 1), "‹ ", Btn::ActStep(-1));
         f.render_widget(Span::styled(step.clone(), Style::new().fg(P.sidebar_fg)), Rect::new(sx + 2, cy, step.width() as u16, 1));
-        button(app, f, Rect::new(r.right() - 2, cy, 2, 1), " ›", false, Btn::ActStep(1));
+        icon(app, f, Rect::new(r.right() - 2, cy, 2, 1), " ›", Btn::ActStep(1));
     }
     let g = Rect::new(r.x, r.y + 2, r.width, 1 + grid);
     let (start, end) = match &cal {
@@ -561,7 +567,7 @@ pub(super) fn repo_pane(app: &mut App, f: &mut Frame, r: Rect, focused: bool) {
     // last push; its page at the right.
     let now = crate::scm::now();
     let ow = 3;
-    button(app, f, Rect::new(r.right().saturating_sub(ow), r.y, ow, 1), &format!(" {} ", ic(OPEN)), false, Btn::OpenRepo);
+    icon(app, f, Rect::new(r.right().saturating_sub(ow), r.y, ow, 1), ic(OPEN), Btn::OpenRepo);
     let desc = if info.description.is_empty() { "No description.".to_string() } else { info.description.clone() };
     f.render_widget(Span::styled(fit(&desc, r.width.saturating_sub(ow + 1) as usize), Style::new().fg(P.sidebar_fg)), Rect::new(r.x, r.y, r.width.saturating_sub(ow + 1), 1));
     let mut facts: Vec<String> = Vec::new();
@@ -744,17 +750,13 @@ pub(super) fn list(app: &mut App, f: &mut Frame, r: Rect, pane: usize, focused: 
     }
     if all.len() > h {
         let track = Rect::new(r.right().saturating_sub(1), r.y, 1, r.height);
-        let s = crate::decor::slider(track.height, all.len(), h, off, all.len() - h);
-        for y in track.y + s.0..(track.y + s.0 + s.1).min(track.bottom()) {
-            f.buffer_mut()[(track.x, y)].set_symbol("▐").set_fg(P.dim);
-        }
+        crate::ui::scrollbar(app, f, track, crate::panel::ScrollTarget::Gh(pane), all.len(), h, off, all.len() - h);
     }
 }
 
 /// A section's header: its chevron, name and count, in the section colours.
 pub(super) fn head(app: &App, f: &mut Frame, r: Rect, s: Sec, focused: bool) {
     let gh = &app.gh;
-    let chev = if gh.folded[s as usize] { icons().chev_right } else { icons().chev_down };
     let d = gh.data.as_ref();
     let (name, count) = match s {
         Sec::Repos => ("REPOSITORIES", d.map_or(0, |d| d.repos.len())),
@@ -766,11 +768,7 @@ pub(super) fn head(app: &App, f: &mut Frame, r: Rect, s: Sec, focused: bool) {
         Sec::RepoPrs => ("PULL REQUESTS", gh.prs(s).len()),
         Sec::RepoIssues => ("ISSUES", gh.issues(s).len()),
     };
-    let fg = if focused { P.focus_border } else { P.section_fg };
-    let count = format!(" {count} ");
-    let name = fit(&format!("{chev} {name}"), (r.width as usize).saturating_sub(count.width()));
-    row(f, r, P.section_bg, vec![Span::styled(name, Style::new().fg(fg).bold())]);
-    crate::ui::right(f, r, vec![Span::styled(count, Style::new().fg(P.dim).bg(P.section_bg))]);
+    crate::ui::section_head(app, f, r, name, !gh.folded[s as usize], &count.to_string(), focused);
 }
 
 /// A repository's name as the account sees it: its own without the owner.
@@ -864,9 +862,7 @@ pub(super) fn item(app: &mut App, f: &mut Frame, r: Rect, bg: Color, (pane, i, r
                 Key::Open => ic(OPEN),
             };
             let br = Rect::new(tx + k as u16 * 2, r.y, 2, 1).intersection(r);
-            let hot = app.hover.is_some_and(|p| br.contains(p));
-            let st = if hot { Style::new().fg(P.sidebar_fg).bg(P.button2_hover) } else { Style::new().fg(P.icon_fg).bg(bg) };
-            f.render_widget(Span::styled(format!("{glyph} "), st), br);
+            kit::icon_button(f, br, &format!("{glyph} "), bg, false);
             app.gh.hits.btns.push((br, Btn::Act(pane, i, *key)));
         }
     }

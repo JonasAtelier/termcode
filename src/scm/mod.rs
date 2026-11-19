@@ -7,6 +7,7 @@
 //! `Side::Scm`, `ui.side_list`), so its keys, clicks and scrollbar are the
 //! generic ones. GRAPH and TIMELINE keep their own state here.
 
+use crate::ui::kit::Look;
 use crate::commitdlg::{self, CommitDlg};
 use crate::diff;
 use crate::git::{ScmFile, Section};
@@ -1320,6 +1321,17 @@ pub fn scroll_of(app: &App, which: u8) -> usize {
     }
 }
 
+/// A commit card's text scroll (its scrollbar's).
+pub fn card_scroll(app: &App) -> usize {
+    app.gitui.card.as_ref().map_or(0, |c| c.scroll)
+}
+
+pub fn set_card_scroll(app: &mut App, off: usize) {
+    if let Some(c) = app.gitui.card.as_mut() {
+        c.scroll = off.min(c.max_scroll);
+    }
+}
+
 pub fn set_scroll(app: &mut App, which: u8, off: usize) {
     let (n, h) = list_len(app, which);
     list_mut(app, which).off = off.min(n.saturating_sub(h));
@@ -1458,11 +1470,8 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
         let p = ratatui::widgets::Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }).style(Style::new().fg(P.sidebar_fg));
         let h = p.line_count(area.width) as u16;
         f.render_widget(p, area);
-        let label = " Trust Repository ";
-        let b = Rect::new(area.x, area.y + h + 1, (label.len() as u16).min(area.width), 1);
-        if b.bottom() <= area.bottom() {
-            let hot = app.hover.is_some_and(|p| b.contains(p));
-            f.render_widget(Span::styled(label, crate::ui::button_style(true, hot)), b);
+        let b = crate::ui::kit::button_at(f, area, (area.x, area.y + h + 1), "Trust Repository", Look::Primary, P.sidebar_bg);
+        if !b.is_empty() {
             app.gitui.hits.areas.push((b, Hit::Trust));
         }
         app.ui.side_list = Rect::default();
@@ -1527,11 +1536,7 @@ pub fn draw_scm(app: &mut App, f: &mut Frame, r: Rect) {
         let m = (s.sidebar_padding.saturating_sub(1) / 2).min(crect.width / 2);
         let btn = Rect::new(crect.x + m, crect.y, crect.width.saturating_sub(2 * m), 1);
         let label = format!("{}{}Add commit", icons().check, sp(crate::blocks::icon_gap(s.icon_gap) / 2));
-        let bg = if app.hover.is_some_and(|p| btn.contains(p)) { P.button_hover } else { P.button_bg };
-        fill(f, btn, bg);
-        let bx = btn.x + btn.width.saturating_sub(label.width() as u16) / 2;
-        f.render_widget(Span::styled(fit(&label, btn.width as usize), Style::new().fg(P.button_fg).bg(bg)), Rect::new(bx, btn.y, btn.right().saturating_sub(bx), 1));
-        crate::ui::round_ends(f, btn, bg, P.sidebar_bg);
+        crate::ui::kit::button(f, btn, &label, Look::Primary, P.sidebar_bg, false);
         app.ui.commit_btn = btn;
         // The list starts right under the button, no blank row between them.
         let top = 1.min(crect.height);
@@ -1973,13 +1978,9 @@ fn draw_card(app: &mut App, f: &mut Frame, area: Rect) {
             f.buffer_mut()[(text.x + x, text.y + y)] = cell;
         }
     }
-    if c.max_scroll > 0 && text.height > 0 {
-        let h = text.height as usize;
-        let len = (h * h / total).clamp(1, h);
-        let top = (c.scroll * (h - len)).div_ceil(c.max_scroll);
-        for y in text.y + top as u16..text.y + (top + len) as u16 {
-            f.buffer_mut()[(r.right() - 1, y)].set_symbol(if crate::theme::ascii() { "#" } else { "┃" }).set_fg(P.dim);
-        }
+    let (scroll, max_scroll) = (c.scroll, c.max_scroll);
+    if max_scroll > 0 && text.height > 0 {
+        crate::ui::scrollbar(app, f, Rect::new(r.right() - 1, text.y, 1, text.height), ScrollTarget::Card, total, text.height as usize, scroll, max_scroll);
     }
     let c = app.gitui.card.as_ref().expect("drawn above");
     (app.gitui.hits.card, app.gitui.hits.card_text) = (r, text);
@@ -1988,20 +1989,17 @@ fn draw_card(app: &mut App, f: &mut Frame, area: Rect) {
     }
     let by = inner.bottom() - 1;
     let short = &c.hash[..c.hash.len().min(7)];
-    let bp = sp(app.settings.spacing.button_padding.min(1));
     let mut x = inner.x;
     f.render_widget(Span::styled(short.to_string(), Style::new().fg(P.dim)), Rect::new(x, by, 8.min(inner.width), 1));
     x += 9;
-    for (label, hit) in [("Copy hash", Hit::CardCopy), ("Open changes", Hit::CardOpen)] {
-        let t = format!("{bp}{label}{bp}");
-        let br = Rect::new(x, by, t.width() as u16, 1).intersection(inner);
+    let row = Rect::new(x, by, inner.right().saturating_sub(x), 1);
+    let items = [("Copy hash", Look::Secondary), ("Open changes", Look::Secondary)];
+    for (br, hit) in crate::ui::kit::button_row(f, row, &items, P.widget_bg).into_iter().zip([Hit::CardCopy, Hit::CardOpen]) {
         if br.is_empty() {
             break;
         }
-        let hot = app.hover.is_some_and(|p| br.contains(p));
-        f.render_widget(Span::styled(t.clone(), crate::ui::button_style(false, hot)), br);
         app.gitui.hits.areas.push((br, hit));
-        x += t.width() as u16 + 1;
+        x = br.right() + 1;
     }
     // The refs follow the buttons, collapsing into +N in what room is left.
     if let Some(Ok(h)) = &c.hover {

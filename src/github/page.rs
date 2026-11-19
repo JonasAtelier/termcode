@@ -718,9 +718,8 @@ pub fn draw_frame(app: &mut App, f: &mut Frame, g: usize, repo: &str, body: Rect
         let gap = (mid.width as usize).saturating_sub(used + br.width() + 1);
         let bx = mid.x + (used + gap) as u16;
         let r = Rect::new(bx, mid.y, (br.width() as u16).min(mid.right().saturating_sub(bx)), 1);
-        let hot = hover.is_some_and(|p| r.contains(p));
         head.push(Span::raw(" ".repeat(gap)));
-        head.push(Span::styled(br, crate::ui::button_style(false, hot)));
+        head.push(Span::styled(br, crate::ui::kit::look_at(crate::ui::kit::Look::Secondary, r)));
         hits.push((r, Target::Branches));
     }
     f.render_widget(Line::from(head), Rect::new(mid.x, mid.y, mid.width, 1));
@@ -764,7 +763,7 @@ pub fn draw_frame(app: &mut App, f: &mut Frame, g: usize, repo: &str, body: Rect
         let label = format!(" {} {} ", icons().gh[REPO], fit(repo, (inner.width as usize).saturating_sub(6)));
         let br = Rect::new(inner.x + 1, inner.y, (label.width() as u16).min(inner.width.saturating_sub(2)), 1);
         let on_main = page.file.is_none() && page.folder.is_empty();
-        f.render_widget(Span::styled(label, crate::ui::button_style(on_main, hover.is_some_and(|p| br.contains(p)))), br);
+        crate::ui::kit::button(f, br, label.trim(), if on_main { crate::ui::kit::Look::Primary } else { crate::ui::kit::Look::Secondary }, P.editor_bg, false);
         hits.push((br, Target::Main));
         let out_h = if outline.is_empty() { 0 } else { (outline.len() as u16 + 1).min(inner.height * 2 / 5).max(3) };
         let tree_area = Rect::new(inner.x, inner.y + 3, inner.width, inner.height.saturating_sub(3 + out_h));

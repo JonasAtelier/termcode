@@ -651,7 +651,7 @@ pub(super) fn draw_peek(f: &mut Frame, zr: Rect, gx: u16, gutter: u16, tx: u16, 
         let st = if !enabled {
             desc.add_modifier(Modifier::DIM)
         } else if matches!(b, PeekBtn::Stage | PeekBtn::Revert) {
-            button_style(true, d.hover.is_some_and(|p| r.contains(p)))
+            crate::ui::kit::look_at(crate::ui::kit::Look::Primary, r)
         } else {
             Style::new().fg(P.peek_title_fg).bg(P.peek_title_bg)
         };

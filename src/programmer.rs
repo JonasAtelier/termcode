@@ -9,7 +9,8 @@
 use crate::gitcmds::{Input, Item, Pick};
 use crate::panel::{App, Focus, PAct, Prompt};
 use crate::theme::{icons, P};
-use crate::ui::{button_style, fill, fit, fit_left, pill, row};
+use crate::ui::kit::{self, Look};
+use crate::ui::{fill, fit, row};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -1650,35 +1651,16 @@ fn feature_of(op: Op) -> Feature {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Look {
-    Primary,
-    Secondary,
-    Danger,
-}
-
-/// A pill button (its icon, its label) on `under`; not `on`: greyed, no click. Drawn whole
-/// or not at all. Returns the x after it.
+/// A button (the kit's: its icon, its label) on `under`; not `on`: greyed, no click.
+/// Drawn whole or not at all. Returns the x after it.
 #[allow(clippy::too_many_arguments)]
 fn button(app: &mut App, f: &mut Frame, b: Rect, (x, y): (u16, u16), icon: &str, label: &str, look: Look, on: bool, hit: Hit, under: ratatui::style::Color) -> u16 {
     let text = if icon.is_empty() { label.to_string() } else { format!("{icon} {label}") };
-    let w = text.width() as u16 + 2;
-    let r = Rect::new(x, y, w, 1);
-    if r.right() > b.right() || y < b.y || y >= b.bottom() {
-        return x + w + 1;
-    }
-    let hot = on && app.hover.is_some_and(|p| r.contains(p));
-    let st = match (on, look) {
-        (false, _) => Style::new().fg(P.dim).bg(P.button2_bg),
-        (true, Look::Primary) => button_style(true, hot),
-        (true, Look::Secondary) => button_style(false, hot),
-        (true, Look::Danger) => Style::new().fg(P.button_fg).bg(P.error_fg).add_modifier(if hot { Modifier::BOLD } else { Modifier::empty() }),
-    };
-    f.render_widget(Line::from(pill(text, st, under)), r);
-    if on {
+    let r = kit::button_at(f, b, (x, y), &text, if on { look } else { Look::Off }, under);
+    if on && !r.is_empty() {
         app.prog.hits.push((r, hit));
     }
-    x + w + 1
+    x + kit::button_w(&text) + 1
 }
 
 /// A key's name, dim, after a button.
@@ -1689,67 +1671,30 @@ fn key_hint(f: &mut Frame, b: Rect, (x, y): (u16, u16), key: &str) {
     }
 }
 
-/// A segmented control: the choices side by side in one pill, the chosen one lit.
+/// A segmented control (the kit's), its choices clickable.
 #[allow(clippy::too_many_arguments)]
 fn segmented(app: &mut App, f: &mut Frame, b: Rect, (x, y): (u16, u16), opts: &[String], sel: usize, hit: fn(usize) -> Hit, under: ratatui::style::Color) -> u16 {
-    if y < b.y || y >= b.bottom() {
-        return x;
-    }
-    let nerd = crate::theme::nerd();
-    let mut cx = x + u16::from(nerd);
-    let bgs: Vec<_> = opts
-        .iter()
-        .enumerate()
-        .map(|(i, o)| {
-            let r = Rect::new(cx, y, o.width() as u16 + 2, 1);
-            cx += r.width;
-            let hot = app.hover.is_some_and(|p| r.contains(p));
-            let st = if i == sel {
-                Style::new().fg(P.button_fg).bg(P.button_bg).bold()
-            } else if hot {
-                Style::new().fg(P.editor_fg).bg(P.list_hover_bg)
-            } else {
-                Style::new().fg(P.input_fg).bg(P.input_bg)
-            };
-            (r, st, format!(" {o} "))
-        })
-        .collect();
-    if cx > b.right() {
-        return cx + 2;
-    }
-    for (i, (r, st, t)) in bgs.iter().enumerate() {
-        f.render_widget(Span::styled(t.clone(), *st), *r);
-        app.prog.hits.push((*r, hit(i)));
-    }
-    if nerd {
-        let cap = |c: &'static str, st: Style| Span::styled(c, Style::new().fg(st.bg.unwrap_or(P.input_bg)).bg(under));
-        f.render_widget(cap("\u{e0b6}", bgs[0].1), Rect::new(x, y, 1, 1));
-        f.render_widget(cap("\u{e0b4}", bgs[bgs.len() - 1].1), Rect::new(cx, y, 1, 1));
-    }
-    cx + 2
+    let (rects, after) = kit::segmented(f, b, (x, y), opts, sel, under);
+    app.prog.hits.extend(rects.into_iter().enumerate().map(|(i, r)| (r, hit(i))));
+    after
 }
 
 #[allow(clippy::too_many_arguments)]
 fn field(app: &mut App, f: &mut Frame, b: Rect, (x, y): (u16, u16), w: u16, text: &str, placeholder: &str, hit: Hit) -> u16 {
     let r = Rect::new(x, y, w, 1).intersection(b);
     if !r.is_empty() {
-        let hot = app.hover.is_some_and(|p| r.contains(p));
-        let room = r.width.saturating_sub(2) as usize;
         let typing = match (&hit, &app.prog.editing) {
             (Hit::Ask(f), Some((g, t))) if f == g => Some(t.clone()),
             _ => None,
         };
         if let Some(t) = &typing {
-            let shown = fit_left(t, room);
-            row(f, r, P.input_bg, vec![Span::styled(format!(" {shown}"), Style::new().fg(P.input_fg))]);
-            // Typing shows: the field's edge in the focus colour, the caret after the text.
-            f.render_widget(Span::styled("▏", Style::new().fg(P.focus_border).bg(P.input_bg)), Rect::new(r.x, r.y, 1, 1));
+            // Typing shows: the field's mark in the focus colour, the caret after the text.
+            kit::input(f, r, t, placeholder, true);
             if app.focus == Focus::Editor {
-                f.set_cursor_position((r.x + 1 + (shown.width() as u16).min(r.width.saturating_sub(2)), r.y));
+                f.set_cursor_position((r.x + 1 + (t.width() as u16).min(r.width.saturating_sub(2)), r.y));
             }
         } else {
-            let (t, fg) = if text.is_empty() { (fit(placeholder, room), P.placeholder) } else { (fit_left(text, room), P.input_fg) };
-            row(f, r, if hot { P.list_hover_bg } else { P.input_bg }, vec![Span::styled(format!(" {t}"), Style::new().fg(fg))]);
+            kit::input(f, r, text, placeholder, false);
         }
         let err = match (&hit, &app.prog.field_err) {
             (Hit::Ask(f), Some((g, e))) if f == g => Some(e.clone()),
@@ -1765,22 +1710,11 @@ fn field(app: &mut App, f: &mut Frame, b: Rect, (x, y): (u16, u16), w: u16, text
 }
 
 fn check(app: &mut App, f: &mut Frame, b: Rect, (x, y): (u16, u16), on: bool, label: &str, hit: Hit) -> u16 {
-    let mark = if crate::theme::ascii() {
-        Span::styled(if on { "[x]" } else { "[ ]" }, Style::new().fg(P.editor_fg))
-    } else if on {
-        Span::styled(format!(" {} ", icons().check), Style::new().fg(P.button_fg).bg(P.button_bg))
-    } else {
-        Span::styled("   ", Style::new().bg(P.input_bg))
-    };
-    let w = 4 + label.width() as u16;
-    let r = Rect::new(x, y, w, 1).intersection(b);
+    let r = kit::check(f, b, (x, y), on, label);
     if !r.is_empty() {
-        let hot = app.hover.is_some_and(|p| r.contains(p));
-        let st = Style::new().fg(P.editor_fg).add_modifier(if hot { Modifier::UNDERLINED } else { Modifier::empty() });
-        f.render_widget(Line::from(vec![mark, Span::raw(" "), Span::styled(label.to_string(), st)]), r);
         app.prog.hits.push((r, hit));
     }
-    x + w + 2
+    x + 4 + label.width() as u16 + 2
 }
 
 /// A dim label at `x`, `w` wide.
@@ -1798,32 +1732,17 @@ fn text_at(f: &mut Frame, b: Rect, (x, y): (u16, u16), spans: Vec<Span<'static>>
     }
 }
 
-/// A titled card with rounded corners; returns inside it (a cell of padding each side).
 fn card(f: &mut Frame, r: Rect, title: &str, border: ratatui::style::Color) -> Rect {
-    if r.height < 3 || r.width < 8 {
-        return Rect::default();
-    }
-    let blk = crate::ui::popup_block(P.editor_bg, P.editor_fg, (1, 0))
-        .border_style(Style::new().fg(border).bg(P.editor_bg))
-        .title(Line::from(Span::styled(format!(" {title} "), Style::new().fg(P.editor_fg).bold())));
-    let inner = blk.inner(r);
-    f.render_widget(blk, r);
-    inner
+    kit::card(f, r, title, border)
 }
 
-/// A scrollbar on `track` for `total` rows, `view` shown from `off`.
-fn scrollbar(f: &mut Frame, track: Rect, total: usize, view: usize, off: usize) {
-    if total <= view || track.height == 0 {
-        return;
-    }
-    let h = track.height as usize;
-    let len = (h * view / total).clamp(1, h);
-    let top = (h - len) * off / (total - view).max(1);
-    for i in 0..h {
-        let on = (top..top + len).contains(&i);
-        let g = if crate::theme::ascii() { if on { "#" } else { "|" } } else if on { "┃" } else { "│" };
-        f.render_widget(Span::styled(g, Style::new().fg(if on { P.dim } else { P.widget_border })), Rect::new(track.x, track.y + i as u16, 1, 1));
-    }
+/// The page's scroll (its scrollbar's).
+pub fn main_off(app: &App) -> usize {
+    app.prog.main_off
+}
+
+pub fn set_main_off(app: &mut App, off: usize) {
+    app.prog.main_off = off; // the page clamps it
 }
 
 /// "3 min ago" for a file's change.
@@ -1982,7 +1901,7 @@ fn target_bar(app: &mut App, f: &mut Frame, r: Rect) {
     let details = if details.is_empty() { probe_text(s) } else { details.join(" · ") };
     // The right end: the state, then the button.
     let (icon, label, hit) = if connected { (glyph(I_DISCONNECT), "Disconnect", Hit::Disconnect) } else { (glyph(I_CONNECT), "Connect", Hit::Run(Op::Connect)) };
-    let bw = format!("{icon} {label}").width() as u16 + 2;
+    let bw = kit::button_w(&format!("{icon} {label}"));
     let bx = inner.right().saturating_sub(bw);
     let (st, c) = if connected { ("● Connected", P.git_added) } else { ("○ Not connected", P.dim) };
     let sx = bx.saturating_sub(st.width() as u16 + 3);
@@ -2191,7 +2110,7 @@ fn page_memory(app: &mut App, f: &mut Frame, r: Rect) {
     let widths: Vec<String> = WIDTHS.iter().map(|w| format!("{}-bit", w * 8)).collect();
     segmented(app, f, c, (c.x + 9, c.y + 2), &widths, app.prog.width, Hit::Width, P.editor_bg);
     // The actions at the right end: Read (F5) on the first row, Save As… on the last.
-    let x = c.right().saturating_sub(13);
+    let x = c.right().saturating_sub(kit::button_w(&format!("{} Save As…", glyph(I_SAVE))).max(kit::button_w(&format!("{} Read", glyph(I_READ))) + 3));
     let after = button(app, f, c, (x, c.y), glyph(I_READ), "Read", Look::Primary, on, Hit::Run(Op::ReadMem), P.editor_bg);
     key_hint(f, c, (after, c.y), "F5");
     if app.prog.mem.is_some() {
@@ -2221,7 +2140,8 @@ fn page_program(app: &mut App, f: &mut Frame, r: Rect) {
         return;
     }
     let file = app.prog.file.clone();
-    let bx = c.right().saturating_sub(12);
+    let browse = format!("{} Browse…", glyph(I_FOLDER));
+    let bx = c.right().saturating_sub(kit::button_w(&browse) + 1);
     button(app, f, c, (bx, c.y), glyph(I_FOLDER), "Browse…", Look::Secondary, true, Hit::Browse, P.editor_bg);
     let room = bx.saturating_sub(c.x + 3);
     // The file's name (a click browses too) and what it is.
@@ -2346,7 +2266,9 @@ fn page_ob(app: &mut App, f: &mut Frame, r: Rect) {
     let most = lines.len().saturating_sub(view);
     app.prog.main_off = app.prog.main_off.min(most);
     let off = app.prog.main_off;
-    scrollbar(f, Rect::new(c.right(), c.y, 1, c.height), lines.len(), view, off);
+    if lines.len() > view {
+        crate::ui::scrollbar(app, f, Rect::new(c.right(), c.y, 1, c.height), crate::panel::ScrollTarget::Prog, lines.len(), view, off, most);
+    }
     f.render_widget(Paragraph::new(lines.into_iter().skip(off).collect::<Vec<_>>()), c);
 }
 
@@ -2358,7 +2280,8 @@ fn page_serial(app: &mut App, f: &mut Frame, r: Rect) {
     }
     let open = app.prog.serial.is_some();
     // The buttons at the right end, the port and rate left of them.
-    let rw = 34;
+    let bw = |i: &str, l: &str| kit::button_w(&format!("{i} {l}"));
+    let rw = (bw(glyph(I_DISCONNECT), "Disconnect") + 3).max(bw(glyph(I_SEND), "Send…") + 1 + bw(glyph(I_ERASE), "Clear")) + 1;
     let bx = c.right().saturating_sub(rw);
     let (icon, name) = if open { (glyph(I_DISCONNECT), "Disconnect") } else { (glyph(I_CONNECT), "Connect") };
     let x = button(app, f, c, (bx, c.y), icon, name, if open { Look::Secondary } else { Look::Primary }, true, Hit::SerialToggle, P.editor_bg);
@@ -2460,7 +2383,9 @@ fn draw_grid(app: &mut App, f: &mut Frame, a: Rect) {
         spans.extend(text.chars().map(|c| Span::styled(c.to_string(), if c == '.' { dim } else { fg })));
         row(f, Rect::new(a.x, a.y + 1 + k as u16, a.width.saturating_sub(1), 1), bg, spans);
     }
-    scrollbar(f, Rect::new(a.right().saturating_sub(1), a.y + 1, 1, h as u16), rows, h, off);
+    if rows > h {
+        crate::ui::scrollbar(app, f, Rect::new(a.right().saturating_sub(1), a.y + 1, 1, h as u16), crate::panel::ScrollTarget::Prog, rows, h, off, rows - h);
+    }
 }
 
 /// The panel's tabs on its top border: Terminal, Programmer, and Serial once the console
@@ -2775,7 +2700,7 @@ mod tests {
         typed(&mut app, "1G");
         key(&mut app, KeyCode::Enter);
         let s = screen(&mut app, &mut t);
-        assert!(s.contains("Type a size from 1 byte to 4 MB") && s.contains("▏1G"), "{s}");
+        assert!(s.contains("Type a size from 1 byte to 4 MB") && s.contains("▎1G"), "{s}");
         let (x, y) = s.lines().enumerate().find_map(|(y, l)| l.find("Type a size").map(|x| (l[..x].chars().count() as u16, y as u16))).unwrap();
         assert_eq!(t.backend().buffer()[(x, y)].fg, P.error_fg);
         // A click elsewhere with a bad value does nothing but keep it; Esc keeps the old one.

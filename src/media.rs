@@ -11,7 +11,7 @@
 use crate::panel::{App, Doc, Drag, Focus, ScrollTarget};
 use crate::symbols::Symbol;
 use crate::theme::P;
-use crate::ui::{button_style, fill, fit, row};
+use crate::ui::{fill, fit, row};
 use image::{imageops, Rgba, RgbaImage};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
@@ -807,33 +807,32 @@ pub fn draw(app: &mut App, f: &mut Frame, g: usize, key: &str, path: &Path, kind
         (Kind::Pdf, _, Some(s)) => format!("{name} · page {} of {n_pages} · {}×{} pt · {bytes}", page + 1, s[page].0, s[page].1),
         _ => format!("{name} · {bytes}"),
     };
-    let mut buttons: Vec<(String, Option<Hit>)> = vec![(" − ".into(), Some(Hit::ZoomOut)), (format!(" {pct}% "), None), (" + ".into(), Some(Hit::ZoomIn)), (" Fit ".into(), Some(Hit::Fit)), (" 1:1 ".into(), Some(Hit::Actual))];
+    use crate::ui::kit::{self, Look};
+    let mut buttons: Vec<(String, Option<Hit>)> = vec![("−".into(), Some(Hit::ZoomOut)), (format!(" {pct}% "), None), ("+".into(), Some(Hit::ZoomIn)), ("Fit".into(), Some(Hit::Fit)), ("1:1".into(), Some(Hit::Actual))];
     if kind == Kind::Pdf {
-        buttons.extend([(" ‹ ".into(), Some(Hit::Prev)), (" › ".into(), Some(Hit::Next)), (" 2 pages ".into(), Some(Hit::Two))]);
+        buttons.extend([("‹".into(), Some(Hit::Prev)), ("›".into(), Some(Hit::Next)), ("2 pages".into(), Some(Hit::Two))]);
     }
     row(f, bar, P.widget_bg, vec![]);
-    let mut x = bar.right().saturating_sub(1);
-    for (label, how) in buttons_for(path).iter().rev() {
-        let t = format!(" {label} ");
-        x = x.saturating_sub(t.width() as u16 + 1);
-        let r = Rect::new(x, bar.y, t.width() as u16, 1);
-        let hot = app.hover.is_some_and(|p| r.contains(p));
-        f.render_widget(Span::styled(t, button_style(*how == As::Main, hot)), r);
-        app.ui.view_btns.push((r, *how));
-    }
-    x = x.saturating_sub(2);
+    // How to show the file (the one shown in the main colours), then the tools left of it.
+    let views = buttons_for(path);
+    let items: Vec<(&str, Look)> = views.iter().map(|(l, how)| (*l, if *how == As::Main { Look::Primary } else { Look::Secondary })).collect();
+    let (rects, mut x) = kit::button_row_end(f, Rect::new(bar.x, bar.y, bar.width.saturating_sub(1), 1), &items, P.widget_bg);
+    app.ui.view_btns.extend(rects.into_iter().zip(views.iter()).filter(|(r, _)| !r.is_empty()).map(|(r, (_, how))| (r, *how)));
+    x = x.saturating_sub(1);
     for (label, hit) in buttons.iter().rev() {
-        x = x.saturating_sub(label.width() as u16);
-        let r = Rect::new(x, bar.y, label.width() as u16, 1);
-        let hot = hit.is_some() && app.hover.is_some_and(|p| r.contains(p));
-        let on = *hit == Some(Hit::Two) && app.media.views.get(key).is_some_and(|v| v.two);
-        let st = match hit {
-            Some(_) => button_style(on, hot),
-            None => Style::new().fg(P.editor_fg).bg(P.widget_bg),
-        };
-        f.render_widget(Span::styled(label.clone(), st), r);
-        if let Some(h) = hit {
-            app.media.hits.push((r, *h));
+        let w = if hit.is_some() { kit::tool_w(label) } else { label.width() as u16 };
+        if x < bar.x + w {
+            break;
+        }
+        x -= w;
+        let r = Rect::new(x, bar.y, w, 1);
+        match hit {
+            Some(h) => {
+                let on = *h == Hit::Two && app.media.views.get(key).is_some_and(|v| v.two);
+                kit::button(f, r, label, if on { Look::Primary } else { Look::Secondary }, P.widget_bg, false);
+                app.media.hits.push((r, *h));
+            }
+            None => f.render_widget(Span::styled(label.clone(), Style::new().fg(P.editor_fg).bg(P.widget_bg)), r),
         }
         x = x.saturating_sub(1);
     }
@@ -1594,7 +1593,7 @@ mod app_tests {
         app.focus = Focus::Editor;
         app.side_visible = false; // the bar whole in 120 columns
         let s = settle(&mut app, &mut t, "red.png · 40×20 · PNG");
-        assert!(s.contains(" Fit ") && s.contains(" 1:1 ") && s.contains(" picture ") && s.contains(" hexdump "), "{s}");
+        assert!(s.contains(&crate::ui::kit::btn_text("Fit")) && s.contains(&crate::ui::kit::btn_text("1:1")) && s.contains(&crate::ui::kit::btn_text("picture")) && s.contains(&crate::ui::kit::btn_text("hexdump")), "{s}");
         assert!(matches!(app.docs.get("file:red.png"), Some(Doc::Text(b)) if b.media == Some(Kind::Image) && b.lines.len() == 1), "no lines read");
         let status = s.lines().last().unwrap_or("");
         assert!(status.contains("Image") && !status.contains("Ln 1"), "{status}");
@@ -1750,7 +1749,7 @@ mod app_tests {
         app.focus = Focus::Editor;
         app.side_visible = false;
         let s = settle(&mut app, &mut t, "page 1 of 3");
-        assert!(s.contains("612×792 pt") && s.contains(" pages ") && s.contains(" text ") && s.contains(" ‹ "), "{s}");
+        assert!(s.contains("612×792 pt") && s.contains(&crate::ui::kit::btn_text("pages")) && s.contains(&crate::ui::kit::btn_text("text")) && s.contains(&crate::ui::kit::btn_text("‹")), "{s}");
         assert!(app.ui.scrollbars.iter().any(|sb| sb.target == ScrollTarget::Media(0)), "a scrollbar");
         // Down the document: PgDn moves a screen, › a page, End to the end.
         let top = app.media.views["file:doc.pdf"].scroll;

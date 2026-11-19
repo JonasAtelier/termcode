@@ -5337,7 +5337,7 @@ fn markdown_turns_to_its_preview_and_back_in_place() {
     app.open_file(0, "README.md", false);
     app.focus = Focus::Editor;
     let s = screen(&mut app, &mut t);
-    assert!(s.contains(" preview ") && s.contains(" source ") && s.contains("# Title"), "{s}");
+    assert!(s.contains(&crate::ui::kit::btn_text("preview")) && s.contains(&crate::ui::kit::btn_text("source")) && s.contains("# Title"), "{s}");
     let press = |app: &mut App, rendered: bool| {
         let r = app.ui.md_btns.iter().find(|b| b.2 == rendered).unwrap().0;
         mouse(app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
@@ -5388,7 +5388,7 @@ fn a_patch_turns_into_a_diff_of_its_files_and_back() {
     app.open_file(0, "fix.patch", false);
     app.focus = Focus::Editor;
     let s = screen(&mut app, &mut t);
-    assert!(s.contains(" diff ") && s.contains(" source ") && s.contains("+new();"), "its text first\n{s}");
+    assert!(s.contains(&crate::ui::kit::btn_text("diff")) && s.contains(&crate::ui::kit::btn_text("source")) && s.contains("+new();"), "its text first\n{s}");
     let r = app.ui.md_btns.iter().find(|b| b.2).unwrap().0;
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
     mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
@@ -5420,7 +5420,7 @@ fn a_map_file_turns_into_its_memory_use_and_an_elf_shows_its_size() {
     app.open_file(0, "fw.map", false);
     (app.focus, app.side_visible, app.minimap_on) = (Focus::Editor, false, false);
     let s = screen(&mut app, &mut t);
-    assert!(s.contains(" usage ") && s.contains("Memory Configuration"), "its text first\n{s}");
+    assert!(s.contains(&crate::ui::kit::btn_text("usage")) && s.contains("Memory Configuration"), "its text first\n{s}");
     let r = app.ui.md_btns.iter().find(|b| b.2).unwrap().0;
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
     mouse(&mut app, MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
@@ -7423,7 +7423,7 @@ fn a_binarys_banner_chooses_between_readelf_and_hexdump() {
     wait(&mut app);
     let mut t = Terminal::new(TestBackend::new(170, 30)).unwrap();
     let s = screen(&mut app, &mut t);
-    assert!(s.contains("# t.so: ELF") && s.contains(" readelf ") && s.contains(" hexdump ") && s.contains("ELF"), "{s}");
+    assert!(s.contains("# t.so: ELF") && s.contains(&crate::ui::kit::btn_text("readelf")) && s.contains(&crate::ui::kit::btn_text("hexdump")) && s.contains("ELF"), "{s}");
     let btn = |app: &App, hex: bool| {
         let how = if hex { crate::media::As::Hex } else { crate::media::As::Main };
         app.ui.view_btns.iter().find(|(_, h)| *h == how).map(|(r, _)| *r).unwrap()

@@ -10,6 +10,17 @@ impl App {
         if matches!(m.kind, MouseEventKind::Down(_)) {
             self.prefix_armed = false;
         }
+        // A kit button (ui/kit.rs) held down shows it, whichever view handles the click.
+        let at = Position::new(m.column, m.row);
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(r) = self.ui.btns.iter().rev().find(|r| r.contains(at)) {
+                    self.pressed = Some(*r);
+                }
+            }
+            MouseEventKind::Up(_) => self.pressed = None,
+            _ => {}
+        }
         if self.settings_dlg.is_some() {
             return crate::settingsui::mouse(self, m);
         }
@@ -113,6 +124,7 @@ impl App {
             outline: self.ui.outline.contains(p).then_some(p.y),
             gh: self.gh.hits.area.contains(p).then_some((p.x, p.y)),
             activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.settings_btn.contains(p).then_some(SIDES.len())),
+            kit_btn: self.ui.btns.iter().rev().find(|r| r.contains(p)).map(|r| (r.x, r.y)),
             bar_btn: self
                 .ui
                 .groups
@@ -189,6 +201,10 @@ impl App {
                 self.quick = None;
             }
             return;
+        }
+        // A view's own scrollbar, before the view takes the click.
+        if let Some(sb) = self.ui.scrollbars.iter().find(|s| matches!(s.target, ScrollTarget::Card | ScrollTarget::Gh(_) | ScrollTarget::Prog) && s.track.contains(p)).copied() {
+            return self.scrollbar_click(sb, p);
         }
         if crate::ext::click(self, p, double) || crate::scm::click(self, p, double) || crate::media::click(self, p) || crate::logview::click(self, p) {
             return;
@@ -346,7 +362,6 @@ impl App {
             let gh = self.ui.groups[g].clone();
             // A tab bar's arrows: a tab further left or right.
             if gh.tab_prev.contains(p) || gh.tab_next.contains(p) {
-                self.pressed = Some(if gh.tab_prev.contains(p) { gh.tab_prev } else { gh.tab_next });
                 return self.scroll_tabs(g, if gh.tab_prev.contains(p) { -1 } else { 1 });
             }
             if let Some(i) = gh.tabs.iter().position(|(_, x)| x.contains(p)).map(|i| gh.tab_first + i) {
@@ -449,6 +464,9 @@ impl App {
             ScrollTarget::Quick => self.quick.as_ref().map_or(0, |q| q.off),
             ScrollTarget::Git(w) => crate::scm::scroll_of(self, w),
             ScrollTarget::Media(g) => crate::media::scroll_of(self, g),
+            ScrollTarget::Card => crate::scm::card_scroll(self),
+            ScrollTarget::Gh(pane) => self.gh.off.get(pane).copied().unwrap_or(0),
+            ScrollTarget::Prog => crate::programmer::main_off(self),
         }
     }
 
@@ -480,6 +498,14 @@ impl App {
             }
             ScrollTarget::Git(w) => crate::scm::set_scroll(self, w, off),
             ScrollTarget::Media(g) => crate::media::set_scroll(self, g, off),
+            ScrollTarget::Card => crate::scm::set_card_scroll(self, off),
+            // (Clamped where drawn.)
+            ScrollTarget::Gh(pane) => {
+                if let Some(o) = self.gh.off.get_mut(pane) {
+                    *o = off;
+                }
+            }
+            ScrollTarget::Prog => crate::programmer::set_main_off(self, off),
             ScrollTarget::Quick => {
                 let h = self.ui.quick_list.height.max(1) as usize;
                 if let Some(q) = self.quick.as_mut() {

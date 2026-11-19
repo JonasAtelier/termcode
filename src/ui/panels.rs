@@ -174,16 +174,14 @@ pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
         x += w + 1;
     }
     let ascii = crate::theme::ascii();
-    let hot = |q: Rect| app.hover.is_some_and(|p| q.contains(p));
-    let btn = |q: Rect| Style::new().fg(if hot(q) { P.editor_fg } else { P.icon_fg }).bg(if hot(q) { P.list_hover_bg } else { P.editor_bg });
     if x + 3 < r.right().saturating_sub(4) {
         let nr = Rect::new(x, r.y, 3, 1);
-        f.render_widget(Span::styled(" + ", btn(nr)), nr);
+        crate::ui::kit::icon_button(f, nr, "+", P.editor_bg, false);
         app.ui.term_new = nr;
     }
     if r.width > 20 && n > 0 {
         let kr = Rect::new(r.right() - 5, r.y, 3, 1);
-        f.render_widget(Span::styled(if ascii { " x " } else { " × " }, btn(kr)), kr);
+        crate::ui::kit::icon_button(f, kr, if ascii { "x" } else { "×" }, P.editor_bg, false);
         app.ui.term_kill = kr;
     }
     if let Some(t) = app.terms.get_mut(app.term_at) {
@@ -200,19 +198,10 @@ pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
         let w = 44.min(inner.width);
         let fr = Rect::new(inner.right() - w, inner.y, w, 1);
         let tail = format!("  {count}  ↑↓ Esc ");
-        let room = (w as usize).saturating_sub(tail.width() + 3);
-        let q: String = {
-            let skip = fd.query.width().saturating_sub(room);
-            fd.query.chars().scan(0, |acc, c| { *acc += c.to_string().width(); Some((*acc, c)) }).filter(|(acc, _)| *acc > skip).map(|(_, c)| c).collect()
-        };
-        let line = Line::from(vec![
-            Span::styled(" ⌕ ", Style::new().fg(P.icon_fg)),
-            Span::styled(fit(&q, room), Style::new().fg(P.input_fg).bg(P.input_bg)),
-            Span::styled(tail, Style::new().fg(if fd.count.1 == 0 && !fd.query.is_empty() { P.error_fg } else { P.dim })),
-        ]);
-        f.render_widget(Paragraph::new(line).style(Style::new().bg(P.widget_bg)), fr);
+        let tail_fg = if fd.count.1 == 0 && !fd.query.is_empty() { P.error_fg } else { P.dim };
+        let caret = crate::ui::kit::search_input(f, fr, &fd.query, "Find", focused, &tail, tail_fg);
         if focused {
-            f.set_cursor_position((fr.x + 3 + (q.width() as u16).min(room as u16), fr.y));
+            f.set_cursor_position((caret, fr.y));
         }
     }
 }

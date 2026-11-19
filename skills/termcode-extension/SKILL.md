@@ -51,7 +51,8 @@ the methods its manifest serves (`"api": {"ns": {"method": "read|edit|run"}}`).
 `events.emit {topic, …}` publishes in its namespaces. Cells and rows take `hint` (a card
 on hover).
 
-Rows: `"text"` · `{text, fg, bg, bold, dim, italic, button, action, hint}` · `[cells…]` ·
+Rows: `"text"` · `{text, fg, bg, bold, dim, italic, button, action, hint}` (`button`:
+termcode's button; `fg: "error"` makes it a danger one) · `[cells…]` ·
 `{"cells": [...], "action": "id"}` (whole row clicks) · `{"header", "open", "extra"}` (a
 section header, termcode's style). Ship a `README.md`: the + view shows it. Colors: `fg dim accent error
 warning ok info selection` or `#rrggbb`. ≤10,000 rows a pane.

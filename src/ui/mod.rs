@@ -47,8 +47,11 @@ mod visual_tests {
 }
 
 mod diffs;
+pub(crate) mod kit;
 mod panels;
 mod text;
+
+pub(crate) use kit::{section_head, popup_block, sash, scrollbar, slider_color, paint_slider, pill, round_ends, badge, input, select_all, input_marked};
 pub(crate) use diffs::*;
 use panels::*;
 use text::*;
@@ -151,25 +154,8 @@ pub fn fit_left(s: &str, w: usize) -> String {
     format!("…{keep}")
 }
 
-/// `n` spaces: the blank cells after an icon, inside a button, at an edge.
-/// A side bar section's header (Source Control's, an extension's): its chevron, its title
-/// bold on the section background, `extra` dim after it.
-pub(crate) fn section_head(app: &App, f: &mut Frame, r: Rect, title: &str, open: bool, extra: &str, focused: bool) {
-    let s = app.settings.spacing;
-    let ic = icons();
-    fill(f, r, P.section_bg);
-    let chev = if open { ic.chev_down } else { ic.chev_right };
-    let fg = if focused && app.settings.blocks != crate::blocks::BlockStyle::Cards { P.focus_border } else { P.section_fg };
-    let pad = s.sidebar_padding.saturating_sub(1) / 2;
-    let gap = crate::blocks::icon_gap(s.icon_gap) / 2;
-    let ir = inset(r, pad);
-    // As in the rows: cut once with "…"; the dim file name only while the title is whole.
-    let head = format!(" {chev}{}{title}", sp(gap));
-    let extra = if extra.is_empty() { String::new() } else { format!(" {extra}") };
-    let (head, extra) = fit_pair(&head, &extra, ir.width as usize);
-    row(f, ir, P.section_bg, vec![Span::styled(head, Style::new().fg(fg).bold()), Span::styled(extra, Style::new().fg(P.dim))]);
-}
 
+/// `n` spaces: the blank cells after an icon, inside a button, at an edge.
 pub(crate) fn sp(n: u16) -> String {
     " ".repeat(n as usize)
 }
@@ -178,41 +164,7 @@ pub(crate) fn inset(r: Rect, pad: u16) -> Rect {
     Rect::new(r.x + pad, r.y, r.width.saturating_sub(2 * pad), r.height)
 }
 
-/// A popup frame: rounded border with 2x1 padding (comfortable only).
-pub(crate) fn popup_block(bg: Color, fg: Color, (h, v): (u16, u16)) -> Block<'static> {
-    let b = Block::bordered()
-        .border_style(Style::new().fg(P.widget_border).bg(bg))
-        .style(Style::new().bg(bg).fg(fg))
-        .padding(Padding::new(h, h, v, v));
-    if crate::theme::ascii() {
-        let s = icons().border;
-        b.border_set(symbols::border::Set {
-            top_left: s[0],
-            top_right: s[1],
-            bottom_left: s[2],
-            bottom_right: s[3],
-            horizontal_top: s[4],
-            horizontal_bottom: s[4],
-            vertical_left: s[5],
-            vertical_right: s[5],
-        })
-    } else {
-        b.border_type(BorderType::Rounded)
-    }
-}
 
-/// A splitter (VS Code's sash) filling `r`: `│` down a 1-column rect, else `─`,
-/// in `border` on `bg`, or in `sash.hoverBorder` while `hot` (hovered or dragged;
-/// a terminal cursor cannot change shape).
-pub(crate) fn sash(f: &mut Frame, r: Rect, hot: bool, border: Color, bg: Color) {
-    let (h, v) = if crate::theme::ascii() { (icons().border[4], icons().border[5]) } else { ("─", "│") };
-    let glyph = if r.width == 1 && r.height > 1 { v } else { h };
-    let fg = if hot { P.sash_hover } else { border };
-    let buf = f.buffer_mut();
-    for p in r.positions() {
-        buf[p].set_symbol(glyph).set_fg(fg).set_bg(bg);
-    }
-}
 
 /// VS Code language id for a syntect syntax name (indent-rainbow's language lists).
 pub fn lang_id(name: &str) -> String {
@@ -232,6 +184,7 @@ pub fn lang_id(name: &str) -> String {
 }
 
 pub fn draw(app: &mut App, f: &mut Frame) {
+    kit::begin(app);
     app.exts.begin();
     draw_frame(app, f);
     crate::ext::overlay(app, f);
@@ -239,6 +192,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         prefix_hint(app, f);
     }
     crate::media::flush(app, f);
+    app.ui.btns = kit::end();
     scrub(f.buffer_mut(), &crate::settingsgraphics::take_drawn());
     // A terminal without 24-bit colour gets the nearest it has (`colors`).
     crate::colors::fit(f.buffer_mut());
@@ -438,15 +392,6 @@ fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     f.render_widget(Span::styled(close, Style::new().fg(P.status_err_fg).bg(bg).add_modifier(Modifier::BOLD)), app.ui.close);
 }
 
-/// A button's colours, lit while the pointer is on it.
-pub(crate) fn button_style(primary: bool, hot: bool) -> Style {
-    match (primary, hot) {
-        (true, false) => Style::new().fg(P.button_fg).bg(P.button_bg),
-        (true, true) => Style::new().fg(P.button_fg).bg(P.button_hover),
-        (false, false) => Style::new().fg(P.button2_fg).bg(P.button2_bg),
-        (false, true) => Style::new().fg(P.button2_fg).bg(P.button2_hover),
-    }
-}
 
 /// A broken settings.json, as a notification above the status bar's right end (the
 /// last good settings stay in use). Close hides it until the error changes.
@@ -470,10 +415,7 @@ fn settings_notice(app: &mut App, f: &mut Frame, area: Rect) {
     let icon = icons().problem[2];
     f.render_widget(Line::from(vec![Span::styled(format!("{icon} "), Style::new().fg(P.error_fg)), Span::styled("settings.json has an error", Style::new().fg(P.widget_fg).bold())]), Rect::new(inner.x, inner.y, inner.width, 1));
     f.render_widget(body.style(Style::new().fg(P.widget_fg)), Rect::new(inner.x, inner.y + 1, inner.width, lines));
-    let label = format!("{0}Close{0}", sp(app.settings.spacing.button_padding.min(1)));
-    let br = Rect::new(inner.x, inner.bottom() - 1, label.width() as u16, 1).intersection(inner);
-    f.render_widget(Span::styled(label, button_style(false, app.hover.is_some_and(|p| br.contains(p)))), br);
-    app.ui.notice_close = br;
+    app.ui.notice_close = kit::button_at(f, inner, (inner.x, inner.bottom() - 1), "Close", kit::Look::Secondary, P.widget_bg);
 }
 
 fn status_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
@@ -665,46 +607,8 @@ fn side_title(app: &App, f: &mut Frame, r: Rect, title: &str, lay: Lay, bg: Colo
     row(f, rr, bg, vec![Span::styled(text, Style::new().fg(P.sidebar_title).bold())]);
 }
 
-/// A slim scrollbar slider over `track`, composited over what is drawn there.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn scrollbar(app: &mut App, f: &mut Frame, track: Rect, target: ScrollTarget, total: usize, view: usize, off: usize, max_off: usize) {
-    let s = decor::slider(track.height, total, view, off, max_off);
-    paint_slider(f, track, s, slider_color(app, track, target));
-    app.ui.scrollbars.push(ScrollHit { track, target, slider: s, max_off, page: view.max(1) });
-}
 
-fn slider_color(app: &App, track: Rect, target: ScrollTarget) -> Rgba {
-    if matches!(app.drag, Drag::Scroll(sb, _) if sb.target == target) {
-        P.slider_active
-    } else if app.hover.is_some_and(|p| track.contains(p)) {
-        P.slider_hover
-    } else {
-        P.slider
-    }
-}
 
-pub(crate) fn paint_slider(f: &mut Frame, track: Rect, (start, len): (u16, u16), c: Rgba) {
-    let track = track.intersection(f.area());
-    let buf = f.buffer_mut();
-    let horizontal = track.width > 1;
-    let span = if horizontal { track.width } else { track.height };
-    let end = start.saturating_add(len).min(span);
-    for at in start..end {
-        let cell = &mut buf[if horizontal { (track.x + at, track.y) } else { (track.x, track.y + at) }];
-        let under = cell.bg;
-        if horizontal {
-            // Keep the row clickable, but draw a narrow stroke with softened ends.
-            let glyph = if crate::theme::ascii() { "-" }
-                else if end - start == 1 { "•" }
-                else if at == start { "╶" }
-                else if at + 1 == end { "╴" }
-                else { "━" };
-            cell.set_symbol(glyph).set_fg(c.over(under));
-        } else {
-            cell.set_bg(c.over(under));
-        }
-    }
-}
 
 fn horizontal_scrollbar(track: Rect, total: usize, page: usize, off: usize) -> ScrollHit {
     let max_off = total.saturating_sub(page);
@@ -1003,34 +907,8 @@ pub(crate) fn right(f: &mut Frame, r: Rect, spans: Vec<Span<'static>>) -> u16 {
     r.right() - w
 }
 
-/// A pill: `text` in `st` between Nerd Font round caps (U+E0B6, U+E0B4) drawn in `st`'s
-/// background over `under`, the surface behind. Without a Nerd Font a space takes each
-/// cap's place: the square look. Either way one cell a side.
-pub(crate) fn pill(text: String, st: Style, under: Color) -> Vec<Span<'static>> {
-    if !crate::theme::nerd() {
-        return vec![Span::styled(format!(" {text} "), st)];
-    }
-    let cap = Style::new().fg(st.bg.unwrap_or(under)).bg(under);
-    vec![Span::styled("\u{e0b6}", cap), Span::styled(text, st), Span::styled("\u{e0b4}", cap)]
-}
 
-/// Rounds a filled run's ends (see `pill`): `r`'s first and last cells become the caps,
-/// `fill` over `under`. Nothing without a Nerd Font, or in a run too short for both.
-pub(crate) fn round_ends(f: &mut Frame, r: Rect, fill: Color, under: Color) {
-    let r = r.intersection(f.area());
-    if !crate::theme::nerd() || r.width < 3 || r.height == 0 {
-        return;
-    }
-    let st = Style::new().fg(fill).bg(under);
-    let buf = f.buffer_mut();
-    buf[(r.x, r.y)].set_symbol("\u{e0b6}").set_style(st);
-    buf[(r.right() - 1, r.y)].set_symbol("\u{e0b4}").set_style(st);
-}
 
-/// A count badge: a pill on `under` (the row's background).
-pub(crate) fn badge(n: usize, under: Color) -> Vec<Span<'static>> {
-    pill(n.to_string(), Style::new().fg(P.badge_fg).bg(P.badge_bg), under)
-}
 
 /// An Explorer row's tooltip (a cut name's full name, the name's column, a file's path)
 /// and rename box (box, scrolled cols).
@@ -1170,9 +1048,8 @@ fn explorer_overlay(app: &mut App, f: &mut Frame, area: Rect) {
         fill(f, r, P.widget_bg);
         let mut spans = vec![Span::styled(text.clone(), Style::new().fg(if err { P.error_fg } else { P.widget_fg }))];
         if button {
-            let br = Rect::new(r.x + text.width() as u16, r.y, 6, 1).intersection(r);
-            let hot = app.hover.is_some_and(|p| br.contains(p));
-            spans.push(Span::styled(" Copy ", button_style(false, hot)));
+            let br = Rect::new(r.x + text.width() as u16, r.y, kit::tool_w("Copy"), 1).intersection(r);
+            spans.extend(kit::button_spans("Copy", kit::Look::Secondary, br, P.widget_bg));
             app.ui.tip_copy = br;
         }
         f.render_widget(Line::from(spans), r);
@@ -1313,44 +1190,8 @@ pub(crate) fn scm_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, sr: &SRo
     }
 }
 
-pub(crate) fn input(f: &mut Frame, r: Rect, text: &str, placeholder: &str, focused: bool) {
-    input_marked(f, r, text, placeholder, focused.then_some(P.focus_border));
-}
 
-/// An `input` field's whole text drawn selected (Ctrl+A, a double-click).
-fn select_all(f: &mut Frame, r: Rect, text: &str) {
-    let w = (text.width() as u16).min(r.width.saturating_sub(2));
-    for x in r.x + 1..r.x + 1 + w {
-        f.buffer_mut()[(x, r.y)].set_bg(P.selection);
-    }
-}
 
-/// `input` with the focus mark in `mark`: a thin bar at its left edge, as a tab's.
-pub(crate) fn input_marked(f: &mut Frame, r: Rect, text: &str, placeholder: &str, mark: Option<Color>) {
-    if r.is_empty() { return; }
-    fill(f, r, P.input_bg);
-    let (t, st) = if text.is_empty() {
-        (placeholder.to_string(), Style::new().fg(P.placeholder))
-    } else {
-        (text.to_string(), Style::new().fg(P.input_fg))
-    };
-    // A blank before the text, and its last cell kept for the caret (the callers put it
-    // at most there), so a long text never runs under it or into what follows.
-    let w = r.width.saturating_sub(2) as usize;
-    // Keep the end (where the caret is) visible.
-    let shown = if t.width() > w && !text.is_empty() {
-        t.chars().rev().scan(0, |acc, c| {
-            *acc += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-            (*acc <= w).then_some(c)
-        }).collect::<Vec<_>>().into_iter().rev().collect()
-    } else {
-        fit(&t, w)
-    };
-    f.render_widget(Span::styled(format!(" {shown}"), st), r);
-    if let Some(c) = mark {
-        f.buffer_mut()[(r.x, r.y)].set_symbol(if crate::theme::ascii() { "|" } else { "▎" }).set_fg(c);
-    }
-}
 
 /// Group `g`'s hit areas, at its index (groups of other spaces keep empty ones).
 fn put_hit(app: &mut App, g: usize, gh: GroupHit) {
@@ -1515,20 +1356,10 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     let first = tab_scroll(&mut app.groups[g], &labels.iter().map(|l| l.1).collect::<Vec<_>>(), room);
     let n_tabs = labels.len();
     let arrow = |left: bool| if crate::theme::ascii() { if left { "<" } else { ">" } } else if left { "‹" } else { "›" };
-    // An arrow and the tabs hidden its side: lit white under the pointer, pressed (a
-    // button's colours) while the mouse holds it down.
-    let pressed = app.pressed;
+    // A scroll button (the kit's icon button) with the tabs hidden its side.
     let draw_arrow = |f: &mut Frame, r: Rect, left: bool, hidden: usize| {
-        let hot = hover.is_some_and(|p| r.contains(p));
-        let st = match (pressed.is_some_and(|q| q.intersects(r)), hot) {
-            (true, _) => Style::new().fg(P.button_fg).bg(P.button_bg),
-            // Under the pointer: lit white.
-            (false, true) => Style::new().fg(Color::Rgb(255, 255, 255)).bg(P.tab_hover),
-            _ => Style::new().fg(P.icon_fg).bg(P.tabs_bg),
-        }
-        .bold();
-        let text = if left { format!(" {}+{hidden} ", arrow(true)) } else { format!(" +{hidden}{} ", arrow(false)) };
-        f.render_widget(Span::styled(text, st), r);
+        let text = if left { format!("{}+{hidden}", arrow(true)) } else { format!("+{hidden}{}", arrow(false)) };
+        kit::icon_button(f, r, &text, P.tabs_bg, false);
     };
     // Hidden on the left: their button first.
     if first > 0 {
@@ -1580,8 +1411,8 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 Span::styled(lead, st),
                 Span::styled(glyph, Style::new().fg(gfg).bg(bg)),
                 Span::styled(name, st),
-                // Unsaved changes: a white dot, whatever the tab's colours.
-                Span::styled(dot, Style::new().fg(Color::Rgb(255, 255, 255)).bg(bg)),
+                // Unsaved changes: a bright dot, whatever the tab's colours.
+                Span::styled(dot, Style::new().fg(kit::lit_fg()).bg(bg)),
                 Span::styled(" ", Style::new().bg(bg)),
                 Span::styled(tail, Style::new().fg(fg).bg(bg).add_modifier(Modifier::BOLD)),
                 Span::styled(tail_edge.clone(), Style::new().bg(bg)),
@@ -1607,19 +1438,18 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     }
     if show_split {
         for (r, glyph, down) in [(split, ic.split, false), (split_down, ic.split_down, true)].into_iter().filter(|(_, _, d)| if *d { can_down } else { can_right }) {
-            let hot = hover.is_some_and(|p| r.contains(p));
-            f.render_widget(Span::styled(glyph, Style::new().fg(if hot { P.tab_active_fg } else { P.icon_fg })), r);
+            kit::icon_button(f, r, glyph, P.tabs_bg, false);
             app.ui.split_btns.push((r, g, down));
         }
     }
-    let lit = if app.term_open { P.tab_active_fg } else { P.icon_fg };
-    f.render_widget(Span::styled(ic.terminal, Style::new().fg(lit)), term_btn);
+    kit::icon_button(f, term_btn, ic.terminal, P.tabs_bg, app.term_open);
     app.ui.term_btns.push(term_btn);
     // Off on a repository page: it shows its own outline.
     let page = app.groups[g].tabs.get(app.groups[g].active).is_some_and(|t| crate::ext::page_key(&t.key));
-    let lit = if page { P.dim } else if app.outline_open { P.tab_active_fg } else { P.icon_fg };
-    f.render_widget(Span::styled(ic.outline, Style::new().fg(lit)), outline_btn);
-    if !page {
+    if page {
+        kit::icon_off(f, outline_btn, ic.outline, P.tabs_bg);
+    } else {
+        kit::icon_button(f, outline_btn, ic.outline, P.tabs_bg, app.outline_open);
         app.ui.outline_btns.push(outline_btn);
     }
     let top = 1;
@@ -1652,19 +1482,14 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         if let Some(look) = look {
             let rendered = !key.starts_with("file:");
             let shown = match look {
-                "patch:" => " diff ",
-                "usage:" => " usage ",
-                "log:" => " log ",
-                _ => " preview ",
+                "patch:" => "diff",
+                "usage:" => "usage",
+                "log:" => "log",
+                _ => "preview",
             };
-            let mut x = r.right().saturating_sub(1);
-            for (label, on) in [(shown, true), (" source ", false)].into_iter().rev() {
-                x = x.saturating_sub(label.width() as u16 + 1);
-                let b = Rect::new(x, r.y, label.width() as u16, 1);
-                let hot = app.hover.is_some_and(|p| b.contains(p));
-                f.render_widget(Span::styled(label, button_style(on == rendered, hot)), b);
-                app.ui.md_btns.push((b, g, on));
-            }
+            let look = |on: bool| if on == rendered { kit::Look::Primary } else { kit::Look::Secondary };
+            let (rects, _) = kit::button_row_end(f, Rect::new(r.x, r.y, r.width.saturating_sub(1), 1), &[(shown, look(true)), ("source", look(false))], P.editor_bg);
+            app.ui.md_btns.extend(rects.into_iter().zip([true, false]).filter(|(b, _)| !b.is_empty()).map(|(b, on)| (b, g, on)));
         }
         gh.crumbs = r;
         body = Rect::new(body.x, body.y + 1, body.width, body.height - 1);
@@ -1818,15 +1643,10 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             // A binary (or an ELF) file: how to show it, on the banner's right.
             if b.readonly.is_some() && (b.binary || b.elf_file || b.hex.is_some() || b.pdf_text) {
                 let now = App::shown_as(b);
-                let mut x = body.right().saturating_sub(2);
-                for (label, how) in b.path.as_deref().map(|p| crate::media::buttons(p, b.elf_file)).unwrap_or_default().into_iter().rev() {
-                    let t = format!(" {label} ");
-                    x = x.saturating_sub(t.width() as u16 + 1);
-                    let r = Rect::new(x, body.y, t.width() as u16, 1);
-                    let hot = app.hover.is_some_and(|p| r.contains(p));
-                    f.render_widget(Span::styled(t, button_style(now == how, hot)), r);
-                    app.ui.view_btns.push((r, how));
-                }
+                let views = b.path.as_deref().map(|p| crate::media::buttons(p, b.elf_file)).unwrap_or_default();
+                let items: Vec<(&str, kit::Look)> = views.iter().map(|&(l, how)| (l, if now == how { kit::Look::Primary } else { kit::Look::Secondary })).collect();
+                let (rects, _) = kit::button_row_end(f, Rect::new(body.x, body.y, body.width.saturating_sub(2), 1), &items, P.editor_bg);
+                app.ui.view_btns.extend(rects.into_iter().zip(views).filter(|(r, _)| !r.is_empty()).map(|(r, (_, how))| (r, how)));
             }
             if let Some(p) = out.caret.filter(|p| !card.is_some_and(|r| r.contains(*p))) {
                 f.set_cursor_position(p);
@@ -2273,9 +2093,8 @@ fn quick(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
 
 fn prompt(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
     let Some(p) = app.prompt.as_ref() else { return };
-    let bp = lay.s.button_padding;
     // Wide enough for the text and for the button row.
-    let buttons: usize = p.buttons.iter().map(|(l, _)| l.width() + 2 * bp as usize + 2).sum();
+    let buttons: usize = p.buttons.iter().map(|(l, _)| kit::button_w(l) as usize + 2).sum();
     let cw = p.text.iter().map(|t| t.width()).max().unwrap_or(20).max(36).max(buttons) as u16 + 2;
     let (r, body, by) = if lay.comfy {
         // Border, popupPadding, the text, a blank row, the buttons.
@@ -2306,16 +2125,14 @@ fn prompt(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
     let mut x = if lay.comfy { body.right() + gap } else { r.right() - 1 };
     let mut btns = Vec::new();
     for (i, (label, _)) in p.buttons.iter().enumerate().rev() {
-        let t = format!("{}{label}{}", sp(bp), sp(bp));
-        let bw = t.width() as u16;
+        let bw = kit::button_w(label);
         x = x.saturating_sub(bw + gap);
         // Too small a terminal: a button cut by the edge is drawn (and hit) only where visible.
         let br = Rect::new(x, by, bw, 1).intersection(r);
-        let st = button_style(i == p.sel, app.hover.is_some_and(|h| br.contains(h)));
         if br.is_empty() {
             continue;
         }
-        f.render_widget(Span::styled(t, st), br);
+        kit::button(f, br, label, if i == p.sel { kit::Look::Primary } else { kit::Look::Secondary }, P.widget_bg, false);
         btns.push((br, i));
     }
     app.ui.prompt_btns = btns;

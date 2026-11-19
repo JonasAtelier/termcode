@@ -6,6 +6,7 @@
 //! The splitters between the panes drag (VS Code's sashes); their positions
 //! are kept as ratios in layout.json, and a double click resets one.
 
+use crate::ui::kit::Look;
 use crate::diff;
 use crate::editor::{self, Buffer, Pos, View};
 use crate::git::{self, ScmFile, Section};
@@ -836,33 +837,19 @@ pub fn hwheel(app: &mut App, p: Position, delta: isize) -> bool {
 
 // ---------------------------------------------------------------- drawing
 
-/// A button: a pill whose caps take the padding cells (`pad` is 0 or 1), or the bare label.
-fn button_spans(label: &str, primary: bool, pad: u16, hot: bool) -> Vec<Span<'static>> {
-    let st = crate::ui::button_style(primary, hot);
-    if pad == 0 {
-        return vec![Span::styled(label.to_string(), st)];
-    }
-    crate::ui::pill(label.to_string(), st, P.widget_bg)
-}
-
-/// Buttons left to right from `x`; each is drawn and hit only where it fits.
-fn buttons(f: &mut Frame, hits: &mut Vec<(Rect, Btn)>, r: Rect, items: &[(&str, Btn, bool)], pad: u16, hover: Option<Position>) {
-    let mut x = r.x;
-    for (label, b, primary) in items {
-        let width = Line::from(button_spans(label, *primary, pad, false)).width() as u16;
-        let br = Rect::new(x, r.y, width, 1).intersection(r);
-        if br.width < width {
+/// Buttons left to right from `r`'s first cell (the kit's); each is drawn and hit only
+/// where it fits.
+fn buttons(f: &mut Frame, hits: &mut Vec<(Rect, Btn)>, r: Rect, items: &[(&str, Btn, bool)]) {
+    let looks: Vec<(&str, Look)> = items.iter().map(|&(l, _, primary)| (l, if primary { Look::Primary } else { Look::Secondary })).collect();
+    for (br, (_, b, _)) in crate::ui::kit::button_row(f, r, &looks, P.widget_bg).into_iter().zip(items) {
+        if br.is_empty() {
             break;
         }
-        let hot = hover.is_some_and(|p| br.contains(p));
-        f.render_widget(Line::from(button_spans(label, *primary, pad, hot)), br);
         hits.push((br, *b));
-        x += br.width + 1;
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn file_pane(f: &mut Frame, d: &mut CommitDlg, k: usize, r: Rect, title: &str, btns: &[(&str, Btn, bool)], pad: u16, hover: Option<Position>) {
+fn file_pane(f: &mut Frame, d: &mut CommitDlg, k: usize, r: Rect, title: &str, btns: &[(&str, Btn, bool)]) {
     if r.height == 0 {
         return;
     }
@@ -892,12 +879,11 @@ fn file_pane(f: &mut Frame, d: &mut CommitDlg, k: usize, r: Rect, title: &str, b
         row(f, Rect::new(list.x, list.y, list.width, 1), P.widget_bg, vec![Span::styled(" (none)", Style::new().fg(P.dim))]);
     }
     if r.height >= 2 {
-        buttons(f, &mut d.hits.btns, Rect::new(r.x + 1, r.bottom() - 1, r.width.saturating_sub(1), 1), btns, pad, hover);
+        buttons(f, &mut d.hits.btns, Rect::new(r.x + 1, r.bottom() - 1, r.width.saturating_sub(1), 1), btns);
     }
 }
 
 pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
-    let pad = app.settings.spacing.button_padding.min(1);
     let comfy = !app.settings.compact;
     let gap = app.settings.spacing.editor_padding;
     let (ratios, hover) = (app.gitui.dlg_split, app.hover);
@@ -927,8 +913,8 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     for (s, r) in SASHES.into_iter().zip(g.sashes) {
         sash(f, r, d.drag == Some(s) || hover.is_some_and(|p| r.contains(p)), P.widget_border, P.widget_bg);
     }
-    file_pane(f, d, 0, g.unstaged, "Unstaged Changes", &[("Stage →", Btn::Stage, false), ("Stage Changed", Btn::StageChanged, false)], pad, hover);
-    file_pane(f, d, 1, g.staged, "Staged Changes (Will Commit)", &[("← Unstage", Btn::Unstage, false)], pad, hover);
+    file_pane(f, d, 0, g.unstaged, "Unstaged Changes", &[("Stage →", Btn::Stage, false), ("Stage Changed", Btn::StageChanged, false)]);
+    file_pane(f, d, 1, g.staged, "Staged Changes (Will Commit)", &[("← Unstage", Btn::Unstage, false)]);
     if diff.width > 4 && diff.height > 1 {
         let name = d.lists[d.side].get(d.sel[d.side]).map_or(String::new(), |f| f.path.clone());
         let which = if d.side == 0 { "Working Tree" } else { "Index" };
@@ -971,7 +957,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         ("Cancel", Btn::Cancel, false),
     ];
     if g.buttons.height > 0 {
-        buttons(f, &mut d.hits.btns, g.buttons, &items, pad, hover);
+        buttons(f, &mut d.hits.btns, g.buttons, &items);
     }
 }
 

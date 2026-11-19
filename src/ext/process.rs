@@ -744,12 +744,10 @@ pub(super) fn draw_rows(f: &mut Frame, r: Rect, pane: &mut Pane, ext: usize, slo
         let line_r = Rect::new(r.x, y, r.width, 1);
         if let Some(open) = row.head {
             // As the side bar's section headers (Source Control's): chevron, bold title, dim count.
-            let ic = crate::theme::icons();
             let title = row.cells.first().map_or("", |c| c.text.as_str());
             let extra = row.cells.get(1).map_or("", |c| c.text.as_str());
-            let fg = if row.action.is_some() && hover.is_some_and(|p| line_r.contains(p)) { P.focus_border } else { P.section_fg };
-            let spans = vec![Span::styled(format!(" {} {title}", if open { ic.chev_down } else { ic.chev_right }), Style::new().fg(fg).bold()), Span::styled(if extra.is_empty() { String::new() } else { format!(" {extra}") }, Style::new().fg(P.dim))];
-            f.render_widget(Paragraph::new(Line::from(spans)).style(Style::new().bg(P.section_bg)), line_r);
+            let lit = row.action.is_some() && hover.is_some_and(|p| line_r.contains(p));
+            crate::ui::kit::head(f, line_r, title, open, extra, lit);
             if let Some(a) = &row.action {
                 hits.push(Hit { r: line_r, ext, slot, sec, action: a.clone() });
             }
@@ -765,14 +763,28 @@ pub(super) fn draw_rows(f: &mut Frame, r: Rect, pane: &mut Pane, ext: usize, slo
         let mut spans = Vec::new();
         let mut x = r.x;
         for c in &row.cells {
-            let text = if c.button { format!(" {} ", c.text) } else { c.text.clone() };
+            if c.button {
+                // The kit's button: a danger one when its colour says error.
+                let w = crate::ui::kit::tool_w(&c.text).min(r.right().saturating_sub(x));
+                let cr = Rect::new(x, y, w, 1);
+                let danger = [&c.fg, &c.bg].iter().any(|k| k.as_deref() == Some("error"));
+                if let Some(a) = &c.action {
+                    hits.push(Hit { r: cr, ext, slot, sec, action: a.clone() });
+                }
+                if let Some(h) = c.hint.as_ref().filter(|_| hover.is_some_and(|p| cr.contains(p))) {
+                    card = Some((cr, h.clone()));
+                }
+                let look = if danger { crate::ui::kit::Look::Danger } else { crate::ui::kit::Look::Primary };
+                spans.extend(crate::ui::kit::button_spans(&c.text, look, cr, row_bg));
+                x += w;
+                continue;
+            }
+            let text = c.text.clone();
             let w = (Span::raw(text.as_str()).width() as u16).min(r.right().saturating_sub(x));
             let cr = Rect::new(x, y, w, 1);
             let hot = c.action.is_some() && hover.is_some_and(|p| cr.contains(p));
             let mut st = base.bg(row_bg);
-            if c.button {
-                st = st.bg(if hot { P.button_hover } else { P.button_bg }).fg(P.button_fg);
-            } else if hot {
+            if hot {
                 st = st.bg(P.list_hover_bg);
             }
             if let Some(c) = c.fg.as_deref().and_then(color) {
@@ -1341,7 +1353,7 @@ while read line; do echo "$line" >> "$TERMCODE_EXTENSION_DIR/got"; done
         let b = t.backend().buffer().clone();
         let text: String = (0..30).map(|y| (0..120).map(|x| b[(x, y)].symbol()).collect::<String>() + "\n").collect();
         assert!(text.contains("PROBE") && text.contains("THINGS") && text.contains("first"), "its side bar:\n{text}");
-        assert!(text.contains("Board") && text.contains("hello") && text.contains(" Go "), "its tab, opened in its own space:\n{text}");
+        assert!(text.contains("Board") && text.contains("hello") && text.contains(&crate::ui::kit::btn_text("Go")), "its tab, opened in its own space:\n{text}");
         assert_eq!(app.space(), Space::View(n));
         // A click on the row: `view.action` with its section; a key in the tab: `view.key`.
         let row = app.exts.hits.iter().find(|h| h.action == "pick").map(|h| Position::new(h.r.x, h.r.y)).unwrap();

@@ -1,5 +1,6 @@
 //! Categorized settings dialog, with reversible previews and explicit persistence.
 
+use crate::ui::kit::Look;
 use crate::panel::{App, Doc, Drag};
 use crate::settings::{self, Settings};
 use crate::theme::{icons, P};
@@ -1101,22 +1102,10 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     d.hits.search = sr;
     let searching = d.focus == Focus::Search;
     f.render_widget(Clear, sr);
-    fill(f, sr, P.input_bg);
     let count = if d.query.is_empty() { String::new() } else { format!("{} found ", rows.len()) };
-    let room = (sr.width as usize).saturating_sub(4 + count.width());
-    let (shown, style) = if d.query.is_empty() && !searching {
-        ("Search settings  (Ctrl+F)".to_string(), Style::new().fg(P.placeholder).bg(P.input_bg))
-    } else {
-        let q: String = d.query.chars().rev().take(room).collect::<Vec<_>>().into_iter().rev().collect();
-        (q, Style::new().fg(P.input_fg).bg(P.input_bg))
-    };
-    text(f, Rect::new(sr.x, sr.y, 3, 1), &format!(" {} ", icons().search), Style::new().fg(P.icon_fg).bg(P.input_bg));
-    text(f, Rect::new(sr.x + 3, sr.y, room as u16, 1), &shown, style);
-    text(f, Rect::new(sr.right() - count.width() as u16, sr.y, count.width() as u16, 1), &count, Style::new().fg(P.dim).bg(P.input_bg));
+    let caret = crate::ui::kit::search_input(f, sr, &d.query, "Search settings  (Ctrl+F)", searching, &count, P.dim);
     if searching {
-        f.set_cursor_position((sr.x + 3 + d.query.width().min(room) as u16, sr.y));
-        // The box's edge lights up, as a focused input's.
-        text(f, Rect::new(sr.x - 1, sr.y, 1, 1), "▏", st.fg(accent));
+        f.set_cursor_position((caret, sr.y));
     }
     let nav_w = if w >= 64 { 22 } else { 16 };
     let top = r.y + 3;
@@ -1209,19 +1198,13 @@ pub fn draw(app: &mut App, f: &mut Frame) {
             match field.kind {
                 Check(default) => {
                     let on = value.as_bool().unwrap_or(default);
-                    let ascii = crate::theme::ascii();
                     if graphics && d.graphics.pixel_controls() {
                         // A real switch, in pixels, where the terminal draws pictures.
                         d.graphics.switch(f, Rect::new(control.x, control.y, 4, 1), on, selected, [bg, if on { P.button_bg } else { P.widget_border }, P.button_fg]);
+                        text(f, Rect::new(control.x + 5, control.y, control.width.saturating_sub(5), 1), if on { "Enabled" } else { "Disabled" }, row_st);
                     } else {
-                        let (mark, mst) = if on {
-                            (if ascii { "[x]".to_string() } else { format!(" {} ", icons().check) }, Style::new().fg(P.button_fg).bg(P.button_bg))
-                        } else {
-                            (if ascii { "[ ]".into() } else { "   ".into() }, input)
-                        };
-                        text(f, Rect::new(control.x, control.y, 3, 1), &mark, mst);
+                        crate::ui::kit::check(f, control, (control.x, control.y), on, if on { "Enabled" } else { "Disabled" });
                     }
-                    text(f, Rect::new(control.x + 5, control.y, control.width.saturating_sub(5), 1), if on { "Enabled" } else { "Disabled" }, row_st);
                     d.hits.rows.push((Rect::new(content.x, y, content.width, FIELD_H - 1), Rect::new(control.x, control.y, control.width.min(14), 1), row));
                 }
                 Number(lo, hi, default) => {
@@ -1265,13 +1248,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         }
         // A scrollbar when they do not all fit.
         if rows.len() > capacity && content.height > 0 {
-            let track_h = content.height as usize;
-            let len = (track_h * capacity / rows.len()).clamp(1, track_h);
-            let at = (d.scroll * (track_h - len)).div_ceil(rows.len() - capacity);
-            let x = r.right() - 2;
-            for k in 0..len {
-                text(f, Rect::new(x, content.y + (at + k) as u16, 1, 1), if crate::theme::ascii() { "#" } else { "┃" }, st.fg(P.dim));
-            }
+            crate::ui::kit::slider(f, Rect::new(r.right() - 2, content.y, 1, content.height), rows.len(), capacity, d.scroll);
         }
     }
     if let Some(area) = preview {
@@ -1303,11 +1280,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let selected_row = rows.get(d.selected).copied().unwrap_or(0);
     for (index, label, focus) in [(0, "Apply", Focus::Apply), (1, "Save", Focus::Save)] {
         let button = Rect::new(r.right() - 21 + index as u16 * 10, footer_y + 2, 9, 1);
-        let hot = app.hover.is_some_and(|p| button.contains(p));
-        let style = crate::ui::button_style(index == 1, hot || d.focus == focus);
-        let style = if d.focus == focus { style.add_modifier(Modifier::BOLD) } else { style };
-        f.render_widget(Paragraph::new(label).alignment(Alignment::Center).style(style), button);
-        crate::ui::round_ends(f, button, style.bg.unwrap_or(P.button_bg), P.widget_bg);
+        crate::ui::kit::button(f, button, label, if index == 1 { Look::Primary } else { Look::Secondary }, P.widget_bg, d.focus == focus);
         d.hits.buttons.push((button, index));
     }
     if let Some(option) = d.dropdown {
@@ -1346,11 +1319,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         let bx = pop.right() - 2 - (3 * bw + 2);
         for (index, label) in ["Cancel", "Discard", "Save"].iter().enumerate() {
             let button = Rect::new(bx + index as u16 * (bw + 1), pop.y + 4, bw, 1);
-            let style = if index == d.confirm_selected { active.add_modifier(Modifier::BOLD) } else { active };
-            f.render_widget(Paragraph::new(crate::ui::fit(label, bw as usize)).alignment(Alignment::Center).style(style), button);
-            if bw as usize >= label.len() + 2 {
-                crate::ui::round_ends(f, button, P.button_bg, P.widget_bg);
-            }
+            crate::ui::kit::button(f, button, label, if index == d.confirm_selected { Look::Primary } else { Look::Secondary }, P.widget_bg, false);
             d.hits.buttons.push((button, index));
         }
     }

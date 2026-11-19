@@ -124,7 +124,8 @@ A row is one of:
 {"cells": ["a list item"], "action": "open:3"}
 ```
 
-A cell: `text`, `fg`, `bg`, `bold`, `dim`, `italic`, `button` (drawn as a button), `action`
+A cell: `text`, `fg`, `bg`, `bold`, `dim`, `italic`, `button` (drawn as termcode's own
+buttons are, from its UI kit; with `fg` or `bg` `"error"`: a destructive one), `action`
 (what `view.action` sends back on a click), `hint` (a card shown while the pointer is
 on it). A `header` row is drawn as the side bar's section headers are (a chevron, the
 title, a dim `extra`); the side bar's own sections fold by their chevron. An extension
