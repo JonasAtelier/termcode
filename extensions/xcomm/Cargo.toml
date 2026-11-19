@@ -1,0 +1,16 @@
+[package]
+name = "termcode-xcomm"
+version = "0.1.0"
+edition = "2021"
+description = "termcode's Serial view as an extension, on the xcomm crate"
+license = "MIT"
+publish = false
+
+[dependencies]
+xcomm = "0.1.3"
+vt100 = "0.16"
+serde_json = "1"
+libc = "0.2"
+
+[profile.release]
+strip = true

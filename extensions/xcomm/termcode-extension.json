@@ -1,0 +1,14 @@
+{
+  "id": "xcomm",
+  "name": "Serial (xcomm)",
+  "version": "0.1.0",
+  "description": "Serial ports and their streams, on xcomm: monitor, attach, line settings, notes; agents reach them with xcomm ctl.",
+  "icon": "⇄",
+  "build": ["sh", "-c", "cargo install --quiet --locked --path . --root . --target-dir \"${XDG_CACHE_HOME:-$HOME/.cache}/termcode/extension-target\""],
+  "run": ["./bin/termcode-xcomm"],
+  "permissions": ["edit"],
+  "commands": [
+    {"id": "open", "title": "Open a Port…"},
+    {"id": "close-all", "title": "Close All Channels"}
+  ]
+}
