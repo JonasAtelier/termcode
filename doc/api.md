@@ -182,7 +182,7 @@ Listening is off unless started, and a remote client starts with `read` only.
 | | What | Version |
 |---|---|---|
 | 1 ✅ | JSON-RPC on the socket, `hello`, `command.list/run` (ids from titles), `editor.open`, `state.get` (workspace, editors, buffers, diagnostics, git, terminals, screen), `buffer.edit` (`apply`, versioned, one undo step), `buffer.save`, `terminal.send`, `events.wait` (terminal output), the `termcode api` CLI, SKILL.md | X |
-| 1b | grants ✅, serial ports ✅ (`serial.*`: monitor, read, wait, attach, send, set, close, notes), `buffer.edit` `propose`, `events.watch` ✅ (a stream) | Y |
+| 1b | grants ✅, serial ports ✅ (`serial.*`, served by the xcomm extension: monitor, read, wait, attach, send, set, close, notes), `buffer.edit` `propose`, `events.watch` ✅ (a stream) | Y |
 | 2 | `events.wait` ✅, `/ui/screen` ✅, `ui.*`: notifications ✅, prompts ✅, decorations ✅; commands, status bar items | Y |
 | 3 | `provider.*` (and the LSP bridge), views, record and replay, headless ✅, MCP ✅ | X each |
 | 4 | Links: `--stdio` and SSH first (they need no new security), then mirror, remote workspace, TCP and serial with pairing | X |

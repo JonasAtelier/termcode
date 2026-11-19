@@ -70,7 +70,6 @@ syn = { version = "2", default-features = false, features = ["full", "parsing"] 
 proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
 # GitHub sign-in from a phone: the device page as a QR code (no image or SVG output).
 qrcode = { version = "0.14.1", default-features = false }
-xcomm = "0.1.2"
 
 # vt100 0.15 laid a scrollback view taller than the screen out with a subtraction that
 # wraps (as release builds do) to the right rows; with overflow checks it would panic.

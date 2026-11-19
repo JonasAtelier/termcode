@@ -23,7 +23,8 @@ Start from the generated `main.py`: keep its `send`/`call`/`messages` helpers.
 
 ## Manifest (`termcode-extension.json`, the folder's root)
 
-`id` (a-z 0-9 -, ≤40), `name`, `version`, `description`, `icon` (one character),
+`id` (a-z 0-9 -, ≤40), `name`, `version`, `description`, `icon` (one character, or
+`{"nerd", "unicode", "ascii"}` for termcode's icon sets),
 `run` (`["python3", "main.py"]`; `./x` = inside the folder), `permissions` (`[]`,
 `"edit"`, `"run"`), `commands` (`[{id, title}]`, in F1), `build` (run at install, e.g.
 `cargo install --path . --root .`). It runs in its own folder; `TERMCODE_WORKSPACE`: the
@@ -44,10 +45,15 @@ Calls (with `id`; await the reply, queue other lines meanwhile):
 Notifications to it (no `id`, never reply): `view.shown {visible}`, `view.action {slot,
 section, tab, action}`, `view.key {slot, tab, key, ctrl, alt, shift}`, `view.paste {tab,
 text}`, `view.tab {tab}` (in front), `view.resize {tab, width, height}`, `view.closed {tab}`,
-`view.command {id}`, `event {topic, …}`.
+`view.command {id}`, `view.wheel {tab, lines}` (tabs set with `scroll: "self"`),
+`event {topic, …}`, and `api.call {method, params, caller}` (with an `id`: answer it) for
+the methods its manifest serves (`"api": {"ns": {"method": "read|edit|run"}}`).
+`events.emit {topic, …}` publishes in its namespaces. Cells and rows take `hint` (a card
+on hover).
 
-Rows: `"text"` · `{text, fg, bg, bold, dim, italic, button, action}` · `[cells…]` ·
-`{"cells": [...], "action": "id"}` (whole row clicks). Colors: `fg dim accent error
+Rows: `"text"` · `{text, fg, bg, bold, dim, italic, button, action, hint}` · `[cells…]` ·
+`{"cells": [...], "action": "id"}` (whole row clicks) · `{"header", "open", "extra"}` (a
+section header, termcode's style). Ship a `README.md`: the + view shows it. Colors: `fg dim accent error
 warning ok info selection` or `#rrggbb`. ≤10,000 rows a pane.
 
 ## Rules

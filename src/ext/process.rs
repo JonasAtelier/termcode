@@ -46,7 +46,7 @@ pub struct Manifest {
     pub name: String,
     pub version: String,
     pub description: String,
-    pub icon: String,
+    pub icon: Icon,
     /// The command: a program on PATH or a path inside the extension's folder, then its arguments.
     pub run: Vec<String>,
     /// Asked at install: changing files and showing things (`edit`), running (`run`).
@@ -54,6 +54,9 @@ pub struct Manifest {
     /// Its commands in F1 (id, title), there before it starts; and what builds it at install.
     pub commands: Vec<(String, String)>,
     pub build: Vec<String>,
+    /// API methods it serves for other clients (`serial.ports`), each with what calling
+    /// it may do (asked of the caller as termcode's own are).
+    pub api: Vec<(String, Tier)>,
     pub dir: PathBuf,
 }
 
@@ -89,10 +92,73 @@ impl Manifest {
             }
         }
         let build: Vec<String> = v["build"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
-        let icon = s("icon").chars().next().or_else(|| name.chars().next()).map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-        Ok(Manifest { version: s("version"), description: s("description"), icon, name, id, run, permissions, commands, build, dir: dir.to_path_buf() })
+        let mut api = Vec::new();
+        let name_ok = |n: &str| !n.is_empty() && n.len() <= 32 && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        for (ns, methods) in v["api"].as_object().into_iter().flatten() {
+            if !name_ok(ns) || CORE.contains(&ns.as_str()) {
+                return Err(format!("{MANIFEST}: api namespace {ns:?}: a-z, 0-9, _, not one of termcode's ({})", CORE.join(", ")));
+            }
+            for (m, t) in methods.as_object().into_iter().flatten() {
+                let tier = match t.as_str() {
+                    Some("read") => Tier::Read,
+                    Some("edit") => Tier::Edit,
+                    Some("run") => Tier::Run,
+                    _ => return Err(format!("{MANIFEST}: api {ns}.{m}: \"read\", \"edit\" or \"run\"")),
+                };
+                if !name_ok(m) {
+                    return Err(format!("{MANIFEST}: api method {m:?}: a-z, 0-9, _"));
+                }
+                api.push((format!("{ns}.{m}"), tier));
+            }
+        }
+        let icon = Icon::read(&v["icon"], &name);
+        Ok(Manifest { version: s("version"), description: s("description"), icon, name, id, run, permissions, commands, build, api, dir: dir.to_path_buf() })
     }
 }
+
+/// An extension's activity bar icon in each of termcode's icon sets (`termcode.icons`):
+/// a Nerd Font glyph, a Unicode symbol, an ASCII letter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Icon {
+    nerd: String,
+    unicode: String,
+    ascii: String,
+}
+
+impl Icon {
+    /// `"⇄"` for every set (ASCII: its name's first letter unless it is ASCII), or
+    /// `{"nerd", "unicode", "ascii"}`, each falling back to the plainer one.
+    fn read(v: &Value, name: &str) -> Icon {
+        let one = |k: &str| v[k].as_str().or(v.as_str()).and_then(|s| s.chars().next()).map(String::from);
+        let letter = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+        let ascii = one("ascii").filter(|c| c.is_ascii() && !c.trim().is_empty()).unwrap_or(letter);
+        let unicode = one("unicode").filter(|c| !is_private(c)).unwrap_or_else(|| ascii.clone());
+        let nerd = one("nerd").unwrap_or_else(|| unicode.clone());
+        Icon { nerd, unicode, ascii }
+    }
+
+    #[cfg(test)]
+    pub fn plain(c: &str) -> Icon {
+        Icon { nerd: c.into(), unicode: c.into(), ascii: c.into() }
+    }
+
+    /// The one for the icon set in use.
+    pub fn get(&self) -> &str {
+        match (crate::theme::nerd(), crate::theme::ascii()) {
+            (true, _) => &self.nerd,
+            (_, true) => &self.ascii,
+            _ => &self.unicode,
+        }
+    }
+}
+
+/// A Nerd Font glyph (Unicode's private use area): drawn only with the Nerd Font set.
+fn is_private(c: &str) -> bool {
+    c.chars().any(|c| matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0x10FFFD))
+}
+
+/// termcode's own API namespaces: no extension serves methods in them.
+const CORE: &[&str] = &["hello", "command", "editor", "state", "buffer", "terminal", "events", "ui", "view", "api"];
 
 /// Where extensions are installed ($TERMCODE_EXTENSIONS, else termcode's data folder).
 pub fn root() -> PathBuf {
@@ -155,6 +221,8 @@ pub(super) struct Cell {
     pub italic: bool,
     pub button: bool,
     pub action: Option<String>,
+    /// Shown in a card while the pointer is on it.
+    pub hint: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -162,6 +230,11 @@ pub(super) struct Row {
     pub cells: Vec<Cell>,
     /// The whole row clicks (a list's item).
     pub action: Option<String>,
+    /// The whole row's card on hover.
+    pub hint: Option<String>,
+    /// A section header (open, or folded), drawn as the side bar's: its first cell the
+    /// title, its second a dim count.
+    pub head: Option<bool>,
 }
 
 /// What a slot shows: a title, rows, where it is scrolled to.
@@ -177,6 +250,10 @@ pub struct Pane {
     height: Option<u16>,
     /// A tab's size as last drawn (told to the extension when it changes).
     size: (u16, u16),
+    /// The extension scrolls it (`scroll: "self"`, a terminal's scrollback): the wheel is told.
+    own_scroll: bool,
+    /// A side bar section folded to its header.
+    folded: bool,
 }
 
 /// One extension: what it is, its process, its panes.
@@ -210,9 +287,14 @@ impl Ext {
 
     /// Turned off: its program told to end (its stdin closed), its panes gone.
     pub(super) fn stop(&mut self) {
-        self.out = None;
+        self.close();
         self.started = false;
         (self.left, self.main, self.right, self.bottom) = (Vec::new(), Vec::new(), None, None);
+    }
+
+    /// Its stdin closed: it is to end.
+    fn close(&mut self) -> bool {
+        self.out.take().is_some_and(|out| out.send(crate::api::CLOSE.into()).is_ok())
     }
 
     fn notify(&self, method: &str, params: Value) {
@@ -221,8 +303,19 @@ impl Ext {
         }
     }
 
-    fn log(&self) -> PathBuf {
-        crate::data_dir(true).join("extensions").join(format!("{}.log", self.m.id))
+    /// Running, not started, or ended (its log says why).
+    pub(super) fn state(&self) -> &'static str {
+        match (&self.out, self.started) {
+            (Some(_), _) => "Running",
+            (None, false) => "Not started",
+            (None, true) => "Ended",
+        }
+    }
+
+    pub(super) fn log(&self) -> PathBuf {
+        // (Tests keep theirs out of the user's state folder.)
+        let dir = if cfg!(test) { std::env::temp_dir().join(format!("termcode-ext-logs-{}", std::process::id())) } else { crate::data_dir(true).join("extensions") };
+        dir.join(format!("{}.log", self.m.id))
     }
 }
 
@@ -238,13 +331,25 @@ pub struct Exts {
     pub(super) typing: bool,
     pub(super) job: Option<std::sync::mpsc::Receiver<Result<super::install::Fetched, String>>>,
     pub(super) pending: Option<super::install::Fetched>,
-    /// One placed and building (its build step), in the background.
+    /// One placed and building (its build step), in the background; one being removed;
+    /// the step going on (what, its stage and how far, shared with its thread).
     pub(super) building: Option<(String, std::sync::mpsc::Receiver<Result<Manifest, String>>)>,
+    pub(super) removing: Option<(String, std::sync::mpsc::Receiver<Result<(), String>>)>,
+    pub(super) progress: Option<(String, Shared)>,
     pub(super) hits: Vec<Hit>,
     pub(super) panes: Vec<(Rect, usize, Slot, usize)>,
-    /// The Extensions view's rows (built each frame), its scroll.
+    /// Text selected in an extension's tab; the card of the row or cell under the pointer.
+    sel: Option<Sel>,
+    hint: Option<(Rect, String)>,
+    /// The Extensions view's rows (built each frame), its scroll; the sections folded; the
+    /// extension whose page shows, and that page.
     pub(super) view: Pane,
+    pub(super) folded: std::collections::HashSet<String>,
+    pub(super) picked: Option<String>,
+    pub(super) detail: Pane,
     sashes: Vec<(Rect, usize, usize)>,
+    /// Side bar sections' chevrons (fold, unfold): extension, section.
+    folds: Vec<(Rect, usize, usize)>,
     /// A side bar line dragged: the extension, the section above it, that section's top.
     drag: Option<(usize, usize, u16)>,
 }
@@ -257,6 +362,20 @@ pub(super) struct Hit {
     pub sec: usize,
     pub action: String,
 }
+
+/// A selection in tab `tab` (its index) of extension `ext`: (row of its rows, column)
+/// where the drag started, where it is.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Sel {
+    ext: usize,
+    tab: usize,
+    a: (usize, u16),
+    b: (usize, u16),
+    dragging: bool,
+}
+
+/// A step's progress, shared with the thread doing it: its stage, how far (0 to 100).
+pub(super) type Shared = Arc<std::sync::Mutex<(&'static str, u8)>>;
 
 /// A click place of the Extensions view's.
 pub(super) const MANAGER: usize = usize::MAX;
@@ -271,6 +390,11 @@ impl Exts {
         let off = std::fs::read(off_file()).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
         let off = off.as_ref().and_then(|v| v["off"].as_array()).into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
         Exts { list, off, ..Exts::default() }
+    }
+
+    /// An install fetching or building in the background: the loop looks for its end.
+    pub fn busy(&self) -> bool {
+        self.job.is_some() || self.building.is_some() || self.removing.is_some()
     }
 
     /// `id` on or off, kept.
@@ -293,9 +417,11 @@ impl Exts {
 
     /// A new frame: last frame's places go.
     pub fn begin(&mut self) {
+        self.hint = None;
         self.hits.clear();
         self.panes.clear();
         self.sashes.clear();
+        self.folds.clear();
     }
 
 }
@@ -313,6 +439,38 @@ pub(super) fn tab_key(id: &str, tab: &str) -> String {
 pub(super) fn split_key(key: &str) -> Option<(&str, &str)> {
     let rest = key.strip_prefix(PREFIX)?;
     Some(rest.split_once('/').unwrap_or((rest, "main")))
+}
+
+/// The extension serving API method `method` (turned on), and what calling it may do.
+pub fn api_owner(app: &App, method: &str) -> Option<(usize, Tier)> {
+    app.exts.list.iter().enumerate().filter(|(_, e)| !app.exts.off.contains(&e.m.id)).find_map(|(i, e)| e.m.api.iter().find(|(m, _)| m == method).map(|(_, t)| (i, *t)))
+}
+
+/// The API methods extensions serve.
+pub fn api_methods(app: &App) -> Vec<String> {
+    app.exts.list.iter().filter(|e| !app.exts.off.contains(&e.m.id)).flat_map(|e| e.m.api.iter().map(|(m, _)| m.clone())).collect()
+}
+
+/// API call `method` passed to extension `i` (started if it is not) as `api.call`; the
+/// key its reply comes back by.
+pub fn forward(app: &mut App, i: usize, method: &str, params: &Value, caller: &str) -> Result<String, String> {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if !app.exts.list[i].started {
+        start(app, i);
+    }
+    let e = &app.exts.list[i];
+    let out = e.out.as_ref().ok_or_else(|| format!("{method}: the {} extension is not running", e.m.name))?;
+    let key = format!("t{}", N.fetch_add(1, Ordering::SeqCst));
+    let msg = json!({"jsonrpc": "2.0", "id": key, "method": "api.call", "params": {"method": method, "params": params, "caller": caller}});
+    out.send(msg.to_string()).map_err(|_| format!("{method}: the {} extension ended", e.m.name))?;
+    Ok(key)
+}
+
+/// May extension `client` publish `topic` (in a namespace it serves)?
+pub fn may_emit(app: &App, client: &Client, topic: &str) -> bool {
+    let Some(e) = client.ext.as_ref().and_then(|id| app.exts.list.iter().find(|e| &e.m.id == id)) else { return false };
+    let ns = topic.split('.').next().unwrap_or("");
+    e.m.api.iter().any(|(m, _)| m.split('.').next() == Some(ns))
 }
 
 /// The extensions' commands as F1 lists them: "Name: Title".
@@ -388,13 +546,24 @@ fn open_tab(app: &mut App, i: usize, tab: &str, focus: bool) {
     }
 }
 
+/// termcode quitting or reloading: each extension's stdin closed (it ends), and a moment
+/// given for them to go, so none is left behind unreaped (a reload replaces this
+/// process, threads and all).
+pub fn shutdown(app: &mut App) {
+    let running: Vec<Arc<AtomicBool>> = app.exts.list.iter_mut().filter_map(|e| e.close().then(|| e.done.clone())).collect();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while running.iter().any(|d| !d.load(Ordering::SeqCst)) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Ended ones noted; each told whether its view shows. True: redraw.
 pub fn tick(app: &mut App) -> bool {
     let space = app.space();
     let mut changed = false;
     for e in app.exts.list.iter_mut() {
         if e.out.is_some() && e.done.load(Ordering::SeqCst) {
-            e.out = None;
+            e.close();
             e.error = Some(format!("{} ended", e.m.name));
             changed = true;
         }
@@ -448,6 +617,9 @@ pub fn call(app: &mut App, client: &Client, method: &str, p: &Value) -> Result<V
             if let Some(t) = title {
                 pane.title = t;
             }
+            if let Some(m) = p["scroll"].as_str() {
+                pane.own_scroll = m == "self";
+            }
             if method == "view.set" {
                 pane.rows = rows;
             } else {
@@ -487,6 +659,11 @@ pub fn call(app: &mut App, client: &Client, method: &str, p: &Value) -> Result<V
     }
 }
 
+/// A card's text: its lines kept, each cleaned.
+fn hint_text(s: &str) -> String {
+    s.lines().take(20).map(clean).collect::<Vec<_>>().join("\n")
+}
+
 /// Text as termcode shows it: no control characters (no escape reaches the terminal), cut long.
 fn clean(s: &str) -> String {
     s.chars().take(MAX_TEXT).map(|c| if c == '\t' { ' ' } else if c.is_control() { '\u{fffd}' } else { c }).collect()
@@ -499,12 +676,18 @@ pub(super) fn rows(v: &Value) -> Result<Vec<Row>, String> {
 /// A row: "text", a cell {text, …}, [cells…], or {cells: […], action}.
 fn row(v: &Value) -> Result<Row, String> {
     match v {
-        Value::Array(a) => Ok(Row { cells: a.iter().map(cell).collect::<Result<_, _>>()?, action: None }),
+        Value::Array(a) => Ok(Row { cells: a.iter().map(cell).collect::<Result<_, _>>()?, action: None, hint: None, head: None }),
+        // A section header: {"header": "Title", "open": true, "extra": "3", "action": …}.
+        Value::Object(o) if o.contains_key("header") => {
+            let t = |k: &str| o.get(k).and_then(Value::as_str).map(clean).unwrap_or_default();
+            let cells = vec![Cell { text: t("header"), ..Cell::default() }, Cell { text: t("extra"), ..Cell::default() }];
+            Ok(Row { cells, action: o.get("action").and_then(Value::as_str).map(clean), hint: None, head: Some(o.get("open").and_then(Value::as_bool).unwrap_or(true)) })
+        }
         Value::Object(o) if o.contains_key("cells") => {
             let cells = o["cells"].as_array().ok_or("\"cells\": an array")?.iter().map(cell).collect::<Result<_, _>>()?;
-            Ok(Row { cells, action: o.get("action").and_then(Value::as_str).map(clean) })
+            Ok(Row { cells, action: o.get("action").and_then(Value::as_str).map(clean), hint: o.get("hint").and_then(Value::as_str).map(hint_text), head: None })
         }
-        _ => Ok(Row { cells: vec![cell(v)?], action: None }),
+        _ => Ok(Row { cells: vec![cell(v)?], action: None, hint: None, head: None }),
     }
 }
 
@@ -515,7 +698,8 @@ fn cell(v: &Value) -> Result<Cell, String> {
         Value::Object(o) => {
             let s = |k: &str| o.get(k).and_then(Value::as_str).map(clean);
             let b = |k: &str| o.get(k).and_then(Value::as_bool).unwrap_or(false);
-            Ok(Cell { text: s("text").unwrap_or_default(), fg: s("fg"), bg: s("bg"), bold: b("bold"), dim: b("dim"), italic: b("italic"), button: b("button"), action: s("action") })
+            let hint = o.get("hint").and_then(Value::as_str).map(hint_text);
+            Ok(Cell { text: s("text").unwrap_or_default(), fg: s("fg"), bg: s("bg"), bold: b("bold"), dim: b("dim"), italic: b("italic"), button: b("button"), action: s("action"), hint })
         }
         _ => Err(format!("a cell is \"text\" or {{\"text\": …}}, got {v}")),
     }
@@ -533,6 +717,8 @@ fn color(name: &str) -> Option<Color> {
         "info" => P.git_renamed,
         "selection" => P.selection,
         "input" => P.input_bg,
+        "active" => P.list_active_bg,
+        "hover" => P.list_hover_bg,
         "bg" => P.editor_bg,
         _ => {
             let h = name.strip_prefix('#').filter(|h| h.len() == 6)?;
@@ -544,7 +730,8 @@ fn color(name: &str) -> Option<Color> {
 
 /// `pane`'s rows in `r` from its scroll: each click place noted; the hovered one lit.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn draw_rows(f: &mut Frame, r: Rect, pane: &mut Pane, ext: usize, slot: Slot, sec: usize, hover: Option<Position>, hits: &mut Vec<Hit>, bg: Color, fg: Color) {
+pub(super) fn draw_rows(f: &mut Frame, r: Rect, pane: &mut Pane, ext: usize, slot: Slot, sec: usize, hover: Option<Position>, hits: &mut Vec<Hit>, bg: Color, fg: Color) -> Option<(Rect, String)> {
+    let mut card = None;
     let max = pane.rows.len().saturating_sub(r.height as usize);
     if pane.follow {
         pane.scroll = max;
@@ -555,8 +742,26 @@ pub(super) fn draw_rows(f: &mut Frame, r: Rect, pane: &mut Pane, ext: usize, slo
     for (k, row) in pane.rows.iter().skip(pane.scroll).take(r.height as usize).enumerate() {
         let y = r.y + k as u16;
         let line_r = Rect::new(r.x, y, r.width, 1);
+        if let Some(open) = row.head {
+            // As the side bar's section headers (Source Control's): chevron, bold title, dim count.
+            let ic = crate::theme::icons();
+            let title = row.cells.first().map_or("", |c| c.text.as_str());
+            let extra = row.cells.get(1).map_or("", |c| c.text.as_str());
+            let fg = if row.action.is_some() && hover.is_some_and(|p| line_r.contains(p)) { P.focus_border } else { P.section_fg };
+            let spans = vec![Span::styled(format!(" {} {title}", if open { ic.chev_down } else { ic.chev_right }), Style::new().fg(fg).bold()), Span::styled(if extra.is_empty() { String::new() } else { format!(" {extra}") }, Style::new().fg(P.dim))];
+            f.render_widget(Paragraph::new(Line::from(spans)).style(Style::new().bg(P.section_bg)), line_r);
+            if let Some(a) = &row.action {
+                hits.push(Hit { r: line_r, ext, slot, sec, action: a.clone() });
+            }
+            continue;
+        }
         let row_hot = row.action.is_some() && hover.is_some_and(|p| line_r.contains(p));
         let row_bg = if row_hot { P.list_hover_bg } else { bg };
+        // The row's own click first: a button in it, noted after, is found first (hits are
+        // searched from the last).
+        if let Some(a) = &row.action {
+            hits.push(Hit { r: line_r, ext, slot, sec, action: a.clone() });
+        }
         let mut spans = Vec::new();
         let mut x = r.x;
         for c in &row.cells {
@@ -584,14 +789,18 @@ pub(super) fn draw_rows(f: &mut Frame, r: Rect, pane: &mut Pane, ext: usize, slo
             if let Some(a) = &c.action {
                 hits.push(Hit { r: cr, ext, slot, sec, action: a.clone() });
             }
+            if let Some(h) = c.hint.as_ref().filter(|_| hover.is_some_and(|p| cr.contains(p))) {
+                card = Some((cr, h.clone()));
+            }
             spans.push(Span::styled(text, st));
             x += w;
         }
-        if let Some(a) = &row.action {
-            hits.push(Hit { r: line_r, ext, slot, sec, action: a.clone() });
+        if let Some(h) = row.hint.as_ref().filter(|_| card.is_none() && hover.is_some_and(|p| line_r.contains(p))) {
+            card = Some((line_r, h.clone()));
         }
         f.render_widget(Paragraph::new(Line::from(spans)).style(base.bg(row_bg)), line_r);
     }
+    card
 }
 
 pub fn title(app: &App, n: u16) -> String {
@@ -606,14 +815,15 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect, n: u16) {
     let card = crate::blocks::card(app.settings.blocks, f, r, P.sidebar_bg, focused);
     let r = crate::ui::inset(card, (app.settings.spacing.sidebar_padding.saturating_sub(1) / 2).max(1));
     let (hover, drag) = (app.hover, app.exts.drag);
-    let Exts { list, hits, panes, sashes, .. } = &mut app.exts;
+    let Exts { list, hits, panes, sashes, folds, hint, .. } = &mut app.exts;
     let e = &mut list[i];
     if let Some(err) = e.error.clone() {
         let log = e.log().display().to_string();
         let log = std::env::var("HOME").ok().and_then(|h| log.strip_prefix(&h).map(|r| format!("~{r}"))).unwrap_or(log);
-        let text = |t: String, fg: &str| Row { cells: vec![Cell { text: t, fg: Some(fg.into()), ..Cell::default() }], action: None };
-        let mut p = Pane { rows: vec![text(err, "error"), text("Its log:".into(), "dim"), text(log, "dim"), Row::default(), Row { cells: vec![Cell { text: "Restart".into(), button: true, action: Some(RESTART.into()), ..Cell::default() }], action: None }], ..Pane::default() };
-        return draw_rows(f, r, &mut p, i, Slot::Left, 0, hover, hits, P.sidebar_bg, P.sidebar_fg);
+        let text = |t: String, fg: &str| Row { cells: vec![Cell { text: t, fg: Some(fg.into()), ..Cell::default() }], action: None, hint: None, head: None };
+        let mut p = Pane { rows: vec![text(err, "error"), text("Its log:".into(), "dim"), text(log, "dim"), Row::default(), Row { cells: vec![Cell { text: "Restart".into(), button: true, action: Some(RESTART.into()), ..Cell::default() }], action: None, hint: None, head: None }], ..Pane::default() };
+        draw_rows(f, r, &mut p, i, Slot::Left, 0, hover, hits, P.sidebar_bg, P.sidebar_fg);
+        return;
     }
     let k = e.left.len();
     if k == 0 {
@@ -621,33 +831,49 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect, n: u16) {
         f.render_widget(Paragraph::new(msg).style(Style::new().fg(P.dim).bg(P.sidebar_bg)), r);
         return;
     }
-    // Headings take a row each (a lone untitled section none); the rest is shared: the
-    // dragged sections keep their height, the others split what is left.
+    // Headings take a row each (a lone untitled section none); the open sections share the
+    // rest: the dragged ones keep their height, the others split what is left, the last
+    // open one taking what remains. A folded one is its header alone.
     let heads: Vec<u16> = e.left.iter().map(|s| u16::from(k > 1 || !s.title.is_empty())).collect();
+    let last = e.left.iter().rposition(|s| !s.folded);
     let body = r.height.saturating_sub(heads.iter().sum());
-    let fixed: u16 = e.left.iter().take(k - 1).filter_map(|s| s.height).sum();
-    let free = e.left.iter().take(k - 1).filter(|s| s.height.is_none()).count() as u16 + 1;
+    let others = |s: &(usize, &Pane)| !s.1.folded && Some(s.0) != last;
+    let fixed: u16 = e.left.iter().enumerate().filter(others).filter_map(|s| s.1.height).sum();
+    let free = e.left.iter().enumerate().filter(others).filter(|s| s.1.height.is_none()).count() as u16 + 1;
     let share = body.saturating_sub(fixed.min(body)) / free;
+    let open_after: Vec<u16> = (0..k).map(|s| e.left[s + 1..].iter().filter(|x| !x.folded).count() as u16).collect();
     let mut y = r.y;
+    let mut headers = Vec::new();
     for (s, sec) in e.left.iter_mut().enumerate() {
         let left = r.bottom().saturating_sub(y + heads[s]);
-        let h = if s + 1 == k { left } else { sec.height.unwrap_or(share).min(left.saturating_sub(2 * (k - 1 - s) as u16)) };
+        let h = match () {
+            _ if sec.folded => 0,
+            _ if Some(s) == last => left,
+            _ => sec.height.unwrap_or(share).min(left.saturating_sub(2 * open_after[s])),
+        };
         if heads[s] == 1 && y < r.bottom() {
             let hr = Rect::new(r.x, y, r.width, 1);
             let hot = s > 0 && (hover.is_some_and(|p| hr.contains(p)) || drag.is_some_and(|d| d.0 == i && d.1 + 1 == s));
-            let line = if s > 0 { "─".repeat(r.width as usize) } else { String::new() };
-            f.render_widget(Paragraph::new(line).style(Style::new().fg(if hot { P.sash_hover } else { P.group_border }).bg(P.sidebar_bg)), hr);
-            let t = Span::styled(format!("{} ", sec.title.to_uppercase()), Style::new().fg(P.sidebar_title).bg(P.sidebar_bg).bold());
-            f.render_widget(Paragraph::new(Line::from(t)), Rect::new(r.x, y, r.width.min(sec.title.chars().count() as u16 + 1), 1));
+            headers.push((hr, sec.title.to_uppercase(), !sec.folded, hot));
+            // Its chevron folds it; below a section, the rest of it drags the line.
+            folds.push((Rect::new(hr.x, hr.y, hr.width.min(4), 1), i, s));
             if s > 0 {
                 sashes.push((hr, i, s - 1));
             }
             y += 1;
         }
         let pr = Rect::new(r.x, y, r.width, h.min(r.bottom().saturating_sub(y)));
-        panes.push((pr, i, Slot::Left, s));
-        draw_rows(f, pr, sec, i, Slot::Left, s, hover, hits, P.sidebar_bg, P.sidebar_fg);
+        if pr.height > 0 {
+            panes.push((pr, i, Slot::Left, s));
+            if let Some(c) = draw_rows(f, pr, sec, i, Slot::Left, s, hover, hits, P.sidebar_bg, P.sidebar_fg) {
+                *hint = Some(c);
+            }
+        }
         y += pr.height;
+    }
+    // Headers as every side bar draws them (Source Control's sections).
+    for (hr, title, open, hot) in headers {
+        crate::ui::section_head(app, f, hr, &title, open, "", hot);
     }
 }
 
@@ -658,7 +884,7 @@ pub fn draw_main(app: &mut App, f: &mut Frame, r: Rect, key: &str) {
     crate::ui::fill(f, r, P.editor_bg);
     let r = crate::ui::inset(r, 1);
     let hover = app.hover;
-    let Exts { list, hits, panes, .. } = &mut app.exts;
+    let Exts { list, hits, panes, hint, sel, .. } = &mut app.exts;
     let e = &mut list[i];
     let Some(k) = e.main.iter().position(|t| t.id == tab) else { return };
     if e.main[k].size != (r.width, r.height) {
@@ -666,7 +892,108 @@ pub fn draw_main(app: &mut App, f: &mut Frame, r: Rect, key: &str) {
         e.notify("view.resize", json!({"slot": "main", "tab": tab, "width": r.width, "height": r.height}));
     }
     panes.push((r, i, Slot::Main, k));
-    draw_rows(f, r, &mut e.main[k], i, Slot::Main, k, hover, hits, P.editor_bg, P.editor_fg);
+    if let Some(c) = draw_rows(f, r, &mut e.main[k], i, Slot::Main, k, hover, hits, P.editor_bg, P.editor_fg) {
+        *hint = Some(c);
+    }
+    // The selection, lit.
+    if let Some(s) = sel.filter(|s| s.ext == i && s.tab == k) {
+        let (a, b) = if s.a <= s.b { (s.a, s.b) } else { (s.b, s.a) };
+        let top = e.main[k].scroll;
+        let buf = f.buffer_mut();
+        for y in 0..r.height {
+            let row = top + y as usize;
+            if row < a.0 || row > b.0 {
+                continue;
+            }
+            let from = if row == a.0 { a.1 } else { 0 };
+            let to = if row == b.0 { b.1 } else { r.width.saturating_sub(1) };
+            for x in from..=to.min(r.width.saturating_sub(1)) {
+                buf[(r.x + x, r.y + y)].set_bg(P.selection);
+            }
+        }
+    }
+}
+
+/// Text selected in a tab, as shown (a row a line).
+fn selected(app: &App) -> Option<String> {
+    let s = app.exts.sel?;
+    let pane = app.exts.list.get(s.ext)?.main.get(s.tab)?;
+    let (a, b) = if s.a <= s.b { (s.a, s.b) } else { (s.b, s.a) };
+    let mut out = Vec::new();
+    for row in a.0..=b.0.min(pane.rows.len().saturating_sub(1)) {
+        let text: String = pane.rows[row].cells.iter().map(|c| if c.button { format!(" {} ", c.text) } else { c.text.clone() }).collect();
+        let (from, to) = (if row == a.0 { a.1 as usize } else { 0 }, if row == b.0 { b.1 as usize } else { usize::MAX });
+        let mut col = 0;
+        let mut line = String::new();
+        for ch in text.chars() {
+            if col >= from && col <= to {
+                line.push(ch);
+            }
+            col += Span::raw(ch.to_string()).width();
+        }
+        out.push(line.trim_end().to_string());
+    }
+    Some(out.join("\n")).filter(|t| !t.trim().is_empty())
+}
+
+/// The pointer in an extension's tab: a press (not on a button) starts a selection, a
+/// drag extends it.
+fn mouse(app: &mut App, m: ratatui::crossterm::event::MouseEvent) -> Option<bool> {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let p = Position::new(m.column, m.row);
+    let at = |app: &App, r: Rect, i: usize, k: usize, p: Position| {
+        let y = p.y.clamp(r.y, r.bottom().saturating_sub(1)) - r.y;
+        let x = p.x.clamp(r.x, r.right().saturating_sub(1)) - r.x;
+        (app.exts.list.get(i).and_then(|e| e.main.get(k)).map_or(0, |t| t.scroll) + y as usize, x)
+    };
+    match m.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            // (An extension's tab; not the Extensions view's own page.)
+            let &(r, i, _, k) = app.exts.panes.iter().find(|(r, i, slot, _)| *slot == Slot::Main && *i != MANAGER && r.contains(p))?;
+            if app.exts.hits.iter().any(|h| h.r.contains(p)) {
+                app.exts.sel = None;
+                return None;
+            }
+            let a = at(app, r, i, k, p);
+            app.exts.sel = Some(Sel { ext: i, tab: k, a, b: a, dragging: true });
+            if let Some(g) = app.ui.groups.iter().position(|gh| gh.text.contains(p)) {
+                app.ag = g;
+            }
+            app.focus = Focus::Editor;
+            Some(true)
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            let s = app.exts.sel.filter(|s| s.dragging)?;
+            let &(r, ..) = app.exts.panes.iter().find(|(_, i, slot, k)| *slot == Slot::Main && *i == s.ext && *k == s.tab)?;
+            let b = at(app, r, s.ext, s.tab, p);
+            app.exts.sel = Some(Sel { b, ..s });
+            Some(true)
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            let s = app.exts.sel.filter(|s| s.dragging)?;
+            app.exts.sel = (s.a != s.b).then_some(Sel { dragging: false, ..s });
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
+/// A row's or cell's card, by what it is about.
+fn draw_hint(app: &mut App, f: &mut Frame) {
+    use ratatui::widgets::{Block, Clear};
+    let Some((at, text)) = app.exts.hint.clone() else { return };
+    let lines: Vec<&str> = text.lines().collect();
+    let area = f.area();
+    let w = (lines.iter().map(|l| Span::raw(*l).width()).max().unwrap_or(0) as u16 + 2).min(60).min(area.width);
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let x = if at.right() + w < area.right() { at.right() + 1 } else { at.x.saturating_sub(w) };
+    let y = at.y.min(area.bottom().saturating_sub(h));
+    let r = Rect::new(x, y, w, h);
+    f.render_widget(Clear, r);
+    let block = Block::bordered().border_set(crate::blocks::border_set()).border_style(Style::new().fg(P.widget_border).bg(P.widget_bg)).style(Style::new().bg(P.widget_bg).fg(P.widget_fg));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    f.render_widget(Paragraph::new(lines.iter().map(|l| Line::raw(*l)).collect::<Vec<_>>()), inner);
 }
 
 pub fn main_title(app: &App, key: &str) -> Option<String> {
@@ -747,6 +1074,12 @@ pub fn draw_panel(app: &mut App, f: &mut Frame, r: Rect, slot: Slot) -> bool {
 /// A click: a row's or a button's action goes to its extension; a click anywhere on its
 /// panes is theirs; a side bar line starts its drag.
 pub fn click(app: &mut App, p: Position) -> bool {
+    if let Some(&(_, i, s)) = app.exts.folds.iter().find(|(r, ..)| r.contains(p)) {
+        if let Some(sec) = app.exts.list.get_mut(i).and_then(|e| e.left.get_mut(s)) {
+            sec.folded = !sec.folded;
+        }
+        return true;
+    }
     if let Some(&(_, i, s)) = app.exts.sashes.iter().find(|(r, ..)| r.contains(p)) {
         let top = app.exts.panes.iter().find(|(_, e, slot, k)| *e == i && *slot == Slot::Left && *k == s).map_or(0, |q| q.0.y);
         app.exts.drag = Some((i, s, top));
@@ -797,7 +1130,7 @@ pub fn drag_to(app: &mut App, y: u16) {
 pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
     let Some(&(_, i, slot, sec)) = app.exts.panes.iter().find(|(r, ..)| r.contains(p)) else { return false };
     if i == MANAGER {
-        let v = &mut app.exts.view;
+        let v = if slot == Slot::Main { &mut app.exts.detail } else { &mut app.exts.view };
         v.scroll = if d < 0 { v.scroll.saturating_sub(3) } else { v.scroll + 3 };
         v.follow = false;
         return true;
@@ -810,6 +1143,12 @@ pub fn wheel(app: &mut App, p: Position, d: isize) -> bool {
         Slot::Bottom => e.bottom.as_mut(),
     };
     if let Some(pane) = pane {
+        if pane.own_scroll {
+            let tab = (slot == Slot::Main).then(|| pane.id.clone());
+            let section = (slot == Slot::Left).then(|| pane.id.clone());
+            e.notify("view.wheel", json!({"slot": slot.name(), "section": section, "tab": tab, "lines": d.signum() * 3}));
+            return true;
+        }
         pane.scroll = if d < 0 { pane.scroll.saturating_sub(3) } else { pane.scroll + 3 };
         pane.follow = false;
     }
@@ -826,6 +1165,15 @@ pub fn takes(app: &mut App, k: ratatui::crossterm::event::KeyEvent) -> bool {
         _ => return false,
     };
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    // Ctrl+C with text selected in its tab copies it (as in the terminal).
+    if slot == Slot::Main && ctrl && matches!(k.code, KeyCode::Char('c' | 'C')) {
+        if let Some(text) = selected(app) {
+            app.msg = format!("copied via {}", crate::panel::clipboard_set(&text));
+            app.clip = text;
+            app.exts.sel = None;
+            return true;
+        }
+    }
     let termcodes = matches!(k.code, KeyCode::F(1)) || (ctrl && matches!(k.code, KeyCode::Char('q' | 'Q') | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Tab | KeyCode::BackTab)) || crate::term::toggle_key(&k) || (slot == Slot::Left && k.code == KeyCode::Esc);
     if termcodes {
         return false;
@@ -856,6 +1204,17 @@ pub fn takes(app: &mut App, k: ratatui::crossterm::event::KeyEvent) -> bool {
     true
 }
 
+/// An extension for tests: a tab for each of `tabs`, a row in each; no program (it is
+/// never started).
+#[cfg(test)]
+pub fn test_ext(id: &str, tabs: &[&str]) -> Ext {
+    let m = Manifest { id: id.into(), name: id.into(), version: String::new(), description: String::new(), icon: Icon::plain("T"), run: vec!["/nonexistent".into()], permissions: Vec::new(), commands: Vec::new(), build: Vec::new(), api: Vec::new(), dir: std::env::temp_dir() };
+    let mut e = Ext::new(m);
+    e.started = true;
+    e.main = tabs.iter().map(|t| Pane { id: t.to_string(), title: t.to_string(), rows: vec![Row { cells: vec![Cell { text: format!("stream of {t}"), ..Cell::default() }], action: None, hint: None, head: None }], ..Pane::default() }).collect();
+    e
+}
+
 /// The ops serving every extension (the view shown, or the panes clicked, says which).
 pub(super) const OPS: Ops = Ops {
     id: "extensions-host",
@@ -874,8 +1233,11 @@ pub(super) const OPS: Ops = Ops {
         draw_main(app, f, r, key);
         Drawn::Whole
     },
+    tab_title: main_title,
     closed,
     paste,
+    mouse,
+    overlay: draw_hint,
     right: |app, f, r| draw_panel(app, f, r, Slot::Right),
     click: |app, p, _| click(app, p),
     wheel,
@@ -902,7 +1264,12 @@ mod tests {
         let put = |v: Value| std::fs::write(d.join(MANIFEST), v.to_string()).unwrap();
         put(json!({"id": "hello", "run": ["python3", "main.py"], "permissions": ["edit"], "icon": "◆x"}));
         let m = Manifest::read(&d).unwrap();
-        assert_eq!((m.name.as_str(), m.icon.as_str(), m.permissions.as_slice()), ("hello", "◆", &[Tier::Edit][..]));
+        assert_eq!((m.name.as_str(), &m.icon.unicode, &m.icon.ascii, m.permissions.as_slice()), ("hello", &"◆".to_string(), &"H".to_string(), &[Tier::Edit][..]));
+        // One per icon set: a Nerd Font plug, ⇄, S; a private-use glyph never stands for Unicode.
+        let i = Icon::read(&json!({"nerd": "\u{f1e6}", "unicode": "⇄", "ascii": "S"}), "Serial");
+        assert_eq!((i.nerd.as_str(), i.unicode.as_str(), i.ascii.as_str()), ("\u{f1e6}", "⇄", "S"));
+        let i = Icon::read(&json!({"nerd": "\u{f1e6}"}), "serial");
+        assert_eq!((i.nerd.as_str(), i.unicode.as_str(), i.ascii.as_str()), ("\u{f1e6}", "S", "S"));
         put(json!({"id": "x", "run": ["./x"], "build": ["make"], "commands": [{"id": "open", "title": "Open…"}]}));
         let m = Manifest::read(&d).unwrap();
         assert_eq!((m.build, m.commands), (vec!["make".to_string()], vec![("open".to_string(), "Open…".to_string())]));
@@ -949,7 +1316,7 @@ while read line; do echo "$line" >> "$TERMCODE_EXTENSION_DIR/got"; done
 "#;
         std::fs::write(d.join("ext/run.sh"), script).unwrap();
         std::fs::set_permissions(d.join("ext/run.sh"), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let m = Manifest { id: "e2e-test".into(), name: "Probe".into(), version: "1".into(), description: String::new(), icon: "P".into(), run: vec!["./run.sh".into()], permissions: vec![Tier::Edit], commands: Vec::new(), build: Vec::new(), dir: d.join("ext") };
+        let m = Manifest { id: "e2e-test".into(), name: "Probe".into(), version: "1".into(), description: String::new(), icon: Icon::plain("P"), run: vec!["./run.sh".into()], permissions: vec![Tier::Edit], commands: Vec::new(), build: Vec::new(), api: Vec::new(), dir: d.join("ext") };
         let mut app = App::new(std::fs::canonicalize(&d).unwrap(), None);
         app.api = crate::api::start(&d.join("run"));
         app.exts.list.push(Ext::new(m));
@@ -997,7 +1364,49 @@ while read line; do echo "$line" >> "$TERMCODE_EXTENSION_DIR/got"; done
         assert!(log.contains(r#""visible":true"#), "view.shown: {log}");
         // view.* is an extension's only.
         assert!(call(&mut app, &Client::default(), "view.set", &json!({"rows": []})).is_err());
-        drop(app); // its stdin closes: it ends
+        // Turned off (Disable, Uninstall, a reload): its stdin closed, it ends, it is reaped.
+        let done = app.exts.list[0].done.clone();
+        app.exts.list[0].stop();
+        for _ in 0..300 {
+            if done.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(done.load(Ordering::SeqCst), "it ended when told");
+        drop(app);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_tab_selects_text_and_a_hint_shows_on_hover() {
+        let d = tmp("sel");
+        let m = Manifest { id: "sel-test".into(), name: "S".into(), version: String::new(), description: String::new(), icon: Icon::plain("S"), run: vec!["x".into()], permissions: Vec::new(), commands: Vec::new(), build: Vec::new(), api: Vec::new(), dir: d.clone() };
+        let mut app = App::new(d.clone(), None);
+        let mut e = Ext::new(m);
+        e.main.push(Pane { id: "t".into(), rows: rows(&json!(["hello world", ["ab", {"text": "cd", "hint": "a card\nof two lines"}]])).unwrap(), ..Pane::default() });
+        app.exts.list.push(e);
+        // From "world" on the first row to "ab" on the second, as shown.
+        app.exts.sel = Some(Sel { ext: 0, tab: 0, a: (0, 6), b: (1, 1), dragging: false });
+        assert_eq!(selected(&app).as_deref(), Some("world\nab"));
+        // The pointer on "cd": its card.
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 4)).unwrap();
+        let mut card = None;
+        t.draw(|f| {
+            let pane = &mut app.exts.list[0].main[0];
+            card = draw_rows(f, Rect::new(0, 0, 30, 4), pane, 0, Slot::Main, 0, Some(Position::new(3, 1)), &mut Vec::new(), P.editor_bg, P.editor_fg);
+        })
+        .unwrap();
+        assert_eq!(card.map(|(r, t)| (r.x, r.y, t)), Some((2, 1, "a card\nof two lines".to_string())));
+        // A button in a row that clicks: the button's click, the rest of the row the row's.
+        let mut pane = Pane { rows: rows(&json!([{"cells": ["item ", {"text": "Go", "button": true, "action": "go"}], "action": "open"}])).unwrap(), ..Pane::default() };
+        let mut hits = Vec::new();
+        t.draw(|f| {
+            let _ = draw_rows(f, Rect::new(0, 0, 30, 4), &mut pane, 0, Slot::Left, 0, None, &mut hits, P.editor_bg, P.editor_fg);
+        })
+        .unwrap();
+        let at = |x: u16| hits.iter().rev().find(|h| h.r.contains(Position::new(x, 0))).map(|h| h.action.clone());
+        assert_eq!((at(6), at(1)), (Some("go".to_string()), Some("open".to_string())));
         std::fs::remove_dir_all(&d).unwrap();
     }
 

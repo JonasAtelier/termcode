@@ -50,7 +50,7 @@ status bar shows). Paths are relative to the workspace (absolute ones must be in
 | `ui.prompt` | `text`, `buttons` (up to 4; `["OK"]`), `timeout` (s, 120) | the `button` the user picked (`null`: closed) |
 | `ui.decorate` | `path`, `marks`: `[{line, severity (info, warning, error), note}]` (`[]` clears) | lines marked as problems: underlined, the note on hover |
 | `ui.clear` | `path`? (none: all) | your marks gone |
-| `serial.ports` | | each serial port: `tty`, `note`, `state` (green, yellow, red), adapter, USB ID, holder, the channel open here |
+| `serial.ports` | | (with the Serial extension installed) each serial port: `tty`, `note`, `state` (green, yellow, red), adapter, USB ID, holder, the channel open here |
 | `serial.note` | `port` (`ttyUSB0`), `note` (`""` removes it) | the note beside that port, kept per adapter |
 | `serial.monitor` | `port` | opens it here, read only (as the Monitor button) |
 | `serial.read` | `port`, `since`? (offset; else the last 4 KB) | `text` (escapes dropped), `next` |
@@ -60,7 +60,8 @@ status bar shows). Paths are relative to the workspace (absolute ones must be in
 | `serial.set` | `port`, `baud`?, `data_bits`?, `parity`?, `stop_bits`?, `flow`? | the line now |
 | `serial.close` | `port` | closes the channel |
 
-A board's console through termcode: `serial.ports` (with the user's notes: which board
+`serial.*` comes from the Serial (xcomm) extension; without it they answer "unknown
+method" with how to install it. A board's console through termcode: `serial.ports` (with the user's notes: which board
 is which), `serial.monitor`, then `serial.read` / `serial.wait`; to type, `serial.attach`,
 then `serial.send` and `serial.wait` with `since` = the send's `mark`. What you send shows
 in the user's tab as a dim `[api]` line. Serial ports open in termcode also take `xcomm ctl`

@@ -33,7 +33,6 @@ mod api;
 mod rpc;
 mod mcp;
 mod ext;
-mod xcomm;
 mod serial;
 mod settingsgraphics;
 mod programmer;

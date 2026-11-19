@@ -170,8 +170,7 @@ impl App {
     pub fn tab_title(&self, key: &str) -> String {
         match self.docs.get(key) {
             Some(Doc::Diff(d)) => d.title.clone(),
-            _ if key.starts_with(crate::ext::PREFIX) => crate::ext::main_title(self, key).unwrap_or_default(),
-            _ => match key.split_once(':') {
+            _ => crate::ext::tab_title(self, key).unwrap_or_else(|| match key.split_once(':') {
                 Some(("preview", rel)) => format!("Preview {}", base(rel)),
                 Some(("usage", rel)) => format!("Usage {}", base(rel)),
                 Some(("log", rel)) => format!("Log {}", base(rel)),
@@ -182,7 +181,7 @@ impl App {
                 Some(("diff" | "cdiff", rest)) => base(rest.split_once(':').map_or(rest, |(_, p)| p)).to_string(),
                 Some((_, rel)) => base(rel).to_string(),
                 None => key.to_string(),
-            },
+            }),
         }
     }
 
@@ -499,7 +498,6 @@ impl App {
             PAct::RustCheck(root, yes) => self.lints.set_cargo_allowed(&root, yes),
             PAct::ExtInstall(yes) => crate::ext::decided(self, yes),
             PAct::ExtRemove(id) => crate::ext::removed(self, &id),
-            PAct::Serial(tty, write) => crate::xcomm::share(self, &tty, write),
             PAct::QuitEndTerminal => {
                 self.term_quit_ok = true;
                 self.request_quit();

@@ -13,8 +13,6 @@ pub enum Out {
     Now(Value),
     Screen,
     Output { term: usize, re: fancy_regex::Regex, mark: u64, timeout: Duration },
-    /// Serial channel `tty`'s output matching `re` after offset `mark`.
-    Serial { tty: String, re: fancy_regex::Regex, mark: u64, timeout: Duration },
     /// The connection kept for events on these topics (none: all of them).
     Watch(Vec<String>),
     /// `ui.notify`: shown with the client's name.
@@ -29,6 +27,9 @@ pub enum Out {
 /// What `events.watch` sends, each as `{"method": "event", "params": {"topic", …}}`.
 pub const TOPICS: &[&str] = &["buffer.changed", "file.saved", "file.opened", "file.closed", "tab", "cursor", "diagnostics", "git", "terminal.output", "serial.output"];
 
+/// Where the Serial view's extension is (its manifest in that folder of termcode's source).
+pub const XCOMM: &str = "https://github.com/JonasAtelier/termcode#extensions/xcomm";
+
 pub const METHODS: &[&str] = &[
     "hello",
     "command.list",
@@ -40,15 +41,6 @@ pub const METHODS: &[&str] = &[
     "terminal.send",
     "events.wait",
     "events.watch",
-    "serial.ports",
-    "serial.note",
-    "serial.monitor",
-    "serial.read",
-    "serial.wait",
-    "serial.attach",
-    "serial.send",
-    "serial.set",
-    "serial.close",
     "ui.notify",
     "ui.prompt",
     "ui.input",
@@ -63,12 +55,12 @@ pub const METHODS: &[&str] = &[
 pub fn tier(method: &str, p: &Value) -> crate::api::Tier {
     use crate::api::Tier;
     match method {
-        "editor.open" | "buffer.edit" | "buffer.save" | "serial.note" | "serial.monitor" | "serial.close" => Tier::Edit,
+        "editor.open" | "buffer.edit" | "buffer.save" => Tier::Edit,
         // Showing things in termcode, asking the user: as changing what is open.
         "ui.notify" | "ui.prompt" | "ui.input" | "ui.pick" | "ui.decorate" | "ui.clear" => Tier::Edit,
         // An extension bringing its view to the front (its panes are its own: reading).
         "view.open" => Tier::Edit,
-        "command.run" | "terminal.send" | "events.wait" | "serial.attach" | "serial.send" | "serial.set" => Tier::Run,
+        "command.run" | "terminal.send" | "events.wait" => Tier::Run,
         "state.get" if matches!(p["path"].as_str(), Some("/terminals" | "/ui/screen")) => Tier::Run,
         // Output (a terminal's, a serial port's) is what running reads; the rest is reading.
         "events.watch" => {
@@ -89,7 +81,7 @@ pub fn call(app: &mut App, method: &str, p: &Value) -> Result<Out, String> {
             "termcode": env!("CARGO_PKG_VERSION"),
             "pid": std::process::id(),
             "root": app.root,
-            "methods": METHODS,
+            "methods": METHODS.iter().map(|m| m.to_string()).chain(crate::ext::api_methods(app)).collect::<Vec<_>>(),
         })),
         "command.list" => now(Value::Array(commands().map(|(id, title, key)| json!({"id": id, "title": title, "key": key})).collect())),
         "command.run" => {
@@ -222,50 +214,13 @@ pub fn call(app: &mut App, method: &str, p: &Value) -> Result<Out, String> {
             }
             now(json!({"cleared": true}))
         }
-        "serial.ports" => now(crate::xcomm::ports_json(app)),
-        "serial.monitor" => crate::xcomm::api_monitor(app, port(p)?).map(Out::Now),
-        "serial.attach" => crate::xcomm::api_attach(app, port(p)?).map(Out::Now),
-        "serial.send" => {
-            let text = p["text"].as_str().ok_or("serial.send: give \"text\" (end it with \\r to enter it)")?;
-            crate::xcomm::api_send(app, port(p)?, text).map(Out::Now)
-        }
-        "serial.set" => crate::xcomm::api_set(app, port(p)?, p).map(Out::Now),
-        "serial.close" => crate::xcomm::api_close(app, port(p)?).map(Out::Now),
-        "serial.read" => {
-            let tty = port(p)?;
-            let c = app.serial.channels.iter().find(|c| c.tty == tty).ok_or_else(|| format!("{tty} is not open: serial.monitor first"))?;
-            // From `since`, else the last 4 KB.
-            let since = p["since"].as_u64().unwrap_or_else(|| crate::xcomm::output_end(c).saturating_sub(4096));
-            let (text, next) = crate::xcomm::output_since(c, since, 1 << 20);
-            now(json!({"port": tty, "text": text, "next": next}))
-        }
-        "serial.wait" => {
-            let tty = port(p)?.to_string();
-            let pat = p["match"].as_str().ok_or("serial.wait: give \"match\", a regex")?;
-            if pat.len() > 1000 {
-                return Err("match: 1000 characters at most".into());
-            }
-            let re = fancy_regex::RegexBuilder::new(pat).backtrack_limit(100_000).build().map_err(|e| format!("match: {e}"))?;
-            let c = app.serial.channels.iter().find(|c| c.tty == tty).ok_or_else(|| format!("{tty} is not open: serial.monitor first"))?;
-            let mark = p["since"].as_u64().unwrap_or_else(|| crate::xcomm::output_end(c));
-            let timeout = Duration::from_secs_f64(p["timeout"].as_f64().unwrap_or(30.0).clamp(0.0, 3600.0));
-            Ok(Out::Serial { tty, re, mark, timeout })
-        }
-        "serial.note" => {
-            let tty = p["port"].as_str().ok_or("serial.note: give \"port\" (ttyUSB0) and \"note\" (\"\" removes it)")?;
-            let id = crate::xcomm::note_by_tty(app, tty, p["note"].as_str().unwrap_or_default())?;
-            now(json!({"port": tty, "id": id}))
-        }
+        // Serial ports are the xcomm extension's (extensions/xcomm), when installed.
+        m if m.starts_with("serial.") => Err(format!("unknown method {m:?}: serial ports come from the xcomm extension (termcode ext install {XCOMM})")),
         m => Err(format!("unknown method {m:?}: one of {}", METHODS.join(", "))),
     }
 }
 
 /// `p["port"]`: a tty (`ttyUSB0`, or `/dev/ttyUSB0`).
-fn port(p: &Value) -> Result<&str, String> {
-    let s = p["port"].as_str().ok_or("give a \"port\" (ttyUSB0)")?;
-    Ok(s.strip_prefix("/dev/").unwrap_or(s))
-}
-
 /// Every command: its id (from its title: "View: Toggle Minimap" → view.toggleMinimap),
 /// its title as F1 shows it, its key.
 pub fn commands() -> impl Iterator<Item = (String, &'static str, &'static str)> {

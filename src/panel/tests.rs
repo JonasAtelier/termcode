@@ -5666,20 +5666,23 @@ fn github_sign_in_offers_a_qr_code_for_a_phone() {
 }
 
 #[test]
-fn code_serial_and_github_keep_their_own_editor_areas() {
+fn code_and_each_view_keep_their_own_editor_areas() {
     use crate::panel::Space;
     let root = repo("spaces");
     fs::write(root.join("a.txt"), "alpha\n").unwrap();
     let mut app = App::new(root.clone(), None);
+    app.exts.list.push(crate::ext::test_ext("spaces-x", &["ttyX9"]));
+    let n = crate::ext::num("spaces-x");
     app.open_file(0, "a.txt", false);
     app.focus = Focus::Editor;
     app.toggle_terminal();
     let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
     let s = screen(&mut app, &mut t);
     assert!(s.contains("alpha") && app.term_open);
-    // A serial tab: the Serial view, its own group; the code and the terminal out of sight.
-    app.show_tab(app.ag, "serial:ttyX9".into(), false);
-    assert_eq!((app.side, app.space(), app.groups.len()), (Side::SERIAL, Space::SERIAL, 2));
+    // A view's tab (an extension's, as Serial's): its view, its own group; the code and
+    // the terminal out of sight.
+    app.show_tab(app.ag, "ext:spaces-x/ttyX9".into(), false);
+    assert_eq!((app.side, app.space(), app.groups.len()), (Side::View(n), Space::View(n), 2));
     let s = screen(&mut app, &mut t);
     assert!(!s.contains("alpha") && s.contains("ttyX9"), "{s}");
     assert!(app.ui.groups[0].area.is_empty() && app.ui.term.is_empty(), "the code group and the terminal hidden");
@@ -5690,32 +5693,34 @@ fn code_serial_and_github_keep_their_own_editor_areas() {
     assert_eq!((app.ag, app.groups[app.ag].space), (0, Space::Code));
     assert!(!app.ui.term.is_empty());
     // Opening a file from anywhere goes back to the code space.
-    app.show_side(Side::SERIAL, false);
+    app.show_side(Side::View(n), false);
     app.open_file(app.ag, "a.txt", false);
     assert_eq!(app.space(), Space::Code);
     assert_eq!(app.groups.iter().filter(|g| g.space == Space::Code).count(), 1, "into the code group, not a new one");
 }
 
 #[test]
-fn a_serial_tab_dragged_to_an_edge_splits_in_its_own_space() {
+fn a_views_tab_dragged_to_an_edge_splits_in_its_own_space() {
     use crate::panel::Space;
     let root = repo("drag-split");
     let mut app = App::new(root.clone(), None);
-    app.show_tab(app.ag, "serial:ttyA1".into(), false);
-    app.show_tab(app.ag, "serial:ttyB2".into(), false);
+    app.exts.list.push(crate::ext::test_ext("drag-x", &["ttyA1", "ttyB2"]));
+    let sp = Space::View(crate::ext::num("drag-x"));
+    app.show_tab(app.ag, "ext:drag-x/ttyA1".into(), false);
+    app.show_tab(app.ag, "ext:drag-x/ttyB2".into(), false);
     let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
     screen(&mut app, &mut t);
     let g = app.ag;
     let (tab_b, area) = (app.ui.groups[g].tabs[1].0, app.ui.groups[g].area);
     let ev = |kind, x: u16, y: u16| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
-    // ttyB2's tab dragged to the group's bottom edge: a group under it, in the serial space.
+    // ttyB2's tab dragged to the group's bottom edge: a group under it, in its space.
     app.on_mouse(ev(MouseEventKind::Down(MouseButton::Left), tab_b.x + 1, tab_b.y));
     app.on_mouse(ev(MouseEventKind::Drag(MouseButton::Left), area.x + area.width / 2, area.bottom() - 2));
     app.on_mouse(ev(MouseEventKind::Up(MouseButton::Left), area.x + area.width / 2, area.bottom() - 2));
-    let serial: Vec<usize> = (0..app.groups.len()).filter(|&i| app.groups[i].space == Space::SERIAL).collect();
-    assert_eq!(serial.len(), 2, "split in the serial space");
+    let serial: Vec<usize> = (0..app.groups.len()).filter(|&i| app.groups[i].space == sp).collect();
+    assert_eq!(serial.len(), 2, "split in its space");
     let lower = serial[1];
-    assert!(app.groups[lower].below && app.groups[lower].tabs[0].key == "serial:ttyB2");
+    assert!(app.groups[lower].below && app.groups[lower].tabs[0].key == "ext:drag-x/ttyB2");
     screen(&mut app, &mut t);
     let (a, b) = (app.ui.groups[serial[0]].area, app.ui.groups[lower].area);
     assert!(a.x == b.x && b.y > a.y, "{a:?} {b:?}");
@@ -5723,7 +5728,7 @@ fn a_serial_tab_dragged_to_an_edge_splits_in_its_own_space() {
     let (r, g2, down) = *app.ui.split_btns.iter().find(|(_, g2, down)| *g2 == lower && *down).expect("a split-down button");
     let _ = (g2, down);
     app.on_mouse(ev(MouseEventKind::Down(MouseButton::Left), r.x, r.y));
-    assert_eq!((0..app.groups.len()).filter(|&i| app.groups[i].space == Space::SERIAL).count(), 3);
+    assert_eq!((0..app.groups.len()).filter(|&i| app.groups[i].space == sp).count(), 3);
 }
 
 #[test]

@@ -152,6 +152,24 @@ pub fn fit_left(s: &str, w: usize) -> String {
 }
 
 /// `n` spaces: the blank cells after an icon, inside a button, at an edge.
+/// A side bar section's header (Source Control's, an extension's): its chevron, its title
+/// bold on the section background, `extra` dim after it.
+pub(crate) fn section_head(app: &App, f: &mut Frame, r: Rect, title: &str, open: bool, extra: &str, focused: bool) {
+    let s = app.settings.spacing;
+    let ic = icons();
+    fill(f, r, P.section_bg);
+    let chev = if open { ic.chev_down } else { ic.chev_right };
+    let fg = if focused && app.settings.blocks != crate::blocks::BlockStyle::Cards { P.focus_border } else { P.section_fg };
+    let pad = s.sidebar_padding.saturating_sub(1) / 2;
+    let gap = crate::blocks::icon_gap(s.icon_gap) / 2;
+    let ir = inset(r, pad);
+    // As in the rows: cut once with "…"; the dim file name only while the title is whole.
+    let head = format!(" {chev}{}{title}", sp(gap));
+    let extra = if extra.is_empty() { String::new() } else { format!(" {extra}") };
+    let (head, extra) = fit_pair(&head, &extra, ir.width as usize);
+    row(f, ir, P.section_bg, vec![Span::styled(head, Style::new().fg(fg).bold()), Span::styled(extra, Style::new().fg(P.dim))]);
+}
+
 pub(crate) fn sp(n: u16) -> String {
     " ".repeat(n as usize)
 }
@@ -564,8 +582,8 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     if r.width > 0 && r.height > 0 {
         item(f, siy, settings_open, app.hover.is_some_and(|p| bottom.contains(p)), ic.settings, r.bottom());
     }
-    // Upward from Settings, where the views leave room: the Extensions view (+), then the
-    // built-in views (GitHub, the Programmer, Serial); each lit down to the icon below it.
+    // Upward from Settings, where the code views leave room: the Extensions view (+), the
+    // installed extensions, GitHub, the Programmer; each lit down to the icon below it.
     let fits = |q: Rect| q.y >= r.y + ih * SIDES.len() as u16 && r.width > 0;
     let mut views_end = bottom.y;
     let mut below = siy;
@@ -602,18 +620,6 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             activity_badge(f, r, item_r, (ix, iy), app.scm_files.len(), if active { active_bg } else { P.activity_bg });
         }
         app.ui.activity.push((item_r, *s));
-    }
-    // Installed extensions after the code views, where room is left.
-    for (k, (n, icon)) in crate::ext::top_items(app).into_iter().enumerate() {
-        let y = r.y + (SIDES.len() + k) as u16 * ih;
-        if y + ih > views_end || r.width == 0 {
-            break;
-        }
-        let item_r = Rect::new(r.x, y, r.width, ih);
-        let active = app.side == Side::View(n) && app.side_visible && !settings_open;
-        let hot = app.hover.is_some_and(|p| item_r.contains(p));
-        item(f, y + off, active, hot, &icon, bottom.y);
-        app.ui.activity.push((item_r, Side::View(n)));
     }
     app.ui.activity.extend(low);
 }

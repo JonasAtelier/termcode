@@ -722,12 +722,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
-name = "lexopt"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "803ec87c9cfb29b9d2633f20cba1f488db3fd53f2158b1024cbefb47ba05d413"
-
-[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1644,7 +1638,6 @@ dependencies = [
  "syntect",
  "unicode-width",
  "vt100",
- "xcomm",
 ]
 
 [[package]]
@@ -2085,21 +2078,6 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
-
-[[package]]
-name = "xcomm"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae84ee244eb7da9c5863ffd74ca56f2dc68ca6ac8ca271d50b401629bd46657e"
-dependencies = [
- "lexopt",
- "libc",
- "memchr",
- "regex",
- "rustix",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "zlib-rs"

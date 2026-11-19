@@ -1,6 +1,6 @@
 # Writing a termcode extension
 
-An extension adds a view to termcode, as Serial and GitHub are views. It works the way
+An extension adds a view to termcode, as GitHub and Serial are views. It works the way
 a Linux DSA switch driver plugs into the DSA subsystem: **termcode is the subsystem,
 your extension is the driver.** termcode owns the frame: the activity bar item, the
 panes, their layout, splits, scrolling, hover, the theme, keys and permissions. Your
@@ -28,7 +28,7 @@ on its stdin and stdout, one message per line.
 | `right` | the panel right of the editors | shown while it has rows |
 | `bottom` | the panel under the editors | resized like the terminal |
 
-Clicking your activity bar icon shows your view: only your panes, as Serial shows only
+Clicking your activity bar icon shows your view: only your panes, as GitHub shows only
 its own. Fill only the slots you need.
 
 ## Quick start
@@ -43,9 +43,10 @@ activity bar. Or, in termcode, click **+** right above Settings, type the folder
 git URL) and press Install: it shows at once. `examples/extension/` in termcode's
 source is the same example.
 
-The **+** view lists every view: the built-in ones (Serial, the Programmer, GitHub) and
-the installed extensions, each with **Turn off** / **Turn on**, and **Remove** for an
-extension. Installed extensions live in `~/.config/termcode/extensions/<id>`.
+The **+** view lists every view: the built-in ones (the Programmer, GitHub) and the
+installed extensions, each with **Turn off** / **Turn on**, and **Remove** for an
+extension. Installed extensions live in `~/.config/termcode/extensions/<id>`. A git URL
+may name a folder of the repository: `https://github.com/you/repo#extensions/thing`.
 
 ## The manifest: `termcode-extension.json`
 
@@ -65,11 +66,12 @@ extension. Installed extensions live in `~/.config/termcode/extensions/<id>`.
 |---|---|
 | `id` | 1 to 40 of `a-z`, `0-9`, `-`; its folder's name once installed |
 | `name` | the view's title |
-| `icon` | one character for the activity bar |
+| `icon` | one character for the activity bar, or one per icon set: `{"nerd": "\uf1e6", "unicode": "⇄", "ascii": "S"}` (each falls back to the plainer one) |
 | `run` | the command: a program on PATH, or `./path` inside the extension's folder, then its arguments |
 | `permissions` | what it may do beyond reading: `"edit"` (change files, show notices, ask the user), `"run"` (commands, terminals). Granted at install |
 | `commands` | `[{"id", "title"}]`: in F1 as "Name: Title", there before it starts; running one starts it and sends `view.command` |
-| `build` | a command run in its folder at install (`["make"]`, a `cargo install` into `./bin`), shown before the user agrees |
+| `api` | `{"namespace": {"method": "read" \| "edit" \| "run"}}`: API methods it serves (below) |
+| `build` | a command run in its folder at install (`["make"]`, a `cargo install` into `./bin`), shown before the user agrees. Its progress shows on the status bar when it prints `NN%`, or cargo's `Building … n/m` (termcode asks cargo for it: don't pass `--quiet`) |
 
 It runs in its own folder; `TERMCODE_WORKSPACE` is the workspace (also
 `state.get` `/workspace`).
@@ -99,6 +101,7 @@ termcode tells your extension (notifications, no `id`; don't reply):
 | `view.tab` | `tab` | your tab now in front (what your right panel is about) |
 | `view.resize` | `tab`, `width`, `height` | your tab's size, first and when it changes (a terminal-like view sizes its screen by it) |
 | `view.closed` | `tab` | the user closed your tab (you decide what that ends; `view.clear` forgets it) |
+| `view.wheel` | `tab`, `lines` | the wheel over a tab you scroll yourself (`view.set` with `scroll: "self"`) |
 | `view.command` | `id` | one of your F1 commands ran |
 | `event` | `topic`, … | what you asked for with `events.watch` |
 
@@ -115,14 +118,19 @@ A row is one of:
 
 ```json
 "plain text"
+{"header": "Devices", "open": true, "extra": "3", "action": "fold:devices"}
 {"text": "one cell", "fg": "error", "bold": true}
 ["several ", {"text": "cells", "fg": "accent"}, {"text": "Go", "button": true, "action": "go"}]
 {"cells": ["a list item"], "action": "open:3"}
 ```
 
 A cell: `text`, `fg`, `bg`, `bold`, `dim`, `italic`, `button` (drawn as a button), `action`
-(what `view.action` sends back on a click). A row with `action` clicks as a whole, like a
-list item. Rows and cells light up under the pointer when they click.
+(what `view.action` sends back on a click), `hint` (a card shown while the pointer is
+on it). A `header` row is drawn as the side bar's section headers are (a chevron, the
+title, a dim `extra`); the side bar's own sections fold by their chevron. An extension
+with a `README.md` in its folder shows it on its page in the + view. A row with `action` clicks as a whole, like a list item; a row's `hint` is its
+card. Rows and cells light up under the pointer when they click. In a tab, dragging
+selects text and Ctrl+C copies it (termcode's, not sent to you).
 
 Colors are theme names, so your view follows the user's theme: `fg`, `bg`, `dim`,
 `accent`, `error`, `warning`, `ok`, `info`, `selection`, `input`; or `#rrggbb`. Control characters are
@@ -144,18 +152,34 @@ shown as `�`: escapes never reach the terminal. A pane keeps the last 10,000 r
 
 ## A full example: Serial, out of tree
 
-`extensions/xcomm/` in termcode's source is termcode's Serial view as an extension, in
-Rust on the xcomm crate: ports and channels in the side bar, a tab per channel (its
-screen sent as rows, at most 30 times a second), keys and pastes to the device, line
-settings on the right, notes through `ui.input`, F1 commands with `ui.pick`, xcomm's
-control socket for agents. Its manifest builds it at install
-(`cargo install --path . --root .` into `./bin`). Install it from the + view.
+termcode's Serial view is an extension: `extensions/xcomm/` in termcode's source, in Rust
+on the xcomm crate. Ports and channels in the side bar (a card on hover), a tab per
+channel (its screen sent as rows, at most 30 times a second, `scroll: "self"` for its
+scrollback), keys and pastes to the device, line settings on the right, notes through
+`ui.input`, F1 commands with `ui.pick`; it serves the API's `serial.*` for agents and
+publishes `serial.output`. Its manifest builds it at install (`cargo install --path .
+--root .` into `./bin`). Install it from the + view (SUGGESTED).
+
+## Serving API methods, publishing events
+
+An extension can serve API methods to other clients (agents, scripts): its manifest
+names them, each with what calling it may do, asked of the caller as termcode's own are:
+
+```json
+"api": {"serial": {"ports": "read", "send": "run", "note": "edit"}}
+```
+
+A call to `serial.ports` then comes to the extension as `api.call {method, params,
+caller}` with an `id` (a string): answer it with that `id` (`result`, or `error`), when
+ready (a wait answers later). `events.emit {topic, …}` publishes an event in a namespace
+it serves (`serial.output`) to `events.watch` clients. termcode's own namespaces
+(`state`, `buffer`, `ui`, …) are never an extension's.
 
 ## Built-in views are drivers too
 
-As in DSA, in-tree and out-of-tree drivers plug into the same subsystem. Serial
-(`src/xcomm.rs`), the Programmer (`src/programmer.rs`), GitHub (`src/github/`) and the
-**+** view (`src/ext/manager.rs`) are Rust drivers built into termcode: each fills one
+As in DSA, in-tree and out-of-tree drivers plug into the same subsystem. The Programmer
+(`src/programmer.rs`), GitHub (`src/github/`) and the **+** view (`src/ext/manager.rs`)
+are Rust drivers built into termcode: each fills one
 `ext::Ops` table (`src/ext/mod.rs`, like `dsa_switch_ops`) and is listed in
 `ext::DRIVERS`. termcode's frame has no special case for any of them. A built-in view
 can draw anything (a terminal screen, pictures); an extension draws rows, from any

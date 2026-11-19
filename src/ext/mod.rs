@@ -2,8 +2,8 @@
 //! bar, the editor area's tabs, the right and bottom panels, mouse, keys, layout); each view
 //! is a driver filling it through one table of ops, `Ops` (DSA's `dsa_switch_ops`).
 //!
-//! In-tree drivers are Rust, built in: Serial (xcomm.rs), the Programmer (programmer.rs),
-//! GitHub (github/), and the Extensions view (manager.rs). Out-of-tree drivers are
+//! In-tree drivers are Rust, built in: the Programmer (programmer.rs), GitHub (github/),
+//! and the Extensions view (manager.rs). Out-of-tree drivers are
 //! programs (process.rs), installed with `termcode ext` (install.rs) or the Extensions
 //! view, filling slots with rows over JSON-RPC; one table of ops serves them all.
 //! A view is numbered (`Side::View`, `Space::View`): in-tree first, then extensions.
@@ -15,7 +15,9 @@ mod process;
 
 pub use install::cli;
 pub use manager::{decided, removed};
-pub use process::{bottom_here, call, command_titles, draw_panel, main_title, right_here, run_command, Exts, Slot, PREFIX};
+#[cfg(test)]
+pub use process::test_ext;
+pub use process::{api_methods, api_owner, bottom_here, call, command_titles, draw_panel, forward, may_emit, right_here, run_command, shutdown, Exts, Slot};
 
 use crate::panel::{App, Side, Space};
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
@@ -23,14 +25,14 @@ use ratatui::layout::{Position, Rect};
 use ratatui::Frame;
 use std::sync::Mutex;
 
-/// The in-tree drivers' numbers (their place in DRIVERS).
-pub const SERIAL: u16 = 0;
-pub const PROGRAMMER: u16 = 1;
-pub const GITHUB: u16 = 2;
-pub const EXTENSIONS: u16 = 3;
+/// The in-tree drivers' numbers (their place in DRIVERS). (Serial is an extension:
+/// extensions/xcomm.)
+pub const PROGRAMMER: u16 = 0;
+pub const GITHUB: u16 = 1;
+pub const EXTENSIONS: u16 = 2;
 
 /// The in-tree drivers, by number.
-pub static DRIVERS: [&Ops; 4] = [&crate::xcomm::OPS, &crate::programmer::OPS, &crate::github::OPS, &manager::OPS];
+pub static DRIVERS: [&Ops; 3] = [&crate::programmer::OPS, &crate::github::OPS, &manager::OPS];
 
 /// A view's number: the in-tree ones fixed, extensions' given as their ids are first met.
 pub fn num(id: &str) -> u16 {
@@ -72,6 +74,8 @@ pub struct Ops {
     /// the key, focused); its last copy closed.
     pub owns: fn(&str) -> bool,
     pub tab: fn(&mut App, &mut Frame, usize, Rect, &str, bool) -> Drawn,
+    /// A tab's title (None: termcode's, from its key).
+    pub tab_title: fn(&App, &str) -> Option<String>,
     pub closed: fn(&mut App, &str),
     /// A tab of its showing its own right side (no Outline beside it).
     pub page: fn(&str) -> bool,
@@ -105,6 +109,9 @@ fn no_tab(_: &mut App, _: &mut Frame, _: usize, r: Rect, _: &str, _: bool) -> Dr
     Drawn::Rest(r)
 }
 fn no_closed(_: &mut App, _: &str) {}
+fn no_title(_: &App, _: &str) -> Option<String> {
+    None
+}
 fn no_right(_: &mut App, _: &mut Frame, _: Rect) -> bool {
     false
 }
@@ -147,6 +154,7 @@ impl Ops {
         shown: no_app,
         owns: no_str,
         tab: no_tab,
+        tab_title: no_title,
         closed: no_closed,
         page: no_str,
         right: no_right,
@@ -187,14 +195,14 @@ pub fn title(app: &App, n: u16) -> String {
     }
 }
 
-/// The activity bar: extensions after the code views (top); upward from Settings, the
-/// Extensions view (+), then the in-tree views (bottom). Each: number, icon.
-pub fn top_items(app: &App) -> Vec<(u16, String)> {
-    app.exts.list.iter().filter(|e| !app.exts.off.contains(&e.m.id)).map(|e| (e.n, e.m.icon.clone())).collect()
-}
-
+/// The activity bar's views below the code ones, upward from Settings: the Extensions
+/// view (+), the installed extensions right above it, then GitHub and the Programmer.
+/// Each: number, icon (the icon set's).
 pub fn bottom_items(app: &App) -> Vec<(u16, String)> {
-    [EXTENSIONS, GITHUB, PROGRAMMER, SERIAL].into_iter().filter(|&n| n == EXTENSIONS || !app.exts.off.contains(DRIVERS[n as usize].id)).map(|n| (n, (DRIVERS[n as usize].icon)().to_string())).collect()
+    let on = |id: &str| !app.exts.off.contains(id);
+    let builtin = |n: u16| (n, (DRIVERS[n as usize].icon)().to_string());
+    let installed = app.exts.list.iter().filter(|e| on(&e.m.id)).map(|e| (e.n, e.m.icon.get().to_string()));
+    std::iter::once(builtin(EXTENSIONS)).chain(installed).chain([GITHUB, PROGRAMMER].into_iter().filter(|&n| on(DRIVERS[n as usize].id)).map(builtin)).collect()
 }
 
 /// The editor area's hint while view `space` has no tab.
@@ -234,6 +242,10 @@ pub fn side(app: &mut App, f: &mut Frame, r: Rect, n: u16) {
 
 pub fn tab(app: &mut App, f: &mut Frame, g: usize, r: Rect, key: &str, focused: bool) -> Option<Drawn> {
     owner(key).map(|n| (ops(n).tab)(app, f, g, r, key, focused))
+}
+
+pub fn tab_title(app: &App, key: &str) -> Option<String> {
+    owner(key).and_then(|n| (ops(n).tab_title)(app, key))
 }
 
 pub fn closed(app: &mut App, key: &str) {

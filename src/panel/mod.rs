@@ -260,7 +260,6 @@ pub enum Side {
     View(u16),
 }
 impl Side {
-    pub const SERIAL: Side = Side::View(crate::ext::SERIAL);
     pub const PROGRAMMER: Side = Side::View(crate::ext::PROGRAMMER);
     pub const GITHUB: Side = Side::View(crate::ext::GITHUB);
 
@@ -389,8 +388,6 @@ pub enum Space {
 }
 
 impl Space {
-    #[cfg(test)]
-    pub const SERIAL: Space = Space::View(crate::ext::SERIAL);
 
     pub fn of_side(s: Side) -> Space {
         match s {
@@ -482,8 +479,6 @@ pub enum PAct {
     DiscardBackup(PathBuf),
     /// An API client's request: 0 deny, 1 allow once, 2 allow while it runs.
     Api(u8),
-    /// A serial port another xcomm holds: shared with it, typed into when true.
-    Serial(String, bool),
     /// An API client's question (`ui.prompt` number), button picked.
     ApiPick(u64, usize),
     /// A Rust workspace: checked with cargo on save (true), or its syntax only.
@@ -716,7 +711,6 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("View: Show Source Control", Cmd::ShowSide(Side::Scm), "Alt+2, F2, Ctrl+G"),
     ("View: Show GitHub", Cmd::ShowSide(Side::GITHUB), ""),
     ("View: Show Programmer", Cmd::ShowSide(Side::PROGRAMMER), ""),
-    ("View: Show Serial", Cmd::ShowSide(Side::SERIAL), ""),
     ("View: Split Editor Right", Cmd::Split(false), "Ctrl+T \\"),
     ("View: Split Editor Down", Cmd::Split(true), "Ctrl+T -"),
     ("STM32: Connect", Cmd::Prog(crate::programmer::Op::Connect), ""),
@@ -1116,7 +1110,6 @@ pub struct App {
     /// The STM32 Programmer view, its page and its log.
     pub prog: crate::programmer::Programmer,
     /// The Serial view's ports and open channels.
-    pub serial: crate::xcomm::Serial,
     /// The extensions installed (ext.rs).
     pub exts: crate::ext::Exts,
     /// This termcode's socket (`termcode PATH` from its terminals); a herdr tab's pane.
@@ -1434,6 +1427,8 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
     // The terminal first: saving backups and the session never holds the shell back.
     restore();
     finish(&mut app);
+    // Extensions told to end, and gone, before this process quits or becomes another.
+    crate::ext::shutdown(&mut app);
     leave(&mut app, token_file, SIGNALED.load(Ordering::SeqCst) || res.is_err());
     // A reload: this process becomes the installed binary, same arguments, same pane.
     if app.reload && matches!(res, Ok(Ok(()))) && !SIGNALED.load(Ordering::SeqCst) {
@@ -1679,6 +1674,7 @@ pub fn run_headless(root: PathBuf, stdio: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
     finish(&mut app);
+    crate::ext::shutdown(&mut app);
     crate::api::remove();
     Ok(())
 }
@@ -1939,7 +1935,6 @@ impl App {
             api_gate: crate::api::Gate::from_env(),
             space_ag: std::collections::HashMap::new(),
             code_side: Side::Explorer,
-            serial: crate::xcomm::Serial::default(),
             exts: crate::ext::Exts::load(),
             tab: false,
             reroot: None,

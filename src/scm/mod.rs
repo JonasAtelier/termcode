@@ -1438,19 +1438,7 @@ fn pane_header(app: &mut App, f: &mut Frame, r: Rect, title: &str, open: bool, h
     if r.height == 0 {
         return;
     }
-    let s = app.settings.spacing;
-    let ic = icons();
-    fill(f, r, P.section_bg);
-    let chev = if open { ic.chev_down } else { ic.chev_right };
-    let fg = if focused && app.settings.blocks != crate::blocks::BlockStyle::Cards { P.focus_border } else { P.section_fg };
-    let pad = s.sidebar_padding.saturating_sub(1) / 2;
-    let gap = crate::blocks::icon_gap(s.icon_gap) / 2;
-    let ir = inset(r, pad);
-    // As in the rows: cut once with "…"; the dim file name only while the title is whole.
-    let head = format!(" {chev}{}{title}", sp(gap));
-    let extra = if extra.is_empty() { String::new() } else { format!(" {extra}") };
-    let (head, extra) = fit_pair(&head, &extra, ir.width as usize);
-    row(f, ir, P.section_bg, vec![Span::styled(head, Style::new().fg(fg).bold()), Span::styled(extra, Style::new().fg(P.dim))]);
+    crate::ui::section_head(app, f, r, title, open, extra, focused);
     app.gitui.hits.areas.push((r, hit));
 }
 

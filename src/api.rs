@@ -147,13 +147,13 @@ enum Waiting {
     /// Terminal `term` printing a match of `re` after byte `mark` of its output (looked
     /// at again only when it printed more than `seen`).
     Output { term: usize, re: fancy_regex::Regex, mark: u64, seen: Option<u64> },
-    /// Serial channel `tty` the same, its output by its ring's offsets.
-    Serial { tty: String, re: fancy_regex::Regex, mark: u64, seen: Option<u64> },
     /// The user's answer: may `client` do `tier` (`req`, done once allowed)? `shown`:
     /// the prompt is up for it; `once`: allowed for this request only.
     Grant { client: Client, tier: Tier, req: Value, shown: bool, once: bool },
     /// `ui.prompt` number `n`, from `who`: its question and buttons; `shown` once up.
     Ask { n: u64, who: String, text: String, buttons: Vec<String>, shown: bool },
+    /// An API call an extension serves, passed on (`ext::forward`): its reply, by key.
+    Ext { key: String },
     /// `ui.input` / `ui.pick` number `n` the same: a picker's box, or its rows.
     Input { n: u64, who: String, text: String, value: String, items: Option<Vec<(String, String)>>, shown: bool },
 }
@@ -177,7 +177,6 @@ struct Snapshot {
     diags: std::collections::BTreeMap<String, (usize, usize)>,
     git: (String, usize),
     terms: Vec<u64>,
-    serial: std::collections::BTreeMap<String, u64>,
 }
 
 fn snapshot(app: &App) -> Snapshot {
@@ -200,7 +199,6 @@ fn snapshot(app: &App) -> Snapshot {
         diags: diags.filter(|(_, (e, w))| e + w > 0).collect(),
         git: (app.branch.clone(), app.status.len()),
         terms: app.terms.iter().map(|t| t.log.end()).collect(),
-        serial: app.serial.channels.iter().map(|c| (c.tty.clone(), crate::xcomm::output_end(c))).collect(),
     }
 }
 
@@ -250,15 +248,6 @@ fn changes(app: &App, a: &Snapshot, b: &Snapshot) -> Vec<(&'static str, Value)> 
             }
         }
     }
-    for (tty, &end) in &b.serial {
-        let from = a.serial.get(tty).copied().unwrap_or(end);
-        if end > from {
-            if let Some(c) = app.serial.channels.iter().find(|c| c.tty == *tty) {
-                let (text, _) = crate::xcomm::output_since(c, from, 16 << 10);
-                out.push(("serial.output", json!({"port": tty, "text": text})));
-            }
-        }
-    }
     out
 }
 
@@ -281,6 +270,22 @@ fn notify(app: &mut App) {
             tx.send(json!({"jsonrpc": "2.0", "method": "event", "params": params})).is_ok()
         })
     });
+}
+
+/// An event (an extension's) to the watchers of `topic`; how many took it.
+fn emit(app: &mut App, topic: &str, params: &Value) -> usize {
+    let Some(srv) = app.api.as_mut() else { return 0 };
+    let mut ev = params.clone();
+    ev["topic"] = json!(topic);
+    let mut n = 0;
+    srv.watchers.retain(|(topics, tx)| {
+        if !(topics.is_empty() || topics.iter().any(|t| t == topic)) {
+            return true;
+        }
+        n += 1;
+        tx.send(json!({"jsonrpc": "2.0", "method": "event", "params": ev})).is_ok()
+    });
+    n
 }
 
 /// The running termcode's server: its socket for its shells, its pipe for the event loop.
@@ -423,6 +428,17 @@ fn serve_io(input: &mut dyn BufRead, out: &mut dyn Write, gone: &dyn Fn() -> boo
             Ok(0) | Err(_) => return,
             Ok(_) if line.trim().is_empty() => continue,
             Ok(_) => match serde_json::from_str::<Value>(&line) {
+                // An extension's reply to a call passed to it (no method, our "t…" id).
+                Ok(r) if events.is_some() && r.get("method").is_none() && r["id"].as_str().is_some_and(|k| k.starts_with('t')) => {
+                    let key = r["id"].as_str().unwrap_or_default().to_string();
+                    let mut replies = EXT_REPLIES.lock().unwrap_or_else(|e| e.into_inner());
+                    if replies.len() < 1000 {
+                        replies.push((key, r));
+                    }
+                    drop(replies);
+                    let _ = poke.write_all(b"!");
+                    continue;
+                }
                 Ok(req) => {
                     // A wait's own timeout, the user's answer, and some to spare.
                     let secs = req["params"]["timeout"].as_f64().unwrap_or(0.0).clamp(0.0, 3600.0) + ASK.as_secs_f64() + 10.0;
@@ -495,10 +511,11 @@ pub fn host(app: &App, mut cmd: std::process::Command, mut client: Client, done:
     let (otx, orx) = channel::<String>();
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
-    // Its stdin from one thread: lines whole, in order, never blocking the screen.
+    // Its stdin from one thread: lines whole, in order, never blocking the screen; CLOSE
+    // closes it (its replies' sender lives as long as it, so the channel alone never ends).
     std::thread::Builder::new().name("ext-out".into()).spawn(move || {
         for line in orx {
-            if writeln!(stdin, "{line}").and_then(|()| stdin.flush()).is_err() {
+            if line == CLOSE || writeln!(stdin, "{line}").and_then(|()| stdin.flush()).is_err() {
                 break;
             }
         }
@@ -513,6 +530,9 @@ pub fn host(app: &App, mut cmd: std::process::Command, mut client: Client, done:
     }).map_err(|e| e.to_string())?;
     Ok((otx, pid))
 }
+
+/// Sent to an extension's stdin thread: its stdin closed (the extension then ends).
+pub const CLOSE: &str = "\u{0}close";
 
 /// A writer whose flushed text goes, as lines, to an extension's stdin thread.
 struct Lines {
@@ -534,6 +554,9 @@ impl Write for Lines {
         Ok(())
     }
 }
+
+/// Extensions' replies to the calls passed to them, by key, until their waits take them.
+static EXT_REPLIES: std::sync::Mutex<Vec<(String, Value)>> = std::sync::Mutex::new(Vec::new());
 
 /// Set when the stdio client closed stdin (`--api-stdio`): headless ends.
 pub static END: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -591,16 +614,17 @@ pub fn tick(app: &mut App) -> bool {
                     re.find(text).ok().flatten().map(|m| Ok(json!({"matched": m.as_str(), "output": tail(text, 4096)})))
                 }
             },
-            Waiting::Serial { tty, re, mark, seen } => match app.serial.channels.iter().find(|c| c.tty == *tty) {
-                None => Some(Err(format!("{tty} closed"))),
-                Some(c) if *seen == Some(crate::xcomm::output_end(c)) => None,
-                Some(c) => {
-                    *seen = Some(crate::xcomm::output_end(c));
-                    let (text, next) = crate::xcomm::output_since(c, *mark, 1 << 20);
-                    re.find(&text).ok().flatten().map(|m| Ok(json!({"matched": m.as_str(), "output": tail(&text, 4096), "next": next})))
-                }
-            },
             Waiting::Screen => None,
+            Waiting::Ext { key } => {
+                let mut replies = EXT_REPLIES.lock().unwrap_or_else(|e| e.into_inner());
+                replies.iter().position(|(k, _)| k == key).map(|i| {
+                    let r = replies.remove(i).1;
+                    match r.get("error") {
+                        Some(e) => Err(e["message"].as_str().unwrap_or("failed").to_string()),
+                        None => Ok(r["result"].clone()),
+                    }
+                })
+            }
             Waiting::Input { n, items, shown, .. } => match app.api_gate.typed.take() {
                 Some((tn, row, text)) if tn == *n => {
                     app.api_gate.asked = None;
@@ -814,7 +838,9 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
     }
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = req["method"].as_str().unwrap_or_default();
-    let tier = crate::rpc::tier(method, &req["params"]);
+    // A method an extension serves: its tier as its manifest says.
+    let served = crate::ext::api_owner(app, method);
+    let tier = served.map_or_else(|| crate::rpc::tier(method, &req["params"]), |(_, t)| t);
     if !allowed {
         match app.api_gate.check(&app.settings.api, client, tier) {
             Some(true) => {}
@@ -834,6 +860,22 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
     // An extension's own panes.
     if method.starts_with("view.") {
         return Reply::Now(envelope(&id, crate::ext::call(app, client, method, &req["params"])));
+    }
+    // An extension's event, in a namespace it serves, to whoever watches it.
+    if method == "events.emit" {
+        let topic = req["params"]["topic"].as_str().unwrap_or_default().to_string();
+        if !crate::ext::may_emit(app, client, &topic) {
+            return Reply::Now(envelope(&id, Err(format!("events.emit: {topic:?} is not in a namespace this extension serves"))));
+        }
+        return Reply::Now(envelope(&id, Ok(json!({"to": emit(app, &topic, &req["params"])}))));
+    }
+    // Served by an extension: passed to it, its reply awaited.
+    if let Some((i, _)) = served {
+        let wait = req["params"]["timeout"].as_f64().unwrap_or(0.0).clamp(0.0, 3600.0) + 30.0;
+        return match crate::ext::forward(app, i, method, &req["params"], &client.label) {
+            Ok(key) => Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + Duration::from_secs_f64(wait), what: Waiting::Ext { key } })),
+            Err(e) => Reply::Now(envelope(&id, Err(e))),
+        };
     }
     match crate::rpc::call(app, method, &req["params"]) {
         Ok(crate::rpc::Out::Now(v)) => Reply::Now(envelope(&id, Ok(v))),
@@ -858,9 +900,6 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
             app.api_gate.next_ask += 1;
             let who = client.label.split(" (pid").next().unwrap_or(&client.label).to_string();
             Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Ask { n, who, text, buttons, shown: false } }))
-        }
-        Ok(crate::rpc::Out::Serial { tty, re, mark, timeout }) => {
-            Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + timeout, what: Waiting::Serial { tty, re, mark, seen: None } }))
         }
         Err(e) => Reply::Now(envelope(&id, Err(e))),
     }

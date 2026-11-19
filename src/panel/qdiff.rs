@@ -451,6 +451,7 @@ impl App {
             || self.file_job.is_some()
             || self.prog.busy()
             || self.logs.busy()
+            || self.exts.busy()
             || self.tip.as_ref().is_some_and(|t| t.md5_rx.is_some());
         let mut wait = if busy { Duration::from_millis(100) } else { Duration::from_secs(5) };
         // A minimap slider held at its edge: the editor stepping on.

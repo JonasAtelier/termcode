@@ -17,6 +17,22 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   `new`. Guides: doc/extensions.md, `termcode ext --skill`.
 - The + view, right above Settings: install an extension from a git URL or a folder
   (shown at once, no reload), turn any view off or on, remove an extension.
+- The + view, after VS Code's Extensions view: a search box (a URL or a folder installs),
+  INSTALLED, BUILT-IN and RECOMMENDED sections, an item each (icon, name, version,
+  description, state), and a page per extension (Disable, Uninstall, Restart, its
+  commands, API methods, log, README). Installed extensions' icons sit right above +,
+  in termcode's icon set (`icon` may give one per set); their side bars' sections look
+  and fold like Source Control's.
+- Installing and uninstalling an extension show their progress on the status bar and in
+  the + view: a bar and a percentage, from git's clone, the build's own (cargo's units
+  built) and the files removed. termcode no longer waits up to 5 s to notice a step done.
+- The Serial view moved out of termcode: it is the xcomm extension now (+ view, SUGGESTED;
+  or `termcode ext install https://github.com/JonasAtelier/termcode#extensions/xcomm`),
+  serving the API's `serial.*` and `serial.output` as before. termcode no longer links xcomm.
+- Extensions can serve API methods (`api` in their manifest, each method's tier asked as
+  termcode's own are) and publish events; their tabs can scroll themselves (a terminal's
+  scrollback), select and copy text, and show a card on hover. A git URL may name a
+  folder of the repository (`URL#folder`).
 - Extensions can have several tabs, their own F1 commands, ask the user for a line or a
   pick (`ui.input`, `ui.pick`, also in the API), hear pastes, their tab's size and closing,
   and build at install. The Serial view runs out of tree too: `extensions/xcomm/`.

@@ -19,15 +19,15 @@ const TOOLS: &[(&str, &str)] = &[
     ("buffer.save", "Save a file: {path}."),
     ("terminal.send", "Type into termcode's terminal: {text (end with \\n to run), index?}; returns the output mark."),
     ("events.wait", "Wait for terminal output: {topic: \"terminal.output\", match (regex), timeout? (s), since? (a mark)}."),
-    ("serial.ports", "The serial ports: tty, the user's note, state, adapter, holder, the channel open in termcode."),
-    ("serial.note", "Set the note beside a port: {port, note} (\"\" removes it)."),
-    ("serial.monitor", "Open a serial port in termcode, read only: {port}."),
-    ("serial.read", "A serial channel's output as text: {port, since? (offset)}; returns next."),
-    ("serial.wait", "Wait for a serial channel's output: {port, match (regex), timeout? (s), since?}."),
-    ("serial.attach", "Turn writing on for a serial channel: {port}."),
-    ("serial.send", "Send to a serial device (attached first): {port, text (end with \\r to enter it)}."),
-    ("serial.set", "A serial channel's line settings (attached first): {port, baud?, data_bits?, parity?, stop_bits?, flow?}."),
-    ("serial.close", "Close a serial channel: {port}."),
+    ("serial.ports", "(Serial extension) The serial ports: tty, the user's note, state, adapter, holder, the channel open in termcode."),
+    ("serial.note", "(Serial extension) Set the note beside a port: {port, note} (\"\" removes it)."),
+    ("serial.monitor", "(Serial extension) Open a serial port in termcode, read only: {port}."),
+    ("serial.read", "(Serial extension) A serial channel's output as text: {port, since? (offset)}; returns next."),
+    ("serial.wait", "(Serial extension) Wait for a serial channel's output: {port, match (regex), timeout? (s), since?}."),
+    ("serial.attach", "(Serial extension) Turn writing on for a serial channel: {port}."),
+    ("serial.send", "(Serial extension) Send to a serial device (attached first): {port, text (end with \\r to enter it)}."),
+    ("serial.set", "(Serial extension) A serial channel's line settings (attached first): {port, baud?, data_bits?, parity?, stop_bits?, flow?}."),
+    ("serial.close", "(Serial extension) Close a serial channel: {port}."),
     ("ui.notify", "Show a message on termcode's status bar: {text}."),
     ("ui.prompt", "Ask the user in termcode: {text, buttons? (up to 4)}; returns the button picked."),
     ("ui.input", "Ask the user for a line of text in termcode: {text, value? (to start with)}; returns the text (null: closed)."),
@@ -145,11 +145,12 @@ mod tests {
         let list = handle(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), &mut call).unwrap();
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"state_get") && names.contains(&"serial_send") && names.iter().all(|n| !n.contains('.')));
-        // Every tool is a method the API has (and every method but events.watch a tool).
+        // Every tool is a method the API has, or (serial.*) the Serial extension serves; every
+        // method but events.watch a tool.
         for (m, _) in TOOLS {
-            assert!(crate::rpc::METHODS.contains(m), "{m}");
+            assert!(crate::rpc::METHODS.contains(m) || m.starts_with("serial."), "{m}");
         }
-        assert_eq!(TOOLS.len(), crate::rpc::METHODS.len() - 1);
+        assert_eq!(TOOLS.iter().filter(|(m, _)| !m.starts_with("serial.")).count(), crate::rpc::METHODS.len() - 1);
         let r = handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "hello", "arguments": {}}}), &mut call).unwrap();
         assert_eq!(r["result"]["isError"], false);
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("\"root\""));

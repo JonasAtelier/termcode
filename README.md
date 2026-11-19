@@ -69,17 +69,17 @@ to trust the repository before enabling Git. Only grant trust if you know its or
 
 ## Serial ports
 
-The **Serial** view (the plug above the Programmer): a block per port and per open
-channel. **Monitor** a port to watch it (read only) in a tab you can split like code;
-**Attach** on its channel turns typing on. The Outline's button shows its
-settings beside it (baud, format, DTR/RTS, break, record, agents). **Ctrl+T W** closes it. Ports are taken as [xcomm](https://crates.io/crates/xcomm) takes them (a
-UUCP lock, an exclusive open) and opened again after an unplug. A port another xcomm
-holds can be shared with it, read only or read & write. Dots: green reads and writes,
-yellow is on hold (it still reads), red is disconnected. Press `n` (or click ✎) to
-write a note beside a port ("router console"); rest the pointer on it, or press `i`, for
-everything about it at a glance. Agents and scripts drive a port opened here with
-`xcomm ctl` as they would an xcomm session (each channel's Agents button: read & write,
-read only or off).
+The **Serial (xcomm)** extension: click **+** above Settings, then Install beside it
+under SUGGESTED (or `termcode ext install https://github.com/JonasAtelier/termcode#extensions/xcomm`;
+it builds with cargo). Its view: the ports and the open channels. **Monitor** a port
+to watch it (read only) in a tab you can split like code; **Attach** turns typing on;
+its line settings (baud, format, DTR/RTS, break, capture, agents) sit on the right.
+Ports are taken as [xcomm](https://crates.io/crates/xcomm) takes them (a UUCP lock, an
+exclusive open) and opened again after an unplug; a port another xcomm holds is shared
+with it. Dots: green reads and writes, yellow is on hold (it still reads), red is
+disconnected. ✎ writes a note beside a port ("router console"); rest the pointer on a
+port for everything about it. Agents drive ports through termcode's `serial.*` API or
+with `xcomm ctl`.
 
 ## Scripts and AI agents
 
