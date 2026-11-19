@@ -736,7 +736,7 @@ fn compile_db(path: &Path, top: &Path) -> Option<Entry> {
     let Some(db) = path.ancestors().skip(1).take_while(|d| d.starts_with(top)).find_map(|d| {
         [d.join("compile_commands.json"), d.join("build/compile_commands.json")].into_iter().find(|p| p.is_file())
     }) else {
-        return kbuild(path);
+        return kbuild(path).or_else(|| kbuild(&built_copy(path)?));
     };
     let mtime = std::fs::metadata(&db).and_then(|m| m.modified()).ok()?;
     type Cache = Mutex<HashMap<(PathBuf, PathBuf), (SystemTime, Option<Entry>)>>;
@@ -807,6 +807,33 @@ fn kbuild(path: &Path) -> Option<Entry> {
     let (cc, args) = compile_args(&split_command(&command), path, &top)?;
     let cpp = matches!(path.extension().and_then(|e| e.to_str()), Some("cc" | "cpp" | "cxx"));
     Some(Entry { cc, args, dir: top, cpp })
+}
+
+/// The same file in a built copy of its kernel tree, when the tree itself is not built
+/// (a firmware build's `fetched/linux_5_10` inside the source it copies): the first
+/// folder one or two levels in with a `.config` and `include/generated`.
+fn built_copy(path: &Path) -> Option<PathBuf> {
+    let kernel = |d: &Path| d.join("Kbuild").is_file() && d.join("arch").is_dir() && d.join("include/linux").is_dir();
+    let top = path.ancestors().skip(1).find(|d| kernel(d))?;
+    // Found once (not found: looked for again, it may be built since).
+    static FOUND: OnceLock<Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();
+    let found = FOUND.get_or_init(Default::default);
+    let known = found.lock().unwrap_or_else(|e| e.into_inner()).get(top).cloned();
+    let copy = match known {
+        Some(c) => c,
+        None => {
+            let dirs = |d: &Path| -> Vec<PathBuf> {
+                let mut v: Vec<PathBuf> = std::fs::read_dir(d).into_iter().flatten().flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect();
+                v.sort();
+                v
+            };
+            let built = |d: &PathBuf| d.join(".config").is_file() && d.join("include/generated").is_dir();
+            let c = dirs(top).into_iter().flat_map(|d| std::iter::once(d.clone()).chain(dirs(&d))).find(built)?;
+            found.lock().unwrap_or_else(|e| e.into_inner()).insert(top.to_path_buf(), c.clone());
+            c
+        }
+    };
+    Some(copy.join(path.strip_prefix(top).ok()?))
 }
 
 /// `.` and `..` resolved without touching the disk.
@@ -1124,6 +1151,18 @@ mod tests {
         std::fs::create_dir_all(top.join("drivers/net/dsa/x")).unwrap();
         assert_eq!(kbuild(&top.join("drivers/net/dsa/x/c.h")).map(|e| e.args), Some(want.clone()), "a driver not built borrows its parent folder's");
         assert_eq!(kbuild(&top.join("fs/b.c")), None);
+        // A source tree not built itself, its built copy inside it: the copy's flags.
+        let src = top.join("src");
+        for d in ["arch/arm64/include/asm", "include/linux", "drivers/net/dsa/x", "fetched/linux/include/generated"] {
+            std::fs::create_dir_all(src.join(d)).unwrap();
+        }
+        std::fs::write(src.join("Kbuild"), "").unwrap();
+        std::fs::write(src.join("fetched/linux/.config"), "").unwrap();
+        assert_eq!(compile_db(&src.join("drivers/net/dsa/x/c.c"), &src), None, "no copy built yet");
+        std::fs::create_dir_all(src.join("fetched/linux/drivers/net")).unwrap();
+        std::fs::copy(top.join("drivers/net/.a.o.cmd"), src.join("fetched/linux/drivers/net/.a.o.cmd")).unwrap();
+        let c = compile_db(&src.join("drivers/net/dsa/x/c.c"), &src).expect("the built copy's flags, once built");
+        assert_eq!((c.args, c.dir), (want.clone(), src.join("fetched/linux")));
         std::fs::remove_dir_all(&top).unwrap();
         // The cross gcc is not installed: clang for its target, without its ABI flag.
         if on_path("clang") {
