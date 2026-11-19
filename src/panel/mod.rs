@@ -1385,7 +1385,9 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
         if panic_restores(main) {
             restore();
             hook(info);
-            eprintln!(
+            // Not eprintln!: with the terminal gone that panics inside this hook (an abort).
+            let _ = writeln!(
+                io::stderr(),
                 "\ntermcode crashed. Unsaved files are kept and offered back when you open them again.\n\
                  Please report it: {}/issues/new/choose (F1 Help: Report Issue in termcode copies the details).",
                 crate::ISSUES
@@ -1398,7 +1400,16 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
         // One write per frame (ratatui flushes the backend after each draw): herdr then
         // gets whole frames, not ~14 line-buffered pieces.
         let out = io::BufWriter::with_capacity(1 << 16, Gate { w: io::stdout(), off: &RESTORED });
-        Terminal::new(CrosstermBackend::new(out)).and_then(|mut t| app.event_loop(&mut t))
+        Terminal::new(CrosstermBackend::new(out)).and_then(|mut t| {
+            let r = app.event_loop(&mut t);
+            // ratatui's drop shows the cursor and, failing (the terminal gone: its window
+            // closed, its tmux session killed), eprintln!s that, which panics with no
+            // stderr either. Shown here; failing, its drop is skipped (restore() resets).
+            if t.show_cursor().is_err() {
+                std::mem::forget(t);
+            }
+            r
+        })
     }));
     // Keys typed into the terminal as it switched or reloaded, read already: to its shell,
     // not lost with this process (the next command typed right after `termcode FOLDER`).

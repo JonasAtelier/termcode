@@ -78,6 +78,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - The .deb's binary is built with link-time optimisation: about a fifth smaller.
 - ratatui 0.30, vt100 0.16; the Settings window's pictures no longer need ratatui-image.
 
+### Fixed
+- termcode no longer records a crash when its terminal goes away under it (its window
+  closed, its tmux session killed), which made the next start report an error.
+
 ## [0.5.0] - 2026-11-18
 
 ### Added

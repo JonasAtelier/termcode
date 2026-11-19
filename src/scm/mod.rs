@@ -882,7 +882,8 @@ pub fn drain(app: &mut App) -> bool {
 
 /// After the UI is gone: let queued and running writes finish (their pipes stay open
 /// and are drained, so git never takes SIGPIPE), for at most `limit` if one is given.
-/// It shows what runs on stderr. Ctrl+C there just ends this process: every git runs in
+/// It shows what runs on stderr, if there still is one (not eprint!: with the terminal gone,
+/// its window closed, that panics). Ctrl+C there just ends this process: every git runs in
 /// its own session (no SIGINT) with its output in files (no SIGPIPE), and finishes alone.
 pub fn finish_writes(app: &mut App, limit: Option<Duration>) {
     let start = Instant::now();
@@ -890,14 +891,14 @@ pub fn finish_writes(app: &mut App, limit: Option<Duration>) {
     while app.gitui.writes > 0 && limit.is_none_or(|l| start.elapsed() < l) {
         let line = app.gitui.waiting_line();
         if line != shown {
-            eprint!("\r\x1b[Ktermcode: {line}");
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), format!("\r\x1b[Ktermcode: {line}").as_bytes());
             shown = line;
         }
         drain(app);
         std::thread::sleep(Duration::from_millis(50));
     }
     if !shown.is_empty() {
-        eprintln!();
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), b"\n");
     }
 }
 
