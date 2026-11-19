@@ -382,6 +382,7 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
             outline_panel(app, f, r);
         }
     }
+    app.ui.drop_preview = Rect::default();
     if let Some((g, zone)) = app.drop {
         if let Some(gh) = app.ui.groups.get(g) {
             let a = gh.area;
@@ -394,6 +395,7 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
                 Zone::Tab(_) => Rect::default(), // the tab bar draws its insertion marker
             };
             fill(f, r, P.drop_bg);
+            app.ui.drop_preview = r;
         }
     }
     crate::blocks::finish(f);
@@ -1412,43 +1414,39 @@ fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     let st = app.settings.blocks;
     // Cards sit border to border; the other styles draw a 1-cell line between groups.
     let sep = u16::from(st != BlockStyle::Cards);
-    // Columns: a group `below` sits under the one before it, in its column.
-    let cols = app.columns(space);
-    let n = cols.len().max(1) as u16;
-    let gw = r.width.saturating_sub((n - 1) * sep) / n;
-    let mut x = r.x;
-    for (ci, col) in cols.iter().enumerate() {
-        let w = if ci + 1 == cols.len() { r.right().saturating_sub(x) } else { gw };
-        let m = col.len() as u16;
-        let gh = r.height.saturating_sub((m - 1) * sep) / m;
-        let mut y = r.y;
-        for (k, &g) in col.iter().enumerate() {
-            let h = if k + 1 == col.len() { r.bottom().saturating_sub(y) } else { gh };
-            // Find's box sits in the group: its card keeps the focus border.
-            let focused = g == app.ag && matches!(app.focus, Focus::Editor | Focus::Find) && !app.activity_lit;
-            let area = crate::blocks::card(st, f, Rect::new(x, y, w, h), P.editor_bg, focused);
-            group(app, f, g, area, lay, (area.y > y).then_some(y));
-            y += h;
-            if k + 1 < col.len() {
-                match st {
-                    BlockStyle::None => f.render_widget(Paragraph::new("─".repeat(usize::from(w))).style(Style::new().fg(P.group_border).bg(P.editor_bg)), Rect::new(x, y, w, 1)),
-                    BlockStyle::Lines => crate::blocks::hline(y, x, x + w - 1),
-                    BlockStyle::Cards => {}
-                }
-                y += sep;
-            }
+    // Each group at its own area; a line along its right and lower edges where another
+    // group follows (the cells they share).
+    let mine: Vec<usize> = (0..app.groups.len()).filter(|&g| app.groups[g].space == space).collect();
+    for g in mine {
+        let fr = app.groups[g].frac;
+        let c = fr.cells(r);
+        let (right, below) = (sep > 0 && fr.x1 < 1.0 - 1e-9, sep > 0 && fr.y1 < 1.0 - 1e-9);
+        let inner = Rect::new(c.x, c.y, c.width.saturating_sub(u16::from(right)), c.height.saturating_sub(u16::from(below)));
+        if inner.is_empty() {
+            continue;
         }
-        x += w;
-        if ci + 1 < cols.len() {
+        // Find's box sits in the group: its card keeps the focus border.
+        let focused = g == app.ag && matches!(app.focus, Focus::Editor | Focus::Find) && !app.activity_lit;
+        let area = crate::blocks::card(st, f, inner, P.editor_bg, focused);
+        group(app, f, g, area, lay, (area.y > inner.y).then_some(inner.y));
+        if below {
+            let y = c.bottom() - 1;
             match st {
-                BlockStyle::None => {
-                    let lines: Vec<Line> = (0..r.height).map(|_| Line::raw("│")).collect();
-                    f.render_widget(Paragraph::new(lines).style(Style::new().fg(P.group_border).bg(P.editor_bg)), Rect::new(x, r.y, 1, r.height));
-                }
-                BlockStyle::Lines => crate::blocks::vline(x, r.y, r.bottom() - 1),
+                BlockStyle::None => f.render_widget(Paragraph::new("─".repeat(usize::from(inner.width))).style(Style::new().fg(P.group_border).bg(P.editor_bg)), Rect::new(c.x, y, inner.width, 1)),
+                BlockStyle::Lines => crate::blocks::hline(y, c.x, c.x + inner.width.saturating_sub(1)),
                 BlockStyle::Cards => {}
             }
-            x += sep;
+        }
+        if right {
+            let x = c.right() - 1;
+            match st {
+                BlockStyle::None => {
+                    let lines: Vec<Line> = (0..c.height).map(|_| Line::raw("│")).collect();
+                    f.render_widget(Paragraph::new(lines).style(Style::new().fg(P.group_border).bg(P.editor_bg)), Rect::new(x, c.y, 1, c.height));
+                }
+                BlockStyle::Lines => crate::blocks::vline(x, c.y, c.bottom() - 1),
+                BlockStyle::Cards => {}
+            }
         }
     }
 }

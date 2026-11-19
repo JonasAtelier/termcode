@@ -47,14 +47,198 @@ type Stamp = Option<(SystemTime, u64)>;
 /// Quick-diff recompute delay after an edit.
 const QDIFF_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const MAX_HITS: usize = 5_000;
-/// A view's editor area splits while each group keeps at least MIN_GROUP_W columns and
-/// MIN_GROUP_H rows: a wide monitor takes more columns, a tall one more rows. MAX_COLS
-/// and MAX_ROWS only bound it (and a restored session).
+/// A group splits while each half keeps at least MIN_GROUP_W columns and MIN_GROUP_H
+/// rows: a wide or tall monitor takes more. MAX_GROUPS only bounds it.
 pub const MIN_GROUP_W: u16 = 30;
 pub const MIN_GROUP_H: u16 = 7;
-pub const MAX_COLS: usize = 8;
-pub const MAX_ROWS: usize = 8;
-pub const MAX_GROUPS: usize = MAX_COLS * MAX_ROWS;
+pub const MAX_GROUPS: usize = 64;
+
+/// Where a group sits in its view's editor area, in fractions of it: left, top, right,
+/// bottom. A split halves a group's own (what a drop's preview shows) and leaves the others
+/// as they are; a group closed gives its own to the neighbours along one side. Halves are
+/// exact in binary, so two neighbours share the very same edge (and the same cell).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frac {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+}
+
+impl Default for Frac {
+    fn default() -> Self {
+        Frac { x0: 0.0, y0: 0.0, x1: 1.0, y1: 1.0 }
+    }
+}
+
+impl Frac {
+    /// Its halves: left and right, or (`down`) top and bottom.
+    pub fn halves(self, down: bool) -> (Frac, Frac) {
+        if down {
+            let m = (self.y0 + self.y1) / 2.0;
+            (Frac { y1: m, ..self }, Frac { y0: m, ..self })
+        } else {
+            let m = (self.x0 + self.x1) / 2.0;
+            (Frac { x1: m, ..self }, Frac { x0: m, ..self })
+        }
+    }
+
+    /// Its cells in `r`: an edge two groups share lands on the same cell for both.
+    pub fn cells(self, r: Rect) -> Rect {
+        let x = |f: f64| r.x + (f * f64::from(r.width)).round() as u16;
+        let y = |f: f64| r.y + (f * f64::from(r.height)).round() as u16;
+        let (x0, y0) = (x(self.x0), y(self.y0));
+        Rect::new(x0, y0, x(self.x1).saturating_sub(x0), y(self.y1).saturating_sub(y0))
+    }
+
+    pub fn size(self) -> f64 {
+        (self.x1 - self.x0) * (self.y1 - self.y0)
+    }
+}
+
+/// Close enough to be the same edge (fractions from halvings are exact; columns of an old
+/// session's thirds are not).
+fn same(p: f64, q: f64) -> bool {
+    (p - q).abs() < 1e-9
+}
+
+/// Do `fracs` tile the whole area: inside it, none empty, none overlapping, all of it?
+pub fn tiles(fracs: &[Frac]) -> bool {
+    let inside = fracs.iter().all(|f| f.x0 > -1e-9 && f.y0 > -1e-9 && f.x1 < 1.0 + 1e-9 && f.y1 < 1.0 + 1e-9 && f.x1 > f.x0 + 1e-9 && f.y1 > f.y0 + 1e-9);
+    let apart = fracs.iter().enumerate().all(|(i, a)| fracs[i + 1..].iter().all(|b| a.x1 <= b.x0 + 1e-9 || b.x1 <= a.x0 + 1e-9 || a.y1 <= b.y0 + 1e-9 || b.y1 <= a.y0 + 1e-9));
+    inside && apart && same(fracs.iter().map(|f| f.size()).sum(), 1.0)
+}
+
+/// Space `sp`'s groups laid out as columns (equal widths), each column's groups top down
+/// (equal heights); `heads` says which group starts a column (an old session's layout).
+pub fn columns_layout(groups: &mut [Group], sp: Space, heads: &[bool]) {
+    let idx: Vec<usize> = (0..groups.len()).filter(|&i| groups[i].space == sp).collect();
+    let mut cols: Vec<Vec<usize>> = Vec::new();
+    for (k, &i) in idx.iter().enumerate() {
+        match cols.last_mut() {
+            Some(c) if !heads.get(k).copied().unwrap_or(true) => c.push(i),
+            _ => cols.push(vec![i]),
+        }
+    }
+    let n = cols.len() as f64;
+    for (ci, col) in cols.iter().enumerate() {
+        let m = col.len() as f64;
+        for (ri, &i) in col.iter().enumerate() {
+            groups[i].frac = Frac { x0: ci as f64 / n, x1: (ci + 1) as f64 / n, y0: ri as f64 / m, y1: (ri + 1) as f64 / m };
+            groups[i].path.clear();
+        }
+    }
+}
+
+/// Group `g`'s area given back to the half it was split from (by their paths): that
+/// half's groups along the cut grow over it, and all of them forget that halving. False
+/// when its path says nothing (an older session's layout).
+fn give_back(groups: &mut [Group], g: usize) -> bool {
+    let (a, sp, path) = (groups[g].frac, groups[g].space, groups[g].path.clone());
+    let Some(&(down, second)) = path.last() else { return false };
+    let d = path.len() - 1;
+    let mut sib = path[..d].to_vec();
+    sib.push((down, !second));
+    let half: Vec<usize> = (0..groups.len()).filter(|&i| i != g && groups[i].space == sp && groups[i].path.starts_with(&sib)).collect();
+    // Along the cut: those of the other half that touch it.
+    let edge = |f: &Frac| match (down, second) {
+        (false, true) => same(f.x1, a.x0),
+        (false, false) => same(f.x0, a.x1),
+        (true, true) => same(f.y1, a.y0),
+        (true, false) => same(f.y0, a.y1),
+    };
+    let cut: Vec<usize> = half.iter().copied().filter(|&i| edge(&groups[i].frac)).collect();
+    let span = |f: &Frac| if down { f.x1 - f.x0 } else { f.y1 - f.y0 };
+    if cut.is_empty() || !same(cut.iter().map(|&i| span(&groups[i].frac)).sum(), span(&a)) {
+        return false;
+    }
+    for &i in &cut {
+        let f = &mut groups[i].frac;
+        match (down, second) {
+            (false, true) => f.x1 = a.x1,
+            (false, false) => f.x0 = a.x0,
+            (true, true) => f.y1 = a.y1,
+            (true, false) => f.y0 = a.y0,
+        }
+    }
+    for &i in &half {
+        groups[i].path.remove(d);
+    }
+    true
+}
+
+/// A rectangle a halving makes: each side a power of two of the whole, starting at a
+/// multiple of it.
+fn halving(f: Frac) -> bool {
+    let fits = |lo: f64, hi: f64| {
+        let w = hi - lo;
+        w > 0.0 && w.log2().fract() == 0.0 && (lo / w).fract() == 0.0
+    };
+    fits(f.x0, f.x1) && fits(f.y0, f.y1)
+}
+
+/// Group `g` removed from `groups`, its area given to its neighbours along a side they
+/// cover exactly: the side whose groups, grown over it, are halvings again (its other
+/// half, the group it was split from), else the fewest. A layout of halvings always has
+/// such a side; anything else is laid out again as columns.
+pub fn remove_group_in(groups: &mut Vec<Group>, g: usize) {
+    if give_back(groups, g) {
+        groups.remove(g);
+        return;
+    }
+    let (a, sp) = (groups[g].frac, groups[g].space);
+    let others: Vec<usize> = (0..groups.len()).filter(|&i| i != g && groups[i].space == sp).collect();
+    // ((not halvings again, how many), (side, those groups))
+    type Pick = ((bool, usize), (usize, Vec<usize>));
+    let mut best: Option<Pick> = None;
+    for side in 0..4 {
+        // 0: those right of it, 1: left, 2: below, 3: above.
+        let span = |f: &Frac| if side < 2 { (f.y0, f.y1) } else { (f.x0, f.x1) };
+        let touch = |f: &Frac| match side {
+            0 => same(f.x0, a.x1),
+            1 => same(f.x1, a.x0),
+            2 => same(f.y0, a.y1),
+            _ => same(f.y1, a.y0),
+        };
+        let (lo, hi) = span(&a);
+        let set: Vec<usize> = others.iter().copied().filter(|&i| touch(&groups[i].frac) && span(&groups[i].frac).0 > lo - 1e-9 && span(&groups[i].frac).1 < hi + 1e-9).collect();
+        let covered: f64 = set.iter().map(|&i| span(&groups[i].frac).1 - span(&groups[i].frac).0).sum();
+        if set.is_empty() || !same(covered, hi - lo) {
+            continue;
+        }
+        let grown = |f: Frac| match side {
+            0 => Frac { x0: a.x0, ..f },
+            1 => Frac { x1: a.x1, ..f },
+            2 => Frac { y0: a.y0, ..f },
+            _ => Frac { y1: a.y1, ..f },
+        };
+        // Better: halvings again; then the fewest groups.
+        let rank = (!set.iter().all(|&i| halving(grown(groups[i].frac))), set.len());
+        if best.as_ref().is_none_or(|b| rank < b.0) {
+            best = Some((rank, (side, set)));
+        }
+    }
+    match best.map(|b| b.1) {
+        Some((side, set)) => {
+            for i in set {
+                let f = &mut groups[i].frac;
+                match side {
+                    0 => f.x0 = a.x0,
+                    1 => f.x1 = a.x1,
+                    2 => f.y0 = a.y0,
+                    _ => f.y1 = a.y1,
+                }
+            }
+            groups.remove(g);
+        }
+        None => {
+            groups.remove(g);
+            if groups.iter().any(|x| x.space == sp) {
+                columns_layout(groups, sp, &[]);
+            }
+        }
+    }
+}
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Set for the process a reload execs: the session comes back whatever the settings say.
 const RELOAD_ENV: &str = "TERMCODE_RELOADED";
@@ -377,8 +561,10 @@ pub struct Tab {
 pub struct Group {
     pub tabs: Vec<Tab>,
     pub active: usize,
-    /// Under the group before it, in its column (Split Editor Down); else a column of its own.
-    pub below: bool,
+    /// Its place in its view's editor area (fractions of it), and the halvings that made
+    /// it, outermost first: (down, its second half). Closed, its other half takes it back.
+    pub frac: Frac,
+    pub path: Vec<(bool, bool)>,
     /// The space it belongs to: only the current view's groups show.
     pub space: Space,
     /// Its tab bar scrolled: the first tab shown; the active tab last brought into view
@@ -844,7 +1030,7 @@ pub struct MiniHit {
 pub enum Zone {
     Left,
     Right,
-    /// The top or bottom edge: a new group above or below, in its column.
+    /// The top or bottom edge: a new group in its upper or lower half.
     Up,
     Down,
     Center,
@@ -969,6 +1155,8 @@ pub struct Hits {
     pub prompt_btns: Vec<(Rect, usize)>,
     /// "Split Editor Right" button per group.
     pub split_btns: Vec<(Rect, usize, bool)>,
+    /// A drop's preview as drawn (where the split it makes goes).
+    pub drop_preview: Rect,
     /// The terminal: its toggle button per group, its panel's top border (the height
     /// handle) and its screen.
     pub term_btns: Vec<Rect>,
@@ -2512,9 +2700,11 @@ impl App {
         let Some(rel) = key.strip_prefix("file:") else { return };
         let pk = format!("preview:{rel}");
         let from = self.ag;
-        // To the side: the next column's group, else a new column, else here.
-        let cols = self.columns(self.groups[from].space);
-        let next = cols.iter().position(|c| c.contains(&from)).and_then(|c| cols.get(c + 1)).map(|c| c[0]);
+        // To the side: the group right of it (the one beside it most), else its right half,
+        // else here.
+        let (f, sp) = (self.groups[from].frac, self.groups[from].space);
+        let overlap = |o: &Frac| o.y1.min(f.y1) - o.y0.max(f.y0);
+        let next = (0..self.groups.len()).filter(|&i| self.groups[i].space == sp && same(self.groups[i].frac.x0, f.x1) && overlap(&self.groups[i].frac) > 1e-9).max_by(|&a, &b| overlap(&self.groups[a].frac).total_cmp(&overlap(&self.groups[b].frac)));
         let g = match next {
             _ if !side => from,
             Some(n) => n,

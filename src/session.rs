@@ -183,7 +183,9 @@ pub fn snapshot(app: &App) -> Value {
         .iter()
         .map(|g| {
             let tabs: Vec<Value> = g.tabs.iter().filter(|t| restorable(&t.key)).map(|t| json!({ "key": t.key, "preview": t.preview, "view": view_json(&t.view) })).collect();
-            json!({ "active": g.tabs.iter().take(g.active).filter(|t| restorable(&t.key)).count(), "below": g.below, "tabs": tabs })
+            let f = g.frac;
+            let path: Vec<[bool; 2]> = g.path.iter().map(|&(d, s)| [d, s]).collect();
+            json!({ "active": g.tabs.iter().take(g.active).filter(|t| restorable(&t.key)).count(), "area": [f.x0, f.y0, f.x1, f.y1], "path": path, "tabs": tabs })
         })
         .collect();
     let open: Vec<&str> = app.tree.iter().filter(|n| n.dir && n.open).map(|n| n.path.as_str()).take(MAX_FOLDERS).collect();
@@ -348,9 +350,9 @@ pub fn restore(app: &mut App) {
         .filter(|h| is_hash(h))
         .collect();
     let gone = missing_commits(app, &hashes.iter().map(String::as_str).collect::<Vec<_>>());
+    // Every saved group with its area (an empty one too, to give its area back after).
     let (mut groups, mut ag) = (Vec::new(), 0);
-    // A column's first group dropped: the next one kept heads that column.
-    let mut head_dropped = false;
+    let mut heads = Vec::new();
     for (gi, g) in saved.iter().enumerate() {
         let want = g["active"].as_u64().unwrap_or(0) as usize;
         let mut tabs: Vec<Tab> = Vec::new();
@@ -366,20 +368,31 @@ pub fn restore(app: &mut App) {
             let view = if views { view_of(&t["view"]).unwrap_or_default() } else { View::default() };
             tabs.push(Tab { key: key.to_string(), preview: t["preview"] == true, view });
         }
-        if tabs.is_empty() {
-            head_dropped |= g["below"] != true;
-            continue;
-        }
         if gi as u64 == v["active_group"].as_u64().unwrap_or(0) {
             ag = groups.len();
         }
         app.session.pending.extend(tabs.iter().map(|t| t.key.clone()));
-        // The first group heads a column whatever was saved.
-        let below = g["below"] == true && !groups.is_empty() && !std::mem::take(&mut head_dropped);
-        head_dropped = false;
-        groups.push(Group { tabs, active, below, space: crate::panel::Space::Code, ..Group::default() });
+        let frac = g["area"].as_array().filter(|a| a.len() == 4).and_then(|a| Some(crate::panel::Frac { x0: a[0].as_f64()?, y0: a[1].as_f64()?, x1: a[2].as_f64()?, y1: a[3].as_f64()? }));
+        heads.push((frac, g["below"] != true));
+        let path = g["path"].as_array().into_iter().flatten().filter_map(|p| Some((p[0].as_bool()?, p[1].as_bool()?))).take(64).collect();
+        groups.push(Group { tabs, active, space: crate::panel::Space::Code, frac: frac.unwrap_or_default(), path, ..Group::default() });
     }
-    fit_layout(&mut groups);
+    // Areas that tile the editor area kept; else (an older session) its columns.
+    let fracs: Vec<crate::panel::Frac> = groups.iter().map(|g| g.frac).collect();
+    if heads.iter().any(|h| h.0.is_none()) || !crate::panel::tiles(&fracs) {
+        let first: Vec<bool> = heads.iter().map(|h| h.1).collect();
+        crate::panel::columns_layout(&mut groups, crate::panel::Space::Code, &first);
+    }
+    // Groups left without a tab go, their areas to their neighbours.
+    for i in (0..groups.len()).rev() {
+        if groups[i].tabs.is_empty() && groups.len() > 1 {
+            crate::panel::remove_group_in(&mut groups, i);
+            if ag > i {
+                ag -= 1;
+            }
+        }
+    }
+    groups.retain(|g| !g.tabs.is_empty());
     ag = ag.min(groups.len().saturating_sub(1));
     if !groups.is_empty() {
         app.groups = groups;
@@ -387,43 +400,6 @@ pub fn restore(app: &mut App) {
         app.focus = crate::panel::Focus::Editor;
     }
     app.session.written = Some(snapshot(app).to_string());
-}
-
-/// A saved layout bounded by MAX_COLS x MAX_ROWS (a session from elsewhere): a column's
-/// groups past MAX_ROWS start columns of their own while there is room, columns past
-/// MAX_COLS give their tabs to the last group kept.
-pub fn fit_layout(groups: &mut Vec<Group>) {
-    use crate::panel::{MAX_COLS, MAX_ROWS};
-    let (mut cols, mut rows) = (0, 0);
-    let mut i = 0;
-    while i < groups.len() {
-        if i == 0 {
-            groups[i].below = false;
-        }
-        if groups[i].below && rows >= MAX_ROWS && cols < MAX_COLS {
-            groups[i].below = false;
-        }
-        if groups[i].below {
-            rows += 1;
-        } else {
-            cols += 1;
-            rows = 1;
-        }
-        if cols > MAX_COLS || rows > MAX_ROWS {
-            let extra = groups.remove(i);
-            let last = &mut groups[i - 1];
-            for t in extra.tabs {
-                if !last.tabs.iter().any(|x| x.key == t.key) {
-                    last.tabs.push(t);
-                }
-            }
-            if !groups[i - 1].below {
-                cols -= 1;
-            }
-            continue;
-        }
-        i += 1;
-    }
 }
 
 /// A document dropped (`App::drop_doc`): no restored tab waits for it any more.

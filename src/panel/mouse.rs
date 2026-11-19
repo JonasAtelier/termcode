@@ -876,7 +876,7 @@ impl App {
             }
         };
         if self.groups[src].tabs.is_empty() && self.groups.len() > 1 {
-            // (Its column kept: the group under a head heads it then.)
+            // (Its area to its neighbours: what it was split from.)
             self.remove_group(src);
             if dst > src {
                 dst -= 1;

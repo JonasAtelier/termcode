@@ -284,87 +284,60 @@ impl App {
         }
     }
 
-    /// The active tab of group `g` again in a new group: to its right (a new column), or
-    /// (`down`) under it in its column.
-    /// Space `sp`'s groups as its editor area lays them out: columns left to right, each
-    /// its groups top down. (Other spaces' groups may sit between them in `groups`.)
-    pub(crate) fn columns(&self, sp: Space) -> Vec<Vec<usize>> {
-        let mut cols: Vec<Vec<usize>> = Vec::new();
-        for g in (0..self.groups.len()).filter(|&g| self.groups[g].space == sp) {
-            match cols.last_mut() {
-                Some(c) if self.groups[g].below => c.push(g),
-                _ => cols.push(vec![g]),
-            }
-        }
-        cols
+    /// Group `g`'s cells in the editor area as last drawn.
+    pub(crate) fn group_cells(&self, g: usize) -> Rect {
+        self.groups.get(g).map_or(Rect::default(), |x| x.frac.cells(self.ui.editor_area))
     }
 
-    /// May group `g` split: right (a new column) or `down` (another group in its column),
-    /// while each would keep MIN_GROUP_W columns and MIN_GROUP_H rows of the editor area as
-    /// last drawn (before the first frame: 3x3).
+    /// May group `g` split in half: side by side, or (`down`) one over the other, while
+    /// each half keeps MIN_GROUP_W columns and MIN_GROUP_H rows (before the first frame: up
+    /// to 9 groups).
     pub(crate) fn can_split(&self, g: usize, down: bool) -> bool {
         let Some(sp) = self.groups.get(g).map(|x| x.space) else { return false };
-        let cols = self.columns(sp);
-        let n = if down { cols.iter().find(|c| c.contains(&g)).map_or(0, Vec::len) } else { cols.len() };
-        let (max, room, min) = if down { (MAX_ROWS, self.ui.editor_area.height, MIN_GROUP_H) } else { (MAX_COLS, self.ui.editor_area.width, MIN_GROUP_W) };
+        let n = self.groups.iter().filter(|x| x.space == sp).count();
+        if n >= MAX_GROUPS {
+            return false;
+        }
+        if self.ui.editor_area.is_empty() {
+            return n < 9;
+        }
+        let c = self.group_cells(g);
         // Cards sit border to border; the other styles draw a line between groups.
         let sep = u16::from(self.settings.blocks != crate::blocks::BlockStyle::Cards);
-        let each = room.saturating_sub(n as u16 * sep) / (n as u16 + 1);
-        n < max && if room == 0 { n < 3 } else { each >= min }
+        if down { c.height.saturating_sub(sep) / 2 >= MIN_GROUP_H } else { c.width.saturating_sub(sep) / 2 >= MIN_GROUP_W }
     }
 
     /// Why `g` may not split that way (the status line's words).
     pub(crate) fn split_refusal(down: bool) -> String {
-        if down { format!("No room for another editor group in this column ({MIN_GROUP_H} rows each at least)") } else { format!("No room for another column of editors ({MIN_GROUP_W} columns each at least)") }
+        if down { format!("No room to split this editor group down ({MIN_GROUP_H} rows each at least)") } else { format!("No room to split this editor group right ({MIN_GROUP_W} columns each at least)") }
     }
 
-    /// Group `g` gone: in its column, the one under it heads the column then.
+    /// Group `g` gone: its neighbours along one side take its place.
     pub(crate) fn remove_group(&mut self, g: usize) {
-        let Some(gone) = self.groups.get(g) else { return };
-        let (head, sp) = (!gone.below, gone.space);
-        self.groups.remove(g);
-        if head {
-            if let Some(next) = self.groups[g..].iter_mut().find(|x| x.space == sp) {
-                next.below = false;
-            }
+        if g < self.groups.len() {
+            remove_group_in(&mut self.groups, g);
         }
     }
 
-    /// The index right after group `t`'s whole column (where a new column goes).
-    fn after_column(&self, t: usize) -> usize {
-        let sp = self.groups[t].space;
-        (t + 1..self.groups.len()).find(|&i| self.groups[i].space == sp && !self.groups[i].below).unwrap_or(self.groups.len())
-    }
-
-    /// A new, empty group of `t`'s space beside group `t`: left, right, above or below
-    /// (`zone`); its index.
+    /// A new, empty group of `t`'s space in one half of group `t` (`zone`: left, right,
+    /// top, bottom; `t` keeps the other half: what the drop's preview showed); its index.
     pub(crate) fn new_group_beside(&mut self, t: usize, zone: Zone) -> usize {
         let space = self.groups[t].space;
-        match zone {
-            Zone::Left => {
-                // Before t's whole column: t's column head moves right with it.
-                let head = (0..=t).rev().find(|&i| self.groups[i].space == space && !self.groups[i].below).unwrap_or(t);
-                self.groups.insert(head, Group { space, ..Group::default() });
-                head
-            }
-            Zone::Up => {
-                let below = self.groups[t].below;
-                self.groups[t].below = true;
-                self.groups.insert(t, Group { space, below, ..Group::default() });
-                t
-            }
-            Zone::Down => {
-                self.groups.insert(t + 1, Group { space, below: true, ..Group::default() });
-                t + 1
-            }
-            _ => {
-                let at = self.after_column(t);
-                self.groups.insert(at, Group { space, ..Group::default() });
-                at
-            }
-        }
+        let down = matches!(zone, Zone::Up | Zone::Down);
+        let (first, second) = self.groups[t].frac.halves(down);
+        // The new one first (left, top) or second (right, bottom); `t` the other half.
+        let new_second = !matches!(zone, Zone::Left | Zone::Up);
+        let (new, keep, at) = if new_second { (second, first, t + 1) } else { (first, second, t) };
+        let mut path = self.groups[t].path.clone();
+        self.groups[t].frac = keep;
+        self.groups[t].path.push((down, !new_second));
+        path.push((down, new_second));
+        self.groups.insert(at, Group { space, frac: new, path, ..Group::default() });
+        at
     }
 
+    /// The active tab of group `g` again in a new group: its right half, or (`down`) its
+    /// lower half.
     pub(crate) fn split(&mut self, g: usize, down: bool) {
         if !self.can_split(g, down) {
             if g < self.groups.len() {
@@ -374,10 +347,8 @@ impl App {
         }
         let Some(t) = self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)) else { return };
         let tab = Tab { key: t.key.clone(), preview: false, view: t.view.clone() };
-        // Down: right under `g`, in its column; right: after `g`'s whole column.
-        let at = if down { g + 1 } else { self.after_column(g) };
-        let space = self.groups[g].space;
-        self.groups.insert(at, Group { tabs: vec![tab], active: 0, below: down, space, ..Group::default() });
+        let at = self.new_group_beside(g, if down { Zone::Down } else { Zone::Right });
+        self.groups[at].tabs = vec![tab];
         self.ag = at;
         self.focus = Focus::Editor;
     }

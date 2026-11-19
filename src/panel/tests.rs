@@ -5720,7 +5720,7 @@ fn a_views_tab_dragged_to_an_edge_splits_in_its_own_space() {
     let serial: Vec<usize> = (0..app.groups.len()).filter(|&i| app.groups[i].space == sp).collect();
     assert_eq!(serial.len(), 2, "split in its space");
     let lower = serial[1];
-    assert!(app.groups[lower].below && app.groups[lower].tabs[0].key == "ext:drag-x/ttyB2");
+    assert!(app.groups[lower].frac.y0 > app.groups[serial[0]].frac.y0 && app.groups[lower].tabs[0].key == "ext:drag-x/ttyB2", "its lower half");
     screen(&mut app, &mut t);
     let (a, b) = (app.ui.groups[serial[0]].area, app.ui.groups[lower].area);
     assert!(a.x == b.x && b.y > a.y, "{a:?} {b:?}");
@@ -5732,37 +5732,38 @@ fn a_views_tab_dragged_to_an_edge_splits_in_its_own_space() {
 }
 
 #[test]
-fn an_editor_splits_down_as_well_as_right_into_columns() {
+fn an_editor_splits_its_own_half_down_or_right() {
     let root = repo("split-down");
     fs::write(root.join("a.txt"), "alpha\n").unwrap();
     let mut app = App::new(root.clone(), None);
     app.open_file(0, "a.txt", false);
     app.focus = Focus::Editor;
     let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
-    // Ctrl+T -: the tab again under it, in the same column.
+    // Ctrl+T -: the tab again in its lower half.
     key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
     key(&mut app, KeyCode::Char('-'), KeyModifiers::NONE);
     screen(&mut app, &mut t);
-    assert_eq!((app.groups.len(), app.ag, app.groups[1].below), (2, 1, true));
+    assert_eq!((app.groups.len(), app.ag, app.groups[1].frac.y0), (2, 1, 0.5));
     let (top, under) = (app.ui.groups[0].area, app.ui.groups[1].area);
     assert!(top.x == under.x && top.width == under.width && under.y >= top.bottom(), "{top:?} {under:?}");
-    // Ctrl+T \ from the top: a new column right of that whole column.
+    // Ctrl+T \ from the top: the top one's right half; the lower one as it was.
     app.ag = 0;
     key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
     key(&mut app, KeyCode::Char('\\'), KeyModifiers::NONE);
     screen(&mut app, &mut t);
-    assert_eq!((app.groups.len(), app.ag, app.groups[2].below), (3, 2, false));
-    let (left, right) = (app.ui.groups[0].area, app.ui.groups[2].area);
-    assert!(right.x >= left.right() && right.height > left.height, "a column of its own, full height: {left:?} {right:?}");
-    // Ctrl+T ↓ from the top one: the one under it.
+    assert_eq!(app.ag, 1, "right after the group it came from");
+    let (left, right, low) = (app.ui.groups[0].area, app.ui.groups[1].area, app.ui.groups[2].area);
+    assert!(right.x >= left.right() && right.y == left.y && right.height == left.height, "{left:?} {right:?}");
+    assert_eq!(low, under, "the other group untouched");
+    // Ctrl+T ↓ from the top left: the one under it.
     app.ag = 0;
     key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
     key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-    assert_eq!(app.ag, 1);
-    // The column's head closed: the one under it heads the column, full height.
+    assert_eq!(app.ag, 2);
+    // The top left closed: its other half (the top right) takes it back, full width.
     app.close_tab(0, 0, true);
     screen(&mut app, &mut t);
-    assert!(!app.groups[0].below && app.ui.groups[0].area.height > top.height);
+    assert_eq!(app.ui.groups[0].area, top);
 }
 
 #[test]
@@ -7476,134 +7477,137 @@ fn the_explorer_shows_the_active_editors_file() {
 }
 
 
-// ---- Editor group splits: every shape up to 3x3, built and closed every way ----
+// ---- Editor group splits: a split halves its group, exactly where its drop preview shows ----
 
-/// The code view's layout: each column's number of groups.
-fn shape(app: &App) -> Vec<usize> {
-    app.columns(Space::Code).iter().map(Vec::len).collect()
-}
-
-/// The groups as drawn tile the editor area: in a column one x and width, top down; the
-/// columns side by side; none empty, none overlapping, all inside it.
-fn assert_tiles(app: &App, label: &str) {
-    let ed = app.ui.editor_area;
-    let cols = app.columns(Space::Code);
-    let mut all: Vec<Rect> = Vec::new();
-    let mut prev_x = None;
-    for col in &cols {
-        let areas: Vec<Rect> = col.iter().map(|&g| app.ui.groups[g].area).collect();
-        for (k, a) in areas.iter().enumerate() {
-            assert!(a.width > 0 && a.height > 0, "{label}: an empty group {a:?}");
-            assert!(a.x >= ed.x && a.right() <= ed.right() && a.y >= ed.y && a.bottom() <= ed.bottom(), "{label}: {a:?} outside {ed:?}");
-            assert!(a.x == areas[0].x && a.width == areas[0].width, "{label}: a column's groups line up {areas:?}");
-            if k > 0 {
-                assert!(a.y >= areas[k - 1].bottom(), "{label}: top down {areas:?}");
-            }
-        }
-        if let Some(px) = prev_x {
-            assert!(areas[0].x > px, "{label}: columns left to right");
-        }
-        prev_x = Some(areas[0].x);
-        all.extend(areas);
-    }
-    for (i, a) in all.iter().enumerate() {
-        for b in &all[i + 1..] {
-            assert!(a.intersection(*b).is_empty(), "{label}: {a:?} overlaps {b:?}");
-        }
-    }
-}
-
-fn split_app(tag: &str, w: u16, h: u16) -> (App, Terminal<TestBackend>, PathBuf) {
-    let root = repo(tag);
-    fs::write(root.join("a.txt"), "alpha\n").unwrap();
-    let (app, t) = split_app_in(&root, w, h);
-    (app, t, root)
-}
-
-/// The same in an existing repository (many layouts, one repository).
 fn split_app_in(root: &Path, w: u16, h: u16) -> (App, Terminal<TestBackend>) {
     let mut app = App::new(root.to_path_buf(), None);
     app.open_file(0, "a.txt", false);
     app.focus = Focus::Editor;
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    screen(&mut app, &mut t);
+    frame(&mut app, &mut t);
     (app, t)
 }
 
-/// `want` built by commands: columns first (each right of the last), then each column's
-/// groups (each under its last); or (`rows_first`) each column's groups as it is made.
-fn build(app: &mut App, want: &[usize], rows_first: bool) {
-    let down = |app: &mut App, ci: usize, n: usize| {
-        for _ in 1..n {
-            let g = *app.columns(Space::Code)[ci].last().unwrap();
-            app.split(g, true);
-        }
-    };
-    for (ci, &n) in want.iter().enumerate() {
-        if ci > 0 {
-            let head = app.columns(Space::Code)[ci - 1][0];
-            app.split(head, false);
-        }
-        if rows_first {
-            down(app, ci, n);
-        }
-    }
-    if !rows_first {
-        for (ci, &n) in want.iter().enumerate() {
-            down(app, ci, n);
+fn frame(app: &mut App, t: &mut Terminal<TestBackend>) {
+    t.draw(|f| crate::ui::draw(app, f)).unwrap();
+}
+
+fn code_groups(app: &App) -> Vec<usize> {
+    (0..app.groups.len()).filter(|&g| app.groups[g].space == Space::Code).collect()
+}
+
+/// The code view's groups tile it (their areas: none empty or overlapping, all of it);
+/// as drawn, each inside the editor area, none overlapping.
+fn assert_tiles(app: &App, label: &str) {
+    let fr: Vec<crate::panel::Frac> = code_groups(app).iter().map(|&g| app.groups[g].frac).collect();
+    assert!(crate::panel::tiles(&fr), "{label}: {fr:?}");
+    let ed = app.ui.editor_area;
+    let drawn: Vec<Rect> = code_groups(app).iter().map(|&g| app.ui.groups[g].area).collect();
+    for (i, a) in drawn.iter().enumerate() {
+        assert!(a.width > 0 && a.height > 0, "{label}: an empty group {a:?}");
+        assert!(a.x >= ed.x && a.right() <= ed.right() && a.y >= ed.y && a.bottom() <= ed.bottom(), "{label}: {a:?} outside {ed:?}");
+        for b in &drawn[i + 1..] {
+            assert!(a.intersection(*b).is_empty(), "{label}: {a:?} overlaps {b:?}");
         }
     }
 }
 
-/// Every shape of up to 3 columns of up to 3 groups each.
-fn shapes() -> Vec<Vec<usize>> {
-    let mut out = Vec::new();
-    for c in 1..=3u32 {
-        for k in 0..3usize.pow(c) {
-            out.push((0..c).map(|i| k / 3usize.pow(i) % 3 + 1).collect());
-        }
+/// Every sequence of up to 3 splits: each of a group then there, right or down.
+type Seq = Vec<(usize, bool)>;
+
+fn split_sequences() -> Vec<Seq> {
+    let (mut all, mut last): (Vec<Seq>, Vec<Seq>) = (vec![vec![]], vec![vec![]]);
+    for _ in 0..3 {
+        let next: Vec<Seq> = last
+            .iter()
+            .flat_map(|seq| (0..=seq.len()).flat_map(move |g| [false, true].map(|d| [seq.clone(), vec![(g, d)]].concat())))
+            .collect();
+        all.extend(next.clone());
+        last = next;
     }
-    out
+    all
+}
+
+fn build(app: &mut App, seq: &[(usize, bool)]) {
+    for &(g, down) in seq {
+        app.split(g, down);
+    }
+}
+
+/// Within `d` cells on every edge.
+fn near(a: Rect, b: Rect, d: i32) -> bool {
+    let e = |p: u16, q: u16| (i32::from(p) - i32::from(q)).abs() <= d;
+    e(a.x, b.x) && e(a.y, b.y) && e(a.right(), b.right()) && e(a.bottom(), b.bottom())
 }
 
 #[test]
-fn every_split_shape_up_to_3x3_builds_both_ways_and_closes_from_anywhere() {
-    let shapes = shapes();
-    assert_eq!(shapes.len(), 39);
-    let root = repo("split-shapes");
+fn a_drop_lands_exactly_where_its_preview_shows() {
+    let root = repo("split-drop");
     fs::write(root.join("a.txt"), "alpha\n").unwrap();
-    for want in &shapes {
-        for rows_first in [false, true] {
-            let (mut app, mut t) = split_app_in(&root, 200, 60);
-            build(&mut app, want, rows_first);
-            assert_eq!(&shape(&app), want, "built {}", if rows_first { "rows first" } else { "columns first" });
-            screen(&mut app, &mut t);
-            assert_tiles(&app, &format!("{want:?}"));
-            // Each group's split buttons: shown exactly when that split may be made.
-            for g in 0..app.groups.len() {
-                for down in [false, true] {
-                    let shown = app.ui.split_btns.iter().any(|&(_, bg, d)| bg == g && d == down);
-                    assert_eq!(shown, app.can_split(g, down), "{want:?} group {g} split {}", if down { "down" } else { "right" });
+    fs::write(root.join("b.txt"), "beta\n").unwrap();
+    let seqs = split_sequences();
+    assert_eq!(seqs.len(), 59);
+    for seq in &seqs {
+        let (mut app, mut t) = split_app_in(&root, 200, 60);
+        build(&mut app, seq);
+        frame(&mut app, &mut t);
+        assert_tiles(&app, &format!("{seq:?}"));
+        for g in code_groups(&app) {
+            for zone in [Zone::Left, Zone::Right, Zone::Up, Zone::Down] {
+                if !app.can_split(g, matches!(zone, Zone::Up | Zone::Down)) {
+                    continue;
                 }
+                let label = format!("{seq:?}: group {g} {zone:?}");
+                // The preview as drawn, and every group where it was.
+                app.drop = Some((g, zone));
+                frame(&mut app, &mut t);
+                let preview = app.ui.drop_preview;
+                let before: Vec<(Rect, crate::panel::Frac)> = app.groups.iter().enumerate().map(|(i, x)| (app.ui.groups[i].area, x.frac)).collect();
+                let target = app.ui.groups[g].area;
+                // Dropped: the new group where the preview was; the target the other half;
+                // every other group just where it was.
+                app.drop = None;
+                let n = app.new_group_beside(g, zone);
+                app.open_file(n, "b.txt", false);
+                frame(&mut app, &mut t);
+                assert!(near(app.ui.groups[n].area, preview, 2), "{label}: dropped at {:?}, preview {preview:?}", app.ui.groups[n].area);
+                let kept = app.ui.groups[if n <= g { g + 1 } else { g }].area;
+                assert!(kept.intersection(preview).area() <= 2 * u32::from(preview.width.max(preview.height)), "{label}: the target keeps the other half {kept:?}");
+                assert!(target.contains(Position::new(kept.x, kept.y)), "{label}");
+                for (i, (area, frac)) in before.iter().enumerate().filter(|&(i, _)| i != g) {
+                    let now = if i >= n { i + 1 } else { i };
+                    assert_eq!((app.ui.groups[now].area, app.groups[now].frac), (*area, *frac), "{label}: group {i} moved");
+                }
+                assert_tiles(&app, &label);
+                // The new one closed: exactly as before.
+                app.close_tab(n, 0, true);
+                frame(&mut app, &mut t);
+                let fr: Vec<crate::panel::Frac> = app.groups.iter().map(|x| x.frac).collect();
+                assert_eq!(fr, before.iter().map(|b| b.1).collect::<Vec<_>>(), "{label}: closed, back as it was");
             }
         }
-        // Closing any one group: only its column shrinks (gone when empty), the rest stays.
-        let n: usize = want.iter().sum();
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn closing_any_group_of_any_layout_leaves_a_tiling() {
+    let root = repo("split-close");
+    fs::write(root.join("a.txt"), "alpha\n").unwrap();
+    for seq in split_sequences() {
+        // (A split with no room for it is refused: count what was made.)
+        let n = {
+            let (mut app, _) = split_app_in(&root, 200, 60);
+            build(&mut app, &seq);
+            code_groups(&app).len()
+        };
         for gone in 0..n {
             let (mut app, mut t) = split_app_in(&root, 200, 60);
-            build(&mut app, want, false);
-            let ci = app.columns(Space::Code).iter().position(|c| c.contains(&gone)).unwrap();
+            build(&mut app, &seq);
             app.close_tab(gone, 0, true);
-            let mut expect = want.clone();
-            expect[ci] -= 1;
-            expect.retain(|&r| r > 0);
-            // (The last group stays, empty: there is always an editor area.)
-            if expect.is_empty() {
-                expect = vec![1];
-            }
-            assert_eq!(shape(&app), expect, "{want:?} without group {gone}");
-            screen(&mut app, &mut t);
-            assert_tiles(&app, &format!("{want:?} without group {gone}"));
+            frame(&mut app, &mut t);
+            assert_eq!(code_groups(&app).len(), (n - 1).max(1), "{seq:?} without {gone}");
+            assert_tiles(&app, &format!("{seq:?} without group {gone}"));
         }
     }
     let _ = fs::remove_dir_all(&root);
@@ -7611,122 +7615,108 @@ fn every_split_shape_up_to_3x3_builds_both_ways_and_closes_from_anywhere() {
 
 #[test]
 fn three_on_the_left_one_on_the_right_the_right_still_splits_down() {
-    let (mut app, mut t, root) = split_app("split-3-1", 200, 60);
-    build(&mut app, &[3, 1], false);
-    let right = app.columns(Space::Code)[1][0];
+    let root = repo("split-3-1");
+    fs::write(root.join("a.txt"), "alpha\n").unwrap();
+    let (mut app, mut t) = split_app_in(&root, 200, 60);
+    // Left and right; the left down twice: 3 on the left, 1 on the right.
+    build(&mut app, &[(0, false), (0, true), (0, true)]);
+    let right = (0..app.groups.len()).find(|&g| app.groups[g].frac.x0 == 0.5).unwrap();
     assert!(app.can_split(right, true));
     app.split(right, true);
-    assert_eq!(shape(&app), [3, 2]);
-    let right = *app.columns(Space::Code)[1].last().unwrap();
-    app.split(right, true);
-    assert_eq!(shape(&app), [3, 3]);
-    screen(&mut app, &mut t);
-    assert_tiles(&app, "[3, 3]");
+    let low = app.ag;
+    app.split(low, true);
+    frame(&mut app, &mut t);
+    let (left, right): (Vec<usize>, Vec<usize>) = code_groups(&app).into_iter().partition(|&g| app.groups[g].frac.x0 == 0.0);
+    assert_eq!((left.len(), right.len()), (3, 3));
+    assert_tiles(&app, "3 + 3");
     let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
-fn splits_follow_the_editor_areas_size() {
+fn a_split_stops_where_a_half_would_be_too_small() {
     use crate::panel::{MIN_GROUP_H, MIN_GROUP_W};
-    // How many groups across (or down) `room` fits, each at least `min`.
-    let fits = |app: &App, room: u16, min: u16| {
-        let sep = u16::from(app.settings.blocks != crate::blocks::BlockStyle::Cards);
-        (1..=8u16).take_while(|&n| room.saturating_sub((n - 1) * sep) / n >= min).last().unwrap_or(1) as usize
-    };
+    let root = repo("split-size");
+    fs::write(root.join("a.txt"), "alpha\n").unwrap();
     for (w, h) in [(90, 24), (140, 40), (200, 60), (400, 100)] {
-        let (mut app, mut t, root) = split_app("split-size", w, h);
-        let ed = app.ui.editor_area;
-        let (cols, rows) = (fits(&app, ed.width, MIN_GROUP_W), fits(&app, ed.height, MIN_GROUP_H));
-        // As many columns as fit, then one more refused with a word why.
+        let (mut app, mut t) = split_app_in(&root, w, h);
+        let sep = u16::from(app.settings.blocks != crate::blocks::BlockStyle::Cards);
+        // Its right half split again and again: until a half would be under the minimum.
         for _ in 0..12 {
-            let last = app.columns(Space::Code).last().unwrap()[0];
-            app.split(last, false);
-        }
-        assert_eq!(shape(&app).len(), cols, "{w}x{h}: {ed:?}");
-        assert!(app.msg.contains("No room for another column"), "{}", app.msg);
-        for _ in 0..12 {
-            let g = *app.columns(Space::Code)[0].last().unwrap();
-            app.split(g, true);
-        }
-        assert_eq!(shape(&app)[0], rows, "{w}x{h}: {ed:?}");
-        screen(&mut app, &mut t);
-        assert_tiles(&app, &format!("{w}x{h}"));
-        // Every group at least the minimum (the last of a row or column takes the rest).
-        for col in app.columns(Space::Code) {
-            for g in col {
-                let a = app.ui.groups[g].area;
-                assert!(a.width + 2 >= MIN_GROUP_W && a.height + 2 >= MIN_GROUP_H, "{w}x{h}: group {g} {a:?}");
+            let g = app.ag;
+            let c = app.group_cells(g);
+            let fits = c.width.saturating_sub(sep) / 2 >= MIN_GROUP_W;
+            assert_eq!(app.can_split(g, false), fits, "{w}x{h}: {c:?}");
+            if !fits {
+                app.split(g, false);
+                assert!(app.msg.contains("No room to split"), "{}", app.msg);
+                break;
             }
+            app.split(g, false);
+            frame(&mut app, &mut t);
         }
-        // A tab dragged to an edge: offered only where a split may be made.
-        for g in 0..app.groups.len() {
+        for _ in 0..12 {
+            let g = app.ag;
+            let fits = app.group_cells(g).height.saturating_sub(sep) / 2 >= MIN_GROUP_H;
+            assert_eq!(app.can_split(g, true), fits);
+            if !fits {
+                break;
+            }
+            app.split(g, true);
+            frame(&mut app, &mut t);
+        }
+        frame(&mut app, &mut t);
+        assert_tiles(&app, &format!("{w}x{h}"));
+        // The split buttons and the drop edges: only where a split fits.
+        for g in code_groups(&app) {
+            for down in [false, true] {
+                let shown = app.ui.split_btns.iter().any(|&(_, bg, d)| bg == g && d == down);
+                assert_eq!(shown, app.can_split(g, down), "{w}x{h} group {g}");
+            }
             let a = app.ui.groups[g].area;
             let mid = (a.x + a.width / 2, a.y + a.height / 2);
-            let probes = [((a.x, mid.1), false), ((a.right() - 1, mid.1), false), ((mid.0, a.y + a.height * 2 / 10), true), ((mid.0, a.bottom() - 1), true)];
-            for ((x, y), down) in probes {
+            for ((x, y), down) in [((a.x, mid.1), false), ((a.right() - 1, mid.1), false), ((mid.0, a.y + a.height * 2 / 10), true), ((mid.0, a.bottom() - 1), true)] {
                 if let Some((_, zone)) = app.drop_target(Position::new(x, y), false) {
-                    let edge = !matches!(zone, Zone::Center | Zone::Tab(_));
-                    assert!(!edge || app.can_split(g, down), "{w}x{h}: group {g} offered {zone:?}");
+                    assert!(matches!(zone, Zone::Center | Zone::Tab(_)) || app.can_split(g, down), "{w}x{h}: group {g} offered {zone:?}");
                 }
             }
         }
         if w >= 400 {
-            assert!(cols > 3 && rows > 3, "a wide, tall screen takes more than 3x3: {cols}x{rows}");
+            assert!(code_groups(&app).len() >= 6, "a big screen takes many: {}", code_groups(&app).len());
         }
-        let _ = fs::remove_dir_all(&root);
     }
-}
-
-#[test]
-fn a_columns_only_tab_moved_away_keeps_the_rest_of_its_column() {
-    let (mut app, mut t, root) = split_app("split-move", 200, 60);
-    fs::write(root.join("z.txt"), "zed\n").unwrap();
-    build(&mut app, &[1, 2, 1], false);
-    // Column 1's head (its only tab) dropped onto column 2's lower edge.
-    let head = app.columns(Space::Code)[1][0];
-    let under = app.columns(Space::Code)[1][1];
-    app.groups[under].tabs[0].key = "file:z.txt".into();
-    let target = app.columns(Space::Code)[2][0];
-    app.move_tab(head, 0, target, Zone::Down);
-    assert_eq!(shape(&app), [1, 1, 2], "the group under it heads its column; none joins column 0");
-    screen(&mut app, &mut t);
-    assert_tiles(&app, "after the move");
     let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
-fn another_views_groups_between_keep_the_columns_whole() {
-    let (mut app, mut t, root) = split_app("split-spaces", 200, 60);
-    build(&mut app, &[2, 1], false);
-    // An extension's group between column 0's two groups (groups of all views share the list).
+fn another_views_groups_between_are_left_alone() {
+    let root = repo("split-spaces");
+    fs::write(root.join("a.txt"), "alpha\n").unwrap();
+    let (mut app, mut t) = split_app_in(&root, 200, 60);
+    build(&mut app, &[(0, true), (0, false)]);
     app.exts.list.push(crate::ext::test_ext("split-x", &["t"]));
     let n = crate::ext::num("split-x");
-    app.groups.insert(1, Group { tabs: vec![Tab { key: "ext:split-x/t".into(), preview: false, view: Default::default() }], active: 0, below: false, space: Space::View(n), ..Group::default() });
-    assert_eq!(shape(&app), [2, 1]);
-    // Split right from column 0's head: a column after its whole column, not between.
+    app.groups.insert(1, Group { tabs: vec![Tab { key: "ext:split-x/t".into(), preview: false, view: Default::default() }], active: 0, space: Space::View(n), ..Group::default() });
     app.split(0, false);
-    assert_eq!(shape(&app), [2, 1, 1]);
-    // Its head closed: the group under it heads column 0.
     app.close_tab(0, 0, true);
-    assert_eq!(shape(&app), [1, 1, 1]);
-    assert!(app.groups.iter().any(|g| g.space == Space::View(n)), "the other view's group untouched");
-    screen(&mut app, &mut t);
+    frame(&mut app, &mut t);
     assert_tiles(&app, "with another view's group between");
+    let other = app.groups.iter().find(|g| g.space == Space::View(n)).expect("still there");
+    assert_eq!(other.frac, crate::panel::Frac::default(), "its own area, whole");
     let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
-fn a_restored_layout_keeps_its_columns_within_bounds() {
-    use crate::panel::{MAX_COLS, MAX_ROWS};
-    let g = |below| Group { tabs: vec![Tab { key: "file:a.txt".into(), preview: false, view: Default::default() }], active: 0, below, space: Space::Code, ..Group::default() };
-    // A column of 10 (another version's): its last ones start a new column.
-    let mut groups: Vec<Group> = (0..10).map(|i| g(i > 0)).collect();
-    crate::session::fit_layout(&mut groups);
-    let mut cols = vec![];
-    for x in &groups {
-        if x.below { *cols.last_mut().unwrap() += 1 } else { cols.push(1) }
-    }
-    assert!(cols.iter().all(|&r| r <= MAX_ROWS) && cols.len() <= MAX_COLS && cols.iter().sum::<usize>() == 10, "{cols:?}");
+fn an_older_sessions_layout_becomes_columns_and_empty_groups_give_their_area_back() {
+    use crate::panel::{columns_layout, remove_group_in, tiles, Frac};
+    let g = |key: &str| Group { tabs: if key.is_empty() { vec![] } else { vec![Tab { key: key.into(), preview: false, view: Default::default() }] }, space: Space::Code, ..Group::default() };
+    // Saved as columns (heads: a new column): [a, b] [c].
+    let mut groups = vec![g("file:a"), g("file:b"), g("file:c")];
+    columns_layout(&mut groups, Space::Code, &[true, false, true]);
+    assert_eq!(groups[1].frac, Frac { x0: 0.0, y0: 0.5, x1: 0.5, y1: 1.0 });
+    assert_eq!(groups[2].frac, Frac { x0: 0.5, y0: 0.0, x1: 1.0, y1: 1.0 });
+    remove_group_in(&mut groups, 0);
+    assert_eq!(groups[0].frac, Frac { x0: 0.0, y0: 0.0, x1: 0.5, y1: 1.0 }, "b takes a's place");
+    assert!(tiles(&groups.iter().map(|x| x.frac).collect::<Vec<_>>()));
 }
 
 #[test]
@@ -7803,3 +7793,4 @@ fn a_long_tab_list_scrolls_and_keeps_the_active_tab_in_view() {
     assert!(s.contains("file17.txt") && s.contains("file19.txt"), "{s}");
     let _ = fs::remove_dir_all(&root);
 }
+
