@@ -7776,9 +7776,10 @@ fn a_long_tab_list_scrolls_and_keeps_the_active_tab_in_view() {
     app.on_mouse(ev(MouseEventKind::Up(MouseButton::Left), gh.tab_next));
     screen(&mut app, &mut t);
     assert!(app.pressed.is_none() && cell(&t, app.ui.groups[0].tab_next) != crate::theme::P.button_bg, "back once let go");
-    // The pointer moved onto it: lit white.
+    // The pointer moved onto it: a redraw asked for (the loop draws only then), lit white.
     let on = app.ui.groups[0].tab_next;
-    app.on_mouse(ev(MouseEventKind::Moved, on));
+    app.on_mouse(ev(MouseEventKind::Moved, Rect { y: on.y + 6, ..on }));
+    assert!(app.on_mouse(ev(MouseEventKind::Moved, on)), "moving onto an arrow redraws");
     screen(&mut app, &mut t);
     assert_eq!(t.backend().buffer()[(on.x + 1, on.y)].fg, ratatui::style::Color::Rgb(255, 255, 255), "white under the pointer");
     screen(&mut app, &mut t);

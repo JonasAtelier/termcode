@@ -533,6 +533,9 @@ struct HoverKey {
     button: Option<usize>,
     /// The status bar item under the pointer (its column): statusBarItem.hoverBackground.
     status: Option<u16>,
+    /// A tab bar's button under the pointer (its cell): a scroll arrow (lit white), split,
+    /// terminal, outline.
+    bar_btn: Option<(u16, u16)>,
 }
 
 /// Events the loop batches before one frame: wheel ticks and plain pointer motion.

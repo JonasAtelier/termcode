@@ -113,6 +113,16 @@ impl App {
             outline: self.ui.outline.contains(p).then_some(p.y),
             gh: self.gh.hits.area.contains(p).then_some((p.x, p.y)),
             activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.settings_btn.contains(p).then_some(SIDES.len())),
+            bar_btn: self
+                .ui
+                .groups
+                .iter()
+                .flat_map(|gh| [gh.tab_prev, gh.tab_next])
+                .chain(self.ui.split_btns.iter().map(|b| b.0))
+                .chain(self.ui.term_btns.iter().copied())
+                .chain(self.ui.outline_btns.iter().copied())
+                .find(|r| r.contains(p))
+                .map(|r| (r.x, r.y)),
             button: match self.gitui.dlg.as_ref() {
                 Some(d) => d.hits.btns.iter().position(|(r, _)| r.contains(p)),
                 None => self.ui.commit_btn.contains(p).then_some(usize::MAX).or_else(|| {
