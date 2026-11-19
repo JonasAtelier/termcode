@@ -7740,6 +7740,8 @@ fn a_long_tab_list_scrolls_and_keeps_the_active_tab_in_view() {
     assert_eq!(app.groups[0].active, 19);
     assert!(gh.tab_first > 0 && !gh.tab_prev.is_empty() && gh.tab_next.is_empty(), "first {}", gh.tab_first);
     assert!(s.contains("file19.txt") && !s.contains("file00.txt"));
+    // ‹ says how many are hidden on the left.
+    assert!(s.starts_with(&format!(" ‹+{} ", gh.tab_first)), "{s}");
     // The wheel over the bar: back to the first tabs; the bar stays there (no snap back).
     for _ in 0..30 {
         app.wheel(Position::new(gh.tabbar.x + 5, gh.tabbar.y), -1);
@@ -7748,8 +7750,11 @@ fn a_long_tab_list_scrolls_and_keeps_the_active_tab_in_view() {
     let gh = app.ui.groups[0].clone();
     let s = bar(&s, gh.tabbar);
     assert!(gh.tab_first == 0 && gh.tab_prev.is_empty() && !gh.tab_next.is_empty());
-    assert_eq!(gh.tab_next.width, 3, "an arrow easy to hit");
+    assert!(gh.tab_next.width >= 5, "an arrow easy to hit");
     assert!(s.contains("file00.txt") && !s.contains("file19.txt"), "{s}");
+    // It says how many are hidden right of it: those after the last drawn.
+    let shown = gh.tabs.len();
+    assert!(s.contains(&format!(" +{}› ", 20 - shown)), "{s}");
     assert_eq!(app.groups[0].active, 19, "scrolling picks no tab");
     // A drawn tab clicked: that tab, by its index in the group.
     let ev = |kind, p: Rect| MouseEvent { kind, column: p.x + 2, row: p.y, modifiers: KeyModifiers::NONE };

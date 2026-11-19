@@ -1360,8 +1360,11 @@ fn put_hit(app: &mut App, g: usize, gh: GroupHit) {
     app.ui.groups[g] = gh;
 }
 
-/// A tab bar's scroll arrow: three cells (" ‹ "), lit under the pointer, easy to hit.
-const TAB_ARROW_W: u16 = 3;
+/// A tab bar's scroll button with how many tabs it hides (" ‹+3 ", " +5› "): its
+/// cells, lit under the pointer, easy to hit.
+fn tab_arrow_w(hidden: usize) -> u16 {
+    4 + hidden.to_string().len() as u16
+}
 
 /// The first tab a bar of `room` cells shows, tabs `widths` wide: the active one in
 /// view when it changed since last time (else as scrolled), no room left empty at the
@@ -1375,7 +1378,7 @@ pub(crate) fn tab_scroll(grp: &mut crate::panel::Group, widths: &[u16], room: u1
     }
     // Tabs from `off` that fit (with the arrows they need).
     let fits = |off: usize, last: usize| {
-        let arrows = TAB_ARROW_W * (u16::from(off > 0) + u16::from(last + 1 < n));
+        let arrows = if off > 0 { tab_arrow_w(off) } else { 0 } + if last + 1 < n { tab_arrow_w(n - 1 - last) } else { 0 };
         widths[off..=last].iter().sum::<u16>() + arrows <= room
     };
     let mut off = grp.tab_off.min(n - 1);
@@ -1512,10 +1515,10 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     let first = tab_scroll(&mut app.groups[g], &labels.iter().map(|l| l.1).collect::<Vec<_>>(), room);
     let n_tabs = labels.len();
     let arrow = |left: bool| if crate::theme::ascii() { if left { "<" } else { ">" } } else if left { "‹" } else { "›" };
-    // An arrow, three cells wide: lit white under the pointer, pressed (a button's
-    // colours) while the mouse holds it down.
+    // An arrow and the tabs hidden its side: lit white under the pointer, pressed (a
+    // button's colours) while the mouse holds it down.
     let pressed = app.pressed;
-    let draw_arrow = |f: &mut Frame, r: Rect, left: bool| {
+    let draw_arrow = |f: &mut Frame, r: Rect, left: bool, hidden: usize| {
         let hot = hover.is_some_and(|p| r.contains(p));
         let st = match (pressed.is_some_and(|q| q.intersects(r)), hot) {
             (true, _) => Style::new().fg(P.button_fg).bg(P.button_bg),
@@ -1524,17 +1527,17 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
             _ => Style::new().fg(P.icon_fg).bg(P.tabs_bg),
         }
         .bold();
-        f.render_widget(Span::styled(format!(" {} ", arrow(left)), st), r);
+        let text = if left { format!(" {}+{hidden} ", arrow(true)) } else { format!(" +{hidden}{} ", arrow(false)) };
+        f.render_widget(Span::styled(text, st), r);
     };
-    // Hidden on the left: an arrow first.
+    // Hidden on the left: their button first.
     if first > 0 {
-        let r = Rect::new(x, tabbar.y, TAB_ARROW_W, 1);
-        draw_arrow(f, r, true);
+        let r = Rect::new(x, tabbar.y, tab_arrow_w(first), 1);
+        draw_arrow(f, r, true, first);
         gh.tab_prev = r;
-        x += TAB_ARROW_W;
+        x += r.width;
     }
     gh.tab_first = first;
-    let end = outline_btn.x.saturating_sub(TAB_ARROW_W);
     for (i, t) in app.groups[g].tabs.iter().enumerate().skip(first) {
         if slot == Some(i) {
             marker = Some(x.saturating_sub(u16::from(i > first)));
@@ -1543,11 +1546,12 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         let (glyph, gfg) = tab_icon(app, &t.key);
         let dirty = matches!(app.docs.get(&t.key), Some(Doc::Text(b)) if b.dirty());
         let active = i == app.groups[g].active;
-        // The cells before the buttons kept for the right arrow while more follow.
-        let limit = if i + 1 < n_tabs { end } else { outline_btn.x };
+        // The cells before the buttons kept for the right button while more follow.
+        let limit = if i + 1 < n_tabs { outline_btn.x.saturating_sub(tab_arrow_w(n_tabs - 1 - i)) } else { outline_btn.x };
         if x + w > limit {
-            let r = Rect::new(end, tabbar.y, TAB_ARROW_W, 1);
-            draw_arrow(f, r, false);
+            let rw = tab_arrow_w(n_tabs - i);
+            let r = Rect::new(outline_btn.x.saturating_sub(rw), tabbar.y, rw, 1);
+            draw_arrow(f, r, false, n_tabs - i);
             gh.tab_next = r;
             break;
         }
