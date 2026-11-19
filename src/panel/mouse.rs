@@ -334,10 +334,15 @@ impl App {
         }
         for g in 0..self.ui.groups.len() {
             let gh = self.ui.groups[g].clone();
-            if let Some(i) = gh.tabs.iter().position(|(_, x)| x.contains(p)) {
+            // A tab bar's arrows: a tab further left or right.
+            if gh.tab_prev.contains(p) || gh.tab_next.contains(p) {
+                self.pressed = Some(if gh.tab_prev.contains(p) { gh.tab_prev } else { gh.tab_next });
+                return self.scroll_tabs(g, if gh.tab_prev.contains(p) { -1 } else { 1 });
+            }
+            if let Some(i) = gh.tabs.iter().position(|(_, x)| x.contains(p)).map(|i| gh.tab_first + i) {
                 return self.close_tab(g, i, false);
             }
-            if let Some(i) = gh.tabs.iter().position(|(r, _)| r.contains(p)) {
+            if let Some(i) = gh.tabs.iter().position(|(r, _)| r.contains(p)).map(|i| gh.tab_first + i) {
                 self.groups[g].active = i;
                 self.ag = g;
                 self.focus = Focus::Editor;
@@ -617,7 +622,7 @@ impl App {
                 .map(|(_, z, _)| z);
             let zone = if bar && tabs.contains(p) {
                 // Before the first drawn tab whose middle is right of the pointer.
-                Zone::Tab(g.tabs.iter().take_while(|(r, x)| p.x >= (r.x + x.right()) / 2).count())
+                Zone::Tab(g.tab_first + g.tabs.iter().take_while(|(r, x)| p.x >= (r.x + x.right()) / 2).count())
             } else if tabs.contains(p) {
                 Zone::Center
             } else {
@@ -769,6 +774,7 @@ impl App {
     }
 
     pub(super) fn release(&mut self) {
+        self.pressed = None;
         self.mini_auto = None;
         if crate::scm::release(self) {
             return;
@@ -888,8 +894,23 @@ impl App {
         true
     }
 
+    /// Group `g`'s tab bar scrolled `d` tabs (the active tab stays as it is).
+    pub(super) fn scroll_tabs(&mut self, g: usize, d: isize) {
+        if let Some(grp) = self.groups.get_mut(g) {
+            let max = grp.tabs.len().saturating_sub(1);
+            grp.tab_off = grp.tab_off.saturating_add_signed(d).min(max);
+            grp.tab_follow = Some(grp.active);
+        }
+    }
+
     /// Scroll what is under `p`; false when it could not move (no redraw needed).
     pub(super) fn wheel(&mut self, p: Position, d: isize) -> bool {
+        // Over a tab bar with tabs hidden: the tabs scroll.
+        if let Some(g) = self.ui.groups.iter().position(|gh| gh.tabbar.contains(p) && !(gh.tab_prev.is_empty() && gh.tab_next.is_empty())) {
+            let before = self.groups[g].tab_off;
+            self.scroll_tabs(g, d.signum());
+            return self.groups[g].tab_off != before;
+        }
         if let Some(q) = self.quick.as_mut() {
             let old = q.sel;
             q.sel = (q.sel as isize + d).clamp(0, (q.items.len() as isize - 1).max(0)) as usize;

@@ -377,7 +377,7 @@ pub fn restore(app: &mut App) {
         // The first group heads a column whatever was saved.
         let below = g["below"] == true && !groups.is_empty() && !std::mem::take(&mut head_dropped);
         head_dropped = false;
-        groups.push(Group { tabs, active, below, space: crate::panel::Space::Code });
+        groups.push(Group { tabs, active, below, space: crate::panel::Space::Code, ..Group::default() });
     }
     fit_layout(&mut groups);
     ag = ag.min(groups.len().saturating_sub(1));

@@ -1358,6 +1358,43 @@ fn put_hit(app: &mut App, g: usize, gh: GroupHit) {
     app.ui.groups[g] = gh;
 }
 
+/// A tab bar's scroll arrow: three cells (" ‹ "), lit under the pointer, easy to hit.
+const TAB_ARROW_W: u16 = 3;
+
+/// The first tab a bar of `room` cells shows, tabs `widths` wide: the active one in
+/// view when it changed since last time (else as scrolled), no room left empty at the
+/// end while tabs are hidden on the left, a cell for each arrow shown.
+pub(crate) fn tab_scroll(grp: &mut crate::panel::Group, widths: &[u16], room: u16) -> usize {
+    let n = widths.len();
+    if n == 0 || widths.iter().sum::<u16>() <= room {
+        grp.tab_off = 0;
+        grp.tab_follow = Some(grp.active);
+        return 0;
+    }
+    // Tabs from `off` that fit (with the arrows they need).
+    let fits = |off: usize, last: usize| {
+        let arrows = TAB_ARROW_W * (u16::from(off > 0) + u16::from(last + 1 < n));
+        widths[off..=last].iter().sum::<u16>() + arrows <= room
+    };
+    let mut off = grp.tab_off.min(n - 1);
+    if grp.tab_follow != Some(grp.active) {
+        let a = grp.active.min(n - 1);
+        if a < off {
+            off = a;
+        }
+        while off < a && !fits(off, a) {
+            off += 1;
+        }
+        grp.tab_follow = Some(grp.active);
+    }
+    // No blank end: shown from as far left as still fits the rest.
+    while off > 0 && fits(off - 1, n - 1) {
+        off -= 1;
+    }
+    grp.tab_off = off;
+    off
+}
+
 fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     app.ui.groups.clear();
     app.ui.groups.resize_with(app.groups.len(), GroupHit::default);
@@ -1458,20 +1495,62 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         _ => None,
     };
     let mut marker = None;
-    for (i, t) in app.groups[g].tabs.iter().enumerate() {
-        if slot == Some(i) {
-            marker = Some(x.saturating_sub(u16::from(i > 0)));
+    // Then [dirty dot] [blank] [cross]: fixed slots, so editing never moves the cross.
+    let tail_w = 3 + tail_edge.len() as u16;
+    // Each tab's label and width; the bar scrolled to show the active tab when that
+    // changed (Ctrl+PgDn, a file opened), else where the wheel or an arrow left it.
+    let labels: Vec<(String, u16)> = app.groups[g]
+        .tabs
+        .iter()
+        .map(|t| {
+            let (glyph, _) = tab_icon(app, &t.key);
+            // Dirty state and close have separate fixed slots, so hover never hides an edit.
+            let label = format!("{edge}{glyph}{gap}{}{close_gap}", fit(&app.tab_title(&t.key), 30));
+            let w = label.width() as u16 + tail_w;
+            (label, w)
+        })
+        .collect();
+    let room = outline_btn.x.saturating_sub(tabbar.x);
+    let first = tab_scroll(&mut app.groups[g], &labels.iter().map(|l| l.1).collect::<Vec<_>>(), room);
+    let n_tabs = labels.len();
+    let arrow = |left: bool| if crate::theme::ascii() { if left { "<" } else { ">" } } else if left { "‹" } else { "›" };
+    // An arrow, three cells wide: lit white under the pointer, pressed (a button's
+    // colours) while the mouse holds it down.
+    let pressed = app.pressed;
+    let draw_arrow = |f: &mut Frame, r: Rect, left: bool| {
+        let hot = hover.is_some_and(|p| r.contains(p));
+        let st = match (pressed.is_some_and(|q| q.intersects(r)), hot) {
+            (true, _) => Style::new().fg(P.button_fg).bg(P.button_bg),
+            // Under the pointer: lit white.
+            (false, true) => Style::new().fg(Color::Rgb(255, 255, 255)).bg(P.tab_hover),
+            _ => Style::new().fg(P.icon_fg).bg(P.tabs_bg),
         }
-        let title = app.tab_title(&t.key);
+        .bold();
+        f.render_widget(Span::styled(format!(" {} ", arrow(left)), st), r);
+    };
+    // Hidden on the left: an arrow first.
+    if first > 0 {
+        let r = Rect::new(x, tabbar.y, TAB_ARROW_W, 1);
+        draw_arrow(f, r, true);
+        gh.tab_prev = r;
+        x += TAB_ARROW_W;
+    }
+    gh.tab_first = first;
+    let end = outline_btn.x.saturating_sub(TAB_ARROW_W);
+    for (i, t) in app.groups[g].tabs.iter().enumerate().skip(first) {
+        if slot == Some(i) {
+            marker = Some(x.saturating_sub(u16::from(i > first)));
+        }
+        let (label, w) = (&labels[i].0, labels[i].1);
         let (glyph, gfg) = tab_icon(app, &t.key);
         let dirty = matches!(app.docs.get(&t.key), Some(Doc::Text(b)) if b.dirty());
         let active = i == app.groups[g].active;
-        // Dirty state and close have separate fixed slots, so hover never hides an edit.
-        let label = format!("{edge}{glyph}{gap}{}{close_gap}", fit(&title, 30));
-        // Then [dirty dot] [blank] [cross]: fixed slots, so editing never moves the cross.
-        let tail_w = 3 + tail_edge.len() as u16;
-        let w = label.width() as u16 + tail_w;
-        if x + w > outline_btn.x {
+        // The cells before the buttons kept for the right arrow while more follow.
+        let limit = if i + 1 < n_tabs { end } else { outline_btn.x };
+        if x + w > limit {
+            let r = Rect::new(end, tabbar.y, TAB_ARROW_W, 1);
+            draw_arrow(f, r, false);
+            gh.tab_next = r;
             break;
         }
         let tr = Rect::new(x, tabbar.y, w, 1);
@@ -1517,7 +1596,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         gh.tabs.push((Rect::new(x, tabbar.y, w - tail_w + 2, 1), xr));
         x += w;
     }
-    if let Some(n) = slot.filter(|&n| n >= gh.tabs.len()) {
+    if let Some(n) = slot.filter(|&n| n >= first + gh.tabs.len()) {
         marker = Some(if n == 0 { tabbar.x } else { x - 1 });
     }
     if let Some(mx) = marker.filter(|&mx| mx < tabbar.right()) {

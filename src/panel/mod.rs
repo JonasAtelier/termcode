@@ -381,6 +381,10 @@ pub struct Group {
     pub below: bool,
     /// The space it belongs to: only the current view's groups show.
     pub space: Space,
+    /// Its tab bar scrolled: the first tab shown; the active tab last brought into view
+    /// (the bar follows the active tab when that changes, else stays where it was put).
+    pub tab_off: usize,
+    pub tab_follow: Option<usize>,
 }
 
 /// What the editor area is for: code (the Explorer, Search, Source Control), serial
@@ -1025,8 +1029,12 @@ impl Hits {
 pub struct GroupHit {
     pub area: Rect,
     pub tabbar: Rect,
-    /// (title area, close-button cell) per tab.
+    /// (title area, close-button cell) per tab drawn, from tab `tab_first`; the arrows
+    /// shown when tabs are hidden left or right of them.
     pub tabs: Vec<(Rect, Rect)>,
+    pub tab_first: usize,
+    pub tab_prev: Rect,
+    pub tab_next: Rect,
     /// Text area right of the gutter.
     pub text: Rect,
     /// The quick-diff marker column.
@@ -1195,6 +1203,8 @@ pub struct App {
     /// Clicks in a row on one spot (2: a word, 3: a line, in a diff).
     clicks: u8,
     pub hover: Option<Position>,
+    /// A button held down (a tab bar's arrow): drawn pressed until the mouse is let go.
+    pub pressed: Option<Rect>,
     pending_k: bool,
     /// Running a `Cmd::Keys`: its key does what it does by default, past the keybindings.
     replaying: bool,
@@ -1998,6 +2008,7 @@ impl App {
             rename: None,
             clicks: 0,
             hover: None,
+            pressed: None,
             pending_k: false,
             replaying: false,
             pending_ev: None,

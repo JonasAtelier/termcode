@@ -377,7 +377,7 @@ impl App {
         // Down: right under `g`, in its column; right: after `g`'s whole column.
         let at = if down { g + 1 } else { self.after_column(g) };
         let space = self.groups[g].space;
-        self.groups.insert(at, Group { tabs: vec![tab], active: 0, below: down, space });
+        self.groups.insert(at, Group { tabs: vec![tab], active: 0, below: down, space, ..Group::default() });
         self.ag = at;
         self.focus = Focus::Editor;
     }

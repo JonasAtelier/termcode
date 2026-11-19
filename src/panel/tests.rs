@@ -7701,7 +7701,7 @@ fn another_views_groups_between_keep_the_columns_whole() {
     // An extension's group between column 0's two groups (groups of all views share the list).
     app.exts.list.push(crate::ext::test_ext("split-x", &["t"]));
     let n = crate::ext::num("split-x");
-    app.groups.insert(1, Group { tabs: vec![Tab { key: "ext:split-x/t".into(), preview: false, view: Default::default() }], active: 0, below: false, space: Space::View(n) });
+    app.groups.insert(1, Group { tabs: vec![Tab { key: "ext:split-x/t".into(), preview: false, view: Default::default() }], active: 0, below: false, space: Space::View(n), ..Group::default() });
     assert_eq!(shape(&app), [2, 1]);
     // Split right from column 0's head: a column after its whole column, not between.
     app.split(0, false);
@@ -7718,7 +7718,7 @@ fn another_views_groups_between_keep_the_columns_whole() {
 #[test]
 fn a_restored_layout_keeps_its_columns_within_bounds() {
     use crate::panel::{MAX_COLS, MAX_ROWS};
-    let g = |below| Group { tabs: vec![Tab { key: "file:a.txt".into(), preview: false, view: Default::default() }], active: 0, below, space: Space::Code };
+    let g = |below| Group { tabs: vec![Tab { key: "file:a.txt".into(), preview: false, view: Default::default() }], active: 0, below, space: Space::Code, ..Group::default() };
     // A column of 10 (another version's): its last ones start a new column.
     let mut groups: Vec<Group> = (0..10).map(|i| g(i > 0)).collect();
     crate::session::fit_layout(&mut groups);
@@ -7727,4 +7727,78 @@ fn a_restored_layout_keeps_its_columns_within_bounds() {
         if x.below { *cols.last_mut().unwrap() += 1 } else { cols.push(1) }
     }
     assert!(cols.iter().all(|&r| r <= MAX_ROWS) && cols.len() <= MAX_COLS && cols.iter().sum::<usize>() == 10, "{cols:?}");
+}
+
+#[test]
+fn a_long_tab_list_scrolls_and_keeps_the_active_tab_in_view() {
+    let root = repo("tab-scroll");
+    for i in 0..20 {
+        fs::write(root.join(format!("file{i:02}.txt")), "x\n").unwrap();
+    }
+    let mut app = App::new(root.clone(), None);
+    for i in 0..20 {
+        app.open_file(0, &format!("file{i:02}.txt"), false);
+    }
+    app.focus = Focus::Editor;
+    let mut t = Terminal::new(TestBackend::new(170, 20)).unwrap();
+    // The tab bar's own row of the screen.
+    let bar = |s: &str, r: Rect| s.lines().nth(r.y as usize).unwrap_or("").chars().skip(r.x as usize).take(r.width as usize).collect::<String>();
+    let s = screen(&mut app, &mut t);
+    // The active tab (the last opened) in view; the ones before it behind ‹.
+    let gh = app.ui.groups[0].clone();
+    let s = bar(&s, gh.tabbar);
+    assert_eq!(app.groups[0].active, 19);
+    assert!(gh.tab_first > 0 && !gh.tab_prev.is_empty() && gh.tab_next.is_empty(), "first {}", gh.tab_first);
+    assert!(s.contains("file19.txt") && !s.contains("file00.txt"));
+    // The wheel over the bar: back to the first tabs; the bar stays there (no snap back).
+    for _ in 0..30 {
+        app.wheel(Position::new(gh.tabbar.x + 5, gh.tabbar.y), -1);
+    }
+    let s = screen(&mut app, &mut t);
+    let gh = app.ui.groups[0].clone();
+    let s = bar(&s, gh.tabbar);
+    assert!(gh.tab_first == 0 && gh.tab_prev.is_empty() && !gh.tab_next.is_empty());
+    assert_eq!(gh.tab_next.width, 3, "an arrow easy to hit");
+    assert!(s.contains("file00.txt") && !s.contains("file19.txt"), "{s}");
+    assert_eq!(app.groups[0].active, 19, "scrolling picks no tab");
+    // A drawn tab clicked: that tab, by its index in the group.
+    let ev = |kind, p: Rect| MouseEvent { kind, column: p.x + 2, row: p.y, modifiers: KeyModifiers::NONE };
+    app.on_mouse(ev(MouseEventKind::Down(MouseButton::Left), gh.tabs[1].0));
+    app.on_mouse(ev(MouseEventKind::Up(MouseButton::Left), gh.tabs[1].0));
+    assert_eq!(app.groups[0].active, 1);
+    // › : one tab further; its tabs' clicks and drop slots count from the first shown.
+    // (Its last cell: `ev` clicks two cells in.) Held down: drawn pressed; let go: not.
+    app.on_mouse(ev(MouseEventKind::Down(MouseButton::Left), gh.tab_next));
+    screen(&mut app, &mut t);
+    let held = app.ui.groups[0].tab_next;
+    let cell = |t: &Terminal<TestBackend>, r: Rect| t.backend().buffer()[(r.x + 1, r.y)].bg;
+    assert_eq!(cell(&t, held), crate::theme::P.button_bg, "pressed while held");
+    app.on_mouse(ev(MouseEventKind::Up(MouseButton::Left), gh.tab_next));
+    screen(&mut app, &mut t);
+    assert!(app.pressed.is_none() && cell(&t, app.ui.groups[0].tab_next) != crate::theme::P.button_bg, "back once let go");
+    // The pointer moved onto it: lit white.
+    let on = app.ui.groups[0].tab_next;
+    app.on_mouse(ev(MouseEventKind::Moved, on));
+    screen(&mut app, &mut t);
+    assert_eq!(t.backend().buffer()[(on.x + 1, on.y)].fg, ratatui::style::Color::Rgb(255, 255, 255), "white under the pointer");
+    screen(&mut app, &mut t);
+    let gh = app.ui.groups[0].clone();
+    assert_eq!(gh.tab_first, 1);
+    let (r, _) = gh.tabs[1];
+    assert_eq!(app.drop_target(Position::new(r.x, r.y), true).map(|d| d.1), Some(Zone::Tab(2)), "a slot in the whole list");
+    // Ctrl+PgDn to the last tab: the bar follows it.
+    app.groups[0].active = 19;
+    let s = screen(&mut app, &mut t);
+    let s = bar(&s, app.ui.groups[0].tabbar);
+    assert!(s.contains("file19.txt"), "{s}");
+    // Tabs closed: the bar fills from the left, no blank end while some are hidden.
+    for _ in 0..17 {
+        app.close_tab(0, 0, true);
+    }
+    let s = screen(&mut app, &mut t);
+    let gh = app.ui.groups[0].clone();
+    let s = bar(&s, gh.tabbar);
+    assert!(gh.tab_prev.is_empty() && gh.tab_next.is_empty() && gh.tab_first == 0, "3 tabs fit: first {}", gh.tab_first);
+    assert!(s.contains("file17.txt") && s.contains("file19.txt"), "{s}");
+    let _ = fs::remove_dir_all(&root);
 }

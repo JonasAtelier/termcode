@@ -9,6 +9,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ## [Unreleased]
 
 ### Added
+- A long tab bar scrolls: the wheel over it, or its ‹ › arrows when tabs are hidden on
+  that side; it follows the active tab (Ctrl+PgDn, a file opened) and leaves no blank end.
 - Extensions: a program adds its own view, as Serial and GitHub are views. termcode
   draws the frame (an activity bar icon, side bar sections split by draggable lines, a
   tab, the right and bottom panels); the extension fills them with rows and answers
