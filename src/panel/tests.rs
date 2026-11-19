@@ -7475,3 +7475,256 @@ fn the_explorer_shows_the_active_editors_file() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+
+// ---- Editor group splits: every shape up to 3x3, built and closed every way ----
+
+/// The code view's layout: each column's number of groups.
+fn shape(app: &App) -> Vec<usize> {
+    app.columns(Space::Code).iter().map(Vec::len).collect()
+}
+
+/// The groups as drawn tile the editor area: in a column one x and width, top down; the
+/// columns side by side; none empty, none overlapping, all inside it.
+fn assert_tiles(app: &App, label: &str) {
+    let ed = app.ui.editor_area;
+    let cols = app.columns(Space::Code);
+    let mut all: Vec<Rect> = Vec::new();
+    let mut prev_x = None;
+    for col in &cols {
+        let areas: Vec<Rect> = col.iter().map(|&g| app.ui.groups[g].area).collect();
+        for (k, a) in areas.iter().enumerate() {
+            assert!(a.width > 0 && a.height > 0, "{label}: an empty group {a:?}");
+            assert!(a.x >= ed.x && a.right() <= ed.right() && a.y >= ed.y && a.bottom() <= ed.bottom(), "{label}: {a:?} outside {ed:?}");
+            assert!(a.x == areas[0].x && a.width == areas[0].width, "{label}: a column's groups line up {areas:?}");
+            if k > 0 {
+                assert!(a.y >= areas[k - 1].bottom(), "{label}: top down {areas:?}");
+            }
+        }
+        if let Some(px) = prev_x {
+            assert!(areas[0].x > px, "{label}: columns left to right");
+        }
+        prev_x = Some(areas[0].x);
+        all.extend(areas);
+    }
+    for (i, a) in all.iter().enumerate() {
+        for b in &all[i + 1..] {
+            assert!(a.intersection(*b).is_empty(), "{label}: {a:?} overlaps {b:?}");
+        }
+    }
+}
+
+fn split_app(tag: &str, w: u16, h: u16) -> (App, Terminal<TestBackend>, PathBuf) {
+    let root = repo(tag);
+    fs::write(root.join("a.txt"), "alpha\n").unwrap();
+    let (app, t) = split_app_in(&root, w, h);
+    (app, t, root)
+}
+
+/// The same in an existing repository (many layouts, one repository).
+fn split_app_in(root: &Path, w: u16, h: u16) -> (App, Terminal<TestBackend>) {
+    let mut app = App::new(root.to_path_buf(), None);
+    app.open_file(0, "a.txt", false);
+    app.focus = Focus::Editor;
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    screen(&mut app, &mut t);
+    (app, t)
+}
+
+/// `want` built by commands: columns first (each right of the last), then each column's
+/// groups (each under its last); or (`rows_first`) each column's groups as it is made.
+fn build(app: &mut App, want: &[usize], rows_first: bool) {
+    let down = |app: &mut App, ci: usize, n: usize| {
+        for _ in 1..n {
+            let g = *app.columns(Space::Code)[ci].last().unwrap();
+            app.split(g, true);
+        }
+    };
+    for (ci, &n) in want.iter().enumerate() {
+        if ci > 0 {
+            let head = app.columns(Space::Code)[ci - 1][0];
+            app.split(head, false);
+        }
+        if rows_first {
+            down(app, ci, n);
+        }
+    }
+    if !rows_first {
+        for (ci, &n) in want.iter().enumerate() {
+            down(app, ci, n);
+        }
+    }
+}
+
+/// Every shape of up to 3 columns of up to 3 groups each.
+fn shapes() -> Vec<Vec<usize>> {
+    let mut out = Vec::new();
+    for c in 1..=3u32 {
+        for k in 0..3usize.pow(c) {
+            out.push((0..c).map(|i| k / 3usize.pow(i) % 3 + 1).collect());
+        }
+    }
+    out
+}
+
+#[test]
+fn every_split_shape_up_to_3x3_builds_both_ways_and_closes_from_anywhere() {
+    let shapes = shapes();
+    assert_eq!(shapes.len(), 39);
+    let root = repo("split-shapes");
+    fs::write(root.join("a.txt"), "alpha\n").unwrap();
+    for want in &shapes {
+        for rows_first in [false, true] {
+            let (mut app, mut t) = split_app_in(&root, 200, 60);
+            build(&mut app, want, rows_first);
+            assert_eq!(&shape(&app), want, "built {}", if rows_first { "rows first" } else { "columns first" });
+            screen(&mut app, &mut t);
+            assert_tiles(&app, &format!("{want:?}"));
+            // Each group's split buttons: shown exactly when that split may be made.
+            for g in 0..app.groups.len() {
+                for down in [false, true] {
+                    let shown = app.ui.split_btns.iter().any(|&(_, bg, d)| bg == g && d == down);
+                    assert_eq!(shown, app.can_split(g, down), "{want:?} group {g} split {}", if down { "down" } else { "right" });
+                }
+            }
+        }
+        // Closing any one group: only its column shrinks (gone when empty), the rest stays.
+        let n: usize = want.iter().sum();
+        for gone in 0..n {
+            let (mut app, mut t) = split_app_in(&root, 200, 60);
+            build(&mut app, want, false);
+            let ci = app.columns(Space::Code).iter().position(|c| c.contains(&gone)).unwrap();
+            app.close_tab(gone, 0, true);
+            let mut expect = want.clone();
+            expect[ci] -= 1;
+            expect.retain(|&r| r > 0);
+            // (The last group stays, empty: there is always an editor area.)
+            if expect.is_empty() {
+                expect = vec![1];
+            }
+            assert_eq!(shape(&app), expect, "{want:?} without group {gone}");
+            screen(&mut app, &mut t);
+            assert_tiles(&app, &format!("{want:?} without group {gone}"));
+        }
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn three_on_the_left_one_on_the_right_the_right_still_splits_down() {
+    let (mut app, mut t, root) = split_app("split-3-1", 200, 60);
+    build(&mut app, &[3, 1], false);
+    let right = app.columns(Space::Code)[1][0];
+    assert!(app.can_split(right, true));
+    app.split(right, true);
+    assert_eq!(shape(&app), [3, 2]);
+    let right = *app.columns(Space::Code)[1].last().unwrap();
+    app.split(right, true);
+    assert_eq!(shape(&app), [3, 3]);
+    screen(&mut app, &mut t);
+    assert_tiles(&app, "[3, 3]");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn splits_follow_the_editor_areas_size() {
+    use crate::panel::{MIN_GROUP_H, MIN_GROUP_W};
+    // How many groups across (or down) `room` fits, each at least `min`.
+    let fits = |app: &App, room: u16, min: u16| {
+        let sep = u16::from(app.settings.blocks != crate::blocks::BlockStyle::Cards);
+        (1..=8u16).take_while(|&n| room.saturating_sub((n - 1) * sep) / n >= min).last().unwrap_or(1) as usize
+    };
+    for (w, h) in [(90, 24), (140, 40), (200, 60), (400, 100)] {
+        let (mut app, mut t, root) = split_app("split-size", w, h);
+        let ed = app.ui.editor_area;
+        let (cols, rows) = (fits(&app, ed.width, MIN_GROUP_W), fits(&app, ed.height, MIN_GROUP_H));
+        // As many columns as fit, then one more refused with a word why.
+        for _ in 0..12 {
+            let last = app.columns(Space::Code).last().unwrap()[0];
+            app.split(last, false);
+        }
+        assert_eq!(shape(&app).len(), cols, "{w}x{h}: {ed:?}");
+        assert!(app.msg.contains("No room for another column"), "{}", app.msg);
+        for _ in 0..12 {
+            let g = *app.columns(Space::Code)[0].last().unwrap();
+            app.split(g, true);
+        }
+        assert_eq!(shape(&app)[0], rows, "{w}x{h}: {ed:?}");
+        screen(&mut app, &mut t);
+        assert_tiles(&app, &format!("{w}x{h}"));
+        // Every group at least the minimum (the last of a row or column takes the rest).
+        for col in app.columns(Space::Code) {
+            for g in col {
+                let a = app.ui.groups[g].area;
+                assert!(a.width + 2 >= MIN_GROUP_W && a.height + 2 >= MIN_GROUP_H, "{w}x{h}: group {g} {a:?}");
+            }
+        }
+        // A tab dragged to an edge: offered only where a split may be made.
+        for g in 0..app.groups.len() {
+            let a = app.ui.groups[g].area;
+            let mid = (a.x + a.width / 2, a.y + a.height / 2);
+            let probes = [((a.x, mid.1), false), ((a.right() - 1, mid.1), false), ((mid.0, a.y + a.height * 2 / 10), true), ((mid.0, a.bottom() - 1), true)];
+            for ((x, y), down) in probes {
+                if let Some((_, zone)) = app.drop_target(Position::new(x, y), false) {
+                    let edge = !matches!(zone, Zone::Center | Zone::Tab(_));
+                    assert!(!edge || app.can_split(g, down), "{w}x{h}: group {g} offered {zone:?}");
+                }
+            }
+        }
+        if w >= 400 {
+            assert!(cols > 3 && rows > 3, "a wide, tall screen takes more than 3x3: {cols}x{rows}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[test]
+fn a_columns_only_tab_moved_away_keeps_the_rest_of_its_column() {
+    let (mut app, mut t, root) = split_app("split-move", 200, 60);
+    fs::write(root.join("z.txt"), "zed\n").unwrap();
+    build(&mut app, &[1, 2, 1], false);
+    // Column 1's head (its only tab) dropped onto column 2's lower edge.
+    let head = app.columns(Space::Code)[1][0];
+    let under = app.columns(Space::Code)[1][1];
+    app.groups[under].tabs[0].key = "file:z.txt".into();
+    let target = app.columns(Space::Code)[2][0];
+    app.move_tab(head, 0, target, Zone::Down);
+    assert_eq!(shape(&app), [1, 1, 2], "the group under it heads its column; none joins column 0");
+    screen(&mut app, &mut t);
+    assert_tiles(&app, "after the move");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn another_views_groups_between_keep_the_columns_whole() {
+    let (mut app, mut t, root) = split_app("split-spaces", 200, 60);
+    build(&mut app, &[2, 1], false);
+    // An extension's group between column 0's two groups (groups of all views share the list).
+    app.exts.list.push(crate::ext::test_ext("split-x", &["t"]));
+    let n = crate::ext::num("split-x");
+    app.groups.insert(1, Group { tabs: vec![Tab { key: "ext:split-x/t".into(), preview: false, view: Default::default() }], active: 0, below: false, space: Space::View(n) });
+    assert_eq!(shape(&app), [2, 1]);
+    // Split right from column 0's head: a column after its whole column, not between.
+    app.split(0, false);
+    assert_eq!(shape(&app), [2, 1, 1]);
+    // Its head closed: the group under it heads column 0.
+    app.close_tab(0, 0, true);
+    assert_eq!(shape(&app), [1, 1, 1]);
+    assert!(app.groups.iter().any(|g| g.space == Space::View(n)), "the other view's group untouched");
+    screen(&mut app, &mut t);
+    assert_tiles(&app, "with another view's group between");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_restored_layout_keeps_its_columns_within_bounds() {
+    use crate::panel::{MAX_COLS, MAX_ROWS};
+    let g = |below| Group { tabs: vec![Tab { key: "file:a.txt".into(), preview: false, view: Default::default() }], active: 0, below, space: Space::Code };
+    // A column of 10 (another version's): its last ones start a new column.
+    let mut groups: Vec<Group> = (0..10).map(|i| g(i > 0)).collect();
+    crate::session::fit_layout(&mut groups);
+    let mut cols = vec![];
+    for x in &groups {
+        if x.below { *cols.last_mut().unwrap() += 1 } else { cols.push(1) }
+    }
+    assert!(cols.iter().all(|&r| r <= MAX_ROWS) && cols.len() <= MAX_COLS && cols.iter().sum::<usize>() == 10, "{cols:?}");
+}

@@ -604,16 +604,21 @@ impl App {
     /// `bar`: a tab bar takes the drop at a slot between its tabs (a dragged tab).
     pub(super) fn drop_target(&self, p: Position, bar: bool) -> Option<(usize, Zone)> {
         self.ui.groups.iter().enumerate().find(|(_, g)| g.area.contains(p)).map(|(i, g)| {
-            let can_split = self.groups.get(i).is_some_and(|x| self.groups_in(x.space) < MAX_GROUPS);
             let rx = (p.x - g.area.x) as u32 * 10 / g.area.width.max(1) as u32;
             let ry = (p.y - g.area.y) as u32 * 10 / g.area.height.max(1) as u32;
             let tabs = g.tabbar;
-            // The nearest edge within its outer 30%: that side; else the middle.
-            let edge = [(rx, Zone::Left), (9 - rx.min(9), Zone::Right), (ry, Zone::Up), (9 - ry.min(9), Zone::Down)].into_iter().filter(|(d, _)| *d < 3).min_by_key(|(d, _)| *d).map(|(_, z)| z);
+            // The nearest edge within its outer 30% that may split (3x3 at most): that side;
+            // else the middle.
+            let (right, down) = (self.can_split(i, false), self.can_split(i, true));
+            let edge = [(rx, Zone::Left, right), (9 - rx.min(9), Zone::Right, right), (ry, Zone::Up, down), (9 - ry.min(9), Zone::Down, down)]
+                .into_iter()
+                .filter(|(d, _, ok)| *d < 3 && *ok)
+                .min_by_key(|(d, ..)| *d)
+                .map(|(_, z, _)| z);
             let zone = if bar && tabs.contains(p) {
                 // Before the first drawn tab whose middle is right of the pointer.
                 Zone::Tab(g.tabs.iter().take_while(|(r, x)| p.x >= (r.x + x.right()) / 2).count())
-            } else if tabs.contains(p) || !can_split {
+            } else if tabs.contains(p) {
                 Zone::Center
             } else {
                 edge.unwrap_or(Zone::Center)
@@ -855,7 +860,8 @@ impl App {
             }
         };
         if self.groups[src].tabs.is_empty() && self.groups.len() > 1 {
-            self.groups.remove(src);
+            // (Its column kept: the group under a head heads it then.)
+            self.remove_group(src);
             if dst > src {
                 dst -= 1;
             }

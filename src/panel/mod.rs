@@ -47,7 +47,14 @@ type Stamp = Option<(SystemTime, u64)>;
 /// Quick-diff recompute delay after an edit.
 const QDIFF_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const MAX_HITS: usize = 5_000;
-pub const MAX_GROUPS: usize = 4;
+/// A view's editor area splits while each group keeps at least MIN_GROUP_W columns and
+/// MIN_GROUP_H rows: a wide monitor takes more columns, a tall one more rows. MAX_COLS
+/// and MAX_ROWS only bound it (and a restored session).
+pub const MIN_GROUP_W: u16 = 30;
+pub const MIN_GROUP_H: u16 = 7;
+pub const MAX_COLS: usize = 8;
+pub const MAX_ROWS: usize = 8;
+pub const MAX_GROUPS: usize = MAX_COLS * MAX_ROWS;
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Set for the process a reload execs: the session comes back whatever the settings say.
 const RELOAD_ENV: &str = "TERMCODE_RELOADED";
@@ -2491,15 +2498,14 @@ impl App {
         let Some(rel) = key.strip_prefix("file:") else { return };
         let pk = format!("preview:{rel}");
         let from = self.ag;
-        let g = if !side {
-            from
-        } else if from + 1 < self.groups.len() {
-            from + 1
-        } else if self.groups_in(self.groups[from].space) < MAX_GROUPS {
-            self.groups.insert(from + 1, Group { space: self.groups[from].space, ..Group::default() });
-            from + 1
-        } else {
-            from
+        // To the side: the next column's group, else a new column, else here.
+        let cols = self.columns(self.groups[from].space);
+        let next = cols.iter().position(|c| c.contains(&from)).and_then(|c| cols.get(c + 1)).map(|c| c[0]);
+        let g = match next {
+            _ if !side => from,
+            Some(n) => n,
+            None if self.can_split(from, false) => self.new_group_beside(from, Zone::Right),
+            None => from,
         };
         self.show_tab(g, pk, false);
         if side && g != from {

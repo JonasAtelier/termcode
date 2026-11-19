@@ -1376,13 +1376,7 @@ fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     // Cards sit border to border; the other styles draw a 1-cell line between groups.
     let sep = u16::from(st != BlockStyle::Cards);
     // Columns: a group `below` sits under the one before it, in its column.
-    let mut cols: Vec<Vec<usize>> = Vec::new();
-    for g in (0..app.groups.len()).filter(|&g| app.groups[g].space == space) {
-        match cols.last_mut() {
-            Some(c) if app.groups[g].below => c.push(g),
-            _ => cols.push(vec![g]),
-        }
-    }
+    let cols = app.columns(space);
     let n = cols.len().max(1) as u16;
     let gw = r.width.saturating_sub((n - 1) * sep) / n;
     let mut x = r.x;
@@ -1444,7 +1438,10 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
     // Split Editor (right, then down) at the right end of the tab bar, Toggle Terminal before them.
     let split = Rect::new(tabbar.right().saturating_sub(3), tabbar.y, 2, 1);
     let split_down = Rect::new(split.x.saturating_sub(2), tabbar.y, 2, 1);
-    let show_split = app.groups_in(app.groups[g].space) < crate::panel::MAX_GROUPS && !app.groups[g].tabs.is_empty();
+    // Each shown while that split may be made (3 columns, 3 groups a column, at most).
+    let has_tabs = !app.groups[g].tabs.is_empty();
+    let (can_right, can_down) = (has_tabs && app.can_split(g, false), has_tabs && app.can_split(g, true));
+    let show_split = can_right || can_down;
     let term_btn = Rect::new(if show_split { split_down.x.saturating_sub(2) } else { split.x }, tabbar.y, 2, 1);
     let outline_btn = Rect::new(term_btn.x.saturating_sub(2), tabbar.y, 2, 1);
     let mut x = tabbar.x;
@@ -1528,7 +1525,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         f.render_widget(Span::styled(if crate::theme::ascii() { "|" } else { "▌" }, st), Rect::new(mx, tabbar.y, 1, 1));
     }
     if show_split {
-        for (r, glyph, down) in [(split, ic.split, false), (split_down, ic.split_down, true)] {
+        for (r, glyph, down) in [(split, ic.split, false), (split_down, ic.split_down, true)].into_iter().filter(|(_, _, d)| if *d { can_down } else { can_right }) {
             let hot = hover.is_some_and(|p| r.contains(p));
             f.render_widget(Span::styled(glyph, Style::new().fg(if hot { P.tab_active_fg } else { P.icon_fg })), r);
             app.ui.split_btns.push((r, g, down));

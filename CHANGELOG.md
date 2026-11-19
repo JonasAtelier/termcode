@@ -108,6 +108,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - ratatui 0.30, vt100 0.16; the Settings window's pictures no longer need ratatui-image.
 
 ### Fixed
+- Editor splits: as many as the editor area holds (each group 30 columns by 7 rows at
+  least), no longer 4 groups in all; a 3 + 1 layout's right side splits down. Moving a
+  column's only tab away, closing it beside another view's groups, or restoring a session
+  no longer moves the group under it into another column. Split buttons and drop edges
+  show only where a split fits.
 - termcode no longer records a crash when its terminal goes away under it (its window
   closed, its tmux session killed), which made the next start report an error.
 

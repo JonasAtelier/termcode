@@ -349,6 +349,8 @@ pub fn restore(app: &mut App) {
         .collect();
     let gone = missing_commits(app, &hashes.iter().map(String::as_str).collect::<Vec<_>>());
     let (mut groups, mut ag) = (Vec::new(), 0);
+    // A column's first group dropped: the next one kept heads that column.
+    let mut head_dropped = false;
     for (gi, g) in saved.iter().enumerate() {
         let want = g["active"].as_u64().unwrap_or(0) as usize;
         let mut tabs: Vec<Tab> = Vec::new();
@@ -365,6 +367,7 @@ pub fn restore(app: &mut App) {
             tabs.push(Tab { key: key.to_string(), preview: t["preview"] == true, view });
         }
         if tabs.is_empty() {
+            head_dropped |= g["below"] != true;
             continue;
         }
         if gi as u64 == v["active_group"].as_u64().unwrap_or(0) {
@@ -372,14 +375,55 @@ pub fn restore(app: &mut App) {
         }
         app.session.pending.extend(tabs.iter().map(|t| t.key.clone()));
         // The first group heads a column whatever was saved.
-        groups.push(Group { tabs, active, below: g["below"] == true && !groups.is_empty(), space: crate::panel::Space::Code });
+        let below = g["below"] == true && !groups.is_empty() && !std::mem::take(&mut head_dropped);
+        head_dropped = false;
+        groups.push(Group { tabs, active, below, space: crate::panel::Space::Code });
     }
+    fit_layout(&mut groups);
+    ag = ag.min(groups.len().saturating_sub(1));
     if !groups.is_empty() {
         app.groups = groups;
         app.ag = ag;
         app.focus = crate::panel::Focus::Editor;
     }
     app.session.written = Some(snapshot(app).to_string());
+}
+
+/// A saved layout bounded by MAX_COLS x MAX_ROWS (a session from elsewhere): a column's
+/// groups past MAX_ROWS start columns of their own while there is room, columns past
+/// MAX_COLS give their tabs to the last group kept.
+pub fn fit_layout(groups: &mut Vec<Group>) {
+    use crate::panel::{MAX_COLS, MAX_ROWS};
+    let (mut cols, mut rows) = (0, 0);
+    let mut i = 0;
+    while i < groups.len() {
+        if i == 0 {
+            groups[i].below = false;
+        }
+        if groups[i].below && rows >= MAX_ROWS && cols < MAX_COLS {
+            groups[i].below = false;
+        }
+        if groups[i].below {
+            rows += 1;
+        } else {
+            cols += 1;
+            rows = 1;
+        }
+        if cols > MAX_COLS || rows > MAX_ROWS {
+            let extra = groups.remove(i);
+            let last = &mut groups[i - 1];
+            for t in extra.tabs {
+                if !last.tabs.iter().any(|x| x.key == t.key) {
+                    last.tabs.push(t);
+                }
+            }
+            if !groups[i - 1].below {
+                cols -= 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
 }
 
 /// A document dropped (`App::drop_doc`): no restored tab waits for it any more.

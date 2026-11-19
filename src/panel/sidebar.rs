@@ -286,9 +286,54 @@ impl App {
 
     /// The active tab of group `g` again in a new group: to its right (a new column), or
     /// (`down`) under it in its column.
-    /// How many groups space `sp` has (each space may have MAX_GROUPS).
-    pub(crate) fn groups_in(&self, sp: Space) -> usize {
-        self.groups.iter().filter(|g| g.space == sp).count()
+    /// Space `sp`'s groups as its editor area lays them out: columns left to right, each
+    /// its groups top down. (Other spaces' groups may sit between them in `groups`.)
+    pub(crate) fn columns(&self, sp: Space) -> Vec<Vec<usize>> {
+        let mut cols: Vec<Vec<usize>> = Vec::new();
+        for g in (0..self.groups.len()).filter(|&g| self.groups[g].space == sp) {
+            match cols.last_mut() {
+                Some(c) if self.groups[g].below => c.push(g),
+                _ => cols.push(vec![g]),
+            }
+        }
+        cols
+    }
+
+    /// May group `g` split: right (a new column) or `down` (another group in its column),
+    /// while each would keep MIN_GROUP_W columns and MIN_GROUP_H rows of the editor area as
+    /// last drawn (before the first frame: 3x3).
+    pub(crate) fn can_split(&self, g: usize, down: bool) -> bool {
+        let Some(sp) = self.groups.get(g).map(|x| x.space) else { return false };
+        let cols = self.columns(sp);
+        let n = if down { cols.iter().find(|c| c.contains(&g)).map_or(0, Vec::len) } else { cols.len() };
+        let (max, room, min) = if down { (MAX_ROWS, self.ui.editor_area.height, MIN_GROUP_H) } else { (MAX_COLS, self.ui.editor_area.width, MIN_GROUP_W) };
+        // Cards sit border to border; the other styles draw a line between groups.
+        let sep = u16::from(self.settings.blocks != crate::blocks::BlockStyle::Cards);
+        let each = room.saturating_sub(n as u16 * sep) / (n as u16 + 1);
+        n < max && if room == 0 { n < 3 } else { each >= min }
+    }
+
+    /// Why `g` may not split that way (the status line's words).
+    pub(crate) fn split_refusal(down: bool) -> String {
+        if down { format!("No room for another editor group in this column ({MIN_GROUP_H} rows each at least)") } else { format!("No room for another column of editors ({MIN_GROUP_W} columns each at least)") }
+    }
+
+    /// Group `g` gone: in its column, the one under it heads the column then.
+    pub(crate) fn remove_group(&mut self, g: usize) {
+        let Some(gone) = self.groups.get(g) else { return };
+        let (head, sp) = (!gone.below, gone.space);
+        self.groups.remove(g);
+        if head {
+            if let Some(next) = self.groups[g..].iter_mut().find(|x| x.space == sp) {
+                next.below = false;
+            }
+        }
+    }
+
+    /// The index right after group `t`'s whole column (where a new column goes).
+    fn after_column(&self, t: usize) -> usize {
+        let sp = self.groups[t].space;
+        (t + 1..self.groups.len()).find(|&i| self.groups[i].space == sp && !self.groups[i].below).unwrap_or(self.groups.len())
     }
 
     /// A new, empty group of `t`'s space beside group `t`: left, right, above or below
@@ -298,7 +343,7 @@ impl App {
         match zone {
             Zone::Left => {
                 // Before t's whole column: t's column head moves right with it.
-                let head = (0..=t).rev().find(|&i| !self.groups[i].below).unwrap_or(t);
+                let head = (0..=t).rev().find(|&i| self.groups[i].space == space && !self.groups[i].below).unwrap_or(t);
                 self.groups.insert(head, Group { space, ..Group::default() });
                 head
             }
@@ -313,7 +358,7 @@ impl App {
                 t + 1
             }
             _ => {
-                let at = (t + 1..self.groups.len()).find(|&i| !self.groups[i].below).unwrap_or(self.groups.len());
+                let at = self.after_column(t);
                 self.groups.insert(at, Group { space, ..Group::default() });
                 at
             }
@@ -321,16 +366,17 @@ impl App {
     }
 
     pub(crate) fn split(&mut self, g: usize, down: bool) {
-        if self.groups.get(g).is_none_or(|x| self.groups_in(x.space) >= MAX_GROUPS) {
-            self.msg = format!("{MAX_GROUPS} editor groups at most");
+        if !self.can_split(g, down) {
+            if g < self.groups.len() {
+                self.msg = App::split_refusal(down);
+            }
             return;
         }
         let Some(t) = self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active)) else { return };
         let tab = Tab { key: t.key.clone(), preview: false, view: t.view.clone() };
-        // To the right: after the whole column `g` is in.
-        let at = if down { g + 1 } else { (g + 1..self.groups.len()).find(|&i| !self.groups[i].below).unwrap_or(self.groups.len()) };
+        // Down: right under `g`, in its column; right: after `g`'s whole column.
+        let at = if down { g + 1 } else { self.after_column(g) };
         let space = self.groups[g].space;
-        // (Groups of other spaces between: a new column goes after this space's column.)
         self.groups.insert(at, Group { tabs: vec![tab], active: 0, below: down, space });
         self.ag = at;
         self.focus = Focus::Editor;
