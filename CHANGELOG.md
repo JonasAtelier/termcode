@@ -25,6 +25,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   matches, the cursor) as thin bars over it. Quick Open's slider too.
 - In Ghostty and kitty popups (Find, Commit, Settings, hover cards) get a rounded frame
   in pixels: a thin line at their outer edge, the corners clear.
+- In Ghostty and kitty the Settings and Commit dialogs are drawn with more pixels: fields,
+  dropdowns, the search box, the chosen category, setting, file and the message box have
+  rounded corners; number settings are sliders with a round knob; New Commit / Amend are
+  round radio buttons; separators meet a popup's frame.
 - Extensions can show pictures: a `{"picture": <base64 PNG>, "rows": 8}` row (a plot, a
   waveform, a diagram), in real pixels in Ghostty and kitty, half-blocks elsewhere.
 - In Ghostty and kitty the UI kit draws in pixels where text cannot: buttons get rounded

@@ -285,10 +285,18 @@ pub(crate) fn check(f: &mut Frame, b: Rect, (x, y): (u16, u16), on: bool, label:
             (false, true) => P.list_hover_bg,
             (false, false) => P.input_bg,
         };
-        super::pixels::ask(f, box_r, super::pixels::Shape::Check { on, fill, mark: P.button_fg, under: P.editor_bg }, under);
+        super::pixels::ask(f, box_r, super::pixels::Shape::Check { on, fill, mark: P.button_fg, under: P.editor_bg, round: false }, under);
     }
     note(r);
     r
+}
+
+/// A radio button's `(•)` or `( )` (`r`, drawn by the caller) as a round button in pixels
+/// where they show: a dot on a button's colour when `on`, else a ring on an input's.
+pub(crate) fn radio_px(f: &mut Frame, r: Rect, on: bool) {
+    let under: Vec<Color> = r.positions().map(|p| f.buffer_mut()[p].bg).collect();
+    let (fill, mark) = if on { (P.button_bg, P.button_fg) } else { (P.input_bg, P.widget_border) };
+    super::pixels::ask(f, r, super::pixels::Shape::Check { on, fill, mark, under: P.widget_bg, round: true }, under);
 }
 
 /// A search field: the search icon, the query (its end in view) or the placeholder, `tail`

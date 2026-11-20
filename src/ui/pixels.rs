@@ -20,11 +20,15 @@ pub(crate) enum Shape {
     /// A vertical slider `len` pixels long, `start` pixels into its cells, in `color`, on
     /// the track whose top row is `top`.
     Slider { start: f32, len: f32, color: Rgba, top: u16 },
-    /// A checkbox, ticked or not, lit under the pointer.
-    Check { on: bool, fill: Color, mark: Color, under: Color },
+    /// A checkbox, ticked or not, lit under the pointer; `round`: a radio button (a dot).
+    Check { on: bool, fill: Color, mark: Color, under: Color, round: bool },
+    /// A value's slider `cells` wide: a thin track, `fill` up to the knob in cell `pos`,
+    /// `rest` after it.
+    Range { pos: u16, fill: Color, rest: Color, knob: Color },
     /// A cell of a popup's frame: its `line` along the cell's outer edges `sides` (1 left,
-    /// 2 top, 4 right, 8 bottom; two make a rounded corner), `fill` inside.
-    Frame { sides: u8, line: Color, fill: Color },
+    /// 2 top, 4 right, 8 bottom; two make a rounded corner), `fill` inside; `tee`: a line
+    /// inside meets the edge there (`├`, `┤` across the cell's middle; `┬`, `┴` down it).
+    Frame { sides: u8, line: Color, fill: Color, tee: bool },
     /// A Nerd Font icon in `color`, `size` of the picture's height, centred.
     Icon { glyph: char, color: Color, size: f32 },
 }
@@ -60,6 +64,12 @@ thread_local! {
     /// This frame's cell size in pixels, when its shapes go out as pictures.
     static CELL: std::cell::Cell<Option<(u16, u16)>> = const { std::cell::Cell::new(None) };
     static ASKS: RefCell<Vec<Ask>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// While Some: each shape placed, its cells and pixels (a test's picture of the screen).
+    pub(crate) static SHOTS: RefCell<Option<Vec<(Rect, RgbaImage)>>> = const { RefCell::new(None) };
 }
 
 /// A frame starts: `cell` (`media::pixel_cell`), None where pictures do not show.
@@ -112,6 +122,33 @@ pub(crate) fn icon(f: &mut Frame, at: Rect, glyph: &str, color: Color, size: f32
     let at = at.intersection(f.area());
     let under = at.positions().map(|p| f.buffer_mut()[p].bg).collect();
     ask(f, at, Shape::Icon { glyph: c, color, size }, under);
+}
+
+/// `r` (a filled box: a field, a selected row) with rounded corners where pictures show:
+/// each corner cell still blank (padding) takes the corner, in its own background, `under`
+/// round it. A focus mark there (`▎`) becomes the corner's line in its colour.
+pub(crate) fn round_box(f: &mut Frame, r: Rect, under: Color) {
+    let r = r.intersection(f.area());
+    if cell().is_none() || r.width < 2 {
+        return;
+    }
+    let (x1, y1) = (r.right() - 1, r.bottom() - 1);
+    let mut corners = vec![(r.x, r.y), (x1, r.y), (r.x, y1), (x1, y1)];
+    corners.sort_unstable();
+    corners.dedup();
+    for (x, y) in corners {
+        let c = f.buffer_mut()[(x, y)].clone();
+        let line = match c.symbol() {
+            " " => c.bg,
+            "▎" | "▏" => c.fg,
+            _ => continue,
+        };
+        if !matches!((c.bg, line), (Color::Rgb(..), Color::Rgb(..))) {
+            continue;
+        }
+        let sides = u8::from(x == r.x) | u8::from(y == r.y) << 1 | u8::from(x == x1) << 2 | u8::from(y == y1) << 3;
+        ask(f, Rect::new(x, y, 1, 1), Shape::Frame { sides, line, fill: c.bg, tee: false }, vec![under]);
+    }
 }
 
 /// The frame's caps and bars as the kit's text draws them, found in its cells: a cap's
@@ -185,22 +222,23 @@ fn frames(buf: &ratatui::buffer::Buffer, out: &mut Vec<Ask>) {
             let beside = |x: Option<u16>, y: u16| x.filter(|x| area.left() <= *x && *x < area.right()).map_or(fill, |x| buf[(x, y)].bg);
             let mut put = |x: u16, y: u16, sides: u8, under: Color| {
                 let c = buf[(x, y)].clone();
-                out.push(Ask { at: Rect::new(x, y, 1, 1), shape: Shape::Frame { sides, line, fill }, cells: vec![c], under: vec![under], ticks: Vec::new() });
+                let tee = !matches!(c.symbol(), "─" | "│" | "╭" | "╮" | "╰" | "╯");
+                out.push(Ask { at: Rect::new(x, y, 1, 1), shape: Shape::Frame { sides, line, fill, tee }, cells: vec![c], under: vec![under], ticks: Vec::new() });
             };
             put(x0, y0, 3, beside(x0.checked_sub(1), y0));
             put(x1, y0, 6, beside(x1.checked_add(1), y0));
             put(x0, y1, 9, beside(x0.checked_sub(1), y1));
             put(x1, y1, 12, beside(x1.checked_add(1), y1));
             for x in x0 + 1..x1 {
-                for (y, sides) in [(y0, 2), (y1, 8)] {
-                    if is(x, y, "─") {
+                for (y, sides, tee) in [(y0, 2, "┬"), (y1, 8, "┴")] {
+                    if is(x, y, "─") || is(x, y, tee) {
                         put(x, y, sides, fill);
                     }
                 }
             }
             for y in y0 + 1..y1 {
-                for (x, sides) in [(x0, 1), (x1, 4)] {
-                    if is(x, y, "│") {
+                for (x, sides, tee) in [(x0, 1, "├"), (x1, 4, "┤")] {
+                    if is(x, y, "│") || is(x, y, tee) {
                         put(x, y, sides, fill);
                     }
                 }
@@ -230,10 +268,14 @@ pub(crate) fn place(app: &mut App, f: &mut Frame) {
                 let under = a.under.clone();
                 let mut img = make();
                 draw_ticks(&mut img, &a.ticks);
+                #[cfg(test)]
+                SHOTS.with_borrow_mut(|s| s.as_mut().map(|v| v.push((a.at, img.clone()))));
                 crate::media::show_pixels(app, f, &slot, a.at, &img, &|y| under.get(usize::from(y)).copied().unwrap_or(Color::Reset));
                 continue;
             }
             _ => {
+                #[cfg(test)]
+                SHOTS.with_borrow_mut(|s| s.as_mut().map(|v| v.push((a.at, make()))));
                 let mut hk = std::collections::hash_map::DefaultHasher::new();
                 std::hash::Hash::hash(&(format!("{:?}", a.shape), a.at.width, a.at.height, cw, ch), &mut hk);
                 crate::media::kept(app, std::hash::Hasher::finish(&hk), (a.at.width, a.at.height), |_| Some(make()))
@@ -297,14 +339,42 @@ pub(crate) fn paint(shape: Shape, w: u32, h: u32, (cw, ch): (u16, u16)) -> RgbaI
                     let r = (cw / 2.0 - inset).max(1.0);
                     ([color.0, color.1, color.2, 255], rbox(fx, fy, (inset, start, w as f32 - inset, start + len), r) * f32::from(color.3) / 255.0)
                 }
-                Shape::Check { on, fill, mark, .. } => {
+                Shape::Range { pos, fill, rest, knob } => {
+                    let (th, yc) = ((ch * 0.16).max(2.0), h as f32 / 2.0);
+                    let kx = (f32::from(pos) + 0.5) * cw;
+                    let track = rbox(fx, fy, (cw * 0.3, yc - th / 2.0, w as f32 - cw * 0.3, yc + th / 2.0), th / 2.0);
+                    let k = (ch * 0.26 + 0.5 - ((fx - kx).powi(2) + (fy - yc).powi(2)).sqrt()).clamp(0.0, 1.0);
+                    if k > 0.0 {
+                        let (a, b) = (rgb(knob), rgb(if fx < kx { fill } else { rest }));
+                        let mix = |i: usize| (f32::from(a[i]) * k + f32::from(b[i]) * track * (1.0 - k)).round() as u8;
+                        let alpha = k + track * (1.0 - k);
+                        let unmix = |i: usize| (f32::from(mix(i)) / alpha.max(1e-6)).round().min(255.0) as u8;
+                        ([unmix(0), unmix(1), unmix(2), 255], alpha)
+                    } else {
+                        (rgb(if fx < kx { fill } else { rest }), track)
+                    }
+                }
+                Shape::Check { on, fill, mark, round, .. } => {
                     let s = (w as f32).min(h as f32) * 0.78;
                     let (x0, y0) = ((w as f32 - s) / 2.0, (h as f32 - s) / 2.0);
-                    let b = rbox(fx, fy, (x0, y0, x0 + s, y0 + s), s * 0.22);
+                    let b = rbox(fx, fy, (x0, y0, x0 + s, y0 + s), if round { s / 2.0 } else { s * 0.22 });
+                    // An empty radio button: its ring in `mark`.
+                    if round && !on {
+                        let inner = rbox(fx, fy, (x0 + 1.0, y0 + 1.0, x0 + s - 1.0, y0 + s - 1.0), s / 2.0 - 1.0);
+                        let (m, f) = (rgb(mark), rgb(fill));
+                        let mix = |i: usize| ((f32::from(m[i]) * (b - inner) + f32::from(f[i]) * inner) / b.max(1e-6)).round() as u8;
+                        img.put_pixel(x, y, image::Rgba([mix(0), mix(1), mix(2), (b * 255.0).round() as u8]));
+                        continue;
+                    }
                     // The tick: two strokes, from the left middle down, then up to the right.
                     let t = s * 0.11;
                     let pts = [(x0 + s * 0.24, y0 + s * 0.52), (x0 + s * 0.43, y0 + s * 0.7), (x0 + s * 0.77, y0 + s * 0.31)];
-                    let tick = if on { pts.windows(2).map(|p| (t - dist(fx, fy, p[0], p[1])).clamp(0.0, 1.0)).fold(0.0, f32::max) } else { 0.0 };
+                    let tick = match (on, round) {
+                        (false, _) => 0.0,
+                        // A radio button's dot.
+                        (true, true) => (s * 0.2 + 0.5 - ((fx - x0 - s / 2.0).powi(2) + (fy - y0 - s / 2.0).powi(2)).sqrt()).clamp(0.0, 1.0),
+                        (true, false) => pts.windows(2).map(|p| (t - dist(fx, fy, p[0], p[1])).clamp(0.0, 1.0)).fold(0.0, f32::max),
+                    };
                     if tick > 0.0 && b > 0.0 {
                         let (m, f) = (rgb(mark), rgb(fill));
                         let mix = |i: usize| (f32::from(m[i]) * tick + f32::from(f[i]) * (1.0 - tick)).round() as u8;
@@ -313,7 +383,7 @@ pub(crate) fn paint(shape: Shape, w: u32, h: u32, (cw, ch): (u16, u16)) -> RgbaI
                         (rgb(fill), b)
                     }
                 }
-                Shape::Frame { sides, line, fill } => {
+                Shape::Frame { sides, line, fill, tee } => {
                     // The popup's box runs on past this cell where it has no edge.
                     let (big, wf, hf) = (1e4, w as f32, h as f32);
                     let b = (
@@ -325,7 +395,12 @@ pub(crate) fn paint(shape: Shape, w: u32, h: u32, (cw, ch): (u16, u16)) -> RgbaI
                     let r = (cw * 0.7).min(ch * 0.5);
                     let t = (ch / 20.0).round().max(1.0);
                     let outer = rbox(fx, fy, b, r);
-                    let inner = rbox(fx, fy, (b.0 + t, b.1 + t, b.2 - t, b.3 - t), (r - t).max(0.0));
+                    let mut inner = rbox(fx, fy, (b.0 + t, b.1 + t, b.2 - t, b.3 - t), (r - t).max(0.0));
+                    if tee {
+                        // The inner line from the edge on, through the cell's middle.
+                        let across = if sides & 5 != 0 { (fy - hf / 2.0).abs() } else { (fx - wf / 2.0).abs() };
+                        inner = inner.min((across + 0.5 - t / 2.0).clamp(0.0, 1.0));
+                    }
                     let (l, f) = (rgb(line), rgb(fill));
                     let mix = |i: usize| ((f32::from(l[i]) * (outer - inner) + f32::from(f[i]) * inner) / outer.max(1e-6)).round() as u8;
                     ([mix(0), mix(1), mix(2), 255], outer)
@@ -407,8 +482,8 @@ mod tests {
         // A slider from 20 px down for 30 px: clear above and below, its colour's alpha within.
         let s = paint(Shape::Slider { start: 20.0, len: 30.0, color: Rgba(200, 200, 200, 102), top: 0 }, 8, 64, (8, 16));
         assert_eq!((s.get_pixel(4, 10)[3], s.get_pixel(4, 35)[3], s.get_pixel(4, 60)[3]), (0, 102, 0));
-        let on = paint(Shape::Check { on: true, fill, mark: Color::Rgb(255, 255, 255), under }, 24, 16, (8, 16));
-        let off = paint(Shape::Check { on: false, fill, mark: Color::Rgb(255, 255, 255), under }, 24, 16, (8, 16));
+        let on = paint(Shape::Check { on: true, fill, mark: Color::Rgb(255, 255, 255), under, round: false }, 24, 16, (8, 16));
+        let off = paint(Shape::Check { on: false, fill, mark: Color::Rgb(255, 255, 255), under, round: false }, 24, 16, (8, 16));
         let white = |i: &RgbaImage| i.pixels().filter(|p| p[0] > 200 && p[1] > 200 && p[3] > 200).count();
         assert!(white(&on) > 6 && white(&off) == 0, "the tick only when ticked");
     }
@@ -516,6 +591,46 @@ mod tests {
         assert_eq!(b[(4, 1)].symbol(), "F", "the title stays text");
         assert_eq!((b[(2, 1)].bg, b[(5, 4)].bg), (behind, bg), "a corner shows what is beside the popup; an edge is the popup's");
         assert!(!pic(5, 2), "inside stays text");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn fields_round_their_blank_corners_and_sliders_and_radio_buttons_paint() {
+        let d = std::env::temp_dir().join(format!("termcode-pixels-round-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut app = App::new(d.clone(), None);
+        app.media.kitty_for_tests();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(12, 3)).unwrap();
+        let mut out = None;
+        let (under, field, mark) = (Color::Rgb(30, 30, 30), Color::Rgb(60, 60, 60), Color::Rgb(0, 120, 212));
+        t.draw(|f| {
+            begin(Some((8, 16)));
+            crate::ui::fill(f, f.area(), under);
+            f.render_widget(Line::styled(" abc ", Style::new().bg(field)), Rect::new(0, 0, 5, 1));
+            f.render_widget(Line::styled(" abcde", Style::new().bg(field)), Rect::new(0, 1, 6, 1));
+            f.render_widget(Line::styled("▎ab ", Style::new().fg(mark).bg(field)), Rect::new(0, 2, 4, 1));
+            for y in 0..3 {
+                round_box(f, Rect::new(0, y, if y == 1 { 6 } else { 5 - y }, 1), under);
+            }
+            place(&mut app, f);
+            out = Some(f.buffer_mut().clone());
+        })
+        .unwrap();
+        let b = out.unwrap();
+        let pic = |x: u16, y: u16| b[(x, y)].symbol().contains('\u{10EEEE}');
+        assert!(pic(0, 0) && pic(4, 0) && b[(0, 0)].bg == under, "both blank ends, round on what is behind");
+        assert!(pic(0, 1) && b[(5, 1)].symbol() == "e", "text at an end stays");
+        assert!(pic(0, 2), "the focus mark becomes the corner's line");
+        // A value's slider: the knob in its cell, the fill before it, the rest after.
+        let (fill, rest, knob) = (Color::Rgb(0, 120, 212), Color::Rgb(80, 80, 80), Color::Rgb(220, 220, 220));
+        let s = paint(Shape::Range { pos: 2, fill, rest, knob }, 64, 16, (8, 16));
+        assert_eq!((*s.get_pixel(20, 8), *s.get_pixel(12, 8), *s.get_pixel(50, 8)), (image::Rgba([220, 220, 220, 255]), image::Rgba([0, 120, 212, 255]), image::Rgba([80, 80, 80, 255])));
+        assert_eq!(s.get_pixel(50, 2)[3], 0, "a thin track");
+        // A radio button: a dot when chosen, a ring when not.
+        let on = paint(Shape::Check { on: true, fill, mark: knob, under, round: true }, 24, 16, (8, 16));
+        let off = paint(Shape::Check { on: false, fill: rest, mark: knob, under, round: true }, 24, 16, (8, 16));
+        assert_eq!((on.get_pixel(12, 8)[0], off.get_pixel(12, 8)[0]), (220, 80));
+        assert!(off.get_pixel(12, 2)[0] > 150, "the ring, at the edge");
         std::fs::remove_dir_all(&d).unwrap();
     }
 

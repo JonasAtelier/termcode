@@ -7838,3 +7838,73 @@ fn resting_on_a_picture_shows_it_in_a_card_in_the_explorer_and_the_editor() {
     assert!(s.contains(" 64×32 "), "{s}");
     let _ = fs::remove_dir_all(&root);
 }
+
+/// Pictures of the Settings and Commit dialogs as Ghostty would show them (10×22 px cells,
+/// the kit's shapes in pixels), into `$TERMCODE_SHOTS`:
+/// `TERMCODE_SHOTS=/tmp/shots cargo test --release screenshots -- --ignored`.
+#[test]
+#[ignore]
+fn screenshots() {
+    let Some(dir) = std::env::var_os("TERMCODE_SHOTS").map(PathBuf::from) else { return };
+    fs::create_dir_all(&dir).unwrap();
+    // A monospace font with the Nerd Font icons when there is one.
+    let file = Command::new("fc-match").args(["-f", "%{file}", "monospace:charset=ea60"]).output().unwrap().stdout;
+    let font = fontdue::Font::from_bytes(fs::read(String::from_utf8_lossy(&file).trim()).unwrap(), fontdue::FontSettings::default()).unwrap();
+    // The screen's cells, then the shapes placed over them (`pixels::SHOTS`).
+    let snap = |app: &mut App, t: &mut Terminal<TestBackend>, name: &str| {
+        let (cw, ch, px) = (10u32, 22u32, 15.0f32);
+        crate::ui::pixels::SHOTS.set(Some(Vec::new()));
+        let mut buf = None;
+        t.draw(|f| {
+            crate::ui::draw(app, f);
+            buf = Some(f.buffer_mut().clone());
+        })
+        .unwrap();
+        let b = buf.unwrap();
+        let lm = font.horizontal_line_metrics(1.0).unwrap();
+        let ascent = (ch as f32 - lm.new_line_size * px) / 2.0 + lm.ascent * px;
+        let rgb = |c: Color, or: [u8; 3]| if let Color::Rgb(r, g, b) = c { [r, g, b, 255] } else { [or[0], or[1], or[2], 255] };
+        let mut img = image::RgbaImage::new(u32::from(b.area.width) * cw, u32::from(b.area.height) * ch);
+        for p in b.area.positions() {
+            let c = &b[p];
+            let (x0, y0) = (u32::from(p.x) * cw, u32::from(p.y) * ch);
+            let (bg, fg) = (rgb(c.bg, [30, 30, 30]), rgb(c.fg, [204, 204, 204]));
+            image::imageops::replace(&mut img, &image::RgbaImage::from_pixel(cw, ch, image::Rgba(bg)), i64::from(x0), i64::from(y0));
+            // The cell's own character: after any picture sequence sent with it.
+            let Some(g) = c.symbol().chars().last().filter(|g| *g != ' ' && !c.symbol().contains('\u{10EEEE}')) else { continue };
+            let (m, cover) = font.rasterize(g, px);
+            let top = (ascent - (m.ymin as f32 + m.height as f32)).round() as i64;
+            for (i, &a) in cover.iter().enumerate().filter(|(_, a)| **a > 0) {
+                let (gx, gy) = (i64::from(x0) + m.xmin as i64 + (i % m.width) as i64, i64::from(y0) + top + (i / m.width) as i64);
+                if (0..i64::from(img.width())).contains(&gx) && (0..i64::from(img.height())).contains(&gy) {
+                    let mut dot = image::Rgba(fg);
+                    dot.0[3] = a;
+                    image::imageops::overlay(&mut img, &image::RgbaImage::from_pixel(1, 1, dot), gx, gy);
+                }
+            }
+        }
+        for (at, pic) in crate::ui::pixels::SHOTS.take().unwrap_or_default() {
+            image::imageops::overlay(&mut img, &pic, i64::from(at.x) * i64::from(cw), i64::from(at.y) * i64::from(ch));
+        }
+        img.save(dir.join(name)).unwrap();
+    };
+    let root = repo("screenshots");
+    fs::write(root.join("src/main.rs"), "fn main() {\n    println!(\"changed\");\n}\n").unwrap();
+    fs::write(root.join("new.txt"), "x\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.media.kitty_cells_for_tests((10, 22));
+    let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    wait_idle(&mut app);
+    crate::settingsui::open(&mut app);
+    snap(&mut app, &mut t, "settings.png");
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    snap(&mut app, &mut t, "settings-layout.png");
+    app.settings_dlg = None;
+    crate::commitdlg::open(&mut app);
+    wait_idle(&mut app);
+    snap(&mut app, &mut t, "commit.png");
+    app.gitui.dlg = None;
+    wait_idle(&mut app);
+    fs::remove_dir_all(&root).unwrap();
+}
+

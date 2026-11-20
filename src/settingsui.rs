@@ -1295,6 +1295,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     f.render_widget(Clear, sr);
     let count = if d.query.is_empty() { String::new() } else { format!("{} found ", rows.len()) };
     let caret = crate::ui::kit::search_input(f, sr, &d.query, "Search settings  (Ctrl+F)", searching, &count, P.dim);
+    crate::ui::pixels::round_box(f, sr, P.widget_bg);
     if searching {
         f.set_cursor_position((caret, sr.y));
     }
@@ -1336,6 +1337,9 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         text(f, row, &format!(" {label}"), style);
         let count = format!("{n} ");
         text(f, Rect::new(row.right() - count.width() as u16, y, count.width() as u16, 1), &count, style.fg(if current && d.focus == Focus::Categories { P.button_fg } else { P.dim }));
+        if current {
+            crate::ui::pixels::round_box(f, row, P.widget_bg);
+        }
         d.hits.categories.push((row, i));
     }
     // The settings: a heading (the category, or the search), then each one as VS Code lists
@@ -1419,7 +1423,14 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                     text(f, Rect::new(track.x + pos, track.y, 1, 1), if crate::theme::ascii() { "O" } else { "●" }, row_st.fg(if selected { accent } else { P.widget_fg }));
                     text(f, Rect::new(track.x + pos + 1, track.y, track_w - pos - 1, 1), &rest.repeat((track_w - pos - 1) as usize), row_st.fg(P.widget_border));
                     let num = format!(" {n} ");
-                    text(f, Rect::new(track.right() + 2, control.y, num.width() as u16, 1), &num, input);
+                    let num_r = Rect::new(track.right() + 2, control.y, num.width() as u16, 1);
+                    text(f, num_r, &num, input);
+                    crate::ui::pixels::round_box(f, num_r, bg);
+                    if !crate::theme::ascii() {
+                        let under = track.positions().map(|p| f.buffer_mut()[p].bg).collect();
+                        let shape = crate::ui::pixels::Shape::Range { pos, fill: accent, rest: P.widget_border, knob: if selected { accent } else { P.widget_fg } };
+                        crate::ui::pixels::ask(f, track, shape, under);
+                    }
                     d.hits.rows.push((Rect::new(content.x, y, content.width, FIELD_H - 1), track, row));
                 }
                 Choice(options) => {
@@ -1427,6 +1438,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                     let r2 = Rect::new(control.x, control.y, (wide as u16).min(control.width), 1);
                     let shown = format!(" {:<w$} {} ", crate::ui::fit(&d.display(row), wide - 5), icons().chev_down, w = wide - 5);
                     text(f, r2, &shown, input);
+                    crate::ui::pixels::round_box(f, r2, bg);
                     d.hits.rows.push((Rect::new(content.x, y, content.width, FIELD_H - 1), r2, row));
                 }
                 Json(_) if field.key == QUICK => {
@@ -1451,7 +1463,11 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                         text(f, Rect::new(r2.x + 1, r2.y, r2.width - 1, 1), &d.display(row), input);
                     }
                     d.hits.rows.push((Rect::new(content.x, y, content.width, FIELD_H - 1), r2, row));
+                    crate::ui::pixels::round_box(f, r2, bg);
                 }
+            }
+            if selected {
+                crate::ui::pixels::round_box(f, block, P.widget_bg);
             }
             y += fh;
         }

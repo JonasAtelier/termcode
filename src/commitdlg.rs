@@ -874,6 +874,9 @@ fn file_pane(f: &mut Frame, d: &mut CommitDlg, k: usize, r: Rect, title: &str, b
         };
         let c = git_color(file.letter);
         row(f, rr, bg, vec![Span::styled(format!(" {} ", file.letter), Style::new().fg(c)), Span::styled(fit(&file.path, (rr.width as usize).saturating_sub(4)), Style::new().fg(c))]);
+        if i == d.sel[k] {
+            crate::ui::pixels::round_box(f, rr, P.widget_bg);
+        }
     }
     if d.lists[k].is_empty() && h > 0 {
         row(f, Rect::new(list.x, list.y, list.width, 1), P.widget_bg, vec![Span::styled(" (none)", Style::new().fg(P.dim))]);
@@ -939,6 +942,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         let t = format!("{} {label}", radio(on));
         let r = Rect::new(x, mode.y, t.width() as u16, 1).intersection(mode);
         f.render_widget(Span::styled(t.clone(), Style::new().fg(P.widget_fg)), r);
+        crate::ui::kit::radio_px(f, Rect::new(r.x, r.y, 3, 1).intersection(r), on);
         d.hits.btns.push((r, b));
         x += t.width() as u16 + 3;
     }
@@ -970,7 +974,8 @@ fn message(f: &mut Frame, d: &mut CommitDlg, r: Rect) {
     }
     let (b, v) = (&d.msg, &mut d.view);
     let c = b.clamp(v.cursor);
-    let (h, w) = (r.height as usize, (r.width - 1) as usize);
+    // A blank column each side: the box's rounded corners (ui::pixels) go there.
+    let (h, w) = (r.height as usize, (r.width - 2) as usize);
     if c.line < v.scroll {
         v.scroll = c.line;
     } else if c.line >= v.scroll + h {
@@ -1010,6 +1015,7 @@ fn message(f: &mut Frame, d: &mut CommitDlg, r: Rect) {
     if d.focus == Pane::Message && c.line >= v.scroll && c.line < v.scroll + h {
         f.set_cursor_position((r.x + 1 + (cx - v.hscroll) as u16, r.y + (c.line - v.scroll) as u16));
     }
+    crate::ui::pixels::round_box(f, r, P.widget_bg);
 }
 
 #[cfg(test)]
