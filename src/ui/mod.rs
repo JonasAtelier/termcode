@@ -48,6 +48,7 @@ mod visual_tests {
 
 mod diffs;
 pub(crate) mod kit;
+pub(crate) mod pixels;
 mod panels;
 mod text;
 
@@ -185,12 +186,14 @@ pub fn lang_id(name: &str) -> String {
 
 pub fn draw(app: &mut App, f: &mut Frame) {
     kit::begin(app);
+    pixels::begin(crate::media::pixel_cell(app));
     app.exts.begin();
     draw_frame(app, f);
     crate::ext::overlay(app, f);
     if app.prefix_armed {
         prefix_hint(app, f);
     }
+    pixels::place(app, f);
     crate::media::flush(app, f);
     app.ui.btns = kit::end();
     scrub(f.buffer_mut(), &crate::settingsgraphics::take_drawn());

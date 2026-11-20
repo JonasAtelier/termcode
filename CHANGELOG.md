@@ -19,6 +19,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   half-blocks elsewhere.
 - Extensions can show pictures: a `{"picture": <base64 PNG>, "rows": 8}` row (a plot, a
   waveform, a diagram), in real pixels in Ghostty and kitty, half-blocks elsewhere.
+- In Ghostty and kitty the UI kit draws in pixels where text cannot: buttons get rounded
+  ends (with any font), scrollbar sliders are rounded and move by the pixel, checkboxes
+  are rounded boxes with a real tick. A popup over them keeps them under it.
 
 ## [1.0.0] - 2026-11-20
 

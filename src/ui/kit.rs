@@ -268,6 +268,8 @@ pub(crate) fn check(f: &mut Frame, b: Rect, (x, y): (u16, u16), on: bool, label:
         return Rect::default();
     }
     let lit = hot(r);
+    let box_r = Rect::new(r.x, r.y, 3.min(r.width), 1);
+    let under: Vec<Color> = box_r.positions().map(|p| f.buffer_mut()[p].bg).collect();
     let mark = if crate::theme::ascii() {
         Span::styled(if on { "[x]" } else { "[ ]" }, Style::new().fg(if lit { lit_fg() } else { P.editor_fg }))
     } else if on {
@@ -276,6 +278,15 @@ pub(crate) fn check(f: &mut Frame, b: Rect, (x, y): (u16, u16), on: bool, label:
         Span::styled("   ", Style::new().bg(if lit { P.list_hover_bg } else { P.input_bg }))
     };
     f.render_widget(Line::from(vec![mark, Span::raw(" "), Span::styled(label.to_string(), Style::new().fg(P.editor_fg))]), r);
+    if !crate::theme::ascii() {
+        let fill = match (on, lit) {
+            (true, true) => P.button_hover,
+            (true, false) => P.button_bg,
+            (false, true) => P.list_hover_bg,
+            (false, false) => P.input_bg,
+        };
+        super::pixels::ask(f, box_r, super::pixels::Shape::Check { on, fill, mark: P.button_fg, under: P.editor_bg }, under);
+    }
     note(r);
     r
 }
@@ -336,8 +347,26 @@ pub(crate) fn card(f: &mut Frame, r: Rect, title: &str, border: Color) -> Rect {
 pub(crate) fn slider(f: &mut Frame, track: Rect, total: usize, view: usize, off: usize) {
     if total > view && !track.is_empty() {
         let s = decor::slider(track.height, total, view, off, total - view);
-        paint_slider(f, track, s, if hot(track) { P.slider_hover } else { P.slider });
+        draw_slider(f, track, s, (total, view, off, total - view), if hot(track) { P.slider_hover } else { P.slider });
     }
+}
+
+/// A scrollbar's slider: `s` (its cells), or where pictures show a rounded one placed to
+/// the pixel (`total`, `view`, `off`, `max_off` say where).
+fn draw_slider(f: &mut Frame, track: Rect, s: (u16, u16), (total, view, off, max_off): (usize, usize, usize, usize), c: Rgba) {
+    let Some((_, ch)) = super::pixels::cell().filter(|_| track.width == 1 && track.height > 1) else {
+        paint_slider(f, track, s, c);
+        return;
+    };
+    let ch = f32::from(ch);
+    let span = f32::from(track.height) * ch;
+    let len = (view as f32 / total.max(1) as f32 * span).clamp(ch, span);
+    let start = if max_off == 0 { 0.0 } else { off.min(max_off) as f32 / max_off as f32 * (span - len) };
+    let (c0, c1) = ((start / ch).floor() as u16, ((start + len) / ch).ceil().min(f32::from(track.height)) as u16);
+    let cells = Rect::new(track.x, track.y + c0, 1, c1.saturating_sub(c0)).intersection(f.area());
+    let under: Vec<Color> = cells.positions().map(|p| f.buffer_mut()[p].bg).collect();
+    paint_slider(f, track, (c0, c1.saturating_sub(c0)), c);
+    super::pixels::ask(f, cells, super::pixels::Shape::Slider { start: start - f32::from(c0) * ch, len, color: c }, under);
 }
 
 /// A side bar section's header (Source Control's, an extension's): its chevron, its title
@@ -404,7 +433,7 @@ pub(crate) fn sash(f: &mut Frame, r: Rect, hot: bool, border: Color, bg: Color) 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn scrollbar(app: &mut App, f: &mut Frame, track: Rect, target: ScrollTarget, total: usize, view: usize, off: usize, max_off: usize) {
     let s = decor::slider(track.height, total, view, off, max_off);
-    paint_slider(f, track, s, slider_color(app, track, target));
+    draw_slider(f, track, s, (total, view, off, max_off), slider_color(app, track, target));
     app.ui.scrollbars.push(ScrollHit { track, target, slider: s, max_off, page: view.max(1) });
 }
 
@@ -456,13 +485,19 @@ pub(crate) fn pill(text: String, st: Style, under: Color) -> Vec<Span<'static>> 
 /// `fill` over `under`. Nothing without a Nerd Font, or in a run too short for both.
 pub(crate) fn round_ends(f: &mut Frame, r: Rect, fill: Color, under: Color) {
     let r = r.intersection(f.area());
-    if !crate::theme::nerd() || r.width < 3 || r.height == 0 {
+    if r.width < 3 || r.height == 0 {
         return;
     }
-    let st = Style::new().fg(fill).bg(under);
-    let buf = f.buffer_mut();
-    buf[(r.x, r.y)].set_symbol("\u{e0b6}").set_style(st);
-    buf[(r.right() - 1, r.y)].set_symbol("\u{e0b4}").set_style(st);
+    if crate::theme::nerd() {
+        let st = Style::new().fg(fill).bg(under);
+        let buf = f.buffer_mut();
+        buf[(r.x, r.y)].set_symbol("\u{e0b6}").set_style(st);
+        buf[(r.right() - 1, r.y)].set_symbol("\u{e0b4}").set_style(st);
+    }
+    // Where pictures show, rounded in pixels (with any font): a one-line run's.
+    for (right, x) in [(false, r.x), (true, r.right() - 1)].into_iter().filter(|_| r.height == 1) {
+        super::pixels::ask(f, Rect::new(x, r.y, 1, 1), super::pixels::Shape::Cap { right, fill, under }, vec![under]);
+    }
 }
 
 /// A count badge: a pill on `under` (the row's background).

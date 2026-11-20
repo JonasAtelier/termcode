@@ -1679,7 +1679,7 @@ mod app_tests {
         // A notch of the wheel: three rows on, the same tiles, no pixels sent.
         mouse(&mut app, MouseEventKind::ScrollDown, geo.area.x + 30, geo.area.y + 5);
         screen(&mut app, &mut t);
-        assert!(sent(&t).is_empty(), "scrolling sends cells only");
+        assert!(!sent(&t).contains(&format!("c={},r={}", TILE.0, TILE.1)), "scrolling sends no tiles, cells only (the slider's own picture aside)");
         assert_ne!(top(&t), before, "the cells point further down");
         // A selection remakes the tiles under it; the old ones leave the frame after.
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), geo.area.x + 2, geo.area.y + 1);
