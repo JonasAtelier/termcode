@@ -24,7 +24,8 @@ const SHELL_PAUSE: Duration = Duration::from_millis(500);
 /// Before a C/C++ file is (a compiler run, heavier), and a Rust file's syntax.
 const C_PAUSE: Duration = Duration::from_millis(800);
 const RUST_PAUSE: Duration = Duration::from_millis(400);
-/// A run still going after this frees the slot (its thread ends on its own).
+/// A run still going after this frees the slot for other files (a cold disk, a huge
+/// file); its answer is still taken when it comes, and it is not started again.
 const GIVE_UP: Duration = Duration::from_secs(30);
 /// How far a problem looks for its line after lines above it were added or removed.
 const DRIFT: usize = 200;
@@ -84,6 +85,8 @@ pub struct Lints {
     /// The version last seen per document and when it changed (the typing pause).
     seen: HashMap<String, (u64, Instant)>,
     job: Option<Job>,
+    /// A run past GIVE_UP: its answer, when it comes.
+    late: Option<Job>,
     due: Option<Instant>,
     told: HashSet<String>,
     /// Marks an API client put on a document's lines (`ui.decorate`), shown as problems.
@@ -119,6 +122,7 @@ impl Default for Lints {
             files: HashMap::new(),
             seen: HashMap::new(),
             job: None,
+            late: None,
             due: None,
             told: HashSet::new(),
             marks: HashMap::new(),
@@ -205,6 +209,17 @@ pub fn tick(app: &mut App) -> bool {
         return false;
     }
     let mut changed = false;
+    if let Some(late) = &app.lints.late {
+        match late.rx.try_recv() {
+            Ok(found) => {
+                let late = app.lints.late.take().unwrap();
+                app.lints.files.insert(late.key, Checked { ver: late.ver, diags: found.diags, placed: Vec::new(), placed_ver: u64::MAX });
+                changed = true;
+            }
+            Err(TryRecvError::Disconnected) => app.lints.late = None,
+            Err(TryRecvError::Empty) => {}
+        }
+    }
     if let Some(job) = &app.lints.job {
         match job.rx.try_recv() {
             Ok(found) => {
@@ -216,7 +231,13 @@ pub fn tick(app: &mut App) -> bool {
                 changed = true;
             }
             Err(TryRecvError::Disconnected) => app.lints.job = None,
-            Err(TryRecvError::Empty) if job.since.elapsed() > GIVE_UP => app.lints.job = None,
+            Err(TryRecvError::Empty) if job.since.elapsed() > GIVE_UP => {
+                app.lints.late = app.lints.job.take();
+                let note = "Still checking for problems after 30 s (a slow disk?): they show when it ends";
+                if app.lints.told.insert(note.to_string()) {
+                    app.msg = note.to_string();
+                }
+            }
             Err(TryRecvError::Empty) => {}
         }
     }
@@ -239,7 +260,8 @@ pub fn tick(app: &mut App) -> bool {
         let Some(Doc::Text(b)) = app.docs.get(&key) else { continue };
         let Some(tool) = tool(&key, b) else { continue };
         let ver = b.version();
-        if app.lints.files.get(&key).is_some_and(|c| c.ver == ver) || app.lints.job.as_ref().is_some_and(|j| j.key == key && j.ver == ver) {
+        let running = |j: &Option<Job>| j.as_ref().is_some_and(|j| j.key == key && j.ver == ver);
+        if app.lints.files.get(&key).is_some_and(|c| c.ver == ver) || running(&app.lints.job) || running(&app.lints.late) {
             continue;
         }
         // First sight (opened): at once. Then the typing pause, or for C/C++ the save.
@@ -1221,5 +1243,33 @@ mod tests {
         assert_eq!(place(&d, &now(&["a", "bad line fixed", "c"])), None, "its own line edited");
         assert_eq!(shebang("#!/usr/bin/env bash"), Some("bash"));
         assert_eq!((shebang("#!/bin/sh -e"), shebang("#!/usr/bin/python3")), (Some("sh"), None));
+    }
+
+    #[test]
+    fn a_check_past_its_time_frees_the_slot_shows_its_late_answer_and_is_not_run_again() {
+        let root = std::env::temp_dir().join(format!("termcode-lint-late-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("s.sh"), "#!/bin/sh\necho $1\n").unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.lints.on = true;
+        app.open_file(0, "s.sh", false);
+        let key = "file:s.sh".to_string();
+        let Some(Doc::Text(b)) = app.docs.get(&key) else { panic!("opened") };
+        let ver = b.version();
+        // A run (a cold disk's) still going past GIVE_UP.
+        let (tx, rx) = mpsc::channel();
+        app.lints.job = Some(Job { key: key.clone(), ver, since: Instant::now() - GIVE_UP - Duration::from_secs(1), rx });
+        tick(&mut app);
+        assert!(app.lints.job.is_none() && app.lints.late.is_some(), "the slot freed, the run kept");
+        assert!(app.msg.contains("Still checking"), "{}", app.msg);
+        tick(&mut app);
+        assert!(app.lints.job.is_none(), "the same text is not checked again meanwhile");
+        let d = Diag { line: 1, start: 5, end: 7, sev: Sev::Warning, msg: "late".into(), text: "echo $1".into() };
+        tx.send(Found { diags: vec![d], hint: None }).unwrap();
+        assert!(tick(&mut app), "a redraw");
+        assert_eq!(app.lints.shown(&key).len(), 1, "its late answer shown");
+        assert!(app.lints.late.is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
