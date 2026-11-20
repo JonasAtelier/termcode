@@ -9,6 +9,7 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ## [Unreleased]
 
 ### Added
+- The title bar shows termcode's version: `main.rs — termcode 0.5.0`.
 - A long tab bar scrolls: the wheel over it, or its ‹ › arrows when tabs are hidden on
   that side; it follows the active tab (Ctrl+PgDn, a file opened) and leaves no blank end.
 - Extensions: a program adds its own view, as Serial and GitHub are views. termcode

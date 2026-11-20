@@ -375,7 +375,7 @@ fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
     // file — folder — app, a part equal to the one before it once (termcode's own repo).
     let mut parts: Vec<String> = active.into_iter().chain([app.repo.clone(), "termcode".into()]).collect();
     parts.dedup();
-    let text = parts.join(" — ");
+    let text = format!("{} {}", parts.join(" — "), env!("CARGO_PKG_VERSION"));
     let st = Style::new().fg(P.title_fg).bg(P.title_bg);
     fill(f, r, P.title_bg);
     let (tp, bp) = (lay.s.title_padding.div_ceil(2), lay.s.button_padding.div_ceil(2));

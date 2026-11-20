@@ -5923,7 +5923,8 @@ fn the_title_names_a_folder_called_termcode_once() {
     let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
     let shown = screen(&mut app, &mut t);
     let title = shown.lines().next().unwrap();
-    assert!(title.contains("main.rs — termcode") && !title.contains("termcode — termcode"), "{title}");
+    let ver = format!("main.rs — termcode {}", env!("CARGO_PKG_VERSION"));
+    assert!(title.contains(&ver) && !title.contains("termcode — termcode"), "{title}");
     let close = app.ui.close;
     let cross = (close.x..close.right()).map(|x| &t.backend().buffer()[(x, close.y)]).find(|c| c.symbol() == crate::theme::icons().tab_close).expect("the tab's cross on Close");
     assert!(cross.modifier.contains(Modifier::BOLD), "bold, as on a tab");
