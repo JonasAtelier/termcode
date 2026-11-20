@@ -22,6 +22,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - In Ghostty and kitty the UI kit draws in pixels where text cannot: buttons get rounded
   ends (with any font), scrollbar sliders are rounded and move by the pixel, checkboxes
   are rounded boxes with a real tick. A popup over them keeps them under it.
+- Colours written in a file (`#0e639c`, `#fff8`, `rgb(…)`, `rgba(…)`) show on their own
+  colour, their text black or white to read on it (`#123`, an issue's number, does not).
+- In Ghostty and kitty, badges (Source Control's count, the activity bar's) are rounded
+  in pixels, and bars are smooth rounded bars: an extension's install progress, and the
+  ELF and map reports' bars (a memory region's green, amber past 75%, red past 90%).
 
 ## [1.0.0] - 2026-11-20
 

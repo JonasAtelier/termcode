@@ -15,6 +15,8 @@ use std::cell::RefCell;
 pub(crate) enum Shape {
     /// A filled run's left or right end (`right`), rounded: `fill` over `under`.
     Cap { right: bool, fill: Color, under: Color },
+    /// A bar `filled` of `cells` cells full, rounded, in `fill` on a faint track.
+    Bar { cells: u16, filled: u16, fill: Color, track: Rgba },
     /// A vertical slider `len` pixels long, `start` pixels into its cells, in `color`.
     Slider { start: f32, len: f32, color: Rgba },
     /// A checkbox, ticked or not, lit under the pointer.
@@ -58,10 +60,60 @@ pub(crate) fn ask(f: &mut Frame, at: Rect, shape: Shape, under: Vec<Color>) {
     ASKS.with_borrow_mut(|a| a.push(Ask { at, shape, cells, under }));
 }
 
-/// The frame drawn: each shape asked for over its cells, where they are still the kit's.
+/// The frame's caps and bars as the kit's text draws them, found in its cells: a cap's
+/// glyph (a button's, a badge's: `kit::CAP_L`, `CAP_R`) and a bar of `█` then `░` 10
+/// (progress), 20 (a part's size) or 24 cells long (a memory region: green, then amber
+/// past 75%, red past 90%).
+// ponytail: found by their text, not told by the kit (badges are spans placed later);
+// a file showing exactly such a run gets a bar too.
+fn found(f: &mut Frame) -> Vec<Ask> {
+    let buf = f.buffer_mut();
+    let area = buf.area;
+    let rgb = |c: Color| matches!(c, Color::Rgb(..));
+    let mut out = Vec::new();
+    for y in area.top()..area.bottom() {
+        let mut x = area.left();
+        while x < area.right() {
+            let c = &buf[(x, y)];
+            let right = c.symbol() == super::kit::CAP_R;
+            if (right || c.symbol() == super::kit::CAP_L) && rgb(c.fg) && rgb(c.bg) {
+                out.push(Ask { at: Rect::new(x, y, 1, 1), shape: Shape::Cap { right, fill: c.fg, under: c.bg }, cells: vec![c.clone()], under: vec![c.bg] });
+                x += 1;
+                continue;
+            }
+            let run = (x..area.right()).take_while(|&k| matches!(buf[(k, y)].symbol(), "█" | "░")).count() as u16;
+            if run == 0 {
+                x += 1;
+                continue;
+            }
+            let filled = (x..x + run).take_while(|&k| buf[(k, y)].symbol() == "█").count() as u16;
+            let ordered = (x + filled..x + run).all(|k| buf[(k, y)].symbol() == "░");
+            if ordered && matches!(run, 10 | 20 | 24) {
+                let share = f64::from(filled) / f64::from(run);
+                let fill = match run {
+                    24 if share > 0.9 => crate::theme::P.error_fg,
+                    24 if share > 0.75 => crate::theme::P.git_modified,
+                    24 => crate::theme::P.git_added,
+                    _ => crate::theme::P.button_bg,
+                };
+                let Color::Rgb(r, g, b) = super::kit::lit_fg() else { unreachable!() };
+                let at = Rect::new(x, y, run, 1);
+                let cells: Vec<Cell> = at.positions().map(|p| buf[p].clone()).collect();
+                let under = cells.iter().map(|c| c.bg).collect();
+                out.push(Ask { at, shape: Shape::Bar { cells: run, filled, fill, track: Rgba(r, g, b, 36) }, cells, under });
+            }
+            x += run;
+        }
+    }
+    out
+}
+
+/// The frame drawn: each shape asked for over its cells, where they are still the kit's;
+/// then the caps and bars its text has (`found`).
 pub(crate) fn place(app: &mut App, f: &mut Frame) {
-    let asks = ASKS.take();
+    let mut asks = ASKS.take();
     let Some((cw, ch)) = cell() else { return };
+    asks.extend(found(f));
     for a in asks {
         let buf = f.buffer_mut();
         if !a.at.positions().zip(&a.cells).all(|(p, c)| buf[p] == *c) {
@@ -116,9 +168,22 @@ pub(crate) fn paint(shape: Shape, w: u32, h: u32, (cw, ch): (u16, u16)) -> RgbaI
             let (color, a) = match shape {
                 Shape::Cap { right, fill, .. } => {
                     // The button's box goes on past the cell: only its rounded end shows.
-                    let r = (ch * 0.3).min(cw);
+                    let r = (ch * 0.36).min(cw);
                     let b = if right { (-cw, 0.0, w as f32, h as f32) } else { (0.0, 0.0, w as f32 + cw, h as f32) };
                     (rgb(fill), rbox(fx, fy, b, r))
+                }
+                Shape::Bar { cells, filled, fill, track } => {
+                    // A rounded bar across the cells' middle; its full part over the track.
+                    let th = (ch * 0.42).round();
+                    let (y0, x1) = (((h as f32 - th) / 2.0).round(), w as f32 - 1.0);
+                    let edge = (1.0, y0, x1, y0 + th);
+                    let full = (1.0, y0, 1.0 + (x1 - 1.0) * f32::from(filled) / f32::from(cells.max(1)), y0 + th);
+                    let on = if filled > 0 { rbox(fx, fy, full, th / 2.0) } else { 0.0 };
+                    if on > 0.0 {
+                        (rgb(fill), on.max(rbox(fx, fy, edge, th / 2.0) * f32::from(track.3) / 255.0))
+                    } else {
+                        ([track.0, track.1, track.2, 255], rbox(fx, fy, edge, th / 2.0) * f32::from(track.3) / 255.0)
+                    }
                 }
                 Shape::Slider { start, len, color } => {
                     let inset = (cw * 0.15).max(1.0);
@@ -200,13 +265,32 @@ mod tests {
             out = Some(f.buffer_mut().clone());
         })
         .unwrap();
-        let b = out.unwrap();
+        let b = out.take().unwrap();
         let pic = |x: u16, y: u16| b[(x, y)].symbol().contains('\u{10EEEE}');
         assert!(pic(0, 0) && pic(7, 0) && pic(0, 1), "the buttons' ends, in pixels");
         assert_eq!(b[(7, 1)].symbol(), "X", "what is in front stays");
         assert!(!pic(3, 0), "the label stays text");
         assert_eq!(b[(0, 0)].bg, Color::Rgb(30, 30, 30), "round the end, the surface behind");
         assert!((0..6).any(|y| pic(19, y)) && !(0..6).all(|y| pic(19, y)), "the slider, in pixels, only where it is");
+        // Text the kit drew as spans (a badge), and bars written as text: found in the frame.
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(40, 4)).unwrap();
+        t.draw(|f| {
+            begin(Some((8, 16)));
+            let under = Color::Rgb(30, 30, 30);
+            f.render_widget(Line::from(crate::ui::kit::badge(3, under)), Rect::new(0, 0, 5, 1));
+            f.render_widget(Line::raw("80% ████████░░ done"), Rect::new(0, 1, 40, 1));
+            f.render_widget(Line::raw("FLASH ██████████████████████░░ 92%"), Rect::new(0, 2, 40, 1));
+            f.render_widget(Line::raw("art ██░ not a bar"), Rect::new(0, 3, 40, 1));
+            place(&mut app, f);
+            out = Some(f.buffer_mut().clone());
+        })
+        .unwrap();
+        let b = out.unwrap();
+        let pic = |x: u16, y: u16| b[(x, y)].symbol().contains('\u{10EEEE}');
+        assert!(pic(0, 0) && b[(1, 0)].symbol() == "3" && pic(2, 0), "the badge's caps in pixels, its count text");
+        assert!((4..14).all(|x| pic(x, 1)), "a progress bar of 10 cells");
+        assert!((6..30).all(|x| pic(x, 2)), "a memory region's bar of 24 cells");
+        assert!(!pic(4, 3) && b[(4, 3)].symbol() == "█", "a short run stays text");
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

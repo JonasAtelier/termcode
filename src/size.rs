@@ -11,8 +11,10 @@ use std::process::{Command, Stdio};
 
 /// Rows of a list (symbols, files) shown at most.
 const TOP: usize = 200;
-/// A bar's cells.
+/// A region's bar (how full it is) and a part's (its size beside the largest), in cells:
+/// told apart by their length where they are drawn in pixels (ui::pixels).
 const BAR: usize = 24;
+const SHARE: usize = 20;
 
 pub fn human(n: u64) -> String {
     match n {
@@ -23,9 +25,13 @@ pub fn human(n: u64) -> String {
 }
 
 fn bar(part: u64, whole: u64) -> String {
-    let fill = if whole == 0 { 0 } else { ((part as f64 / whole as f64) * BAR as f64).round().min(BAR as f64) as usize };
+    bar_of(part, whole, BAR)
+}
+
+fn bar_of(part: u64, whole: u64, cells: usize) -> String {
+    let fill = if whole == 0 { 0 } else { ((part as f64 / whole as f64) * cells as f64).round().min(cells as f64) as usize };
     let fill = if part > 0 { fill.max(1) } else { 0 };
-    format!("{}{}", "█".repeat(fill), "░".repeat(BAR - fill))
+    format!("{}{}", "█".repeat(fill), "░".repeat(cells - fill))
 }
 
 fn hex(s: &str) -> Option<u64> {
@@ -192,7 +198,7 @@ fn elf_lines(name: &str, text: &str, regions: Option<&[Region]>) -> Vec<String> 
             (true, false, true) => "code",
             _ => "read-only",
         };
-        lines.push(format!("{:w$}  0x{:08x}  {:>9}  {}  {kind}", s.name, s.addr, human(s.size), bar(s.size, biggest)));
+        lines.push(format!("{:w$}  0x{:08x}  {:>9}  {}  {kind}", s.name, s.addr, human(s.size), bar_of(s.size, biggest, SHARE)));
     }
     let syms = symbols(text);
     let index: HashMap<String, String> = {
@@ -376,7 +382,7 @@ pub fn map_lines(name: &str, text: &str) -> Vec<String> {
             (Some(v), _) => v,
             _ => String::new(),
         };
-        lines.push(format!("{:w$}  0x{:08x}  {:>9}  {}  {place}", o.name, o.addr, human(o.size), bar(o.size, biggest)));
+        lines.push(format!("{:w$}  0x{:08x}  {:>9}  {}  {place}", o.name, o.addr, human(o.size), bar_of(o.size, biggest, SHARE)));
     }
     // By file: its bytes in each region.
     let names: Vec<String> = regions.iter().map(|r| r.name.clone()).collect();

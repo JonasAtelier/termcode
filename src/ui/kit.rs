@@ -474,11 +474,12 @@ pub(crate) fn paint_slider(f: &mut Frame, track: Rect, (start, len): (u16, u16),
 /// background over `under`, the surface behind. Without a Nerd Font a space takes each
 /// cap's place: the square look. Either way one cell a side.
 pub(crate) fn pill(text: String, st: Style, under: Color) -> Vec<Span<'static>> {
-    if !crate::theme::nerd() {
+    // Where pictures show, the caps' glyphs become rounded pixels (ui::pixels), any font.
+    if !crate::theme::nerd() && super::pixels::cell().is_none() {
         return vec![Span::styled(format!(" {text} "), st)];
     }
     let cap = Style::new().fg(st.bg.unwrap_or(under)).bg(under);
-    vec![Span::styled("\u{e0b6}", cap), Span::styled(text, st), Span::styled("\u{e0b4}", cap)]
+    vec![Span::styled(CAP_L, cap), Span::styled(text, st), Span::styled(CAP_R, cap)]
 }
 
 /// Rounds a filled run's ends (see `pill`): `r`'s first and last cells become the caps,
@@ -488,17 +489,18 @@ pub(crate) fn round_ends(f: &mut Frame, r: Rect, fill: Color, under: Color) {
     if r.width < 3 || r.height == 0 {
         return;
     }
-    if crate::theme::nerd() {
+    // Where pictures show, the glyphs become rounded pixels (ui::pixels), any font.
+    if crate::theme::nerd() || super::pixels::cell().is_some() {
         let st = Style::new().fg(fill).bg(under);
         let buf = f.buffer_mut();
-        buf[(r.x, r.y)].set_symbol("\u{e0b6}").set_style(st);
-        buf[(r.right() - 1, r.y)].set_symbol("\u{e0b4}").set_style(st);
-    }
-    // Where pictures show, rounded in pixels (with any font): a one-line run's.
-    for (right, x) in [(false, r.x), (true, r.right() - 1)].into_iter().filter(|_| r.height == 1) {
-        super::pixels::ask(f, Rect::new(x, r.y, 1, 1), super::pixels::Shape::Cap { right, fill, under }, vec![under]);
+        buf[(r.x, r.y)].set_symbol(CAP_L).set_style(st);
+        buf[(r.right() - 1, r.y)].set_symbol(CAP_R).set_style(st);
     }
 }
+
+/// A filled run's round caps (Nerd Font's U+E0B6, U+E0B4): in a frame's last pass, pixels.
+pub(crate) const CAP_L: &str = "\u{e0b6}";
+pub(crate) const CAP_R: &str = "\u{e0b4}";
 
 /// A count badge: a pill on `under` (the row's background).
 pub(crate) fn badge(n: usize, under: Color) -> Vec<Span<'static>> {
@@ -619,8 +621,8 @@ mod tests {
                     continue;
                 }
                 let name = p.to_string_lossy().into_owned();
-                // The kit, the palette, tests, and the settings' pixel switch and option list.
-                if !name.ends_with(".rs") || ["kit.rs", "theme.rs", "tests.rs", "ui_tests.rs", "settingsui.rs"].iter().any(|n| name.ends_with(n)) {
+                // The kit (its pixels too), the palette, tests, and the settings' pixel switch and option list.
+                if !name.ends_with(".rs") || ["kit.rs", "ui/pixels.rs", "theme.rs", "tests.rs", "ui_tests.rs", "settingsui.rs"].iter().any(|n| name.ends_with(n)) {
                     continue;
                 }
                 let text = std::fs::read_to_string(&p).unwrap();
