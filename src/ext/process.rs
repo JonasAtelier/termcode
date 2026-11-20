@@ -267,6 +267,7 @@ impl Picture {
 /// A picture's base64 at most (6 MB of PNG), and its pixels across and down.
 const MAX_PICTURE: usize = 8 << 20;
 const MAX_PIXELS: u32 = 4096;
+const KEEP: u32 = 1024;
 
 /// A picture row as its lines: `{"picture": <base64 PNG>, "rows": 8, "cols"?, "action"?,
 /// "hint"?}`. Its size is read before its pixels: a huge one is refused, not decoded.
@@ -282,6 +283,9 @@ fn picture(o: &serde_json::Map<String, Value>) -> Result<Vec<Row>, String> {
         return Err(format!("\"picture\": {w}×{h}: {MAX_PIXELS}×{MAX_PIXELS} at most"));
     }
     let img = image::load_from_memory_with_format(&png, format).map_err(|e| format!("\"picture\": {e}"))?.to_rgba8();
+    // Kept while its rows are: 1024 px a side at most (4 MB), more than a pane shows.
+    let k = (f64::from(KEEP) / f64::from(w.max(h))).min(1.0);
+    let img = if k < 1.0 { image::imageops::resize(&img, (f64::from(w) * k).round().max(1.0) as u32, (f64::from(h) * k).round().max(1.0) as u32, image::imageops::FilterType::Triangle) } else { img };
     let rows = o.get("rows").and_then(Value::as_u64).unwrap_or(8).clamp(1, 100) as u16;
     let cols = o.get("cols").and_then(Value::as_u64).map(|c| c.clamp(1, 500) as u16);
     let mut hk = std::collections::hash_map::DefaultHasher::new();
@@ -1576,6 +1580,8 @@ while read line; do echo "$line" >> "$TERMCODE_EXTENSION_DIR/got"; done
         assert_eq!(r[1].pic.as_ref().unwrap().0.size((8, 16), 80), (12, 3));
         assert!(rows(&json!([{"picture": "not base64!"}])).is_err());
         assert!(rows(&json!([{"picture": png(5000, 2)}])).unwrap_err().contains("4096"), "a huge one is refused before decoding");
+        let big = rows(&json!([{"picture": png(3000, 1500), "rows": 1}])).unwrap();
+        assert_eq!(big[0].pic.as_ref().unwrap().0.img.dimensions(), (1024, 512), "kept at 1024 px a side at most");
         // Drawn: half-blocks in its colour, or (Kitty) cells pointing into it, sent once.
         let d = tmp("pic");
         let mut app = App::new(d.clone(), None);
