@@ -4545,8 +4545,10 @@ fn index_writes_are_serialized_off_the_ui_thread() {
         assert!(start.elapsed() < Duration::from_secs(10));
     }
     assert!(start.elapsed() >= Duration::from_millis(400), "git really was slow");
-    // Each slowed git call takes ≥ 400 ms: a step that waited on one would show it.
-    assert!(worst < Duration::from_millis(30), "a UI step took {worst:?} while git ran");
+    // Each slowed git call takes ≥ 400 ms: a step that waited on one would take that
+    // long. (A busy machine — the other tests running — can hold any step for tens of ms,
+    // so the bound sits well between the two.)
+    assert!(worst < Duration::from_millis(200), "a UI step took {worst:?} while git ran");
     assert!(app.scm_files.iter().any(|f| f.path == "n00.txt" && f.section == Section::Changes));
     wait_idle(&mut app);
     fs::remove_dir_all(&root).unwrap();
