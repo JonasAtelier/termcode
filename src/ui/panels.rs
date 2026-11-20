@@ -201,7 +201,7 @@ pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
         let tail_fg = if fd.count.1 == 0 && !fd.query.is_empty() { P.error_fg } else { P.dim };
         let caret = crate::ui::kit::search_input(f, fr, &fd.query, "Find", focused, &tail, tail_fg);
         if focused {
-            f.set_cursor_position((caret, fr.y));
+            crate::ui::caret((caret, fr.y));
         }
     }
 }

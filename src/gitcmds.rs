@@ -1151,7 +1151,7 @@ fn draw_picker(app: &mut App, f: &mut Frame, area: Rect) {
         (Rect::new(pop.x + 1, pop.y, pop.width.saturating_sub(2), 1).intersection(pop), Rect::new(pop.x, pop.y + 1, pop.width, pop.height.saturating_sub(1)).intersection(pop))
     };
     input(f, inp, &p.query, &p.title, true);
-    f.set_cursor_position((inp.x + 1 + (p.query.width() as u16).min(inp.width.saturating_sub(2)), inp.y));
+    crate::ui::caret((inp.x + 1 + (p.query.width() as u16).min(inp.width.saturating_sub(2)), inp.y));
     let shown = p.shown();
     let lh = list.height.max(1) as usize;
     p.sel = p.sel.min(shown.len().saturating_sub(1));

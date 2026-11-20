@@ -7908,3 +7908,28 @@ fn screenshots() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn no_caret_shows_through_a_dialog_unless_the_dialog_takes_typing() {
+    let root = repo("dialog-caret");
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    app.open_file(0, "src/main.rs", false);
+    app.focus = Focus::Editor;
+    t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+    assert!(t.backend().cursor_visible(), "the editor's caret");
+    crate::settingsui::open(&mut app);
+    t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+    assert!(!t.backend().cursor_visible(), "Settings over the editor: no caret from behind it");
+    app.settings_dlg = None;
+    crate::commitdlg::open(&mut app);
+    wait_idle(&mut app);
+    app.gitui.dlg.as_mut().unwrap().focus = crate::commitdlg::Pane::Unstaged;
+    t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+    assert!(!t.backend().cursor_visible(), "nor over the Commit dialog while its lists have the keys");
+    app.gitui.dlg.as_mut().unwrap().focus = crate::commitdlg::Pane::Message;
+    t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+    assert!(t.backend().cursor_visible(), "the message's caret");
+    app.gitui.dlg = None;
+    wait_idle(&mut app);
+    fs::remove_dir_all(&root).unwrap();
+}

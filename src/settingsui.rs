@@ -1252,6 +1252,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let Some(d) = app.settings_dlg.as_mut() else {
         return;
     };
+    // Over everything: the editor's (or a field's) caret behind it does not show.
+    crate::ui::cover();
     d.hits = Hits::default();
     d.graphics.refresh_size();
     let a = f.area();
@@ -1297,7 +1299,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let caret = crate::ui::kit::search_input(f, sr, &d.query, "Search settings  (Ctrl+F)", searching, &count, P.dim);
     crate::ui::pixels::round_box(f, sr, P.widget_bg);
     if searching {
-        f.set_cursor_position((caret, sr.y));
+        crate::ui::caret((caret, sr.y));
     }
     let nav_w = if w >= 64 { 22 } else { 16 };
     let top = r.y + 3;
@@ -1456,7 +1458,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                         fill(f, r2, P.input_bg);
                         let style = if e.all { active } else { input };
                         text(f, Rect::new(r2.x + 1, r2.y, r2.width - 1, 1), &format!("{tail}{}", &e.text[e.cursor..]), style);
-                        f.set_cursor_position((r2.x + 1 + tail.width() as u16, r2.y));
+                        crate::ui::caret((r2.x + 1 + tail.width() as u16, r2.y));
                         text(f, Rect::new(r2.x - 1, r2.y, 1, 1), "▏", st.fg(accent));
                     } else {
                         fill(f, r2, P.input_bg);
@@ -1705,7 +1707,7 @@ fn draw_pick(d: &mut Dialog, f: &mut Frame, frame: Rect, dlg: Rect) {
     }
     let input = Rect::new(inner.x, inner.y, inner.width, 1);
     let caret = crate::ui::kit::search_input(f, input, &query, "Type to find a command", true, "", P.dim);
-    f.set_cursor_position((caret, input.y));
+    crate::ui::caret((caret, input.y));
     let list = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
     let cur = d.quick().into_iter().find(|(c, _)| *c == sel).map(|(_, n)| n).unwrap_or_default();
     let off = at.saturating_sub(list.height as usize - 1);

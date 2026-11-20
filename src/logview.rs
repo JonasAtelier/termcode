@@ -531,7 +531,7 @@ pub fn draw(app: &mut App, f: &mut Frame, g: usize, key: &str, rel: &str, body: 
     let st = if v.editing { Style::new().fg(P.editor_fg).bg(P.editor_bg) } else { Style::new().fg(if v.filter.is_empty() { P.dim } else { P.editor_fg }).bg(P.editor_bg) };
     f.render_widget(Span::styled(format!(" {:w$}", fit(&shown, fw as usize - 1), w = fw as usize - 1), st), fr);
     if v.editing && focused {
-        f.set_cursor_position(Position::new((fr.x + 1 + v.filter.width() as u16).min(fr.right() - 1), fr.y));
+        crate::ui::caret(Position::new((fr.x + 1 + v.filter.width() as u16).min(fr.right() - 1), fr.y));
     }
     // The lines' count (and what is under way) first: the buttons get what is left.
     let total = v.lines();

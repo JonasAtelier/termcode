@@ -184,7 +184,24 @@ pub fn lang_id(name: &str) -> String {
     .into()
 }
 
+thread_local! {
+    /// Where the terminal cursor goes this frame: the last layer drawn with a caret.
+    static CARET: std::cell::Cell<Option<Position>> = const { std::cell::Cell::new(None) };
+}
+
+/// The terminal cursor at `p` (a field being typed in), unless a layer drawn later covers
+/// it (`cover`).
+pub(crate) fn caret(p: impl Into<Position>) {
+    CARET.set(Some(p.into()));
+}
+
+/// A layer over everything drawn so far (a dialog): no caret behind it shows through.
+pub(crate) fn cover() {
+    CARET.set(None);
+}
+
 pub fn draw(app: &mut App, f: &mut Frame) {
+    CARET.set(None);
     kit::begin(app);
     pixels::begin(crate::media::pixel_cell(app));
     app.exts.begin();
@@ -192,6 +209,9 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     crate::ext::overlay(app, f);
     if app.prefix_armed {
         prefix_hint(app, f);
+    }
+    if let Some(p) = CARET.take() {
+        f.set_cursor_position(p);
     }
     pixels::place(app, f);
     crate::media::flush(app, f);
@@ -700,7 +720,7 @@ pub(crate) fn list_side(app: &mut App, f: &mut Frame, r: Rect) {
             }
             if focused && text.width > 1 {
                 let cx = text.x + 1 + (app.query.width() as u16).min(text.width.saturating_sub(2));
-                f.set_cursor_position((cx, y));
+                crate::ui::caret((cx, y));
             }
             // One sectionGap between the field and the results, which the summary heads.
             y += 1 + lay.s.section_gap;
@@ -990,7 +1010,7 @@ pub(crate) fn rename_field(f: &mut Frame, r: Rect, rn: &crate::panel::Rename, co
     let fg = if conflict { P.error_fg } else { P.input_fg };
     let line = render_line(&rn.text, None, &sel, None, skip, w, Style::new().fg(fg).bg(P.input_bg));
     f.render_widget(line, r);
-    f.set_cursor_position((r.x + (caret - skip) as u16, r.y));
+    crate::ui::caret((r.x + (caret - skip) as u16, r.y));
     skip
 }
 
@@ -1660,7 +1680,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
                 app.ui.view_btns.extend(rects.into_iter().zip(views).filter(|(r, _)| !r.is_empty()).map(|(r, (_, how))| (r, how)));
             }
             if let Some(p) = out.caret.filter(|p| !card.is_some_and(|r| r.contains(*p))) {
-                f.set_cursor_position(p);
+                crate::ui::caret(p);
             }
             gh.text = out.text;
             gh.marks_x = out.marks_x;
@@ -2001,7 +2021,7 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     if app.focus == Focus::Find {
         let (field, s, w) = if fd.field == 1 { (1, fd.replace.as_deref().unwrap_or(""), iw) } else { (0, fd.query.as_str(), qt.width) };
         let cx = q.x + 1 + (s.width() as u16).min(w.saturating_sub(2));
-        f.set_cursor_position((cx, r.y + field));
+        crate::ui::caret((cx, r.y + field));
     }
     app.ui.find_btns.extend(btns);
 }
@@ -2039,7 +2059,7 @@ fn quick(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
     let ph = if q.commands { "Type the name of a command to run" } else { "Search files by name (append : to go to a line or @ to go to a symbol)" };
     let goto = !q.commands && matches!(q.query.chars().next(), Some(':' | '@'));
     input(f, inp, &q.query, ph, true);
-    f.set_cursor_position((inp.x + 1 + (q.query.width() as u16).min(inp.width.saturating_sub(2)), inp.y));
+    crate::ui::caret((inp.x + 1 + (q.query.width() as u16).min(inp.width.saturating_sub(2)), inp.y));
     let lh = list.height.max(1) as usize;
     if q.sel < q.off {
         q.off = q.sel;

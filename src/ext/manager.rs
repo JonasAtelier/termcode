@@ -127,7 +127,7 @@ fn draw(app: &mut App, f: &mut Frame, r: Rect) {
     crate::ui::input(f, inp, &app.exts.input, "Search, or a git URL / folder", typing && crate::theme::ascii());
     crate::ui::round_ends(f, inp, P.input_bg, P.sidebar_bg);
     if typing && inp.width > 2 {
-        f.set_cursor_position((inp.x + 1 + (Span::raw(app.exts.input.as_str()).width() as u16).min(inp.width - 2), inp.y));
+        crate::ui::caret((inp.x + 1 + (Span::raw(app.exts.input.as_str()).width() as u16).min(inp.width - 2), inp.y));
     }
     app.exts.hits.push(super::process::Hit { r: inp, ext: MANAGER, slot: Slot::Left, sec: 0, action: "type".into() });
     let gap = 1 + app.settings.spacing.section_gap;

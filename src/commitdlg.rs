@@ -891,6 +891,8 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let gap = app.settings.spacing.editor_padding;
     let (ratios, hover) = (app.gitui.dlg_split, app.hover);
     let Some(d) = app.gitui.dlg.as_mut() else { return };
+    // Over everything: no caret behind it shows through.
+    crate::ui::cover();
     d.hits = DlgHits::default();
     // Five rows clear above and below it (the title and status bars stay in view).
     let outer = centered(area, area.width.saturating_sub(4).min(160), area.height.saturating_sub(10), false);
@@ -1013,7 +1015,7 @@ fn message(f: &mut Frame, d: &mut CommitDlg, r: Rect) {
         }
     }
     if d.focus == Pane::Message && c.line >= v.scroll && c.line < v.scroll + h {
-        f.set_cursor_position((r.x + 1 + (cx - v.hscroll) as u16, r.y + (c.line - v.scroll) as u16));
+        crate::ui::caret((r.x + 1 + (cx - v.hscroll) as u16, r.y + (c.line - v.scroll) as u16));
     }
     crate::ui::pixels::round_box(f, r, P.widget_bg);
 }

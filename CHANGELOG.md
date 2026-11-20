@@ -40,6 +40,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   in pixels, and bars are smooth rounded bars: an extension's install progress, and the
   ELF and map reports' bars (a memory region's green, amber past 75%, red past 90%).
 
+### Fixed
+- The editor's caret (or a field's behind it) no longer blinks through the Settings and
+  Commit dialogs; only a field in the dialog being typed in shows one.
+
 ## [1.0.0] - 2026-11-20
 
 ### Added

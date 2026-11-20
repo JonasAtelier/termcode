@@ -87,7 +87,7 @@ pub(super) fn field(app: &mut App, f: &mut Frame, b: Rect, (x, y): (u16, u16), w
             // Typing shows: the field's mark in the focus colour, the caret after the text.
             kit::input(f, r, t, placeholder, true);
             if app.focus == Focus::Editor {
-                f.set_cursor_position((r.x + 1 + (t.width() as u16).min(r.width.saturating_sub(2)), r.y));
+                crate::ui::caret((r.x + 1 + (t.width() as u16).min(r.width.saturating_sub(2)), r.y));
             }
         } else {
             kit::input(f, r, text, placeholder, false);
