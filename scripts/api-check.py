@@ -11,6 +11,9 @@ import json, os, shutil, subprocess, sys, tempfile, time
 
 TC = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else shutil.which("termcode")
 SESSION = f"tc-api-check-{os.getpid()}"
+# A tmux server of its own (its own socket, no tmux.conf): the user's is never touched,
+# and its panes get this script's environment (a running server would give its own).
+TMUX = ["tmux", "-L", SESSION, "-f", "/dev/null"]
 # Not this termcode's shell's termcode, nor herdr's: a clean start.
 ENV = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_") and k != "TERMCODE_SOCKET"}
 results = []
@@ -38,6 +41,10 @@ def main():
         sys.exit("needs tmux")
     work = tempfile.mkdtemp(prefix="tc-api-check-")
     repo = os.path.join(work, "repo")
+    # A home of its own: the termcodes it starts keep their sessions, settings and
+    # extensions there, never in the user's.
+    home = os.path.join(work, "home")
+    ENV.update(HOME=home, XDG_CONFIG_HOME=f"{home}/.config", XDG_STATE_HOME=f"{home}/.local/state", XDG_CACHE_HOME=f"{home}/.cache", XDG_DATA_HOME=f"{home}/.local/share")
     os.makedirs(repo)
     with open(os.path.join(repo, "a.txt"), "w") as f:
         f.write("hello\nworld\n")
@@ -51,12 +58,11 @@ def main():
         hello, _ = api("hello", to=pid)
         check("hello: api 1, this workspace", hello and hello["api"] == 1 and os.path.realpath(hello["root"]) == os.path.realpath(repo), hello)
         run(pid, repo)
-        subprocess.run(["tmux", "kill-session", "-t", SESSION], capture_output=True)
+        subprocess.run(TMUX + ["kill-session", "-t", SESSION], capture_output=True)
         # This one asks, as the user's own does.
         safety(start(SESSION + "-ask", repo, {}), SESSION + "-ask", repo)
     finally:
-        for s in (SESSION, SESSION + "-ask"):
-            subprocess.run(["tmux", "kill-session", "-t", s], capture_output=True)
+        subprocess.run(TMUX + ["kill-server"], capture_output=True)
         shutil.rmtree(work, ignore_errors=True)
     width = max(len(r[0]) for r in results)
     for name, ok, detail in results:
@@ -67,8 +73,8 @@ def main():
 
 
 def start(session, repo, env):
-    subprocess.run(["tmux", "new-session", "-d", "-s", session, "-x", "120", "-y", "40", "-c", repo, f"exec {TC} ."], env=dict(ENV, **env), check=True)
-    pid = int(subprocess.run(["tmux", "display", "-p", "-t", session, "#{pane_pid}"], capture_output=True, text=True).stdout.strip())
+    subprocess.run(TMUX + ["new-session", "-d", "-s", session, "-x", "120", "-y", "40", "-c", repo, f"exec {TC} ."], env=dict(ENV, **env), check=True)
+    pid = int(subprocess.run(TMUX + ["display", "-p", "-t", session, "#{pane_pid}"], capture_output=True, text=True).stdout.strip())
     for _ in range(100):  # the socket comes up with the window
         if api("hello", to=pid)[0]:
             break
@@ -77,7 +83,7 @@ def start(session, repo, env):
 
 
 def screen(session):
-    return subprocess.run(["tmux", "capture-pane", "-p", "-t", session], capture_output=True, text=True).stdout
+    return subprocess.run(TMUX + ["capture-pane", "-p", "-t", session], capture_output=True, text=True).stdout
 
 
 # A new client each call: a process that stays (not a shell, not an exec like nice).
@@ -95,7 +101,7 @@ def asked(method, params, pid, session, keys, via=FRESH):
             break
         time.sleep(0.1)
     for k in keys:
-        subprocess.run(["tmux", "send-keys", "-t", session, k])
+        subprocess.run(TMUX + ["send-keys", "-t", session, k])
         time.sleep(0.2)
     out, err = p.communicate(timeout=30)
     return shown, (json.loads(out) if p.returncode == 0 else None), err.strip()
