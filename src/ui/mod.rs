@@ -2097,7 +2097,7 @@ fn quick(app: &mut App, f: &mut Frame, area: Rect, lay: Lay) {
         } else {
             P.slider
         };
-        paint_slider(f, track, s, c);
+        kit::draw_slider(f, track, s, (n, lh, off, n - lh), c);
         app.ui.scrollbars.push(ScrollHit { track, target: ScrollTarget::Quick, slider: s, max_off: n - lh, page: lh });
     }
 }

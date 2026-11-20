@@ -353,20 +353,56 @@ pub(crate) fn slider(f: &mut Frame, track: Rect, total: usize, view: usize, off:
 
 /// A scrollbar's slider: `s` (its cells), or where pictures show a rounded one placed to
 /// the pixel (`total`, `view`, `off`, `max_off` say where).
-fn draw_slider(f: &mut Frame, track: Rect, s: (u16, u16), (total, view, off, max_off): (usize, usize, usize, usize), c: Rgba) {
-    let Some((_, ch)) = super::pixels::cell().filter(|_| track.width == 1 && track.height > 1) else {
+pub(crate) fn draw_slider(f: &mut Frame, track: Rect, s: (u16, u16), geo: (usize, usize, usize, usize), c: Rgba) {
+    let Some((start, len, ch)) = slider_px(track, geo) else {
         paint_slider(f, track, s, c);
         return;
     };
-    let ch = f32::from(ch);
-    let span = f32::from(track.height) * ch;
-    let len = (view as f32 / total.max(1) as f32 * span).clamp(ch, span);
-    let start = if max_off == 0 { 0.0 } else { off.min(max_off) as f32 / max_off as f32 * (span - len) };
     let (c0, c1) = ((start / ch).floor() as u16, ((start + len) / ch).ceil().min(f32::from(track.height)) as u16);
     let cells = Rect::new(track.x, track.y + c0, 1, c1.saturating_sub(c0)).intersection(f.area());
     let under: Vec<Color> = cells.positions().map(|p| f.buffer_mut()[p].bg).collect();
     paint_slider(f, track, (c0, c1.saturating_sub(c0)), c);
-    super::pixels::ask(f, cells, super::pixels::Shape::Slider { start: start - f32::from(c0) * ch, len, color: c }, under);
+    super::pixels::ask(f, cells, super::pixels::Shape::Slider { start: start - f32::from(c0) * ch, len, color: c, top: track.y }, under);
+}
+
+/// A vertical track's slider in pixels where shapes go out in pixels: its top, its length
+/// (one cell at least), the cell's height.
+fn slider_px(track: Rect, (total, view, off, max_off): (usize, usize, usize, usize)) -> Option<(f32, f32, f32)> {
+    let (_, ch) = super::pixels::cell().filter(|_| track.width == 1 && track.height > 1)?;
+    let ch = f32::from(ch);
+    let span = f32::from(track.height) * ch;
+    let len = (view as f32 / total.max(1) as f32 * span).clamp(ch, span);
+    let start = if max_off == 0 { 0.0 } else { off.min(max_off) as f32 / max_off as f32 * (span - len) };
+    Some((start, len, ch))
+}
+
+/// A vertical scrollbar the caller drew as text (`paint_slider`, then its overview ruler's
+/// marks) again in pixels, whole: its slider placed as `draw_slider` places it, `marks`
+/// (content row, lane: 0 left, 1 right, 2 across; colour) over it, under the slider where
+/// their rows show, else where they fall in the whole. `under`: the track's backgrounds
+/// before the slider was painted.
+pub(crate) fn ruler_px(f: &mut Frame, track: Rect, geo: (usize, usize, usize, usize), c: Rgba, marks: &[(usize, u8, Rgba)], under: Vec<Color>) {
+    let Some((start, len, ch)) = slider_px(track, geo) else { return };
+    let (total, view, off, max_off) = geo;
+    let off = off.min(max_off);
+    let span = f32::from(track.height) * ch;
+    let row_h = (span / total.max(1) as f32).max(2.0);
+    let y_of = |at: usize| {
+        if (off..off + view).contains(&at) {
+            start + (at - off) as f32 * len / view.max(1) as f32
+        } else {
+            let whole = at as f32 / total.max(1) as f32 * span;
+            if at < off { whole.min(start - row_h).max(0.0) } else { whole.max(start + len).min(span - row_h) }
+        }
+    };
+    let ticks = marks
+        .iter()
+        .map(|&(at, lane, color)| {
+            let h = if lane == 2 { 2.0 } else { row_h };
+            super::pixels::Tick { y: y_of(at) + (row_h - h) / 2.0, h, lane, color }
+        })
+        .collect();
+    super::pixels::ask_ticks(f, track, super::pixels::Shape::Slider { start, len, color: c, top: track.y }, under, ticks);
 }
 
 /// A side bar section's header (Source Control's, an extension's): its chevron, its title

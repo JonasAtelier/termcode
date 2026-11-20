@@ -312,7 +312,11 @@ pub(super) fn text_editor(
     let total = v.row_of(n - 1) + 1;
     let max_off = total.saturating_sub(1);
     let s = decor::slider(track.height, total + h.saturating_sub(1), h, v.row_of(v.scroll), max_off);
+    let under: Vec<Color> = if crate::ui::pixels::cell().is_some() { track.positions().map(|p| f.buffer_mut()[p].bg).collect() } else { Vec::new() };
     paint_slider(f, track, s, d.slider);
+    // The marks again for the pixels: (editor row, lane, colour).
+    let mut px: Vec<(usize, u8, Rgba)> = Vec::new();
+    let op = crate::ui::pixels::opaque;
     if d.ruler {
         let th = track.height as usize;
         // Where the slider is when that line shows (the slider counts a page past the end).
@@ -331,20 +335,25 @@ pub(super) fn text_editor(
                 None => continue,
             };
             put(row_of(i), 1, ic.lane_left, c);
+            px.push((v.row_of(i), 0, op(c)));
         }
         for &(l, _, _, sev) in d.problems {
             put(row_of(l), 2, ic.lane_right, P.problem[sev as usize]);
+            px.push((v.row_of(l), 1, op(P.problem[sev as usize])));
         }
         for (a, _) in d.find.map_or(&[][..], |fd| &fd.matches[..]) {
             put(row_of(a.line), 2, ic.lane_right, P.ruler_find);
+            px.push((v.row_of(a.line), 1, op(P.ruler_find)));
         }
         put(row_of(c.line), 3, ic.lane_cursor, P.cursor);
+        px.push((v.row_of(c.line), 2, op(P.cursor)));
         for (r, lane) in lanes.into_iter().enumerate() {
             if let Some((_, g, col)) = lane {
                 f.buffer_mut()[(track.x, track.y + r as u16)].set_symbol(g).set_fg(col);
             }
         }
     }
+    crate::ui::kit::ruler_px(f, track, (total + h.saturating_sub(1), h, v.row_of(v.scroll), max_off), d.slider, &px, under);
     out.sb = Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off, page: h.max(1) });
     out
 }

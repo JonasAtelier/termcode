@@ -232,8 +232,18 @@ pub(crate) fn diff_view(
         return (None, out_mini, Some(texts), hsb, out_img);
     }
     let s = decor::slider(track.height, n + h - 1, h, v.scroll, n.saturating_sub(1));
+    let under: Vec<Color> = if crate::ui::pixels::cell().is_some() { track.positions().map(|p| f.buffer_mut()[p].bg).collect() } else { Vec::new() };
     paint_slider(f, track, s, slider);
     diff_overview(f, &d.rows, v, track);
+    let mut marks: Vec<(usize, u8, Rgba)> = Vec::new();
+    for (i, r) in d.rows.iter().enumerate() {
+        let (del, ins) = row_sides(r);
+        marks.extend([(del, 0, P.diff_ruler_del), (ins, 1, P.diff_ruler_ins)].into_iter().filter(|m| m.0).map(|(_, lane, c)| (i, lane, c)));
+    }
+    if v.want_x.is_some() {
+        marks.push((v.cursor.line, 2, crate::ui::pixels::opaque(P.cursor)));
+    }
+    crate::ui::kit::ruler_px(f, track, (n + h - 1, h, v.scroll, n.saturating_sub(1)), slider, &marks, under);
     (Some(ScrollHit { track, target: ScrollTarget::Editor(0), slider: s, max_off: n.saturating_sub(1), page: h }), out_mini, Some(texts), hsb, out_img)
 }
 
@@ -263,6 +273,16 @@ pub(super) fn diff_word_spans(old: &str, new: &str) -> (Option<std::ops::Range<u
 /// The diff's overview ruler on its scrollbar track, as VS Code's two lanes:
 /// removed rows in the cell's left half (`▌`), inserted in its right (`▐`), both
 /// splitting the cell; the change F7 last jumped to as the cursor.
+/// Whether a diff row takes lines out, puts lines in.
+fn row_sides(r: &crate::diff::Row) -> (bool, bool) {
+    match r.kind {
+        Kind::Same => (false, false),
+        Kind::Del => (true, false),
+        Kind::Ins => (false, true),
+        Kind::Change => (r.left.is_some(), r.right.is_some()),
+    }
+}
+
 pub(super) fn diff_overview(f: &mut Frame, rows: &[crate::diff::Row], v: &View, track: Rect) {
     let (n, th) = (rows.len(), track.height as usize);
     if n == 0 || th == 0 {
@@ -272,12 +292,10 @@ pub(super) fn diff_overview(f: &mut Frame, rows: &[crate::diff::Row], v: &View, 
     let row_of = |i: usize| usize::from(decor::mark_row(track.height, n + th - 1, th, i, v.scroll, n.saturating_sub(1))).min(th - 1);
     let mut lanes = vec![(false, false); th];
     for (i, r) in rows.iter().enumerate() {
-        let (del, ins) = match r.kind {
-            Kind::Same => continue,
-            Kind::Del => (true, false),
-            Kind::Ins => (false, true),
-            Kind::Change => (r.left.is_some(), r.right.is_some()),
-        };
+        let (del, ins) = row_sides(r);
+        if !del && !ins {
+            continue;
+        }
         let l = &mut lanes[row_of(i)];
         (l.0, l.1) = (l.0 || del, l.1 || ins);
     }

@@ -1,6 +1,6 @@
 //! The kit's shapes in pixels where the terminal shows Kitty pictures (Ghostty, kitty):
 //! a button's rounded ends, a scrollbar's slider (rounded, placed to the pixel), a
-//! checkbox, an icon bigger than the font draws it. The kit draws its cells as ever, then asks for the shape here; once the
+//! checkbox, an icon bigger than the font draws it, a popup's rounded frame. The kit draws its cells as ever, then asks for the shape here; once the
 //! frame is drawn, `place` puts the picture over the cells that still show what the kit
 //! drew (a popup drawn over them since keeps them: it is in front).
 
@@ -17,10 +17,14 @@ pub(crate) enum Shape {
     Cap { right: bool, fill: Color, under: Color },
     /// A bar `filled` of `cells` cells full, rounded, in `fill` on a faint track.
     Bar { cells: u16, filled: u16, fill: Color, track: Rgba },
-    /// A vertical slider `len` pixels long, `start` pixels into its cells, in `color`.
-    Slider { start: f32, len: f32, color: Rgba },
+    /// A vertical slider `len` pixels long, `start` pixels into its cells, in `color`, on
+    /// the track whose top row is `top`.
+    Slider { start: f32, len: f32, color: Rgba, top: u16 },
     /// A checkbox, ticked or not, lit under the pointer.
     Check { on: bool, fill: Color, mark: Color, under: Color },
+    /// A cell of a popup's frame: its `line` along the cell's outer edges `sides` (1 left,
+    /// 2 top, 4 right, 8 bottom; two make a rounded corner), `fill` inside.
+    Frame { sides: u8, line: Color, fill: Color },
     /// A Nerd Font icon in `color`, `size` of the picture's height, centred.
     Icon { glyph: char, color: Color, size: f32 },
 }
@@ -31,6 +35,25 @@ struct Ask {
     /// The cells as the kit left them, and the background each takes under the picture.
     cells: Vec<Cell>,
     under: Vec<Color>,
+    /// Overview ruler marks over a slider.
+    ticks: Vec<Tick>,
+}
+
+/// An overview ruler mark: `h` pixels from `y` down, in `lane` (0: the left part, 1: the
+/// right, 2: across), in `color`.
+pub(crate) struct Tick {
+    pub y: f32,
+    pub h: f32,
+    pub lane: u8,
+    pub color: Rgba,
+}
+
+/// `c` as an opaque `Rgba` (grey for a named colour).
+pub(crate) fn opaque(c: Color) -> Rgba {
+    match c {
+        Color::Rgb(r, g, b) => Rgba(r, g, b, 255),
+        _ => Rgba(128, 128, 128, 255),
+    }
 }
 
 thread_local! {
@@ -53,13 +76,18 @@ pub(crate) fn cell() -> Option<(u16, u16)> {
 /// `shape` over `at`, whose cells the kit has drawn; `under` the background each cell
 /// takes under the picture (its clear pixels show it).
 pub(crate) fn ask(f: &mut Frame, at: Rect, shape: Shape, under: Vec<Color>) {
+    ask_ticks(f, at, shape, under, Vec::new());
+}
+
+/// `ask`, with overview ruler marks over the shape (a slider).
+pub(crate) fn ask_ticks(f: &mut Frame, at: Rect, shape: Shape, under: Vec<Color>, ticks: Vec<Tick>) {
     let at = at.intersection(f.area());
     if cell().is_none() || at.is_empty() {
         return;
     }
     let buf = f.buffer_mut();
     let cells = at.positions().map(|p| buf[p].clone()).collect();
-    ASKS.with_borrow_mut(|a| a.push(Ask { at, shape, cells, under }));
+    ASKS.with_borrow_mut(|a| a.push(Ask { at, shape, cells, under, ticks }));
 }
 
 /// The font with the Nerd Font icons (any patched font has them all), once.
@@ -103,7 +131,7 @@ fn found(f: &mut Frame) -> Vec<Ask> {
             let c = &buf[(x, y)];
             let right = c.symbol() == super::kit::CAP_R;
             if (right || c.symbol() == super::kit::CAP_L) && rgb(c.fg) && rgb(c.bg) {
-                out.push(Ask { at: Rect::new(x, y, 1, 1), shape: Shape::Cap { right, fill: c.fg, under: c.bg }, cells: vec![c.clone()], under: vec![c.bg] });
+                out.push(Ask { at: Rect::new(x, y, 1, 1), shape: Shape::Cap { right, fill: c.fg, under: c.bg }, cells: vec![c.clone()], under: vec![c.bg], ticks: Vec::new() });
                 x += 1;
                 continue;
             }
@@ -126,12 +154,59 @@ fn found(f: &mut Frame) -> Vec<Ask> {
                 let at = Rect::new(x, y, run, 1);
                 let cells: Vec<Cell> = at.positions().map(|p| buf[p].clone()).collect();
                 let under = cells.iter().map(|c| c.bg).collect();
-                out.push(Ask { at, shape: Shape::Bar { cells: run, filled, fill, track: Rgba(r, g, b, 36) }, cells, under });
+                out.push(Ask { at, shape: Shape::Bar { cells: run, filled, fill, track: Rgba(r, g, b, 36) }, cells, under, ticks: Vec::new() });
             }
             x += run;
         }
     }
+    frames(buf, &mut out);
     out
+}
+
+/// The popups' frames (`kit::popup_block`'s rounded borders): each cell of a whole box
+/// (its four corners found) in pixels, the line at the box's outer edge, the corners clear
+/// outside so what is next to the popup shows there. Titles in a border stay text.
+fn frames(buf: &ratatui::buffer::Buffer, out: &mut Vec<Ask>) {
+    let area = buf.area;
+    let line = crate::theme::P.widget_border;
+    let is = |x: u16, y: u16, s: &str| buf[(x, y)].symbol() == s && buf[(x, y)].fg == line && matches!(buf[(x, y)].bg, Color::Rgb(..));
+    for y0 in area.top()..area.bottom() {
+        for x0 in area.left()..area.right() {
+            if !is(x0, y0, "╭") {
+                continue;
+            }
+            let Some(x1) = (x0 + 1..area.right()).find(|&x| is(x, y0, "╮")) else { continue };
+            let Some(y1) = (y0 + 1..area.bottom()).find(|&y| is(x0, y, "╰")) else { continue };
+            if !is(x1, y1, "╯") {
+                continue;
+            }
+            // Inside: the frame's own background (a popup's border is drawn on it).
+            let fill = buf[(x0, y0)].bg;
+            let beside = |x: Option<u16>, y: u16| x.filter(|x| area.left() <= *x && *x < area.right()).map_or(fill, |x| buf[(x, y)].bg);
+            let mut put = |x: u16, y: u16, sides: u8, under: Color| {
+                let c = buf[(x, y)].clone();
+                out.push(Ask { at: Rect::new(x, y, 1, 1), shape: Shape::Frame { sides, line, fill }, cells: vec![c], under: vec![under], ticks: Vec::new() });
+            };
+            put(x0, y0, 3, beside(x0.checked_sub(1), y0));
+            put(x1, y0, 6, beside(x1.checked_add(1), y0));
+            put(x0, y1, 9, beside(x0.checked_sub(1), y1));
+            put(x1, y1, 12, beside(x1.checked_add(1), y1));
+            for x in x0 + 1..x1 {
+                for (y, sides) in [(y0, 2), (y1, 8)] {
+                    if is(x, y, "─") {
+                        put(x, y, sides, fill);
+                    }
+                }
+            }
+            for y in y0 + 1..y1 {
+                for (x, sides) in [(x0, 1), (x1, 4)] {
+                    if is(x, y, "│") {
+                        put(x, y, sides, fill);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The frame drawn: each shape asked for over its cells, where they are still the kit's;
@@ -149,10 +224,13 @@ pub(crate) fn place(app: &mut App, f: &mut Frame) {
         let make = || paint(a.shape, w, h, (cw, ch));
         let id_seq = match a.shape {
             // A slider moves with every scroll: one picture a scrollbar, swapped.
-            Shape::Slider { .. } => {
-                let slot = format!("slider:{}", a.at.x);
+            // (by its track: two lists can share a column).
+            Shape::Slider { top, .. } => {
+                let slot = format!("slider:{}:{top}", a.at.x);
                 let under = a.under.clone();
-                crate::media::show_pixels(app, f, &slot, a.at, &make(), &|y| under.get(usize::from(y)).copied().unwrap_or(Color::Reset));
+                let mut img = make();
+                draw_ticks(&mut img, &a.ticks);
+                crate::media::show_pixels(app, f, &slot, a.at, &img, &|y| under.get(usize::from(y)).copied().unwrap_or(Color::Reset));
                 continue;
             }
             _ => {
@@ -214,7 +292,7 @@ pub(crate) fn paint(shape: Shape, w: u32, h: u32, (cw, ch): (u16, u16)) -> RgbaI
                         ([track.0, track.1, track.2, 255], rbox(fx, fy, edge, th / 2.0) * f32::from(track.3) / 255.0)
                     }
                 }
-                Shape::Slider { start, len, color } => {
+                Shape::Slider { start, len, color, .. } => {
                     let inset = (cw * 0.15).max(1.0);
                     let r = (cw / 2.0 - inset).max(1.0);
                     ([color.0, color.1, color.2, 255], rbox(fx, fy, (inset, start, w as f32 - inset, start + len), r) * f32::from(color.3) / 255.0)
@@ -234,6 +312,23 @@ pub(crate) fn paint(shape: Shape, w: u32, h: u32, (cw, ch): (u16, u16)) -> RgbaI
                     } else {
                         (rgb(fill), b)
                     }
+                }
+                Shape::Frame { sides, line, fill } => {
+                    // The popup's box runs on past this cell where it has no edge.
+                    let (big, wf, hf) = (1e4, w as f32, h as f32);
+                    let b = (
+                        if sides & 1 != 0 { 0.0 } else { -big },
+                        if sides & 2 != 0 { 0.0 } else { -big },
+                        if sides & 4 != 0 { wf } else { wf + big },
+                        if sides & 8 != 0 { hf } else { hf + big },
+                    );
+                    let r = (cw * 0.7).min(ch * 0.5);
+                    let t = (ch / 20.0).round().max(1.0);
+                    let outer = rbox(fx, fy, b, r);
+                    let inner = rbox(fx, fy, (b.0 + t, b.1 + t, b.2 - t, b.3 - t), (r - t).max(0.0));
+                    let (l, f) = (rgb(line), rgb(fill));
+                    let mix = |i: usize| ((f32::from(l[i]) * (outer - inner) + f32::from(f[i]) * inner) / outer.max(1e-6)).round() as u8;
+                    ([mix(0), mix(1), mix(2), 255], outer)
                 }
                 Shape::Icon { .. } => unreachable!("drawn by icon_image"),
             };
@@ -264,6 +359,30 @@ fn icon_image(glyph: char, color: Color, w: u32, h: u32, size: f32) -> RgbaImage
     img
 }
 
+/// The marks over `img` (a scrollbar's), each over what is under it.
+fn draw_ticks(img: &mut RgbaImage, ticks: &[Tick]) {
+    let (w, h) = (img.width(), img.height());
+    for t in ticks {
+        let (x0, x1) = match t.lane {
+            0 => (0, w * 2 / 5),
+            1 => (w - w * 2 / 5, w),
+            _ => (0, w),
+        };
+        let y0 = (t.y.round().max(0.0) as u32).min(h.saturating_sub(1));
+        let y1 = ((t.y + t.h).round() as u32).clamp(y0 + 1, h);
+        let a = f32::from(t.color.3) / 255.0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = img.get_pixel(x, y).0;
+                let da = f32::from(d[3]) / 255.0;
+                let oa = a + da * (1.0 - a);
+                let mix = |s: u8, d: u8| ((f32::from(s) * a + f32::from(d) * da * (1.0 - a)) / oa.max(1e-6)).round() as u8;
+                img.put_pixel(x, y, image::Rgba([mix(t.color.0, d[0]), mix(t.color.1, d[1]), mix(t.color.2, d[2]), (oa * 255.0).round() as u8]));
+            }
+        }
+    }
+}
+
 /// From (`x`, `y`) to the segment `a`–`b`.
 fn dist(x: f32, y: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
@@ -286,7 +405,7 @@ mod tests {
         let right = paint(Shape::Cap { right: true, fill, under }, 8, 16, (8, 16));
         assert_eq!((right.get_pixel(7, 0)[3], right.get_pixel(0, 0)[3]), (0, 255), "mirrored");
         // A slider from 20 px down for 30 px: clear above and below, its colour's alpha within.
-        let s = paint(Shape::Slider { start: 20.0, len: 30.0, color: Rgba(200, 200, 200, 102) }, 8, 64, (8, 16));
+        let s = paint(Shape::Slider { start: 20.0, len: 30.0, color: Rgba(200, 200, 200, 102), top: 0 }, 8, 64, (8, 16));
         assert_eq!((s.get_pixel(4, 10)[3], s.get_pixel(4, 35)[3], s.get_pixel(4, 60)[3]), (0, 102, 0));
         let on = paint(Shape::Check { on: true, fill, mark: Color::Rgb(255, 255, 255), under }, 24, 16, (8, 16));
         let off = paint(Shape::Check { on: false, fill, mark: Color::Rgb(255, 255, 255), under }, 24, 16, (8, 16));
@@ -340,6 +459,63 @@ mod tests {
         assert!((4..14).all(|x| pic(x, 1)), "a progress bar of 10 cells");
         assert!((6..30).all(|x| pic(x, 2)), "a memory region's bar of 24 cells");
         assert!(!pic(4, 3) && b[(4, 3)].symbol() == "█", "a short run stays text");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_scrollbars_marks_go_out_in_its_picture_over_the_whole_track() {
+        let d = std::env::temp_dir().join(format!("termcode-pixels-ruler-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut app = App::new(d.clone(), None);
+        app.media.kitty_for_tests();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(4, 6)).unwrap();
+        let mut out = None;
+        let red = Rgba(255, 0, 0, 255);
+        t.draw(|f| {
+            begin(Some((8, 16)));
+            let track = Rect::new(3, 0, 1, 6);
+            crate::ui::kit::ruler_px(f, track, (100, 20, 0, 80), Rgba(200, 200, 200, 102), &[(0, 0, red), (90, 1, red)], vec![Color::Rgb(30, 30, 30); 6]);
+            place(&mut app, f);
+            out = Some(f.buffer_mut().clone());
+        })
+        .unwrap();
+        let b = out.unwrap();
+        assert!((0..6).all(|y| b[(3, y)].symbol().contains('\u{10EEEE}')), "the whole track, not the slider's cells only");
+        // The marks: line 0 at the top in the left lane, line 90 near the bottom in the right.
+        let mut img = paint(Shape::Slider { start: 0.0, len: 20.0, color: Rgba(200, 200, 200, 102), top: 0 }, 10, 96, (10, 16));
+        draw_ticks(&mut img, &[Tick { y: 0.0, h: 3.0, lane: 0, color: red }, Tick { y: 86.0, h: 3.0, lane: 1, color: red }]);
+        assert_eq!(*img.get_pixel(1, 1), image::Rgba([255, 0, 0, 255]));
+        assert_eq!(img.get_pixel(7, 10)[0], 200, "the right lane by the first mark is the slider's");
+        assert_eq!(*img.get_pixel(8, 87), image::Rgba([255, 0, 0, 255]));
+        assert_eq!(img.get_pixel(1, 87)[3], 0, "clear elsewhere");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_popups_frame_goes_out_in_pixels_its_title_stays_text_its_corners_show_whats_beside() {
+        let d = std::env::temp_dir().join(format!("termcode-pixels-frame-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut app = App::new(d.clone(), None);
+        app.media.kitty_for_tests();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(16, 6)).unwrap();
+        let mut out = None;
+        let (behind, bg) = (Color::Rgb(30, 30, 30), Color::Rgb(37, 37, 38));
+        t.draw(|f| {
+            begin(Some((8, 16)));
+            crate::ui::fill(f, f.area(), behind);
+            let r = Rect::new(2, 1, 12, 4);
+            f.render_widget(ratatui::widgets::Clear, r);
+            f.render_widget(crate::ui::popup_block(bg, Color::Rgb(200, 200, 200), (0, 0)).title(" Find "), r);
+            place(&mut app, f);
+            out = Some(f.buffer_mut().clone());
+        })
+        .unwrap();
+        let b = out.unwrap();
+        let pic = |x: u16, y: u16| b[(x, y)].symbol().contains('\u{10EEEE}');
+        assert!([(2, 1), (13, 1), (2, 4), (13, 4), (10, 1), (5, 4), (2, 2), (13, 3)].iter().all(|&(x, y)| pic(x, y)), "corners and edges");
+        assert_eq!(b[(4, 1)].symbol(), "F", "the title stays text");
+        assert_eq!((b[(2, 1)].bg, b[(5, 4)].bg), (behind, bg), "a corner shows what is beside the popup; an edge is the popup's");
+        assert!(!pic(5, 2), "inside stays text");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
