@@ -127,6 +127,11 @@ pub(super) fn text_editor(
                 }
             }
         }
+        // Colours written in the text, on their own colour (VS Code's colour decorators).
+        let colors = if b.binary || b.elf || b.report { Vec::new() } else { crate::decor::color_literals(line) };
+        for &(s, e, c) in &colors {
+            overlays.push((s, e, c.over(bg)));
+        }
         for (a, e) in word.iter().flat_map(|w| editor::find_in([(i, line.as_str())], w, true, true)) {
             overlays.push((a.col, e.col, P.word_hl));
         }
@@ -178,6 +183,14 @@ pub(super) fn text_editor(
             col = editor::advance(col, ch);
         }
         let line_end = col;
+        // A colour's text in black or white, whichever reads on it (not where selected).
+        for &(s, e, c) in &colors {
+            let Color::Rgb(r, g, bl) = c.over(bg) else { continue };
+            let fg = if u32::from(r) * 299 + u32::from(g) * 587 + u32::from(bl) * 114 >= 128_000 { Color::Rgb(0, 0, 0) } else { Color::Rgb(255, 255, 255) };
+            for (at, _) in line[s..e].char_indices().filter(|(at, _)| !selected.is_some_and(|(a, z)| (a..z).contains(&(s + at)))) {
+                paint.push((editor::display_col(line, s + at), fg));
+            }
+        }
         // One screen row, or with word wrap one per wrapped piece.
         let starts = if d.wrap { editor::wrap_starts(line, tw) } else { vec![v.hscroll] };
         let cursor_row = (i == c.line).then(|| editor::wrap_row(&starts, editor::display_col(line, c.col)));

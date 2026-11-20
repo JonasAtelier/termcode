@@ -371,6 +371,51 @@ pub fn drag_offset(y: i32, grab: u16, track: u16, len: u16, max_off: usize) -> u
     ((top as f64 * max_off as f64) / free as f64).round() as usize
 }
 
+/// The colours written in `line`, as VS Code's colour decorators find them: `#rgb`,
+/// `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb(r, g, b)` and `rgba(r, g, b, a)`. Each: its bytes
+/// and the colour. A short `#123` with no letter is an issue's number, not a colour.
+pub fn color_literals(line: &str) -> Vec<(usize, usize, Rgba)> {
+    let b = line.as_bytes();
+    let word = |i: usize| b.get(i).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'#' && (i == 0 || !(word(i - 1) || b[i - 1] == b'&')) {
+            let n = b[i + 1..].iter().take_while(|c| c.is_ascii_hexdigit()).count();
+            let hex = &line[i + 1..i + 1 + n];
+            let letter = hex.bytes().any(|c| c.is_ascii_alphabetic());
+            if !word(i + 1 + n) && (matches!(n, 6 | 8) || (matches!(n, 3 | 4) && letter)) {
+                let d = |k: usize, w: usize| u8::from_str_radix(&hex[k * w..k * w + w], 16).map(|v| if w == 1 { v * 17 } else { v }).unwrap_or(0);
+                let w = if n > 4 { 2 } else { 1 };
+                let a = if n == 4 || n == 8 { d(3, w) } else { 255 };
+                out.push((i, i + 1 + n, Rgba(d(0, w), d(1, w), d(2, w), a)));
+                i += 1 + n;
+                continue;
+            }
+        }
+        if (line[i..].starts_with("rgb(") || line[i..].starts_with("rgba(")) && (i == 0 || !word(i - 1)) {
+            let open = i + line[i..].find('(').unwrap_or(0);
+            if let Some(close) = line[open..].find(')').map(|c| open + c) {
+                let parts: Vec<&str> = line[open + 1..close].split(',').map(str::trim).collect();
+                let byte = |s: &str| s.parse::<u8>().ok();
+                let alpha = |s: &str| s.parse::<f64>().ok().filter(|a| (0.0..=1.0).contains(a)).map(|a| (a * 255.0).round() as u8);
+                let c = match parts.as_slice() {
+                    [r, g, bl] => (|| Some(Rgba(byte(r)?, byte(g)?, byte(bl)?, 255)))(),
+                    [r, g, bl, a] => (|| Some(Rgba(byte(r)?, byte(g)?, byte(bl)?, alpha(a)?)))(),
+                    _ => None,
+                };
+                if let Some(c) = c {
+                    out.push((i, close + 1, c));
+                    i = close + 1;
+                    continue;
+                }
+            }
+        }
+        i += line[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,5 +566,17 @@ mod tests {
         assert_eq!(drag_offset(6, 1, 10, 5, 10), 10);
         assert_eq!(drag_offset(1, 1, 10, 5, 10), 0);
         assert_eq!(drag_offset(4, 1, 10, 5, 10), 6);
+    }
+
+    #[test]
+    fn colours_written_in_a_line_are_found_and_issue_numbers_are_not() {
+        let found = |l: &str| color_literals(l).into_iter().map(|(a, e, c)| (l[a..e].to_string(), c)).collect::<Vec<_>>();
+        assert_eq!(found(r##""fg": "#0e639c", "bg": "#fff8", x: rgba(128, 32, 32, 0.6);"##), [
+            ("#0e639c".to_string(), Rgba(14, 99, 156, 255)),
+            ("#fff8".to_string(), Rgba(255, 255, 255, 136)),
+            ("rgba(128, 32, 32, 0.6)".to_string(), Rgba(128, 32, 32, 153)),
+        ]);
+        assert_eq!(found("rgb(1,2,3) #abc"), [("rgb(1,2,3)".to_string(), Rgba(1, 2, 3, 255)), ("#abc".to_string(), Rgba(170, 187, 204, 255))]);
+        assert!(found("fixes #123 and #4567, &#123; a#fff, #define, #12345, rgb(300,0,0)").is_empty());
     }
 }
