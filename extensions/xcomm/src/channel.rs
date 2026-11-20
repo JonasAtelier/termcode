@@ -70,6 +70,9 @@ pub struct Channel {
     /// xcomm's control socket on a port opened here; what it lets agents do.
     ctl: Option<xcomm::ctl::server::CtlServer>,
     pub agents: xcomm::ctl::CtlMode,
+    /// Shared: the session's offset of the next byte streamed (a second connection goes on
+    /// from there, not from the start of what it keeps).
+    session_at: u64,
 }
 
 
@@ -115,11 +118,22 @@ pub fn session_socket(tty: &str, env: &dyn Fn(&str) -> Option<String>) -> Option
     xcomm::ctl::path::socket_dirs(env).into_iter().map(|d| xcomm::ctl::path::socket_path(&d, &name)).find(|p| p.exists())
 }
 
-/// One request line to an xcomm session.
+/// One request line to an xcomm session: all of it, even on a non-blocking socket (a line
+/// cut short would garble the next), within two seconds.
 fn request(to: &mut std::os::unix::net::UnixStream, r: xcomm::ctl::proto::Request) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(&xcomm::ctl::proto::Envelope { request: r, deadline_ms: None }).map_err(std::io::Error::other)?;
     line.push(b'\n');
-    to.write_all(&line)
+    let (mut left, until) = (&line[..], Instant::now() + Duration::from_secs(2));
+    while !left.is_empty() {
+        match to.write(left) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => left = &left[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until => std::thread::sleep(Duration::from_millis(2)),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// The reply line to a request (two seconds at most).
@@ -140,14 +154,15 @@ fn reply(from: &std::os::unix::net::UnixStream) -> Result<serde_json::Value, Str
     if v["ok"] == true { Ok(v) } else { Err(v["error"].as_str().unwrap_or("refused").to_string()) }
 }
 
-/// Session socket `sock` shared: its output streamed from the oldest it keeps; with
-/// `write`, a second connection for what is typed.
-fn attach(sock: &Path, write: bool) -> Result<Source, String> {
+/// Session socket `sock` shared: its output streamed from offset `since` (the oldest it
+/// keeps, when that is gone), and where that is; with `write`, a second connection for
+/// what is typed.
+fn attach(sock: &Path, write: bool, since: u64) -> Result<(Source, u64), String> {
     use xcomm::ctl::proto::Request;
     let connect = || std::os::unix::net::UnixStream::connect(sock).map_err(|e| format!("{}: {e}", sock.display()));
     let mut out = connect()?;
-    request(&mut out, Request::Subscribe { since: Some(0), from_oldest: true }).map_err(|e| e.to_string())?;
-    reply(&out)?;
+    request(&mut out, Request::Subscribe { since: Some(since), from_oldest: true }).map_err(|e| e.to_string())?;
+    let start = reply(&out)?["start"].as_u64().unwrap_or(since);
     out.set_nonblocking(true).map_err(|e| e.to_string())?;
     let ctl = if write {
         let mut c = connect()?;
@@ -159,7 +174,7 @@ fn attach(sock: &Path, write: bool) -> Result<Source, String> {
     } else {
         None
     };
-    Ok(Source::Shared { out, ctl })
+    Ok((Source::Shared { out, ctl }, start))
 }
 
 fn data_bits(d: xcomm::cli::DataBits) -> u8 {
@@ -214,6 +229,7 @@ impl Channel {
             ring: xcomm::ring::Ring::new(RING),
             ctl: None,
             agents: xcomm::ctl::CtlMode::ReadWrite,
+            session_at: 0,
         }
     }
 
@@ -306,8 +322,11 @@ impl Channel {
     /// `tty`, held by the xcomm session on `sock` (`who` it is), shared with it: watched,
     /// and (`write`) typed into through it.
     pub fn share(tty: &str, sock: &Path, who: String, write: bool) -> Result<Channel, String> {
-        let source = attach(sock, write)?;
-        Ok(Channel::new(tty.to_string(), Path::new("/dev").join(tty), source, Some((sock.to_path_buf(), who)), write, LineSettings::default()))
+        // From the oldest it keeps: what came before shows too.
+        let (source, start) = attach(sock, write, 0)?;
+        let mut c = Channel::new(tty.to_string(), Path::new("/dev").join(tty), source, Some((sock.to_path_buf(), who)), write, LineSettings::default());
+        c.session_at = start;
+        Ok(c)
     }
 
     fn drop_port(&mut self, why: String) {
@@ -329,6 +348,7 @@ impl Channel {
             match n {
                 n if n > 0 => {
                     let b = &buf[..n as usize];
+                    self.session_at += b.len() as u64;
                     self.screen.process(b);
                     self.ring.push(b);
                     if let Some(srv) = &mut self.ctl {
@@ -382,36 +402,42 @@ impl Channel {
     }
 
     /// `b` to the device: written to the port, or sent through the session sharing it.
-    /// Not on a read-only channel.
-    pub fn send(&mut self, mut b: &[u8]) {
+    /// Not on a read-only channel, nor one disconnected; all of it within a second, else
+    /// what went says so.
+    pub fn send(&mut self, mut b: &[u8]) -> Result<(), String> {
         if !self.write {
             self.note = Some("read only: Attach to type".into());
-            return;
+            return Err(format!("{} is read only: Attach first", self.tty));
         }
+        let all = b.len();
         match &mut self.source {
             Some(Source::Own(p, _)) => {
                 let fd = p.fd().as_raw_fd();
                 let until = Instant::now() + Duration::from_secs(1);
-                while !b.is_empty() && Instant::now() < until {
+                while !b.is_empty() {
                     // SAFETY: an open descriptor and a buffer of the length given.
                     let n = unsafe { libc::write(fd, b.as_ptr().cast(), b.len()) };
+                    let e = std::io::Error::last_os_error();
                     if n > 0 {
                         self.tx += n as u64;
                         b = &b[n as usize..];
-                    } else if std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock {
-                        return;
+                    } else if e.kind() != std::io::ErrorKind::WouldBlock && e.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(format!("{}: {e} ({} of {all} bytes went)", self.tty, all - b.len()));
+                    } else if Instant::now() >= until {
+                        return Err(format!("{}: the device took {} of {all} bytes in a second (flow control?)", self.tty, all - b.len()));
                     } else {
                         std::thread::sleep(Duration::from_millis(2));
                     }
                 }
+                Ok(())
             }
             Some(Source::Shared { ctl: Some(c), .. }) => {
                 let data_b64 = xcomm::ctl::proto::base64_encode(b);
-                if request(c, xcomm::ctl::proto::Request::Send { data_b64 }).is_ok() {
-                    self.tx += b.len() as u64;
-                }
+                request(c, xcomm::ctl::proto::Request::Send { data_b64 }).map_err(|e| format!("{}: {e}", self.tty))?;
+                self.tx += all as u64;
+                Ok(())
             }
-            _ => {}
+            _ => Err(format!("{} is not connected (unplugged?)", self.tty)),
         }
     }
 
@@ -461,8 +487,12 @@ impl Channel {
         if self.source.is_some() || Instant::now() < self.retry {
             return false;
         }
-        let back = match &self.shared {
-            Some((sock, _)) => attach(sock, self.write).ok(),
+        let back = match self.shared.clone() {
+            // A session started again: its output from the oldest it keeps.
+            Some((sock, _)) => attach(&sock, self.write, 0).ok().map(|(src, start)| {
+                self.session_at = start;
+                src
+            }),
             None => take(&self.reopen, &self.settings, env).ok(),
         };
         match back {
@@ -507,12 +537,14 @@ impl Channel {
         match (a, &mut self.source) {
             (Act::Write, _) => {
                 if let Some((sock, _)) = self.shared.clone() {
-                    // Shared: writing needs its own connection to the session.
-                    match attach(&sock, !self.write) {
-                        Ok(src) => {
+                    // Shared: writing needs its own connection to the session; its output
+                    // goes on from where it was (not all it keeps again).
+                    match attach(&sock, !self.write, self.session_at) {
+                        Ok((src, start)) => {
                             self.drop_port(String::new());
                             self.source = Some(src);
                             self.link = Link::Open;
+                            self.session_at = start;
                         }
                         Err(e) => return format!("{tty}: {e}"),
                     }
@@ -704,4 +736,64 @@ pub fn plain(bytes: &[u8]) -> String {
         };
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex};
+
+    /// An xcomm session's control socket, as far as sharing goes: each request line kept,
+    /// answered ok (a subscription from where it asked), the first one streamed "hello".
+    fn fake_session(sock: &Path) -> Arc<Mutex<Vec<String>>> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let l = UnixListener::bind(sock).unwrap();
+        let kept = seen.clone();
+        std::thread::spawn(move || {
+            for (n, conn) in l.incoming().enumerate() {
+                let Ok(mut conn) = conn else { return };
+                let kept = kept.clone();
+                std::thread::spawn(move || {
+                    let mut lines = BufReader::new(conn.try_clone().unwrap()).lines();
+                    while let Some(Ok(line)) = lines.next() {
+                        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        let since = v.pointer("/request/since").or_else(|| v.pointer("/request/subscribe/since")).and_then(serde_json::Value::as_u64);
+                        kept.lock().unwrap().push(line);
+                        let _ = writeln!(conn, "{}", serde_json::json!({"ok": true, "start": since.unwrap_or(0)}));
+                        if n == 0 {
+                            let _ = conn.write_all(b"hello");
+                        }
+                    }
+                });
+            }
+        });
+        seen
+    }
+
+    #[test]
+    fn attaching_to_a_shared_port_goes_on_from_where_its_output_was_not_from_the_start() {
+        let dir = std::env::temp_dir().join(format!("xcomm-ext-share-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("ttyUSB9.sock");
+        let seen = fake_session(&sock);
+        let mut c = Channel::share("ttyUSB9", &sock, "xcomm".into(), false).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while c.session_at < 5 && Instant::now() < until {
+            c.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(c.session_at, 5, "the stream counted");
+        c.act(Act::Write, &dir);
+        assert!(c.write);
+        let lines = seen.lock().unwrap().clone();
+        assert!(lines[0].contains("\"since\":0"), "first: all it keeps {lines:?}");
+        assert!(lines.iter().skip(1).any(|l| l.contains("\"since\":5")), "again: from where it was {lines:?}");
+        assert!(!lines.iter().skip(1).any(|l| l.contains("\"since\":0")), "{lines:?}");
+        // Unplugged: a send says it did not go.
+        c.drop_port("gone".into());
+        assert!(c.send(b"x").unwrap_err().contains("not connected"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

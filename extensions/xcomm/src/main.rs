@@ -40,14 +40,21 @@ enum Asked {
     ApiAttach(Value, String),
 }
 
-/// A `serial.wait` waiting: its call, the channel, what to match from where, until when.
+/// A `serial.wait` waiting: its call, the channel, what to match from where, until when;
+/// the output's end when last looked at, and when.
 struct ApiWait {
     id: Value,
     tty: String,
     re: regex::Regex,
     mark: u64,
     until: Instant,
+    seen: u64,
+    looked: Instant,
 }
+
+/// `serial.wait`s at most at once, and how often each looks at new output.
+const WAITS: usize = 32;
+const LOOK_EVERY: Duration = Duration::from_millis(50);
 
 struct View {
     next: u64,
@@ -161,14 +168,17 @@ impl View {
                 if let (Some(b), Some(c)) = (bytes, self.channels.iter_mut().find(|c| c.tty == tab)) {
                     // Typing goes back to the bottom, as in a terminal.
                     c.screen.screen_mut().set_scrollback(0);
-                    c.send(&b);
+                    // (A refusal shows in the channel's status.)
+                    let _ = c.send(&b);
                     self.dirty.push(tab);
                 }
             }
             "view.paste" => {
                 if let Some(c) = self.channels.iter_mut().find(|c| c.tty == tab) {
                     let text = p["text"].as_str().unwrap_or("").replace("\r\n", "\r").replace('\n', "\r");
-                    c.send(text.as_bytes());
+                    if let Err(e) = c.send(text.as_bytes()) {
+                        self.notify(e);
+                    }
                 }
             }
             "view.resize" => {
@@ -195,6 +205,8 @@ impl View {
             "view.closed" => self.close(&tab),
             "view.command" => match p["id"].as_str().unwrap_or("") {
                 "open" => {
+                    // The view may never have shown: its ports not listed yet.
+                    self.list_ports();
                     let ttys: Vec<String> = self.ports.iter().map(|p| p.tty.clone()).collect();
                     let items: Vec<Value> = self.ports.iter().map(|p| json!({"label": p.tty, "detail": p.product.clone().unwrap_or_default()})).collect();
                     if items.is_empty() {
@@ -217,7 +229,9 @@ impl View {
 
     fn answered(&mut self, a: Asked, r: &Value) {
         match a {
-            Asked::Attach(tty) if r["button"] == "Attach" => self.act(&tty, Act::Write),
+            Asked::Attach(tty) if r["button"] == "Attach" => {
+                let _ = self.writable(&tty);
+            }
             Asked::Attach(_) => {}
             Asked::Note(id) => {
                 if let Some(text) = r["text"].as_str() {
@@ -234,8 +248,7 @@ impl View {
             }
             Asked::ApiAttach(id, tty) => {
                 let r = if r["button"] == "Attach" {
-                    self.act(&tty, Act::Write);
-                    Ok(json!({"port": tty, "write": true}))
+                    self.writable(&tty).map(|()| json!({"port": tty, "write": true}))
                 } else {
                     Err(format!("serial.attach {tty}: the user said no"))
                 };
@@ -277,7 +290,9 @@ impl View {
                         let n = self.call("ui.prompt", json!({"text": text, "buttons": ["Attach", "Cancel"]}));
                         self.asked.insert(n, Asked::Attach(arg));
                     }
-                    _ => self.act(&arg, Act::Write),
+                    _ => {
+                        let _ = self.act(&arg, Act::Write);
+                    }
                 }
             }
             "close" => self.close(&arg),
@@ -297,20 +312,34 @@ impl View {
                     "agents" => Act::Agents,
                     _ => return,
                 };
-                self.act(&tty, a);
+                let _ = self.act(&tty, a);
             }
             _ => {}
         }
     }
 
-    fn act(&mut self, tty: &str, a: Act) {
+    /// `a` on channel `tty`; what it did (also told the user).
+    fn act(&mut self, tty: &str, a: Act) -> String {
         let root = std::env::var_os("TERMCODE_WORKSPACE").map_or_else(|| PathBuf::from("."), PathBuf::from);
-        let Some(c) = self.channels.iter_mut().find(|c| c.tty == tty) else { return };
+        let Some(c) = self.channels.iter_mut().find(|c| c.tty == tty) else { return format!("{tty} is not open") };
         let said = c.act(a, &root);
         self.side = true;
         self.right = true;
         self.dirty.push(tty.to_string());
-        self.notify(said);
+        self.notify(said.clone());
+        said
+    }
+
+    /// Channel `tty` typed into (read and write), if it is not yet (`Act::Write` turns it
+    /// either way); what stopped it.
+    fn writable(&mut self, tty: &str) -> Result<(), String> {
+        match self.channels.iter().find(|c| c.tty == tty) {
+            None => return Err(format!("{tty} was closed")),
+            Some(c) if c.write => return Ok(()),
+            Some(_) => {}
+        }
+        let said = self.act(tty, Act::Write);
+        if self.channels.iter().any(|c| c.tty == tty && c.write) { Ok(()) } else { Err(said) }
     }
 
     /// `tty` opened here (free), shared with its xcomm session (held by one), or not.
@@ -400,9 +429,13 @@ impl View {
                     }
                     let re = regex::RegexBuilder::new(pat).size_limit(1 << 20).build().map_err(|e| format!("match: {e}"))?;
                     let c = self.channels.iter().find(|c| c.tty == tty).ok_or_else(|| not_open(&tty))?;
+                    if self.waits.len() >= WAITS {
+                        return Err(format!("serial.wait: {WAITS} waits already: wait for one to end"));
+                    }
                     let mark = q["since"].as_u64().unwrap_or_else(|| c.output_end());
                     let secs = q["timeout"].as_f64().unwrap_or(30.0).clamp(0.0, 3600.0);
-                    Ok(ApiWait { id: id.clone(), tty, re, mark, until: Instant::now() + Duration::from_secs_f64(secs) })
+                    // `seen` unlike any end: the output there already is looked at first.
+                    Ok(ApiWait { id: id.clone(), tty, re, mark, until: Instant::now() + Duration::from_secs_f64(secs), seen: u64::MAX, looked: Instant::now() - LOOK_EVERY })
                 })();
                 match r {
                     Ok(w) => {
@@ -426,8 +459,7 @@ impl View {
                     self.asked.insert(n, Asked::ApiAttach(id.clone(), tty));
                     return None;
                 } else {
-                    self.act(&tty, Act::Write);
-                    Ok(json!({"port": tty, "write": true}))
+                    self.writable(&tty).map(|()| json!({"port": tty, "write": true}))
                 }
             }
             "serial.send" => (|| {
@@ -438,7 +470,7 @@ impl View {
                     return Err(format!("{tty} is read only: serial.attach first"));
                 }
                 let mark = c.output_end();
-                c.send(text.as_bytes());
+                c.send(text.as_bytes())?;
                 // Shown as an agent's, as xcomm shows a control client's sends.
                 let shown: String = text.chars().map(|ch| if ch.is_control() { ' ' } else { ch }).collect();
                 c.screen.process(format!("\x1b[2m[api] {}\x1b[0m\r\n", shown.trim_end()).as_bytes());
@@ -498,15 +530,21 @@ impl View {
         Value::Array(list)
     }
 
-    /// `serial.wait`s matched, or out of time: answered.
+    /// `serial.wait`s matched, or out of time: answered. Each looks again only when output
+    /// came, at most every LOOK_EVERY.
     fn answer_waits(&mut self) {
         let now = Instant::now();
         let mut done = Vec::new();
-        self.waits.retain(|w| {
+        self.waits.retain_mut(|w| {
             let Some(c) = self.channels.iter().find(|c| c.tty == w.tty) else {
                 done.push((w.id.clone(), Err(format!("{} was closed", w.tty))));
                 return false;
             };
+            let end = c.output_end();
+            if (end == w.seen || now.duration_since(w.looked) < LOOK_EVERY) && now < w.until {
+                return true;
+            }
+            (w.seen, w.looked) = (end, now);
             let (text, next) = c.output_since(w.mark, 1 << 20);
             if let Some(m) = w.re.find(&text) {
                 let tail: String = text.chars().rev().take(4096).collect::<Vec<_>>().into_iter().rev().collect();
@@ -784,7 +822,8 @@ fn key_bytes(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Vec<u8>> {
         "F2" => seq("\x1bOQ"),
         "F3" => seq("\x1bOR"),
         "F4" => seq("\x1bOS"),
-        f if f.starts_with('F') && f.len() <= 3 => {
+        // F5..F12 (a typed capital F is a character).
+        f if f.len() >= 2 && f.len() <= 3 && f.starts_with('F') && f[1..].bytes().all(|b| b.is_ascii_digit()) => {
             let n: u8 = f[1..].parse().ok()?;
             let code = [15, 17, 18, 19, 20, 21, 23, 24].get(usize::from(n.checked_sub(5)?))?;
             seq(&format!("\x1b[{code}~"))
@@ -898,6 +937,8 @@ mod tests {
         assert_eq!(key_bytes("x", false, true, false), Some(b"\x1bx".to_vec()));
         assert_eq!(key_bytes("F5", false, false, false), Some(b"\x1b[15~".to_vec()));
         assert_eq!(key_bytes("F13", false, false, false), None);
+        assert_eq!(key_bytes("F", false, false, true), Some(b"F".to_vec()), "a capital F, typed");
+        assert_eq!(key_bytes("Fx", false, false, false), None);
         assert_eq!(color(vt100::Color::Idx(1)).as_deref(), Some("#cd3131"));
         assert_eq!(color(vt100::Color::Idx(196)).as_deref(), Some("#ff0000"));
     }
