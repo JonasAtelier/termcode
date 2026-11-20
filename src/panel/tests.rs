@@ -7802,3 +7802,37 @@ fn a_long_tab_list_scrolls_and_keeps_the_active_tab_in_view() {
     let _ = fs::remove_dir_all(&root);
 }
 
+
+#[test]
+fn resting_on_a_picture_shows_it_in_a_card_in_the_explorer_and_the_editor() {
+    let root = repo("hover-picture");
+    image::RgbaImage::from_pixel(64, 32, image::Rgba([200, 30, 30, 255])).save(root.join("shot.png")).unwrap();
+    fs::write(root.join("notes.md"), "See shot.png for it.\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(170, 30)).unwrap();
+    screen(&mut app, &mut t);
+    // The Explorer: the tooltip's card, right of the side bar, the picture's size on it.
+    let (r, ..) = app.ui.tips.iter().find(|(_, _, _, f, _)| f.as_deref() == Some("shot.png")).cloned().expect("a file's tooltip");
+    app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: r.x + 3, row: r.y, modifiers: KeyModifiers::NONE });
+    app.tip.as_mut().unwrap().since -= TIP_DELAY;
+    let mut dirty = false;
+    app.step(&mut t, &mut dirty, |_| Ok(None)).unwrap();
+    let s = screen(&mut app, &mut t);
+    let line = s.lines().nth(r.y as usize).unwrap();
+    assert!(line.contains(" shot.png "), "the card's title on the row's line: {line}");
+    assert!(s.contains(" 64×32 "), "{s}");
+    let b = t.backend().buffer();
+    let red = (0..b.area.width).flat_map(|x| (0..b.area.height).map(move |y| (x, y))).any(|(x, y)| b[(x, y)].fg == Color::Rgb(200, 30, 30));
+    assert!(red, "the picture, in half-blocks without Kitty graphics");
+    // The editor: its path under the pointer.
+    app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: 0, row: 0, modifiers: KeyModifiers::NONE });
+    app.open_file(0, "notes.md", false);
+    screen(&mut app, &mut t);
+    let text = app.ui.groups[0].text;
+    let s = screen(&mut app, &mut t);
+    assert!(!s.contains(" 64×32 "), "nothing until the pointer is on it");
+    app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: text.x + 6, row: text.y, modifiers: KeyModifiers::NONE });
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains(" 64×32 "), "{s}");
+    let _ = fs::remove_dir_all(&root);
+}

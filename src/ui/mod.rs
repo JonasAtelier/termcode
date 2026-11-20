@@ -355,6 +355,7 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     crate::blocks::finish(f);
     explorer_overlay(app, f, area);
     crate::navui::draw(app, f);
+    crate::thumb::draw_editor(app, f);
     settings_notice(app, f, area);
     crate::scm::draw_popups(app, f, area);
     if app.quick.is_some() {
@@ -1003,6 +1004,8 @@ fn explorer_overlay(app: &mut App, f: &mut Frame, area: Rect) {
     }
     let Some(t) = app.tip.as_ref().filter(|t| t.shown) else { return };
     let ext = t.ext(area.right());
+    // A picture's file: a card with the picture right of the side bar (thumb.rs).
+    let picture = t.file.as_deref().map(|p| app.root.join(p)).filter(|p| crate::media::kind(p) == Some(crate::media::Kind::Image)).map(|p| (p, t.rect.y));
     // Lines under the row (over the rows above it at the list's foot): where a link points,
     // a file's MD5 with its Copy button.
     let mut info: Vec<(String, bool, bool)> = Vec::new(); // text, an error, a Copy button
@@ -1053,6 +1056,10 @@ fn explorer_overlay(app: &mut App, f: &mut Frame, area: Rect) {
         f.render_widget(Line::from(spans), r);
     }
     app.ui.tip_md5 = block;
+    if let Some((path, y)) = picture {
+        let x = app.ui.sidebar.right().max(ext.right()).max(block.right());
+        crate::thumb::card(app, f, &path, Rect::new(x, y, 1, 1), true);
+    }
 }
 
 fn search_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, hr: &HRow, i: usize) {

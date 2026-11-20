@@ -44,6 +44,7 @@ mod logview;
 mod patch;
 mod size;
 mod mdpreview;
+mod thumb;
 mod theme;
 mod ui;
 // Source Control UI: the CHANGES / GRAPH view, Timeline, hover card, commit dialog.

@@ -13,6 +13,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   it: smooth curved branch lines, a ring for each commit (HEAD's filled), the lanes going
   on past an opened commit's files, and the subjects lined up right of it. Elsewhere the
   graph stays in box-drawing characters.
+- Resting on a picture shows it in a card: an image file in the Explorer (beside its
+  tooltip), or a picture's path in the editor (`docs/shot.png`, `~/pics/a.jpg`: beside the
+  file, then in the workspace), with its size in pixels. Real pixels in Ghostty and kitty,
+  half-blocks elsewhere.
 
 ## [1.0.0] - 2026-11-20
 

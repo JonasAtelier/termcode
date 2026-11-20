@@ -1036,7 +1036,7 @@ fn pic_size(path: &Path, width: Option<u32>, max_cols: usize, (cw, ch): (u16, u1
 
 /// A picture as half-blocks (two pixels a cell): `rows` lines `cols` wide. Kept by file,
 /// time and size: a preview is drawn again at each edit of its source.
-fn half_blocks(path: &Path, cols: u16, rows: u16) -> Option<Vec<Line<'static>>> {
+pub(crate) fn half_blocks(path: &Path, cols: u16, rows: u16) -> Option<Vec<Line<'static>>> {
     type Key = (PathBuf, Option<std::time::SystemTime>, u16, u16, Color);
     static KEPT: std::sync::Mutex<Vec<(Key, Vec<Line<'static>>)>> = std::sync::Mutex::new(Vec::new());
     let key: Key = (path.to_path_buf(), std::fs::metadata(path).and_then(|m| m.modified()).ok(), cols, rows, P.editor_bg);
