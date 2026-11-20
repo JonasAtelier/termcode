@@ -1,6 +1,6 @@
 //! The kit's shapes in pixels where the terminal shows Kitty pictures (Ghostty, kitty):
 //! a button's rounded ends, a scrollbar's slider (rounded, placed to the pixel), a
-//! checkbox. The kit draws its cells as ever, then asks for the shape here; once the
+//! checkbox, an icon bigger than the font draws it. The kit draws its cells as ever, then asks for the shape here; once the
 //! frame is drawn, `place` puts the picture over the cells that still show what the kit
 //! drew (a popup drawn over them since keeps them: it is in front).
 
@@ -21,6 +21,8 @@ pub(crate) enum Shape {
     Slider { start: f32, len: f32, color: Rgba },
     /// A checkbox, ticked or not, lit under the pointer.
     Check { on: bool, fill: Color, mark: Color, under: Color },
+    /// A Nerd Font icon in `color`, `size` of the picture's height, centred.
+    Icon { glyph: char, color: Color, size: f32 },
 }
 
 struct Ask {
@@ -58,6 +60,30 @@ pub(crate) fn ask(f: &mut Frame, at: Rect, shape: Shape, under: Vec<Color>) {
     let buf = f.buffer_mut();
     let cells = at.positions().map(|p| buf[p].clone()).collect();
     ASKS.with_borrow_mut(|a| a.push(Ask { at, shape, cells, under }));
+}
+
+/// The font with the Nerd Font icons (any patched font has them all), once.
+fn icon_font() -> Option<&'static fontdue::Font> {
+    static FONT: std::sync::OnceLock<Option<fontdue::Font>> = std::sync::OnceLock::new();
+    FONT.get_or_init(|| {
+        let o = std::process::Command::new("fc-match").args(["-f", "%{file}", ":charset=ea60"]).stderr(std::process::Stdio::null()).output().ok()?;
+        let bytes = std::fs::read(String::from_utf8_lossy(&o.stdout).trim()).ok()?;
+        fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
+    })
+    .as_ref()
+}
+
+/// `glyph` (a Nerd Font icon the kit drew in `at`) again in pixels, `size` of `at`'s
+/// height: bigger than the font draws it. Other icon sets, and a font without it: text.
+pub(crate) fn icon(f: &mut Frame, at: Rect, glyph: &str, color: Color, size: f32) {
+    let mut cs = glyph.chars();
+    let (Some(c), None) = (cs.next(), cs.next()) else { return };
+    if cell().is_none() || !crate::theme::nerd() || !icon_font().is_some_and(|font| font.lookup_glyph_index(c) != 0) {
+        return;
+    }
+    let at = at.intersection(f.area());
+    let under = at.positions().map(|p| f.buffer_mut()[p].bg).collect();
+    ask(f, at, Shape::Icon { glyph: c, color, size }, under);
 }
 
 /// The frame's caps and bars as the kit's text draws them, found in its cells: a cap's
@@ -148,6 +174,9 @@ pub(crate) fn place(app: &mut App, f: &mut Frame) {
 
 /// `shape` in a `w`×`h` picture of cells `cell` pixels, anti-aliased, clear around it.
 pub(crate) fn paint(shape: Shape, w: u32, h: u32, (cw, ch): (u16, u16)) -> RgbaImage {
+    if let Shape::Icon { glyph, color, size } = shape {
+        return icon_image(glyph, color, w, h, size);
+    }
     let (cw, ch) = (f32::from(cw), f32::from(ch));
     let mut img = RgbaImage::new(w, h);
     let rgb = |c: Color| match c {
@@ -206,10 +235,30 @@ pub(crate) fn paint(shape: Shape, w: u32, h: u32, (cw, ch): (u16, u16)) -> RgbaI
                         (rgb(fill), b)
                     }
                 }
+                Shape::Icon { .. } => unreachable!("drawn by icon_image"),
             };
             if a > 0.0 {
                 img.put_pixel(x, y, image::Rgba([color[0], color[1], color[2], (a * 255.0).round() as u8]));
             }
+        }
+    }
+    img
+}
+
+/// `glyph` in `color`, as big as fits `size` × `h` high (and `w` wide), centred.
+fn icon_image(glyph: char, color: Color, w: u32, h: u32, size: f32) -> RgbaImage {
+    let mut img = RgbaImage::new(w, h);
+    let Some(font) = icon_font() else { return img };
+    let Color::Rgb(r, g, b) = color else { return img };
+    let m = font.metrics(glyph, 100.0);
+    let (bw, bh) = ((w as f32 * 0.95).min(size * h as f32), size * h as f32);
+    let px = 100.0 * (bw / m.width.max(1) as f32).min(bh / m.height.max(1) as f32);
+    let (m, cover) = font.rasterize(glyph, px);
+    let (x0, y0) = ((i64::from(w) - m.width as i64) / 2, (i64::from(h) - m.height as i64) / 2);
+    for (i, &a) in cover.iter().enumerate().filter(|(_, a)| **a > 0) {
+        let (x, y) = (x0 + (i % m.width) as i64, y0 + (i / m.width) as i64);
+        if (0..i64::from(w)).contains(&x) && (0..i64::from(h)).contains(&y) {
+            img.put_pixel(x as u32, y as u32, image::Rgba([r, g, b, a]));
         }
     }
     img
@@ -291,6 +340,39 @@ mod tests {
         assert!((4..14).all(|x| pic(x, 1)), "a progress bar of 10 cells");
         assert!((6..30).all(|x| pic(x, 2)), "a memory region's bar of 24 cells");
         assert!(!pic(4, 3) && b[(4, 3)].symbol() == "█", "a short run stays text");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn an_icon_goes_out_bigger_than_its_glyph_where_the_icon_font_is_else_stays_text() {
+        let d = std::env::temp_dir().join(format!("termcode-pixels-icon-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut app = App::new(d.clone(), None);
+        app.media.kitty_for_tests();
+        let glyph = crate::theme::icons().settings;
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(6, 2)).unwrap();
+        let mut out = None;
+        t.draw(|f| {
+            begin(Some((8, 16)));
+            f.render_widget(Span::raw(glyph), Rect::new(0, 0, 2, 1));
+            icon(f, Rect::new(0, 0, 2, 1), glyph, Color::Rgb(200, 200, 200), 0.9);
+            icon(f, Rect::new(3, 0, 2, 1), "ab", Color::Rgb(200, 200, 200), 0.9);
+            place(&mut app, f);
+            out = Some(f.buffer_mut().clone());
+        })
+        .unwrap();
+        let b = out.unwrap();
+        let pic = |x: u16| b[(x, 0)].symbol().contains('\u{10EEEE}');
+        assert!(!pic(3), "not one glyph: text");
+        // Without the font (CI), it stays the font's glyph; here, a picture 0.9 of the row high.
+        if icon_font().is_none() {
+            assert_eq!(b[(0, 0)].symbol(), glyph);
+        } else {
+            assert!(pic(0) && pic(1), "the icon's two cells, in pixels");
+            let img = icon_image(glyph.chars().next().unwrap(), Color::Rgb(200, 200, 200), 16, 16, 0.9);
+            let rows: Vec<u32> = (0..16).filter(|&y| (0..16).any(|x| img.get_pixel(x, y)[3] > 0)).collect();
+            assert!(rows.len() >= 12, "as tall as asked: {rows:?}");
+        }
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

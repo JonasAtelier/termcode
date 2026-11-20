@@ -518,7 +518,10 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
             }
         }
         let fg = if active || hot { P.activity_fg } else { P.activity_inactive };
-        f.render_widget(Span::styled(icon.to_string(), Style::new().fg(fg)), Rect::new(ix, iy, 2.min(r.right().saturating_sub(ix)), 1));
+        let at = Rect::new(ix, iy, 2.min(r.right().saturating_sub(ix)), 1);
+        f.render_widget(Span::styled(icon.to_string(), Style::new().fg(fg)), at);
+        // In pixels: nearly the row's height, as big as VS Code's against its item.
+        pixels::icon(f, at, icon, fg, 0.86);
     };
     // Settings: like a view's item, its icon above one blank row at the bottom; lifted
     // while its dialog is open (the view's item is not, meanwhile).

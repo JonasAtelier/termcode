@@ -201,8 +201,9 @@ pub struct State {
     trash: Vec<u32>,
     trash_old: Vec<u32>,
     next_id: u32,
-    /// Pictures kept in the terminal whole (a Markdown preview's): their image ids.
-    kept: HashMap<u64, u32>,
+    /// Pictures kept in the terminal whole (a Markdown preview's, the chrome's): key ->
+    /// (image id, pixels).
+    kept: HashMap<u64, (u32, u32)>,
     /// Pictures swapped in place (a minimap): by slot, the image id shown and its pixels' digest.
     swaps: HashMap<String, (u32, u64)>,
 }
@@ -1042,18 +1043,21 @@ pub fn kept(app: &mut App, key: u64, (cols, rows): (u16, u16), make: impl FnOnce
     if !tiles {
         return None;
     }
-    if let Some(&id) = app.media.kept.get(&key) {
+    if let Some(&(id, _)) = app.media.kept.get(&key) {
         return Some((id, String::new()));
     }
     let img = make((u32::from(cols) * u32::from(cell.0), u32::from(rows) * u32::from(cell.1)))?;
-    // ponytail: 32 at most, then all go; a README has a few.
-    if app.media.kept.len() >= 32 {
-        let old: Vec<u32> = app.media.kept.drain().map(|(_, id)| id).collect();
+    // ponytail: all go at once past 128 pictures or 8M pixels (32 MB in the terminal); the
+    // chrome's icons and caps are a few dozen small ones, a README has a few big ones.
+    let px = img.width() * img.height();
+    let held: u64 = app.media.kept.values().map(|&(_, n)| u64::from(n)).sum();
+    if app.media.kept.len() >= 128 || held + u64::from(px) > 8 << 20 {
+        let old: Vec<u32> = app.media.kept.drain().map(|(_, (id, _))| id).collect();
         app.media.trash.extend(old);
     }
     let id = app.media.new_id();
     let seq = app.media.gfx.as_ref()?.transmit(id, &img, cols, rows);
-    app.media.kept.insert(key, id);
+    app.media.kept.insert(key, (id, px));
     Some((id, seq))
 }
 

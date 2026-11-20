@@ -17,6 +17,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   tooltip), or a picture's path in the editor (`docs/shot.png`, `~/pics/a.jpg`: beside the
   file, then in the workspace), with its size in pixels. Real pixels in Ghostty and kitty,
   half-blocks elsewhere.
+- In Ghostty and kitty the activity bar's icons, and the GitHub view's mark (where the
+  account has no picture), are drawn in pixels, bigger than the font draws them. Other
+  icon sets, and terminals without pictures, keep the font's icons.
 - Extensions can show pictures: a `{"picture": <base64 PNG>, "rows": 8}` row (a plot, a
   waveform, a diagram), in real pixels in Ghostty and kitty, half-blocks elsewhere.
 - In Ghostty and kitty the UI kit draws in pixels where text cannot: buttons get rounded

@@ -162,6 +162,8 @@ pub(super) fn ready(app: &mut App, f: &mut Frame, area: Rect, focused: bool) {
     };
     if !drew {
         f.render_widget(Span::styled(ic(GITHUB), Style::new().fg(P.sidebar_fg)), Rect::new(pic.x + 1, pic.y, 2, 1));
+        // In pixels: the mark as big as the picture would be.
+        crate::ui::pixels::icon(f, pic, ic(GITHUB), P.sidebar_fg, 0.62);
     }
     let tx = pic.right() + 1;
     let refresh = format!(" {} ", if app.gh.loading || app.gh.repo_loading { ic(RUNNING) } else { ic(REFRESH) });
