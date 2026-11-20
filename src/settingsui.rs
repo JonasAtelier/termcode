@@ -2,8 +2,9 @@
 
 use crate::ui::kit::Look;
 use crate::panel::{App, Doc, Drag};
+use crate::parse::Chord;
 use crate::settings::{self, Settings};
-use crate::theme::{icons, P};
+use crate::theme::{icons, Rgba, P};
 use crate::ui::{fill, popup_block};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
@@ -252,7 +253,7 @@ fn describe(key: &str) -> &'static str {
         "termcode.errorChecking" => "Underline problems shellcheck and the C/C++ compiler find.",
         "termcode.keybindings" => "Your own keys for F1 commands: \"ctrl+alt+p\": \"Git: Pull\".",
         "termcode.prefix" => "The key before a quick key, anywhere, the terminal too: then one key runs a command.",
-        "termcode.prefixKeys" => "The quick keys after the prefix: \"key\": \"F1 command\". Yours go over these defaults.",
+        "termcode.prefixKeys" => "The quick keys after the prefix: click a key (or Enter, then the arrows) to give it a command.",
         "editor.autoClosingBrackets" => "Type the closing bracket with the opening one.",
         "editor.autoClosingQuotes" => "Type the closing quote with the opening one.",
         "editor.guides.indentation" => "Thin lines at each indentation level.",
@@ -293,6 +294,46 @@ fn describe(key: &str) -> &'static str {
 /// Rows a setting takes in the list: its name, what it does, its control, a gap.
 const FIELD_H: u16 = 4;
 
+/// The quick keys' setting: edited on a keyboard (`draw_keyboard`), not as JSON text.
+const QUICK: &str = "termcode.prefixKeys";
+
+/// The keyboard's rows of keys, each indented as a keyboard staggers them.
+const BOARD: [(u16, &str); 4] = [(0, "`1234567890-="), (2, "qwertyuiop[]\\"), (3, "asdfghjkl;'"), (4, "zxcvbnm,./")];
+
+/// The quick keys' keyboard with the keys: the key chosen, and its command list when open.
+struct Board {
+    sel: Chord,
+    pick: Option<Pick>,
+}
+
+/// The commands a key can run: the text typed to find one, the one chosen.
+struct Pick {
+    query: String,
+    at: usize,
+}
+
+/// What a key can be given: none (a free key), then every F1 command matching `q`.
+fn pick_items(q: &str) -> Vec<String> {
+    std::iter::once(String::new()).chain(crate::panel::filter_commands_recent(q, &[], &[])).collect()
+}
+
+/// A key as `termcode.prefixKeys` names it: "t", "\\", "left", "ctrl+x".
+fn chord_name((code, mods): Chord) -> String {
+    let mut s = String::new();
+    for (m, name) in [(KeyModifiers::CONTROL, "ctrl+"), (KeyModifiers::ALT, "alt+"), (KeyModifiers::SHIFT, "shift+")] {
+        if mods.contains(m) {
+            s.push_str(name);
+        }
+    }
+    match code {
+        KeyCode::Char(' ') => s.push_str("space"),
+        KeyCode::Char(c) => s.push(c),
+        KeyCode::F(n) => s.push_str(&format!("f{n}")),
+        other => s.push_str(&format!("{other:?}").to_lowercase()),
+    }
+    s
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Focus {
     /// The search box at the top.
@@ -314,6 +355,10 @@ struct Hits {
     options: Vec<(Rect, usize)>,
     content: Rect,
     search: Rect,
+    /// The quick keys' keyboard: its keys, the command list's rows and frame.
+    keys: Vec<(Rect, Chord)>,
+    picks: Vec<(Rect, String)>,
+    pick: Rect,
 }
 
 struct Edit {
@@ -348,6 +393,8 @@ pub struct Dialog {
     palette: Option<(Map<String, Value>, Result<crate::theme::Pal, String>)>,
     /// The search box's text: the list shows the settings it finds in every category.
     query: String,
+    /// The quick keys' keyboard while it has the keys (the arrows choose a key).
+    board: Option<Board>,
 }
 
 fn toggles(app: &App) -> [bool; 5] {
@@ -394,6 +441,7 @@ pub fn open(app: &mut App) {
                 graphics: crate::settingsgraphics::Graphics::new(),
                 palette: None,
                 query: String::new(),
+                board: None,
             });
         }
     }
@@ -563,6 +611,9 @@ impl Dialog {
             Choice(options) => {
                 self.dropdown = Some(options.iter().position(|s| Some(*s) == self.value(row).as_str()).unwrap_or(0))
             }
+            Json(_) if FIELDS[row].key == QUICK => {
+                self.board = Some(Board { sel: (KeyCode::Char('t'), KeyModifiers::NONE), pick: None })
+            }
             Text(_) | Json(_) => {
                 let text = self.display(row);
                 self.edit = Some(Edit { row, cursor: text.len(), text, all: false });
@@ -640,6 +691,7 @@ impl Dialog {
 
     fn category(&mut self, category: usize) {
         self.category = category;
+        self.board = None;
         self.query.clear();
         self.selected = 0;
         self.scroll = 0;
@@ -719,6 +771,10 @@ impl Dialog {
             if let Some(e) = self.edit.as_mut() {
                 e.all = true;
             }
+            return true;
+        }
+        if self.board.is_some() {
+            self.board_key(k);
             return true;
         }
         if self.edit.is_some() {
@@ -811,6 +867,105 @@ impl Dialog {
                 self.quit_after = false;
                 true
             }
+        }
+    }
+
+    /// The quick keys as the draft has them: the defaults with the user's over them.
+    fn quick(&self) -> Vec<(Chord, String)> {
+        settings::prefix_keys(self.draft.get(QUICK)).unwrap_or_default()
+    }
+
+    /// `chord` runs `cmd` ("": none). Only what differs from the defaults is written.
+    fn bind(&mut self, chord: Chord, cmd: &str) {
+        let row = FIELDS.iter().position(|f| f.key == QUICK).expect("the quick keys' setting");
+        let mut user = self.draft.get(QUICK).and_then(Value::as_object).cloned().unwrap_or_default();
+        user.retain(|k, _| crate::parse::parse_chord(k).ok() != Some(chord));
+        let default = settings::prefix_keys(None).unwrap_or_default().into_iter().find(|(c, _)| *c == chord).map(|(_, n)| n);
+        if default.as_deref().unwrap_or("") != cmd {
+            user.insert(chord_name(chord), Value::from(cmd));
+        }
+        self.set(row, if user.is_empty() { default_of(FIELDS[row].kind) } else { Value::Object(user) });
+    }
+
+    /// The chosen key's command list, at its command.
+    fn open_pick(&mut self) {
+        let Some(sel) = self.board.as_ref().map(|b| b.sel) else { return };
+        let cur = self.quick().into_iter().find(|(c, _)| *c == sel).map(|(_, n)| n).unwrap_or_default();
+        let at = pick_items("").iter().position(|i| *i == cur).unwrap_or(0);
+        if let Some(b) = self.board.as_mut() {
+            b.pick = Some(Pick { query: String::new(), at });
+        }
+    }
+
+    /// The key beside the chosen one as drawn: along its row (`dx`), or the nearest in
+    /// the row above or below (`dy`).
+    fn step(&mut self, dx: i32, dy: i32) {
+        let Some(b) = self.board.as_mut() else { return };
+        let Some(cur) = self.hits.keys.iter().find(|k| k.1 == b.sel).map(|k| k.0) else { return };
+        let mid = |r: Rect| r.x as i32 + r.width as i32 / 2;
+        let next = self
+            .hits
+            .keys
+            .iter()
+            .filter(|(r, _)| if dy == 0 { r.y == cur.y && (mid(*r) - mid(cur)) * dx > 0 } else { (r.y as i32 - cur.y as i32) * dy > 0 })
+            .min_by_key(|(r, _)| ((r.y as i32 - cur.y as i32).abs(), (mid(*r) - mid(cur)).abs()));
+        if let Some(&(_, c)) = next {
+            b.sel = c;
+        }
+    }
+
+    /// A key while the keyboard shows: the arrows choose a key, a typed one goes to its
+    /// key, Enter opens its command list; in the list, typing finds a command, ↑↓ choose,
+    /// Enter gives it to the key. Esc closes the list, then the keyboard.
+    fn board_key(&mut self, k: KeyEvent) {
+        let plain = !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let Some(b) = self.board.as_mut() else { return };
+        if let Some(p) = b.pick.as_mut() {
+            let last = pick_items(&p.query).len().saturating_sub(1);
+            match k.code {
+                KeyCode::Esc => b.pick = None,
+                KeyCode::Up => p.at = p.at.saturating_sub(1),
+                KeyCode::Down => p.at = (p.at + 1).min(last),
+                KeyCode::PageUp => p.at = p.at.saturating_sub(8),
+                KeyCode::PageDown => p.at = (p.at + 8).min(last),
+                KeyCode::Enter => {
+                    let (sel, cmd) = (b.sel, pick_items(&p.query).swap_remove(p.at.min(last)));
+                    b.pick = None;
+                    self.bind(sel, &cmd);
+                }
+                KeyCode::Backspace | KeyCode::Char(_) => {
+                    match k.code {
+                        KeyCode::Char(c) if plain => p.query.push(c),
+                        KeyCode::Backspace => {
+                            p.query.pop();
+                        }
+                        _ => return,
+                    }
+                    // Typing goes to the best match, past "none".
+                    p.at = usize::from(!p.query.is_empty() && pick_items(&p.query).len() > 1);
+                }
+                _ => {}
+            }
+            return;
+        }
+        match k.code {
+            KeyCode::Esc => self.board = None,
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.board = None;
+                self.tab(k.code == KeyCode::BackTab);
+            }
+            KeyCode::Enter => self.open_pick(),
+            KeyCode::Left => self.step(-1, 0),
+            KeyCode::Right => self.step(1, 0),
+            KeyCode::Up => self.step(0, -1),
+            KeyCode::Down => self.step(0, 1),
+            KeyCode::Char(c) if plain => {
+                let c = (KeyCode::Char(c.to_ascii_lowercase()), KeyModifiers::NONE);
+                if self.hits.keys.iter().any(|k| k.1 == c) {
+                    b.sel = c;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -937,7 +1092,29 @@ impl Dialog {
                 if !self.commit_edit() {
                     return true;
                 }
+                // The quick keys: a command clicked in a key's list goes to the key; a key
+                // clicked opens its list; a click anywhere else leaves the keyboard.
+                if let Some(b) = self.board.as_mut().filter(|b| b.pick.is_some()) {
+                    if let Some((_, cmd)) = self.hits.picks.iter().find(|(r, _)| r.contains(p)).cloned() {
+                        let sel = b.sel;
+                        b.pick = None;
+                        self.bind(sel, &cmd);
+                        return true;
+                    }
+                    if self.hits.pick.contains(p) {
+                        return true;
+                    }
+                }
+                self.board = None;
+                if let Some(&(_, c)) = self.hits.keys.iter().find(|(r, _)| r.contains(p)) {
+                    self.board = Some(Board { sel: c, pick: None });
+                    self.focus = Focus::Fields;
+                    self.selected = self.rows().iter().position(|&i| FIELDS[i].key == QUICK).unwrap_or(self.selected);
+                    self.open_pick();
+                    return true;
+                }
                 if self.hits.search.contains(p) {
+                    self.board = None;
                     self.focus = Focus::Search;
                     return true;
                 }
@@ -956,6 +1133,14 @@ impl Dialog {
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if self.hits.pick.contains(p) && self.board.as_ref().is_some_and(|b| b.pick.is_some()) =>
+            {
+                if let Some(pk) = self.board.as_mut().and_then(|b| b.pick.as_mut()) {
+                    let last = pick_items(&pk.query).len().saturating_sub(1);
+                    pk.at = if m.kind == MouseEventKind::ScrollDown { (pk.at + 3).min(last) } else { pk.at.saturating_sub(3) };
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 if !self.confirm && self.hits.content.contains(p) && self.commit_edit() =>
             {
                 let rows = self.rows();
@@ -963,6 +1148,7 @@ impl Dialog {
                     return true;
                 }
                 let step = 1;
+                self.board = None;
                 if m.kind == MouseEventKind::ScrollDown {
                     self.selected = (self.selected + step).min(rows.len() - 1);
                 } else {
@@ -1029,6 +1215,10 @@ pub fn mouse(app: &mut App, m: MouseEvent) -> bool {
     let Some(mut d) = app.settings_dlg.take() else {
         return false;
     };
+    // Where the pointer is, for what lights under it (the kit's buttons, the keyboard).
+    if m.kind == MouseEventKind::Moved {
+        app.hover = Some(Position::new(m.column, m.row));
+    }
     let keep = d.mouse(app, m);
     finish(app, d, keep);
     true
@@ -1058,6 +1248,7 @@ fn text(f: &mut Frame, r: Rect, s: &str, style: Style) {
 }
 
 pub fn draw(app: &mut App, f: &mut Frame) {
+    let hover = app.hover;
     let Some(d) = app.settings_dlg.as_mut() else {
         return;
     };
@@ -1162,29 +1353,40 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     text(f, Rect::new(content.x, content.y, content.width, 1), &heading, st.add_modifier(Modifier::BOLD).fg(P.sidebar_title));
     content = Rect::new(content.x, content.y + 2, content.width, content.height.saturating_sub(2));
     d.hits.content = content;
+    let mut keyboard = None;
     if rows.is_empty() {
         text(f, Rect::new(content.x, content.y, content.width, 1), "No settings found.", dim);
     } else {
         d.selected = d.selected.min(rows.len() - 1);
-        let capacity = (content.height / FIELD_H).max(1) as usize;
-        if d.selected < d.scroll {
+        // Each setting its rows (the keyboard more); the list starts where the chosen one shows whole.
+        let quick_h = 3 + board_h(&d.quick());
+        let field_h = |row: usize| if FIELDS[row].key == QUICK { quick_h } else { FIELD_H };
+        d.scroll = d.scroll.min(d.selected);
+        // A key's command list opens under the keyboard: the keyboard goes to the top.
+        if d.board.as_ref().is_some_and(|b| b.pick.is_some()) {
             d.scroll = d.selected;
         }
-        if d.selected >= d.scroll + capacity {
-            d.scroll = d.selected + 1 - capacity;
+        while d.scroll < d.selected && rows[d.scroll..=d.selected].iter().map(|&r| field_h(r)).sum::<u16>() > content.height + 1 {
+            d.scroll += 1;
         }
-        for (slot, &row) in rows.iter().skip(d.scroll).take(capacity).enumerate() {
-            let y = content.y + slot as u16 * FIELD_H;
+        let mut y = content.y;
+        let mut shown = 0;
+        for &row in rows.iter().skip(d.scroll) {
+            let fh = field_h(row);
+            if shown > 0 && y + fh - 1 > content.bottom() {
+                break;
+            }
+            shown += 1;
             let field = &FIELDS[row];
             let selected = rows[d.selected] == row && d.focus == Focus::Fields;
-            let block = Rect::new(content.x - 1, y, content.width + 1, FIELD_H - 1);
+            let block = Rect::new(content.x - 1, y, content.width + 1, fh - 1);
             if selected {
                 fill(f, block, P.list_inactive_bg);
             }
             let bg = if selected { P.list_inactive_bg } else { P.widget_bg };
             let row_st = st.bg(bg);
             if d.is_set(row) {
-                for yy in y..y + FIELD_H - 1 {
+                for yy in y..(y + fh - 1).min(content.bottom()) {
                     text(f, Rect::new(content.x - 2, yy, 1, 1), "▎", st.fg(accent));
                 }
             }
@@ -1227,6 +1429,12 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                     text(f, r2, &shown, input);
                     d.hits.rows.push((Rect::new(content.x, y, content.width, FIELD_H - 1), r2, row));
                 }
+                Json(_) if field.key == QUICK => {
+                    let at = Rect::new(control.x, control.y, control.width, content.bottom().saturating_sub(control.y));
+                    let frame = draw_keyboard(d, f, at, hover);
+                    keyboard = Some(frame);
+                    d.hits.rows.push((Rect::new(content.x, y, content.width, fh - 1), frame, row));
+                }
                 Text(_) | Json(_) => {
                     let r2 = Rect::new(control.x, control.y, control.width.min(56), 1);
                     if let Some(e) = d.edit.as_ref().filter(|e| e.row == row) {
@@ -1245,11 +1453,15 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                     d.hits.rows.push((Rect::new(content.x, y, content.width, FIELD_H - 1), r2, row));
                 }
             }
+            y += fh;
         }
         // A scrollbar when they do not all fit.
-        if rows.len() > capacity && content.height > 0 {
-            crate::ui::kit::slider(f, Rect::new(r.right() - 2, content.y, 1, content.height), rows.len(), capacity, d.scroll);
+        if rows.len() > shown && content.height > 0 {
+            crate::ui::kit::slider(f, Rect::new(r.right() - 2, content.y, 1, content.height), rows.len(), shown, d.scroll);
         }
+    }
+    if let Some(frame) = keyboard {
+        draw_pick(d, f, frame, r);
     }
     if let Some(area) = preview {
         if !d.palette.as_ref().is_some_and(|(draft, _)| draft == &d.draft) {
@@ -1276,7 +1488,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let key = rows.get(d.selected).map(|&row| FIELDS[row].key.replace('/', ".")).unwrap_or_default();
     let line1 = if d.note.is_empty() { key } else { format!("{key}  ·  {}", d.note) };
     text(f, Rect::new(r.x + 2, footer_y + 1, w.saturating_sub(4), 1), &line1, dim);
-    text(f, Rect::new(r.x + 2, footer_y + 2, w.saturating_sub(26), 1), "Tab moves · ↑↓ choose · ←→ change · Enter edits · Esc closes", dim);
+    let keys = if d.board.is_some() { "Arrows choose a key · Enter changes it · Esc back" } else { "Tab moves · ↑↓ choose · ←→ change · Enter edits · Esc closes" };
+    text(f, Rect::new(r.x + 2, footer_y + 2, w.saturating_sub(26), 1), keys, dim);
     let selected_row = rows.get(d.selected).copied().unwrap_or(0);
     for (index, label, focus) in [(0, "Apply", Focus::Apply), (1, "Save", Focus::Save)] {
         let button = Rect::new(r.right() - 21 + index as u16 * 10, footer_y + 2, 9, 1);
@@ -1322,6 +1535,175 @@ pub fn draw(app: &mut App, f: &mut Frame) {
             crate::ui::kit::button(f, button, label, if index == d.confirm_selected { Look::Primary } else { Look::Secondary }, P.widget_bg, false);
             d.hits.buttons.push((button, index));
         }
+    }
+}
+
+/// Where a panel `w`×`h` opens for the key at `key`: under it, or over it when the dialog
+/// `dlg` has no room below; inside the dialog's frame.
+fn below(key: Rect, w: u16, h: u16, dlg: Rect) -> Rect {
+    let w = w.min(dlg.width.saturating_sub(2));
+    let x = key.x.min(dlg.right().saturating_sub(w + 1)).max(dlg.x + 1);
+    let y = if key.bottom() + h < dlg.bottom() { key.bottom() } else { key.y.saturating_sub(h).max(dlg.y + 1) };
+    Rect::new(x, y, w, h.min(dlg.height.saturating_sub(2)))
+}
+
+/// A key on the drawn keyboard (a key settings.json names that is not, F5 or Ctrl+X,
+/// gets a row of its own under it).
+fn on_board((code, mods): Chord) -> bool {
+    mods.is_empty()
+        && match code {
+            KeyCode::Char(c) => c == ' ' || BOARD.iter().any(|(_, row)| row.contains(c)),
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => true,
+            _ => false,
+        }
+}
+
+/// The keyboard's rows: its frame, five rows of keys a blank row apart, and a row for keys
+/// off the board when settings.json names some.
+fn board_h(quick: &[(Chord, String)]) -> u16 {
+    11 + if quick.iter().all(|(c, _)| on_board(*c)) { 0 } else { 2 }
+}
+
+/// The quick keys as a keyboard in a frame at `at`: a key with a command in the button
+/// colour, a free one plain, the one the arrows chose white; what the key pointed at (or
+/// chosen) runs on the frame's bottom line. Its frame.
+fn draw_keyboard(d: &mut Dialog, f: &mut Frame, at: Rect, hover: Option<Position>) -> Rect {
+    let quick = d.quick();
+    let defaults = settings::prefix_keys(None).unwrap_or_default();
+    let cmd_of = |keys: &[(Chord, String)], c: Chord| keys.iter().find(|(k, _)| *k == c).map(|(_, n)| n.clone());
+    let sel = d.board.as_ref().map(|b| b.sel);
+    // Keys 3 cells wide, a blank between them where it fits.
+    let step = 3 + u16::from(at.width >= 60);
+    let (x0, y0) = (at.x + 2, at.y + 1);
+    let none = KeyModifiers::NONE;
+    let mut keys: Vec<(Rect, Chord, String)> = Vec::new();
+    for (i, (indent, row)) in BOARD.iter().enumerate() {
+        for (j, ch) in row.chars().enumerate() {
+            keys.push((Rect::new(x0 + indent + j as u16 * step, y0 + 2 * i as u16, 3, 1), (KeyCode::Char(ch), none), ch.to_uppercase().collect()));
+        }
+    }
+    let space = Rect::new(x0 + 4 + 2 * step, y0 + 8, 6 * step - 1, 1);
+    keys.push((space, (KeyCode::Char(' '), none), "Space".into()));
+    for (i, (code, label)) in [(KeyCode::Left, "←"), (KeyCode::Up, "↑"), (KeyCode::Down, "↓"), (KeyCode::Right, "→")].into_iter().enumerate() {
+        keys.push((Rect::new(space.right() + 2 + i as u16 * step, space.y, 3, 1), (code, none), label.into()));
+    }
+    let mut x = x0;
+    for (c, _) in quick.iter().filter(|(c, _)| !on_board(*c)) {
+        let label = crate::parse::chord_label(*c);
+        let w = label.width() as u16 + 2;
+        keys.push((Rect::new(x, y0 + 10, w, 1), *c, label));
+        x += w + 1;
+    }
+    let right = keys.iter().map(|k| k.0.right()).max().unwrap_or(x0);
+    let frame = Rect::new(at.x, at.y, (right + 2 - at.x).min(at.width), board_h(&quick)).intersection(Rect::new(at.x, at.y, at.width, at.height.max(1)));
+    // The keyboard's case: the editor's colour, a free key lighter, so each kind stands apart.
+    let case = P.editor_bg;
+    let lit = crate::ui::kit::lit_fg();
+    let Color::Rgb(lr, lg, lb) = lit else { return frame };
+    let free = Rgba(lr, lg, lb, 255).alpha(0.16).over(case);
+    let free_hot = Rgba(lr, lg, lb, 255).alpha(0.3).over(case);
+    let st = Style::new().fg(P.widget_fg).bg(case);
+    let swatch = if crate::theme::ascii() { "#" } else { "■" };
+    let prefix = match d.draft.get("termcode.prefix").and_then(Value::as_str).unwrap_or(settings::DEFAULT_PREFIX) {
+        "" => " The prefix is off ".to_string(),
+        p => format!(" {}, then ", crate::parse::parse_chord(p).map_or_else(|_| p.to_string(), crate::parse::chord_label)),
+    };
+    let legend = Line::from(vec![
+        Span::styled(swatch, st.fg(P.button_bg)),
+        Span::styled(" runs a command  ", st.fg(P.dim)),
+        Span::styled(swatch, st.fg(free)),
+        Span::styled(" free ", st.fg(P.dim)),
+    ])
+    .right_aligned();
+    let pointed = hover.and_then(|p| keys.iter().find(|k| k.0.contains(p)).map(|k| k.1)).or(sel);
+    let info = match pointed {
+        Some(c) => {
+            let what = cmd_of(&quick, c);
+            let was = cmd_of(&defaults, c);
+            let mut spans = vec![
+                Span::styled(format!(" {}  ", crate::parse::chord_label(c)), st.fg(P.focus_border).bold()),
+                Span::styled(what.clone().unwrap_or_else(|| "No command".into()), st),
+            ];
+            if what != was {
+                spans.push(Span::styled(format!("  (default: {})", was.as_deref().unwrap_or("none")), st.fg(P.dim)));
+            }
+            spans.push(Span::styled(" ", st));
+            Line::from(spans)
+        }
+        None => Line::styled(" Point at a key to see its command; click it to change it ", st.fg(P.dim)),
+    };
+    let block = popup_block(case, P.widget_fg, (0, 0))
+        .title(Span::styled(prefix, st.fg(P.sidebar_title).bold()))
+        .title(legend)
+        .title_bottom(info);
+    f.render_widget(block, frame);
+    let inner = Rect::new(frame.x + 1, frame.y + 1, frame.width.saturating_sub(2), frame.height.saturating_sub(2));
+    for (r, c, label) in keys {
+        if r.right() > inner.right() || r.bottom() > inner.bottom() {
+            continue;
+        }
+        let bound = cmd_of(&quick, c).is_some();
+        // Noted as a button: lit under the pointer, pressed while held.
+        let kit = crate::ui::kit::look_at(if bound { Look::Primary } else { Look::Secondary }, r);
+        let style = if sel == Some(c) {
+            Style::new().fg(P.editor_bg).bg(lit).bold()
+        } else if bound {
+            kit
+        } else {
+            Style::new().fg(P.widget_fg).bg(if crate::ui::kit::hot(r) { free_hot } else { free })
+        };
+        let bg = style.bg.unwrap_or(free);
+        fill(f, r, bg);
+        let t = crate::ui::fit(&label, r.width.saturating_sub(2) as usize);
+        text(f, Rect::new(r.x + r.width.saturating_sub(t.width() as u16) / 2, r.y, t.width() as u16, 1), &t, style);
+        crate::ui::kit::round_ends(f, r, bg, case);
+        d.hits.keys.push((r, c));
+    }
+    frame
+}
+
+/// The chosen key's command list, under the keyboard `frame`: a box to find a command,
+/// "none", then the commands; the key's own marked.
+fn draw_pick(d: &mut Dialog, f: &mut Frame, frame: Rect, dlg: Rect) {
+    let Some((sel, query, at)) = d.board.as_ref().and_then(|b| b.pick.as_ref().map(|p| (b.sel, p.query.clone(), p.at))) else { return };
+    let Some(kr) = d.hits.keys.iter().find(|k| k.1 == sel).map(|k| k.0) else { return };
+    let st = Style::new().fg(P.widget_fg).bg(P.widget_bg);
+    let items = pick_items(&query);
+    let at = at.min(items.len().saturating_sub(1));
+    if let Some(p) = d.board.as_mut().and_then(|b| b.pick.as_mut()) {
+        p.at = at;
+    }
+    // Under the keyboard, over what follows it (the footer too); over it only when there is no room.
+    let room = dlg.bottom().saturating_sub(frame.bottom() + 1);
+    let w = 52.min(dlg.width.saturating_sub(2));
+    let x = kr.x.saturating_sub(2).min(dlg.right().saturating_sub(w + 1)).max(dlg.x + 1);
+    let panel = if room >= 6 { Rect::new(x, frame.bottom(), w, room.min(14)) } else { below(Rect::new(x, frame.y, kr.width, frame.height), w, 14, dlg) };
+    f.render_widget(Clear, panel);
+    let title = Span::styled(format!(" {} runs ", crate::parse::chord_label(sel)), st.fg(P.sidebar_title).bold());
+    let block = popup_block(P.widget_bg, P.widget_fg, (1, 0)).title(title);
+    let inner = block.inner(panel);
+    f.render_widget(block, panel);
+    d.hits.pick = panel;
+    if inner.height < 3 {
+        return;
+    }
+    let input = Rect::new(inner.x, inner.y, inner.width, 1);
+    let caret = crate::ui::kit::search_input(f, input, &query, "Type to find a command", true, "", P.dim);
+    f.set_cursor_position((caret, input.y));
+    let list = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
+    let cur = d.quick().into_iter().find(|(c, _)| *c == sel).map(|(_, n)| n).unwrap_or_default();
+    let off = at.saturating_sub(list.height as usize - 1);
+    let active = Style::new().fg(P.button_fg).bg(P.button_bg);
+    for (i, item) in items.iter().enumerate().skip(off).take(list.height as usize) {
+        let row = Rect::new(list.x, list.y + (i - off) as u16, list.width, 1);
+        let style = if i == at { active } else { st };
+        let mark = if *item == cur { "● " } else { "  " };
+        fill(f, row, style.bg.unwrap_or(P.widget_bg));
+        text(f, row, &format!("{mark}{}", if item.is_empty() { "None (a free key)" } else { item }), style);
+        d.hits.picks.push((row, item.clone()));
+    }
+    if items.len() > list.height as usize {
+        crate::ui::kit::slider(f, Rect::new(panel.right() - 1, list.y, 1, list.height), items.len(), list.height as usize, off);
     }
 }
 
@@ -1814,6 +2196,61 @@ mod tests {
         click(&mut app, &mut t, "Discard");
         assert_eq!(app.settings.tab_size, 5);
         assert_eq!(settings::load(&path).unwrap().tab_size, 5);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn quick_keys_show_as_a_keyboard_and_a_key_takes_a_command_from_its_list() {
+        let (mut app, mut t, path) = setup("keyboard");
+        search(&mut app, "Quick keys");
+        let s = screen(&mut app, &mut t);
+        assert!(s.contains("Ctrl+T, then") && s.contains("Space") && s.contains("runs a command"), "the keyboard, on the page: {s}");
+        let key = |app: &App, ch: char| {
+            let d = app.settings_dlg.as_ref().unwrap();
+            d.hits.keys.iter().find(|k| k.1 == (KeyCode::Char(ch), KeyModifiers::NONE)).unwrap().0
+        };
+        let at = |app: &mut App, kind, r: Rect| app.on_mouse(MouseEvent { kind, column: r.x + 1, row: r.y, modifiers: KeyModifiers::NONE });
+        let draft = |app: &App| app.settings_dlg.as_ref().unwrap().draft.get(QUICK).cloned();
+        // Pointing at a key: a card with what it runs.
+        let (q, tk) = (key(&app, 'q'), key(&app, 't'));
+        at(&mut app, MouseEventKind::Moved, q);
+        assert!(screen(&mut app, &mut t).contains(" Q  No command "));
+        at(&mut app, MouseEventKind::Moved, tk);
+        assert!(screen(&mut app, &mut t).contains("T  View: Toggle Terminal"));
+        // Clicking one: its list; typing finds a command, Enter gives it to the key.
+        at(&mut app, MouseEventKind::Down(MouseButton::Left), q);
+        for c in "toggle word wrap".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        let s = screen(&mut app, &mut t);
+        assert!(s.contains("Q runs") && s.contains("View: Toggle Word Wrap"), "{s}");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(draft(&app), Some(serde_json::json!({"q": "View: Toggle Word Wrap"})));
+        // A default key set to none is written as ""; given its default again, it is not written.
+        at(&mut app, MouseEventKind::Down(MouseButton::Left), tk);
+        for _ in 0..40 {
+            press(&mut app, KeyCode::PageUp);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(draft(&app), Some(serde_json::json!({"q": "View: Toggle Word Wrap", "t": ""})));
+        screen(&mut app, &mut t);
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Enter);
+        for c in "toggle terminal".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(draft(&app), Some(serde_json::json!({"q": "View: Toggle Word Wrap"})));
+        // Esc: back to the settings; Save keeps it.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.settings_dlg.as_ref().unwrap().board.is_none());
+        assert!(app.settings_dlg.is_some(), "Esc left the keyboard, not the dialog");
+        click(&mut app, &mut t, "Save");
+        let c = (KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.settings.prefix_keys.contains(&(c, "View: Toggle Word Wrap".into())));
+        let saved = settings::parse_jsonc(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved.get(QUICK), Some(&serde_json::json!({"q": "View: Toggle Word Wrap"})));
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

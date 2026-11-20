@@ -340,7 +340,7 @@ pub const DEFAULT_PREFIX_KEYS: &str = r#"{
 
 /// `termcode.prefixKeys`: the defaults, each key of the user's over them ("" removes it).
 /// A key or command that does not exist is an error, as for keybindings.
-fn prefix_keys(v: Option<&Value>) -> Result<Vec<(crate::parse::Chord, String)>, String> {
+pub(crate) fn prefix_keys(v: Option<&Value>) -> Result<Vec<(crate::parse::Chord, String)>, String> {
     let defaults: Value = serde_json::from_str(DEFAULT_PREFIX_KEYS).expect("valid");
     let mut out: Vec<(crate::parse::Chord, String)> = Vec::new();
     let user = match v {

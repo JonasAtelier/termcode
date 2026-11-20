@@ -9,6 +9,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ## [Unreleased]
 
 ### Added
+- Settings › Keys shows the quick keys as a keyboard: a key with a command is lit, pointing at
+  one shows what it runs on its frame, clicking it opens the commands under it (type to find one,
+  or None to free the key). Only what differs from the defaults is saved.
 - The title bar shows termcode's version: `main.rs — termcode 0.5.0`.
 - A long tab bar scrolls: the wheel over it, or its ‹ › arrows when tabs are hidden on
   that side; it follows the active tab (Ctrl+PgDn, a file opened) and leaves no blank end.
