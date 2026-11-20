@@ -41,6 +41,9 @@ pub struct Lanes {
 pub struct Cell {
     pub glyph: char,
     pub color: usize,
+    /// Where its lines go: `UP | DOWN | LEFT | RIGHT` (the node's too: up when a child
+    /// waits for it, down when it has a parent), for drawing it in pixels.
+    pub bits: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,10 +55,10 @@ pub struct GraphRow {
     pub cells: Vec<Cell>,
 }
 
-const UP: u8 = 1;
-const DOWN: u8 = 2;
-const LEFT: u8 = 4;
-const RIGHT: u8 = 8;
+pub const UP: u8 = 1;
+pub const DOWN: u8 = 2;
+pub const LEFT: u8 = 4;
+pub const RIGHT: u8 = 8;
 /// Box-drawing glyph for each UP|DOWN|LEFT|RIGHT combination.
 const GLYPHS: [char; 16] = [' ', '│', '│', '│', '─', '╯', '╮', '┤', '─', '╰', '╭', '├', '─', '┴', '┬', '┼'];
 
@@ -112,8 +115,13 @@ impl Lanes {
         }
         let node = 2 * col;
         put(&mut cells, node, 0, color);
-        let mut out: Vec<Cell> = cells.iter().map(|&(b, k)| Cell { glyph: GLYPHS[b as usize], color: k }).collect();
-        out[node] = Cell { glyph: '●', color };
+        let mut out: Vec<Cell> = cells.iter().map(|&(b, k)| Cell { glyph: GLYPHS[b as usize], color: k, bits: b }).collect();
+        let side = |i: Option<usize>, bit: u8| i.and_then(|i| cells.get(i)).is_some_and(|c| c.0 & bit != 0);
+        let bits = if hits.is_empty() { 0 } else { UP }
+            | if c.parents.is_empty() { 0 } else { DOWN }
+            | if side(node.checked_sub(1), RIGHT) { LEFT } else { 0 }
+            | if side(Some(node + 1), LEFT) { RIGHT } else { 0 };
+        out[node] = Cell { glyph: '●', color, bits };
         while out.last().is_some_and(|c| c.glyph == ' ') {
             out.pop();
         }
@@ -157,6 +165,98 @@ fn link(cells: &mut Vec<(u8, usize)>, col: usize, lane: usize, vertical: u8, col
         put(cells, i, LEFT | RIGHT, color);
     }
     put(cells, 2 * lane, vertical | if lane > col { LEFT } else { RIGHT }, color);
+}
+
+/// A row of the graph as drawn in pixels: a commit's (its node filled: HEAD's), the
+/// lanes passing a row under a commit (its files: cell, colour), or none.
+pub enum Paint<'a> {
+    Commit(&'a GraphRow, bool),
+    Through(Vec<(usize, usize)>),
+    Blank,
+}
+
+/// The lanes going on below `row`: its cells with a line down.
+pub fn through(row: &GraphRow) -> Vec<(usize, usize)> {
+    row.cells.iter().enumerate().filter(|(_, c)| c.bits & DOWN != 0).map(|(i, c)| (i, c.color)).collect()
+}
+
+/// `rows` drawn in pixels, `cols` cells wide, `cell` pixels a cell, as VS Code draws its
+/// graph: lines a sixth of a cell thick, corners as curves, each commit a dot (a ring
+/// but HEAD's), anti-aliased, on transparent pixels (the row's own background shows).
+pub fn pixels(rows: &[Paint], cols: usize, (cw, ch): (u32, u32), color: &dyn Fn(usize) -> image::Rgba<u8>) -> image::RgbaImage {
+    let mut img = image::RgbaImage::new(cols as u32 * cw, rows.len() as u32 * ch);
+    let t = (cw as f32 / 6.0).clamp(1.2, 3.0);
+    let r = (cw.min(ch) as f32 * 0.36).max(2.5);
+    for (y, row) in rows.iter().enumerate() {
+        let cells: Vec<(usize, u8, usize, Option<bool>)> = match row {
+            Paint::Commit(g, filled) => g.cells.iter().enumerate().map(|(i, c)| (i, c.bits, c.color, (i == g.node).then_some(*filled))).collect(),
+            Paint::Through(v) => v.iter().map(|&(i, k)| (i, UP | DOWN, k, None)).collect(),
+            Paint::Blank => Vec::new(),
+        };
+        for (i, bits, k, node) in cells.into_iter().filter(|c| c.0 < cols && (c.1 != 0 || c.3.is_some())) {
+            let (x0, y0) = (i as f32 * cw as f32, y as f32 * ch as f32);
+            // Lines through pixel centres: sharp, not two half-lit pixels.
+            let (cx, cy, x1, y1) = (x0 + (cw / 2) as f32 + 0.5, y0 + (ch / 2) as f32 + 0.5, x0 + cw as f32, y0 + ch as f32);
+            // A ring's lines stop at it: its middle shows the row.
+            let gap = if node == Some(false) { r } else { 0.0 };
+            let mut segs: Vec<[f32; 4]> = Vec::new();
+            let corner = matches!(bits, b if b.count_ones() == 2 && b & (UP | DOWN) != 0 && b & (LEFT | RIGHT) != 0);
+            if corner && node.is_none() {
+                // A quarter curve from the edge the line comes in at to the one it leaves by.
+                let a = if bits & UP != 0 { (cx, y0) } else { (cx, y1) };
+                let b = if bits & LEFT != 0 { (x0, cy) } else { (x1, cy) };
+                let n = 12;
+                let at = |s: f32| {
+                    let u = 1.0 - s;
+                    (u * u * a.0 + 2.0 * u * s * cx + s * s * b.0, u * u * a.1 + 2.0 * u * s * cy + s * s * b.1)
+                };
+                for j in 0..n {
+                    let (p, q) = (at(j as f32 / n as f32), at((j + 1) as f32 / n as f32));
+                    segs.push([p.0, p.1, q.0, q.1]);
+                }
+            } else {
+                for (bit, seg) in [(UP, [cx, y0, cx, cy - gap]), (DOWN, [cx, cy + gap, cx, y1]), (LEFT, [x0, cy, cx - gap, cy]), (RIGHT, [cx + gap, cy, x1, cy])] {
+                    if bits & bit != 0 {
+                        segs.push(seg);
+                    }
+                }
+            }
+            let c = color(k);
+            for py in y0 as u32..y1 as u32 {
+                for px in x0 as u32..x1 as u32 {
+                    let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+                    let mut a = segs.iter().map(|s| cover(t / 2.0 - dist(fx, fy, s))).fold(0.0, f32::max);
+                    if let Some(filled) = node {
+                        let d = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt();
+                        a = a.max(if filled { cover(r - d) } else { cover(t / 2.0 - (d - r).abs()) });
+                    }
+                    if a > 0.0 {
+                        let p = img.get_pixel_mut(px, py);
+                        let under = f32::from(p[3]) / 255.0;
+                        let out = a + under * (1.0 - a);
+                        for ch in 0..3 {
+                            p[ch] = ((f32::from(c[ch]) * a + f32::from(p[ch]) * under * (1.0 - a)) / out.max(1e-6)).round() as u8;
+                        }
+                        p[3] = (out * 255.0).round() as u8;
+                    }
+                }
+            }
+        }
+    }
+    img
+}
+
+/// How much of a pixel a shape covers, from how far inside its edge the pixel's centre is.
+fn cover(inside: f32) -> f32 {
+    (inside + 0.5).clamp(0.0, 1.0)
+}
+
+/// From (`x`, `y`) to the segment `s` (x0, y0, x1, y1).
+fn dist(x: f32, y: f32, s: &[f32; 4]) -> f32 {
+    let (dx, dy) = (s[2] - s[0], s[3] - s[1]);
+    let len = dx * dx + dy * dy;
+    let u = if len == 0.0 { 0.0 } else { (((x - s[0]) * dx + (y - s[1]) * dy) / len).clamp(0.0, 1.0) };
+    ((x - s[0] - u * dx).powi(2) + (y - s[1] - u * dy).powi(2)).sqrt()
 }
 
 #[cfg(test)]
@@ -227,5 +327,27 @@ mod tests {
             rows.extend(lanes.rows(&log[k..]));
             assert_eq!(rows, whole, "split at {k}");
         }
+    }
+
+    #[test]
+    fn the_graph_in_pixels_dots_its_commits_curves_its_corners_and_leaves_the_rest_clear() {
+        let log = [c("M", &["C", "D"]), c("D", &["B"]), c("C", &["B"]), c("B", &["A"]), c("A", &[])];
+        let rows = Lanes::default().rows(&log);
+        assert_eq!(rows[0].cells[0].bits, DOWN | RIGHT, "the merge: down to its parent, right to the branch");
+        assert_eq!(rows[1].cells[2].bits, UP | DOWN, "the branch's commit: the merge above, its parent below");
+        assert_eq!(rows[4].cells[0].bits, UP, "the root: nothing below");
+        let colors = [image::Rgba([255, 0, 0, 255]), image::Rgba([0, 0, 255, 255])];
+        let paint: Vec<Paint> = vec![Paint::Commit(&rows[0], true), Paint::Commit(&rows[1], false), Paint::Through(through(&rows[1])), Paint::Blank];
+        let img = pixels(&paint, 3, (8, 16), &|k| colors[k % 2]);
+        assert_eq!(img.dimensions(), (24, 64));
+        let at = |x, y| *img.get_pixel(x, y);
+        assert_eq!(at(4, 8), colors[0], "HEAD's dot, filled");
+        assert_eq!(at(20, 24)[3], 0, "a ring's middle is clear");
+        assert_eq!(at(20, 40), colors[1], "the lane goes on past a file row");
+        assert_eq!((at(12, 2)[3], at(12, 60)[3]), (0, 0), "nothing where no line goes");
+        // The corner ╮ (left, down) is a curve: its outer corner stays clear.
+        assert_eq!(rows[0].cells[2].bits, LEFT | DOWN);
+        assert_eq!(at(23, 9)[3], 0);
+        assert!(at(19, 13)[3] > 0, "the curve passes inside the corner");
     }
 }

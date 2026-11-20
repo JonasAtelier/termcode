@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
+## [Unreleased]
+
+### Added
+- In Ghostty and kitty the Source Control graph is drawn in pixels, as VS Code draws
+  it: smooth curved branch lines, a ring for each commit (HEAD's filled), the lanes going
+  on past an opened commit's files, and the subjects lined up right of it. Elsewhere the
+  graph stays in box-drawing characters.
+
 ## [1.0.0] - 2026-11-20
 
 ### Added

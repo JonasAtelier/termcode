@@ -1597,6 +1597,8 @@ fn changes_list(app: &mut App, f: &mut Frame, list: Rect) {
 
 fn graph_list(app: &mut App, f: &mut Frame, list: Rect) {
     let pal = pal(app);
+    // Where the terminal shows Kitty pictures the graph is drawn in pixels (graph::pixels).
+    let px = crate::media::pixel_cell(app);
     let rows = graph_rows(&app.gitui.graph);
     let n = rows.len();
     let h = list.height as usize;
@@ -1613,18 +1615,29 @@ fn graph_list(app: &mut App, f: &mut Frame, list: Rect) {
     let scroll = n > h;
     let hover = app.hover.filter(|p| list.contains(*p)).map(|p| off + (p.y - list.y) as usize);
     let focused = app.focus == Focus::Side && app.gitui.graph_focus;
+    // In pixels the graph is one picture as wide as its widest row shown: the subjects line up.
+    let maxg = (inset(Rect::new(list.x, list.y, list.width.saturating_sub(u16::from(scroll)), 1), pad).width / 2) as usize;
+    let gw = px.map(|_| {
+        let g = &app.gitui.graph;
+        rows.iter().skip(off).take(h).filter_map(|r| match *r {
+            GRow::Commit(ci) | GRow::File(ci, _) => Some(g.rows[ci].cells.len()),
+            GRow::More => None,
+        }).max().unwrap_or(0).min(maxg)
+    }).filter(|&w| w > 0);
+    let mut bgs: Vec<Color> = Vec::new();
     for (k, gr) in rows.iter().enumerate().skip(off).take(h) {
         let y = list.y + (k - off) as u16;
         let rr = Rect::new(list.x, y, list.width.saturating_sub(u16::from(scroll)), 1);
         let hot = k == sel || hover == Some(k);
         let bg = list_bg(k == sel, focused, hover == Some(k));
+        bgs.push(bg);
         fill(f, rr, bg);
         let ir = inset(rr, pad);
         app.gitui.hits.areas.push((rr, Hit::Graph(k)));
         match *gr {
-            GRow::Commit(ci) => commit_row(app, f, ir, bg, ci, hot, &pal),
+            GRow::Commit(ci) => commit_row(app, f, ir, bg, ci, hot, &pal, gw),
             GRow::File(ci, j) => {
-                let indent = app.gitui.graph.rows[ci].cells.len().min(ir.width as usize / 2) + 3;
+                let indent = gw.unwrap_or_else(|| app.gitui.graph.rows[ci].cells.len().min(ir.width as usize / 2)) + 3;
                 let Some(fc) = app.gitui.graph.open.as_ref().and_then(|o| o.1.as_ref()).and_then(|v| v.get(j)).cloned() else { continue };
                 file_row(app, f, ir, bg, indent, &fc);
             }
@@ -1634,19 +1647,43 @@ fn graph_list(app: &mut App, f: &mut Frame, list: Rect) {
             }
         }
     }
+    if let (Some(cell), Some(w)) = (px, gw) {
+        // The rows above "View more": commits, and their files with the lanes passing them.
+        let shown: Vec<GRow> = rows.iter().skip(off).take(h).copied().take_while(|r| !matches!(r, GRow::More)).collect();
+        let g = &app.gitui.graph;
+        let head = |ci: usize| g.commits[ci].refs.iter().any(|x| matches!(x, RefLabel::Current(_) | RefLabel::Head));
+        let paint: Vec<crate::graph::Paint> = shown
+            .iter()
+            .map(|r| match *r {
+                GRow::Commit(ci) => crate::graph::Paint::Commit(&g.rows[ci], head(ci)),
+                GRow::File(ci, _) => crate::graph::Paint::Through(crate::graph::through(&g.rows[ci])),
+                GRow::More => crate::graph::Paint::Blank,
+            })
+            .collect();
+        let img = crate::graph::pixels(&paint, w, (u32::from(cell.0), u32::from(cell.1)), &|k| crate::settingsgraphics::pixel(pal.lane(k)));
+        let x = inset(Rect::new(list.x, list.y, list.width, 1), pad).x + 1;
+        let area = Rect::new(x, list.y, w as u16, shown.len() as u16);
+        crate::media::show_pixels(app, f, "graph", area, &img, &|y| bgs.get(usize::from(y)).copied().unwrap_or(P.sidebar_bg));
+    }
     if scroll {
         let track = Rect::new(list.right() - 1, list.y, 1, list.height);
         scrollbar(app, f, track, ScrollTarget::Git(0), n, h, off, n - h);
     }
 }
 
-fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: bool, pal: &Pal) {
+/// A commit's row: its graph (or, `gw`, room for the graph's picture that wide), its
+/// subject and author, its branch and tag badges.
+#[allow(clippy::too_many_arguments)]
+fn commit_row(app: &mut App, f: &mut Frame, r: Rect, bg: Color, ci: usize, hot: bool, pal: &Pal, gw: Option<usize>) {
     let g = &app.gitui.graph;
     let c = &g.commits[ci];
     let head = c.refs.iter().any(|x| matches!(x, RefLabel::Current(_) | RefLabel::Head));
     let maxg = (r.width / 2) as usize;
     let mut spans = vec![Span::raw(" ")];
-    for cell in g.rows[ci].cells.iter().take(maxg) {
+    if let Some(w) = gw {
+        spans.push(Span::raw(" ".repeat(w)));
+    }
+    for cell in g.rows[ci].cells.iter().take(if gw.is_some() { 0 } else { maxg }) {
         let glyph = if cell.glyph == '●' && !head { '○' } else { cell.glyph };
         let glyph = if crate::theme::ascii() && matches!(glyph, '●' | '○') { if head { '*' } else { 'o' } } else { glyph };
         spans.push(Span::styled(glyph.to_string(), Style::new().fg(pal.lane(cell.color))));

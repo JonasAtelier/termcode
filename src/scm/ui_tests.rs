@@ -908,3 +908,34 @@ fn tiny_terminals_never_panic_with_git_popups() {
         }
     }
 }
+
+#[test]
+fn in_a_kitty_terminal_the_graph_is_a_picture_and_the_subjects_line_up() {
+    let (t, r) = repo(
+        "graph-pixels",
+        "echo a > f; git add f; git commit -qm base; git checkout -qb side; echo b > g; git add g; git commit -qm on-side; \
+         git checkout -q main; echo c > f; git commit -qam on-main; git merge -q --no-edit side -m merged",
+    );
+    let mut app = app(&t, &r);
+    app.media.kitty_for_tests();
+    let mut tm = term();
+    app.show_side(Side::SCM, false);
+    settle(&mut app);
+    let s = screen(&mut app, &mut tm);
+    let b = tm.backend().buffer();
+    // Each subject starts in the same column, right of the graph's picture.
+    let xs: Vec<u16> = ["merged", "on-main", "on-side", "base"].iter().map(|n| at(&tm, n).0).collect();
+    assert!(xs.windows(2).all(|w| w[0] == w[1]), "{xs:?}\n{s}");
+    let (x, y) = at(&tm, "merged");
+    let pic: Vec<&str> = (x - 4..x - 1).map(|cx| b[(cx, y)].symbol()).collect();
+    assert!(pic.iter().all(|c| c.contains('\u{10EEEE}')), "placeholder cells, not box drawing: {pic:?}");
+    let graph_rows: Vec<&str> = s.lines().filter(|l| ["merged", "on-main", "on-side", "base"].iter().any(|n| l.contains(n))).collect();
+    let graph_cells = |l: &&str| l.split("││").nth(1).unwrap_or("").chars().take(6).collect::<String>();
+    assert!(graph_rows.iter().map(graph_cells).all(|g| !g.contains(['●', '○', '│', '─'])), "no text graph: {graph_rows:?}");
+    assert!((0..b.area.width).any(|cx| b[(cx, y)].symbol().contains("\x1b_G")), "the picture is sent with the frame");
+    // An opened commit's files sit right of the picture too.
+    click(&mut app, at(&tm, "on-side"));
+    settle(&mut app);
+    screen(&mut app, &mut tm);
+    assert!(at(&tm, "g").0 >= xs[0], "a file row clears the picture");
+}
