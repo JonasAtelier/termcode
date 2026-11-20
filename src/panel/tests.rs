@@ -5599,11 +5599,13 @@ fn sent_pictures(t: &Terminal<TestBackend>) -> Vec<image::RgbaImage> {
 }
 
 /// Frames drawn until highlighting settles, and the pictures they sent (each frame's).
+/// The minimap's pictures the frames send until highlighting settles: the large ones (a
+/// slider's, a button's end or a bar are a cell or a line high).
 fn frames(app: &mut App, t: &mut Terminal<TestBackend>) -> Vec<image::RgbaImage> {
     let mut pics = Vec::new();
     for _ in 0..10_000 {
         t.draw(|f| crate::ui::draw(app, f)).unwrap();
-        pics.extend(sent_pictures(t));
+        pics.extend(sent_pictures(t).into_iter().filter(|p| p.width() >= 40 && p.height() >= 100));
         if !app.hl_pending() {
             return pics;
         }
