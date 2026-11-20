@@ -55,7 +55,8 @@ on hover).
 Rows: `"text"` · `{text, fg, bg, bold, dim, italic, button, action, hint}` (`button`:
 termcode's button; `fg: "error"` makes it a danger one) · `[cells…]` ·
 `{"cells": [...], "action": "id"}` (whole row clicks) · `{"header", "open", "extra"}` (a
-section header, termcode's style). Ship a `README.md`: the + view shows it. Colors: `fg dim accent error
+section header, termcode's style) · `{"picture": <base64 PNG>, "rows": 8, "cols"?}` (a
+picture or plot; pixels in Ghostty/kitty). Ship a `README.md`: the + view shows it. Colors: `fg dim accent error
 warning ok info selection` or `#rrggbb`. ≤10,000 rows a pane.
 
 ## Rules

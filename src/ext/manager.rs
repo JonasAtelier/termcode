@@ -46,7 +46,7 @@ fn button(t: &str, action: String) -> Cell {
 }
 
 fn line(cells: Vec<Cell>) -> Row {
-    Row { cells, action: None, hint: None, head: None }
+    Row { cells, action: None, hint: None, head: None, pic: None }
 }
 
 /// `t` in dim rows of at most `w` characters, broken between words.
@@ -102,7 +102,7 @@ fn item_rows(it: &Item, w: usize, picked: bool) -> Vec<Row> {
     let used = head.chars().count() + 1 + it.version.chars().count();
     first.push(cell(pad(used), None, false));
     let about = format!("  {}", cut(&it.about, w.saturating_sub(2)));
-    let mut rows = vec![Row { cells: first, action: open.clone(), hint: None, head: None }, Row { cells: vec![cell(about.clone(), Some("dim"), false), cell(pad(about.chars().count()), None, false)], action: open.clone(), hint: None, head: None }];
+    let mut rows = vec![Row { cells: first, action: open.clone(), hint: None, head: None, pic: None }, Row { cells: vec![cell(about.clone(), Some("dim"), false), cell(pad(about.chars().count()), None, false)], action: open.clone(), hint: None, head: None, pic: None }];
     let meta = format!("  {}", cut(&it.meta.0, w.saturating_sub(if it.install { 12 } else { 2 })));
     let mut third = vec![cell(meta.clone(), it.meta.1, false)];
     if it.install {
@@ -111,7 +111,7 @@ fn item_rows(it: &Item, w: usize, picked: bool) -> Vec<Row> {
     } else {
         third.push(cell(pad(meta.chars().count()), None, false));
     }
-    rows.push(Row { cells: third, action: open, hint: None, head: None });
+    rows.push(Row { cells: third, action: open, hint: None, head: None, pic: None });
     rows.push(Row::default());
     rows
 }
@@ -185,7 +185,7 @@ fn draw(app: &mut App, f: &mut Frame, r: Rect) {
         }
         let folded = x.folded.contains(name);
         let cells = vec![text(name, None), text(items.len().to_string(), None)];
-        rows.push(Row { cells, action: Some(format!("fold:{name}")), hint: None, head: Some(!folded) });
+        rows.push(Row { cells, action: Some(format!("fold:{name}")), hint: None, head: Some(!folded), pic: None });
         if folded {
             continue;
         }

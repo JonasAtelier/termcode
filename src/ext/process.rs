@@ -235,6 +235,112 @@ pub(super) struct Row {
     /// A section header (open, or folded), drawn as the side bar's: its first cell the
     /// title, its second a dim count.
     pub head: Option<bool>,
+    /// A line of a picture: the picture, and which of its lines.
+    pub pic: Option<(Arc<Picture>, u16)>,
+}
+
+/// An extension's picture (`{"picture": <base64 PNG>, "rows": n}`): its pixels, the lines
+/// it takes, the cells across (else as its shape gives).
+#[derive(Debug)]
+pub struct Picture {
+    key: u64,
+    img: image::RgbaImage,
+    rows: u16,
+    cols: Option<u16>,
+}
+
+impl PartialEq for Picture {
+    fn eq(&self, o: &Self) -> bool {
+        self.key == o.key && self.rows == o.rows && self.cols == o.cols
+    }
+}
+
+impl Picture {
+    /// Its size in cells: the lines it takes, and as many cells across as keep its shape
+    /// (or `cols`), no wider than `room`.
+    fn size(&self, (cw, ch): (u16, u16), room: u16) -> (u16, u16) {
+        let fit = || (f64::from(self.img.width()) / f64::from(self.img.height().max(1)) * f64::from(self.rows) * f64::from(ch) / f64::from(cw.max(1))).round() as u16;
+        (self.cols.unwrap_or_else(fit).clamp(1, room.max(1)), self.rows)
+    }
+}
+
+/// A picture's base64 at most (6 MB of PNG), and its pixels across and down.
+const MAX_PICTURE: usize = 8 << 20;
+const MAX_PIXELS: u32 = 4096;
+
+/// A picture row as its lines: `{"picture": <base64 PNG>, "rows": 8, "cols"?, "action"?,
+/// "hint"?}`. Its size is read before its pixels: a huge one is refused, not decoded.
+fn picture(o: &serde_json::Map<String, Value>) -> Result<Vec<Row>, String> {
+    let data = o["picture"].as_str().ok_or("\"picture\": a PNG, in base64")?;
+    if data.len() > MAX_PICTURE {
+        return Err("\"picture\": 6 MB at most".into());
+    }
+    let png = crate::parse::unbase64(data).ok_or("\"picture\": not base64")?;
+    let format = image::ImageFormat::Png;
+    let (w, h) = image::ImageReader::with_format(std::io::Cursor::new(&png), format).into_dimensions().map_err(|e| format!("\"picture\": {e}"))?;
+    if w > MAX_PIXELS || h > MAX_PIXELS {
+        return Err(format!("\"picture\": {w}×{h}: {MAX_PIXELS}×{MAX_PIXELS} at most"));
+    }
+    let img = image::load_from_memory_with_format(&png, format).map_err(|e| format!("\"picture\": {e}"))?.to_rgba8();
+    let rows = o.get("rows").and_then(Value::as_u64).unwrap_or(8).clamp(1, 100) as u16;
+    let cols = o.get("cols").and_then(Value::as_u64).map(|c| c.clamp(1, 500) as u16);
+    let mut hk = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&png, &mut hk);
+    let pic = Arc::new(Picture { key: std::hash::Hasher::finish(&hk), img, rows, cols });
+    let action = o.get("action").and_then(Value::as_str).map(clean);
+    let hint = o.get("hint").and_then(Value::as_str).map(hint_text);
+    Ok((0..rows).map(|k| Row { cells: Vec::new(), action: action.clone(), hint: hint.clone(), head: None, pic: Some((pic.clone(), k)) }).collect())
+}
+
+/// A picture's line as a pane drew it: where, the picture, which line, the row's background.
+type PicLine = (Rect, Arc<Picture>, u16, Color);
+
+thread_local! {
+    /// The picture lines this frame's panes drew (`place` draws them once the panes are).
+    static PICS: std::cell::RefCell<Vec<PicLine>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The picture lines the panes just drew: their real pixels where the terminal has Kitty
+/// graphics (sent once, each line pointing into it), half-blocks elsewhere.
+fn place(app: &mut App, f: &mut Frame) {
+    let pics = PICS.take();
+    if pics.is_empty() {
+        return;
+    }
+    let cell = crate::media::cell(app);
+    let mut small: std::collections::HashMap<(u64, u16, u16), image::RgbaImage> = std::collections::HashMap::new();
+    for (line, pic, k, bg) in pics {
+        let (cols, rows) = pic.size(cell, line.width);
+        let area = Rect::new(line.x, line.y, cols, 1);
+        let mut hk = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&(pic.key, cols, rows, cell), &mut hk);
+        let resize = |w, h| image::imageops::resize(&pic.img, w, h, image::imageops::FilterType::Triangle);
+        if let Some((id, seq)) = crate::media::kept(app, std::hash::Hasher::finish(&hk), (cols, rows), |(w, h)| Some(resize(w, h))) {
+            let buf = f.buffer_mut();
+            for x in 0..cols {
+                let (sym, fg) = crate::settingsgraphics::placeholder(id, k, x);
+                buf[(area.x + x, area.y)].set_symbol(&sym).set_fg(fg).set_bg(bg);
+            }
+            if !seq.is_empty() {
+                let c = &mut buf[(area.x, area.y)];
+                let sym = format!("{seq}{}", c.symbol());
+                c.set_symbol(&sym);
+            }
+            crate::settingsgraphics::mark_drawn(area);
+        } else {
+            // Two pixels a cell: the upper as "▀", the lower as its background, over the row's.
+            let img = small.entry((pic.key, cols, rows)).or_insert_with(|| resize(u32::from(cols), u32::from(rows) * 2));
+            let under = crate::settingsgraphics::pixel(bg);
+            let over = |p: &image::Rgba<u8>| {
+                let a = u16::from(p[3]);
+                let mix = |c: usize| ((u16::from(p[c]) * a + u16::from(under[c]) * (255 - a)) / 255) as u8;
+                Color::Rgb(mix(0), mix(1), mix(2))
+            };
+            let y = u32::from(k) * 2;
+            let spans: Vec<Span> = (0..u32::from(cols)).map(|x| Span::styled("▀", Style::new().fg(over(img.get_pixel(x, y))).bg(over(img.get_pixel(x, y + 1))))).collect();
+            f.render_widget(Line::from(spans), area);
+        }
+    }
 }
 
 /// What a slot shows: a title, rows, where it is scrolled to.
@@ -678,24 +784,35 @@ fn clean(s: &str) -> String {
 }
 
 pub(super) fn rows(v: &Value) -> Result<Vec<Row>, String> {
-    v.as_array().ok_or("\"rows\": an array of rows")?.iter().take(MAX_ROWS).map(row).collect()
+    let mut out = Vec::new();
+    for v in v.as_array().ok_or("\"rows\": an array of rows")? {
+        if out.len() >= MAX_ROWS {
+            break;
+        }
+        match v {
+            Value::Object(o) if o.contains_key("picture") => out.extend(picture(o)?),
+            v => out.push(row(v)?),
+        }
+    }
+    out.truncate(MAX_ROWS);
+    Ok(out)
 }
 
 /// A row: "text", a cell {text, …}, [cells…], or {cells: […], action}.
 fn row(v: &Value) -> Result<Row, String> {
     match v {
-        Value::Array(a) => Ok(Row { cells: a.iter().map(cell).collect::<Result<_, _>>()?, action: None, hint: None, head: None }),
+        Value::Array(a) => Ok(Row { cells: a.iter().map(cell).collect::<Result<_, _>>()?, action: None, hint: None, head: None, pic: None }),
         // A section header: {"header": "Title", "open": true, "extra": "3", "action": …}.
         Value::Object(o) if o.contains_key("header") => {
             let t = |k: &str| o.get(k).and_then(Value::as_str).map(clean).unwrap_or_default();
             let cells = vec![Cell { text: t("header"), ..Cell::default() }, Cell { text: t("extra"), ..Cell::default() }];
-            Ok(Row { cells, action: o.get("action").and_then(Value::as_str).map(clean), hint: None, head: Some(o.get("open").and_then(Value::as_bool).unwrap_or(true)) })
+            Ok(Row { cells, action: o.get("action").and_then(Value::as_str).map(clean), hint: None, head: Some(o.get("open").and_then(Value::as_bool).unwrap_or(true)), pic: None })
         }
         Value::Object(o) if o.contains_key("cells") => {
             let cells = o["cells"].as_array().ok_or("\"cells\": an array")?.iter().map(cell).collect::<Result<_, _>>()?;
-            Ok(Row { cells, action: o.get("action").and_then(Value::as_str).map(clean), hint: o.get("hint").and_then(Value::as_str).map(hint_text), head: None })
+            Ok(Row { cells, action: o.get("action").and_then(Value::as_str).map(clean), hint: o.get("hint").and_then(Value::as_str).map(hint_text), head: None, pic: None })
         }
-        _ => Ok(Row { cells: vec![cell(v)?], action: None, hint: None, head: None }),
+        _ => Ok(Row { cells: vec![cell(v)?], action: None, hint: None, head: None, pic: None }),
     }
 }
 
@@ -763,6 +880,17 @@ pub(super) fn draw_rows(f: &mut Frame, r: Rect, pane: &mut Pane, ext: usize, slo
         }
         let row_hot = row.action.is_some() && hover.is_some_and(|p| line_r.contains(p));
         let row_bg = if row_hot { P.list_hover_bg } else { bg };
+        if let Some((pic, k)) = &row.pic {
+            crate::ui::fill(f, line_r, row_bg);
+            if let Some(a) = &row.action {
+                hits.push(Hit { r: line_r, ext, slot, sec, action: a.clone() });
+            }
+            if let Some(h) = row.hint.as_ref().filter(|_| hover.is_some_and(|p| line_r.contains(p))) {
+                card = Some((line_r, h.clone()));
+            }
+            PICS.with_borrow_mut(|p| p.push((line_r, pic.clone(), *k, row_bg)));
+            continue;
+        }
         // The row's own click first: a button in it, noted after, is found first (hits are
         // searched from the last).
         if let Some(a) = &row.action {
@@ -840,8 +968,8 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect, n: u16) {
     if let Some(err) = e.error.clone() {
         let log = e.log().display().to_string();
         let log = std::env::var("HOME").ok().and_then(|h| log.strip_prefix(&h).map(|r| format!("~{r}"))).unwrap_or(log);
-        let text = |t: String, fg: &str| Row { cells: vec![Cell { text: t, fg: Some(fg.into()), ..Cell::default() }], action: None, hint: None, head: None };
-        let mut p = Pane { rows: vec![text(err, "error"), text("Its log:".into(), "dim"), text(log, "dim"), Row::default(), Row { cells: vec![Cell { text: "Restart".into(), button: true, action: Some(RESTART.into()), ..Cell::default() }], action: None, hint: None, head: None }], ..Pane::default() };
+        let text = |t: String, fg: &str| Row { cells: vec![Cell { text: t, fg: Some(fg.into()), ..Cell::default() }], action: None, hint: None, head: None, pic: None };
+        let mut p = Pane { rows: vec![text(err, "error"), text("Its log:".into(), "dim"), text(log, "dim"), Row::default(), Row { cells: vec![Cell { text: "Restart".into(), button: true, action: Some(RESTART.into()), ..Cell::default() }], action: None, hint: None, head: None, pic: None }], ..Pane::default() };
         draw_rows(f, r, &mut p, i, Slot::Left, 0, hover, hits, P.sidebar_bg, P.sidebar_fg);
         return;
     }
@@ -895,6 +1023,7 @@ pub fn draw_side(app: &mut App, f: &mut Frame, r: Rect, n: u16) {
     for (hr, title, open, hot) in headers {
         crate::ui::section_head(app, f, hr, &title, open, "", hot);
     }
+    place(app, f);
 }
 
 /// A main tab (`ext:<id>`): its rows on the editor's background.
@@ -932,6 +1061,7 @@ pub fn draw_main(app: &mut App, f: &mut Frame, r: Rect, key: &str) {
             }
         }
     }
+    place(app, f);
 }
 
 /// Text selected in a tab, as shown (a row a line).
@@ -1088,6 +1218,7 @@ pub fn draw_panel(app: &mut App, f: &mut Frame, r: Rect, slot: Slot) -> bool {
         panes.push((inner, i, slot, 0));
         draw_rows(f, inner, p, i, slot, 0, hover, hits, P.editor_bg, P.editor_fg);
     }
+    place(app, f);
     true
 }
 
@@ -1231,7 +1362,7 @@ pub fn test_ext(id: &str, tabs: &[&str]) -> Ext {
     let m = Manifest { id: id.into(), name: id.into(), version: String::new(), description: String::new(), icon: Icon::plain("T"), run: vec!["/nonexistent".into()], permissions: Vec::new(), commands: Vec::new(), build: Vec::new(), api: Vec::new(), dir: std::env::temp_dir() };
     let mut e = Ext::new(m);
     e.started = true;
-    e.main = tabs.iter().map(|t| Pane { id: t.to_string(), title: t.to_string(), rows: vec![Row { cells: vec![Cell { text: format!("stream of {t}"), ..Cell::default() }], action: None, hint: None, head: None }], ..Pane::default() }).collect();
+    e.main = tabs.iter().map(|t| Pane { id: t.to_string(), title: t.to_string(), rows: vec![Row { cells: vec![Cell { text: format!("stream of {t}"), ..Cell::default() }], action: None, hint: None, head: None, pic: None }], ..Pane::default() }).collect();
     e
 }
 
@@ -1426,6 +1557,48 @@ while read line; do echo "$line" >> "$TERMCODE_EXTENSION_DIR/got"; done
         .unwrap();
         let at = |x: u16| hits.iter().rev().find(|h| h.r.contains(Position::new(x, 0))).map(|h| h.action.clone());
         assert_eq!((at(6), at(1)), (Some("go".to_string()), Some("open".to_string())));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_picture_row_takes_its_lines_and_shows_its_pixels() {
+        let png = |w: u32, h: u32| {
+            let mut v = Vec::new();
+            image::RgbaImage::from_pixel(w, h, image::Rgba([10, 200, 30, 255])).write_to(&mut std::io::Cursor::new(&mut v), image::ImageFormat::Png).unwrap();
+            crate::parse::base64(&v)
+        };
+        assert_eq!(crate::parse::unbase64(&crate::parse::base64(b"any bytes!")).as_deref(), Some(&b"any bytes!"[..]));
+        let r = rows(&json!(["above", {"picture": png(40, 20), "rows": 3, "action": "plot"}, "below"])).unwrap();
+        assert_eq!(r.len(), 5, "a line, the picture's 3, a line");
+        assert_eq!(r[1..4].iter().map(|r| r.pic.as_ref().map(|p| p.1)).collect::<Vec<_>>(), [Some(0), Some(1), Some(2)]);
+        assert!(r[1..4].iter().all(|r| r.action.as_deref() == Some("plot")), "each line clicks as the picture");
+        // Two to one, 3 lines of 8x16 cells: 12 cells across keeps its shape.
+        assert_eq!(r[1].pic.as_ref().unwrap().0.size((8, 16), 80), (12, 3));
+        assert!(rows(&json!([{"picture": "not base64!"}])).is_err());
+        assert!(rows(&json!([{"picture": png(5000, 2)}])).unwrap_err().contains("4096"), "a huge one is refused before decoding");
+        // Drawn: half-blocks in its colour, or (Kitty) cells pointing into it, sent once.
+        let d = tmp("pic");
+        let mut app = App::new(d.clone(), None);
+        let mut e = test_ext("pic-test", &["t"]);
+        e.main[0].rows = r;
+        app.exts.list.push(e);
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 8)).unwrap();
+        let mut draw = |app: &mut App| {
+            let mut b = ratatui::buffer::Buffer::empty(Rect::default());
+            t.draw(|f| {
+                draw_main(app, f, Rect::new(0, 0, 40, 8), "ext:pic-test/t");
+                b = f.buffer_mut().clone();
+            })
+            .unwrap();
+            b
+        };
+        let b = draw(&mut app);
+        assert_eq!((b[(1, 2)].symbol(), b[(1, 2)].fg), ("▀", Color::Rgb(10, 200, 30)));
+        app.media.kitty_for_tests();
+        let b = draw(&mut app);
+        assert!(b[(1, 1)].symbol().contains("\x1b_G") && b[(1, 2)].symbol().starts_with('\u{10EEEE}'));
+        let b = draw(&mut app);
+        assert!(!b[(1, 1)].symbol().contains("\x1b_G") && b[(1, 1)].symbol().starts_with('\u{10EEEE}'), "kept by the terminal: not sent again");
         std::fs::remove_dir_all(&d).unwrap();
     }
 

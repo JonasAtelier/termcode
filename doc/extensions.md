@@ -123,7 +123,13 @@ A row is one of:
 {"text": "one cell", "fg": "error", "bold": true}
 ["several ", {"text": "cells", "fg": "accent"}, {"text": "Go", "button": true, "action": "go"}]
 {"cells": ["a list item"], "action": "open:3"}
+{"picture": "iVBORw0KGgo…", "rows": 8, "action": "plot"}
 ```
+
+A `picture` row is a PNG in base64 (4096×4096 pixels at most), `rows` lines high
+(default 8) and as wide as its shape keeps it (or `cols`): real pixels in Ghostty and
+kitty, half-blocks elsewhere. Send a new one to update it (a plot, a waveform): termcode
+sends each picture to the terminal once.
 
 A cell: `text`, `fg`, `bg`, `bold`, `dim`, `italic`, `button` (drawn as termcode's own
 buttons are, from its UI kit; with `fg` or `bg` `"error"`: a destructive one), `action`

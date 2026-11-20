@@ -17,6 +17,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   tooltip), or a picture's path in the editor (`docs/shot.png`, `~/pics/a.jpg`: beside the
   file, then in the workspace), with its size in pixels. Real pixels in Ghostty and kitty,
   half-blocks elsewhere.
+- Extensions can show pictures: a `{"picture": <base64 PNG>, "rows": 8}` row (a plot, a
+  waveform, a diagram), in real pixels in Ghostty and kitty, half-blocks elsewhere.
 
 ## [1.0.0] - 2026-11-20
 

@@ -97,6 +97,29 @@ pub fn match_score(candidate: &str, query: &str) -> Option<usize> {
     Some(tier * 100_000 + c.len().min(99_999))
 }
 
+/// Standard base64 read back (an extension's picture); None at anything else. Padding
+/// and line breaks are fine.
+pub fn unbase64(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let digits: Vec<u8> = s.bytes().filter(|c| !c.is_ascii_whitespace()).take_while(|&c| c != b'=').map(val).collect::<Option<_>>()?;
+    if digits.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(digits.len() * 3 / 4);
+    for c in digits.chunks(4) {
+        let n = c.iter().enumerate().fold(0u32, |n, (i, &d)| n | u32::from(d) << (18 - 6 * i));
+        out.extend_from_slice(&n.to_be_bytes()[1..c.len()]);
+    }
+    Some(out)
+}
+
 /// Standard base64, for the OSC 52 clipboard escape.
 pub fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
