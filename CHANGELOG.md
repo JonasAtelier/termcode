@@ -9,6 +9,9 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ## [Unreleased]
 
 ### Added
+- The line between editor groups drags: their widths (or heights) follow, in the code
+  view and in a view's own (Serial's channels side by side). With cards, a pane's edge
+  takes either border there (the side bar's, the editors', a panel's).
 - In Ghostty and kitty the Source Control graph is drawn in pixels, as VS Code draws
   it: smooth curved branch lines, a ring for each commit (HEAD's filled), the lanes going
   on past an opened commit's files, and the subjects lined up right of it. Elsewhere the
@@ -41,6 +44,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   ELF and map reports' bars (a memory region's green, amber past 75%, red past 90%).
 
 ### Fixed
+- A view's right panel (Serial's settings, an extension's) resizes by its left edge, as
+  the Outline does; its edge lights under the pointer.
 - The editor's caret (or a field's behind it) no longer blinks through the Settings and
   Commit dialogs; only a field in the dialog being typed in shows one.
 

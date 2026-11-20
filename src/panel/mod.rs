@@ -1056,6 +1056,10 @@ pub enum Drag {
     TermMouse,
     /// The Outline's left border, its width's handle.
     OutlineSash,
+    /// The line between editor groups at fraction `at` of the editor area, across
+    /// (`vertical`: a column, moved left and right) or along: the groups on it follow,
+    /// `grab` cells from the pointer (where it was taken).
+    Group { vertical: bool, at: f64, grab: f64 },
     /// A line in a driver's view (between the Serial view's ports and channels, GitHub's
     /// panes, an extension's sections): its `drag_to` follows the pointer.
     View(u16),
@@ -1175,7 +1179,13 @@ pub struct Hits {
     /// The Outline: its toggle button per group, its left border (the width handle), its
     /// list, and each drawn row with where it goes.
     pub outline_btns: Vec<Rect>,
+    /// The left edge of the panel right of the editors (the Outline, or a view's right
+    /// panel: Serial's settings), its width's handle; that panel.
     pub outline_sash: Rect,
+    pub right_panel: Rect,
+    /// The lines between editor groups, each where it can be grabbed (both borders, with
+    /// cards): (cells, a column, its fraction of the editor area).
+    pub group_sashes: Vec<(Rect, bool, f64)>,
     pub outline: Rect,
     pub outline_rows: Vec<(Rect, usize)>,
     /// Every row the Outline shows (scrolled out of view too), and each drawn chevron.
@@ -1388,6 +1398,9 @@ pub struct App {
     pub quick: Option<Quick>,
     files: Vec<String>,
     pub drag: Drag,
+    /// A pane's edge taken this many cells before the cell its size counts from (the
+    /// other card's border, beside it): the size follows the pointer from there.
+    pub grab: u16,
     /// The prefix (termcode.prefix) pressed: the next key is a quick key.
     pub prefix_armed: bool,
     /// A minimap slider held at (or past) its edge: how far (rows, up negative) and the
@@ -2197,6 +2210,7 @@ impl App {
             quick: None,
             files: Vec::new(),
             drag: Drag::None,
+            grab: 0,
             prefix_armed: false,
             mini_auto: None,
             drop: None,

@@ -1201,10 +1201,16 @@ pub fn draw_panel(app: &mut App, f: &mut Frame, r: Rect, slot: Slot) -> bool {
     use ratatui::widgets::Block;
     let Some(i) = here(app, slot) else { return false };
     let hover = app.hover;
+    let (term_edge, right_edge) = (crate::ui::grab(app, app.ui.term_sash, true), crate::ui::grab(app, app.ui.outline_sash, false));
     let e = &mut app.exts.list[i];
     let Some(p) = (if slot == Slot::Right { e.right.as_mut() } else { e.bottom.as_mut() }) else { return false };
-    let hot = slot == Slot::Bottom && (matches!(app.drag, crate::panel::Drag::TermSash) || hover.is_some_and(|q| q.y == r.y && (r.x..r.right()).contains(&q.x)));
-    let edge = if hot { P.sash_hover } else { crate::blocks::border(false) };
+    // Its resizing edge (the bottom one's top, the right one's left) lit under the pointer
+    // and while dragged, as the terminal's and the Outline's are.
+    let hot = match slot {
+        Slot::Bottom => matches!(app.drag, crate::panel::Drag::TermSash) || hover.is_some_and(|q| term_edge.contains(q)),
+        _ => matches!(app.drag, crate::panel::Drag::OutlineSash) || hover.is_some_and(|q| right_edge.contains(q)),
+    };
+    let edge = if hot && slot == Slot::Bottom { P.sash_hover } else { crate::blocks::border(false) };
     let block = Block::bordered()
         .border_set(crate::blocks::border_set())
         .border_style(Style::new().fg(edge).bg(P.editor_bg))
@@ -1213,8 +1219,11 @@ pub fn draw_panel(app: &mut App, f: &mut Frame, r: Rect, slot: Slot) -> bool {
     let inner = block.inner(r);
     f.render_widget(block, r);
     if slot == Slot::Bottom {
-        app.ui.term_sash = Rect::new(r.x, r.y, r.width, 1);
         app.ui.term = inner;
+    } else if hot {
+        for y in r.y..r.bottom() {
+            f.buffer_mut()[(r.x, y)].set_fg(P.sash_hover);
+        }
     }
     let Exts { list, hits, panes, .. } = &mut app.exts;
     let p = if slot == Slot::Right { list[i].right.as_mut() } else { list[i].bottom.as_mut() };
@@ -1367,6 +1376,15 @@ pub fn test_ext(id: &str, tabs: &[&str]) -> Ext {
     let mut e = Ext::new(m);
     e.started = true;
     e.main = tabs.iter().map(|t| Pane { id: t.to_string(), title: t.to_string(), rows: vec![Row { cells: vec![Cell { text: format!("stream of {t}"), ..Cell::default() }], action: None, hint: None, head: None, pic: None }], ..Pane::default() }).collect();
+    e
+}
+
+/// `test_ext`'s, with a right panel (as Serial's settings) and a bottom one.
+#[cfg(test)]
+pub fn test_ext_panels(id: &str, tabs: &[&str]) -> Ext {
+    let mut e = test_ext(id, tabs);
+    let pane = |t: &str| Pane { id: t.into(), title: t.into(), rows: vec![Row { cells: vec![Cell { text: format!("{t} row"), ..Cell::default() }], action: None, hint: None, head: None, pic: None }], ..Pane::default() };
+    (e.right, e.bottom) = (Some(pane("Settings")), Some(pane("Log")));
     e
 }
 

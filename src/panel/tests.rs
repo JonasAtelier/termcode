@@ -7933,3 +7933,94 @@ fn no_caret_shows_through_a_dialog_unless_the_dialog_takes_typing() {
     wait_idle(&mut app);
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn a_views_panels_resize_by_their_edges_as_the_code_views_do() {
+    let root = repo("view-panels");
+    let mut app = App::new(root.clone(), None);
+    app.exts.list.push(crate::ext::test_ext_panels("panels-x", &["ttyP1"]));
+    let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    app.show_tab(app.ag, "ext:panels-x/ttyP1".into(), false);
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("Settings row") && s.contains("Log row"), "its right and bottom panels: {s}");
+    let drag = |app: &mut App, from: (u16, u16), to: (u16, u16)| {
+        mouse(app, MouseEventKind::Down(MouseButton::Left), from.0, from.1);
+        mouse(app, MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
+        mouse(app, MouseEventKind::Up(MouseButton::Left), to.0, to.1);
+    };
+    // The right panel (Serial's settings) by its left edge, as the Outline: 6 wider.
+    let (sash, w) = (app.ui.outline_sash, app.ui.right_panel.width);
+    assert_eq!(sash.x, app.ui.right_panel.x, "its left edge is its handle");
+    drag(&mut app, (sash.x, sash.y + 3), (sash.x - 6, sash.y + 3));
+    screen(&mut app, &mut t);
+    assert_eq!(app.ui.right_panel.width, w + 6);
+    // Lit under the pointer, as the Outline's edge.
+    let edge = app.ui.outline_sash;
+    mouse(&mut app, MouseEventKind::Moved, edge.x, edge.y + 3);
+    screen(&mut app, &mut t);
+    assert_eq!(t.backend().buffer()[(edge.x, edge.y + 3)].fg, crate::theme::P.sash_hover);
+    // The bottom panel by its top edge, as the terminal: 3 taller.
+    let (ts, h) = (app.ui.term_sash, app.ui.term.height);
+    drag(&mut app, (ts.x + 5, ts.y), (ts.x + 5, ts.y - 3));
+    screen(&mut app, &mut t);
+    assert_eq!(app.ui.term.height, h + 3);
+    // The side bar by its edge: 4 wider.
+    let (d, sw) = (app.ui.divider, app.ui.sidebar.width);
+    drag(&mut app, (d.x, d.y + 5), (d.x + 4, d.y + 5));
+    screen(&mut app, &mut t);
+    assert_eq!(app.ui.sidebar.width, sw + 4);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn every_pane_resizes_from_either_side_of_its_edge_and_groups_from_the_line_between() {
+    let root = repo("group-sash");
+    let mut app = App::new(root.clone(), None);
+    app.open_file(0, "src/main.rs", false);
+    app.run_command(Cmd::Split(false));
+    app.toggle_terminal();
+    let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    screen(&mut app, &mut t);
+    assert_eq!(app.settings.blocks, crate::blocks::BlockStyle::Cards, "cards: two borders meet at each edge");
+    let drag = |app: &mut App, t: &mut Terminal<TestBackend>, from: (u16, u16), to: (u16, u16)| {
+        mouse(app, MouseEventKind::Down(MouseButton::Left), from.0, from.1);
+        mouse(app, MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
+        mouse(app, MouseEventKind::Up(MouseButton::Left), to.0, to.1);
+        screen(app, t);
+    };
+    // Two groups side by side: the line between, from either one's border, moves both.
+    let (a, b) = (app.ui.groups[0].area, app.ui.groups[1].area);
+    let line: Vec<_> = app.ui.group_sashes.iter().filter(|s| s.1).map(|s| s.0).collect();
+    assert_eq!(line.len(), 1, "{:?}", app.ui.group_sashes);
+    let (l, y) = (line[0].x, line[0].y + 5);
+    drag(&mut app, &mut t, (l, y), (l - 10, y));
+    let (a2, b2) = (app.ui.groups[0].area, app.ui.groups[1].area);
+    assert_eq!((a2.width + 10, b2.width), (a.width, b.width + 10), "the left one 10 narrower, the right 10 wider");
+    let l = app.ui.group_sashes.iter().find(|s| s.1).unwrap().0.x;
+    drag(&mut app, &mut t, (l + 1, y), (l + 6, y));
+    assert_eq!(app.ui.groups[0].area.width, a2.width + 5, "the right one's border too");
+    assert!((app.groups[0].frac.x1 - app.groups[1].frac.x0).abs() < 1e-9, "still edge to edge");
+    // Never under 12 columns.
+    drag(&mut app, &mut t, (l + 5, y), (0, y));
+    assert!(app.ui.groups[0].area.width >= 10, "{:?}", app.ui.groups[0].area);
+    // The side bar from its own border (not only the editors'), the terminal from the
+    // editors' bottom border.
+    let (d, sw) = (app.ui.divider, app.ui.sidebar.width);
+    drag(&mut app, &mut t, (d.x - 1, d.y + 5), (d.x + 2, d.y + 5));
+    assert_eq!(app.ui.sidebar.width, sw + 3, "from the side bar's border");
+    let (ts, h) = (app.ui.term_sash, app.ui.term.height);
+    drag(&mut app, &mut t, (ts.x + 5, ts.y - 1), (ts.x + 5, ts.y - 3));
+    assert_eq!(app.ui.term.height, h + 2, "from the editors' bottom border");
+    // Split down too: the line across moves the rows.
+    app.run_command(Cmd::Split(true));
+    screen(&mut app, &mut t);
+    let across = *app.ui.group_sashes.iter().find(|s| !s.1).unwrap();
+    let g = app.ag;
+    let top = app.ui.groups.iter().map(|gh| gh.area).find(|r| r.right() == app.ui.groups[g].area.right() && r.y < app.ui.groups[g].area.y).unwrap();
+    drag(&mut app, &mut t, (across.0.x + 3, across.0.y), (across.0.x + 3, across.0.y + 3));
+    let top2 = app.ui.groups.iter().map(|gh| gh.area).find(|r| r.x == top.x && r.y == top.y).unwrap();
+    assert_eq!(top2.height, top.height + 3);
+    assert!(crate::panel::tiles(&app.groups.iter().filter(|g| g.space == app.space()).map(|g| g.frac).collect::<Vec<_>>()), "the groups still tile the area");
+    wait_idle(&mut app);
+    fs::remove_dir_all(&root).unwrap();
+}

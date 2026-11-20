@@ -7,7 +7,7 @@ use super::*;
 /// Its left edge is the width's handle.
 pub(super) fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
     let focused = app.focus == Focus::Outline;
-    let hot = matches!(app.drag, Drag::OutlineSash) || app.hover.is_some_and(|p| p.x == r.x && (r.y..r.bottom()).contains(&p.y));
+    let hot = matches!(app.drag, Drag::OutlineSash) || app.hover.is_some_and(|p| super::grab(app, app.ui.outline_sash, false).contains(p));
     let block = Block::bordered()
         .border_set(crate::blocks::border_set())
         .border_style(Style::new().fg(crate::blocks::border(focused)).bg(P.editor_bg))
@@ -20,7 +20,6 @@ pub(super) fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
             f.buffer_mut()[(r.x, y)].set_fg(P.sash_hover);
         }
     }
-    app.ui.outline_sash = Rect::new(r.x, r.y, 1, r.height);
     app.ui.outline = inner;
     let note = |f: &mut Frame, text: &str| {
         f.render_widget(Paragraph::new(text.to_string()).wrap(ratatui::widgets::Wrap { trim: true }).style(Style::new().fg(P.dim)), inner);
@@ -126,7 +125,7 @@ pub(super) fn outline_panel(app: &mut App, f: &mut Frame, r: Rect) {
 /// handle (lit while hovered or dragged), its border blue while it has the keys.
 pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
     let focused = app.focus == Focus::Term;
-    let hot = matches!(app.drag, Drag::TermSash) || app.hover.is_some_and(|p| p.y == r.y && (r.x..r.right()).contains(&p.x));
+    let hot = matches!(app.drag, Drag::TermSash) || app.hover.is_some_and(|p| super::grab(app, app.ui.term_sash, true).contains(p));
     // With the STM32 Programmer's log, two tabs on the border instead of the title.
     let tabs = app.prog.has_log();
     let mut block = Block::bordered()
@@ -146,7 +145,6 @@ pub(super) fn terminal_panel(app: &mut App, f: &mut Frame, r: Rect) {
             }
         }
     }
-    app.ui.term_sash = Rect::new(r.x, r.y, r.width, 1);
     app.ui.term = inner;
     // On the top border after the title: a tab per terminal (more than one), then +; × at
     // the right end closes the one shown.

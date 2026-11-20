@@ -18,7 +18,7 @@ mod process;
 pub use install::cli;
 pub use manager::{decided, removed};
 #[cfg(test)]
-pub use process::test_ext;
+pub use process::{test_ext, test_ext_panels};
 pub use process::{api_methods, api_owner, bottom_here, call, command_titles, draw_panel, forward, may_emit, right_here, run_command, shutdown, Exts, Slot};
 
 use crate::panel::{App, Side, Space};

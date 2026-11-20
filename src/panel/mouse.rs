@@ -246,15 +246,18 @@ impl App {
             }
             return;
         }
-        if self.ui.divider.contains(p) {
+        if crate::ui::grab(self, self.ui.divider, false).contains(p) {
             self.drag = Drag::Divider;
+            // From the side bar's own border: one before the editors' it counts from.
+            self.grab = self.ui.divider.x.saturating_sub(p.x);
             return;
         }
         if self.ui.outline_btns.iter().any(|r| r.contains(p)) {
             return self.run_command(Cmd::ToggleOutline);
         }
-        if self.ui.outline_sash.contains(p) {
+        if crate::ui::grab(self, self.ui.outline_sash, false).contains(p) {
             self.drag = Drag::OutlineSash;
+            self.grab = self.ui.right_panel.x.saturating_sub(p.x);
             return;
         }
         if self.ui.outline.contains(p) {
@@ -275,8 +278,16 @@ impl App {
         if let Some(&(_, i)) = self.ui.term_tabs.iter().find(|(r, _)| r.contains(p)) {
             return self.switch_terminal(i);
         }
-        if self.ui.term_sash.contains(p) {
+        if crate::ui::grab(self, self.ui.term_sash, true).contains(p) {
             self.drag = Drag::TermSash;
+            self.grab = self.ui.term_sash.y.saturating_sub(p.y);
+            return;
+        }
+        if let Some(&(_, vertical, at)) = self.ui.group_sashes.iter().find(|(r, ..)| r.contains(p)) {
+            let a = self.ui.editor_area;
+            let (start, len, at_p) = if vertical { (a.x, a.width, p.x) } else { (a.y, a.height, p.y) };
+            let grab = f64::from(start) + at * f64::from(len) - f64::from(at_p);
+            self.drag = Drag::Group { vertical, at, grab };
             return;
         }
         if let Some(sb) = self.ui.scrollbars.iter().find(|s| s.track.contains(p)).copied() {
@@ -676,6 +687,11 @@ impl App {
         if let Drag::View(n) = self.drag {
             return crate::ext::drag_to(self, n, p.y);
         }
+        if let Drag::Group { vertical, at, grab } = self.drag {
+            let at = self.move_group_line(vertical, at, p, grab);
+            self.drag = Drag::Group { vertical, at, grab };
+            return;
+        }
         match &mut self.drag {
             // The terminal's own (term_mouse) never get here.
             Drag::None | Drag::TermSelect(_) | Drag::TermMouse => {}
@@ -683,14 +699,14 @@ impl App {
             Drag::Divider => {
                 let start = self.ui.sidebar.x;
                 let max = self.ui.editor_area.right().saturating_sub(start + 20).max(12);
-                self.side_w = Some(p.x.saturating_sub(start).clamp(12, max));
+                self.side_w = Some((p.x + self.grab).saturating_sub(start).clamp(12, max));
                 self.side_w_legacy = false;
             }
             // The panel's bottom stays; its top border follows the pointer (ui.rs clamps it).
-            Drag::TermSash => self.term_h = Some((self.ui.term.bottom() + 1).saturating_sub(p.y).max(3)),
+            Drag::TermSash => self.term_h = Some((self.ui.term.bottom() + 1).saturating_sub(p.y + self.grab).max(3)),
             // The panel's right edge stays; its left border follows the pointer.
-            Drag::OutlineSash => self.outline_w = Some((self.ui.outline.right() + 1).saturating_sub(p.x).max(16)),
-            Drag::View(_) => {}
+            Drag::OutlineSash => self.outline_w = Some(self.ui.right_panel.right().saturating_sub(p.x + self.grab).max(16)),
+            Drag::View(_) | Drag::Group { .. } => {}
             Drag::File { rel, from, active, dir, .. } => {
                 if !*active && (from.x.abs_diff(p.x) + from.y.abs_diff(p.y)) >= 2 {
                     *active = true;
@@ -809,6 +825,37 @@ impl App {
         true
     }
 
+    /// The line between groups at `at` (a column when `vertical`) moved with the pointer
+    /// (`grab` cells from it): the groups along it follow, each keeping 12 columns (4 rows).
+    /// Where it is now.
+    fn move_group_line(&mut self, vertical: bool, at: f64, p: Position, grab: f64) -> f64 {
+        let a = self.ui.editor_area;
+        let (pos, len, keep) = if vertical { (f64::from(p.x) - f64::from(a.x) + grab, a.width, 12.0) } else { (f64::from(p.y) - f64::from(a.y) + grab, a.height, 4.0) };
+        if len == 0 {
+            return at;
+        }
+        let sp = self.space();
+        let edges = |f: &super::Frac| if vertical { (f.x0, f.x1) } else { (f.y0, f.y1) };
+        let mine = || self.groups.iter().filter(|g| g.space == sp).map(|g| edges(&g.frac));
+        // Before it: their starts; after it: their ends.
+        let lo = mine().filter(|e| super::same(e.1, at)).map(|e| e.0).fold(0.0, f64::max) + keep / f64::from(len);
+        let hi = mine().filter(|e| super::same(e.0, at)).map(|e| e.1).fold(1.0, f64::min) - keep / f64::from(len);
+        if lo > hi {
+            return at;
+        }
+        let to = (pos / f64::from(len)).clamp(lo, hi);
+        for g in self.groups.iter_mut().filter(|g| g.space == sp) {
+            let (e0, e1) = if vertical { (&mut g.frac.x0, &mut g.frac.x1) } else { (&mut g.frac.y0, &mut g.frac.y1) };
+            if super::same(*e1, at) {
+                *e1 = to;
+            }
+            if super::same(*e0, at) {
+                *e0 = to;
+            }
+        }
+        to
+    }
+
     pub(super) fn release(&mut self) {
         self.pressed = None;
         self.mini_auto = None;
@@ -816,7 +863,7 @@ impl App {
             return;
         }
         match std::mem::replace(&mut self.drag, Drag::None) {
-            Drag::Divider | Drag::TermSash | Drag::OutlineSash | Drag::View(_) => self.save_layout(),
+            Drag::Divider | Drag::TermSash | Drag::OutlineSash | Drag::View(_) | Drag::Group { .. } => self.save_layout(),
             // A minimap slider let go: its stretch centred on it (the slider to the middle).
             Drag::Minimap(m, _) => {
                 let live = self.ui.minimaps.iter().find(|h| h.group == m.group).copied().unwrap_or(m);

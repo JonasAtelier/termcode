@@ -184,6 +184,15 @@ pub fn lang_id(name: &str) -> String {
     .into()
 }
 
+/// Where a pane's edge `r` (a column, or a row when `row`) can be taken: with cards also
+/// the other card's border before it (two borders meet there).
+pub(crate) fn grab(app: &App, r: Rect, row: bool) -> Rect {
+    if app.settings.blocks != BlockStyle::Cards || r.is_empty() {
+        return r;
+    }
+    if row { Rect::new(r.x, r.y.saturating_sub(1), r.width, r.height + u16::from(r.y > 0)) } else { Rect::new(r.x.saturating_sub(1), r.y, r.width + u16::from(r.x > 0), r.height) }
+}
+
 thread_local! {
     /// Where the terminal cursor goes this frame: the last layer drawn with a caret.
     static CARET: std::cell::Cell<Option<Position>> = const { std::cell::Cell::new(None) };
@@ -313,7 +322,8 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
         app.ui.sidebar = Rect::new(x, body.y, w, body.height);
         sidebar(app, f, app.ui.sidebar, lay);
         x += w;
-        // Cards use the editor's left border as the resize handle.
+        // The line between, or with cards the editor's left border: the resize handle (the
+        // side bar's border beside it too: `grab`).
         let d = Rect::new(x, body.y, 1, body.height);
         app.ui.divider = d;
         match st {
@@ -346,6 +356,8 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
         let h = app.term_h.unwrap_or(ed.height / 3).clamp(5, ed.height - 7);
         ed.height -= h;
         let pr = Rect::new(ed.x, ed.bottom(), ed.width, h);
+        // Its top border (and with cards the editors' bottom one above it: `grab`).
+        app.ui.term_sash = Rect::new(pr.x, pr.y, pr.width, 1);
         if !(ext_bottom && crate::ext::draw_panel(app, f, pr, crate::ext::Slot::Bottom)) {
             terminal_panel(app, f, pr);
         }
@@ -353,6 +365,10 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
     app.ui.editor_area = ed;
     editor_area(app, f, ed, lay);
     if let Some(r) = outline {
+        // Whichever panel it is, its left edge resizes it (with cards, the editors' right
+        // border beside it too: `grab`).
+        app.ui.right_panel = r;
+        app.ui.outline_sash = Rect::new(r.x, r.y, 1, r.height);
         // A serial channel's tab: its settings there instead (the same button).
         // A driver's right panel there instead (a serial channel's settings, an extension's).
         if !crate::ext::right(app, f, r) {
@@ -376,6 +392,18 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
         }
     }
     crate::blocks::finish(f);
+    // The line between groups under the pointer (or dragged) lit, all along it.
+    let line = match app.drag {
+        Drag::Group { vertical, at, .. } => Some((vertical, at)),
+        _ => app.hover.and_then(|p| app.ui.group_sashes.iter().find(|(r, ..)| r.contains(p))).map(|&(_, v, at)| (v, at)),
+    };
+    if let Some((v, at)) = line {
+        for (r, ..) in app.ui.group_sashes.iter().filter(|(_, rv, ra)| *rv == v && (ra - at).abs() < 1e-9) {
+            for p in r.positions() {
+                f.buffer_mut()[p].set_fg(P.sash_hover);
+            }
+        }
+    }
     explorer_overlay(app, f, area);
     crate::navui::draw(app, f);
     crate::thumb::draw_editor(app, f);
@@ -1302,6 +1330,15 @@ fn editor_area(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {
         }
         // Find's box sits in the group: its card keeps the focus border.
         let focused = g == app.ag && matches!(app.focus, Focus::Editor | Focus::Find) && !app.activity_lit;
+        // Its right and lower edges where another group follows: grabbed there (the line
+        // between; with cards, its border and the next one's), they move the groups on it.
+        let grab = if sep > 0 { 1 } else { 2 };
+        if fr.x1 < 1.0 - 1e-9 {
+            app.ui.group_sashes.push((Rect::new(c.right() - 1, c.y, grab, c.height).intersection(r), true, fr.x1));
+        }
+        if fr.y1 < 1.0 - 1e-9 {
+            app.ui.group_sashes.push((Rect::new(c.x, c.bottom() - 1, c.width, grab).intersection(r), false, fr.y1));
+        }
         let area = crate::blocks::card(st, f, inner, P.editor_bg, focused);
         group(app, f, g, area, lay, (area.y > inner.y).then_some(inner.y));
         if below {
