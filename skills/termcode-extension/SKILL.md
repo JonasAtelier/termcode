@@ -39,6 +39,7 @@ Calls (with `id`; await the reply, queue other lines meanwhile):
 | `view.set` / `view.append` | `slot`: left, main, right, bottom; `section` (left: which; drag-resizable, stacked in order created); `tab` (main: which tab; default "main"); `title`; `rows` |
 | `view.clear` | `slot`, `section`? / `tab`? (a tab: closed) |
 | `view.open` | `tab`? (needs edit) shows the view and that tab |
+| `view.badge` | `count`: a number on its activity bar icon (0: none) |
 | `ui.input` / `ui.pick` | `text`, `value`? / `items` (needs edit): a line typed, a row picked (null: closed) |
 | any API method | `state.get`, `editor.open`, `buffer.edit`, `ui.notify`, `ui.prompt`, `events.watch`, `terminal.send`, … |
 

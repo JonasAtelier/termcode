@@ -165,14 +165,10 @@ fn view_of(v: &Value) -> Option<View> {
 }
 
 fn side_name(s: Side) -> &'static str {
-    match s {
-        Side::Explorer => "explorer",
-        Side::Search => "search",
-        Side::Scm => "scm",
-        // A built-in view by its id; an extension's is not reopened (its program would
-        // start with termcode).
-        Side::View(n) => crate::ext::DRIVERS.get(n as usize).map_or("explorer", |o| o.id),
-    }
+    // A built-in view by its id; an extension's is not reopened (its program would start
+    // with termcode).
+    let Side::View(n) = s;
+    crate::ext::DRIVERS.get(n as usize).map_or("explorer", |o| o.id)
 }
 
 pub fn snapshot(app: &App) -> Value {
@@ -195,7 +191,7 @@ pub fn snapshot(app: &App) -> Value {
         "side": side_name(app.side),
         "sidebar_visible": app.side_visible,
         "sidebar_width": app.side_w,
-        "explorer": { "open": open, "scroll": app.off[Side::Explorer.idx()], "sel": app.sel[Side::Explorer.idx()] },
+        "explorer": { "open": open, "scroll": app.off[Side::EXPLORER.idx()], "sel": app.sel[Side::EXPLORER.idx()] },
         "search": { "query": app.query, "case": app.s_opts.0, "word": app.s_opts.1, "regex": app.s_opts.2 },
         "scm": app.gitui.layout(),
         "groups": groups,
@@ -313,12 +309,11 @@ pub fn restore(app: &mut App) {
     if !layout {
         return;
     }
-    app.side = match v["side"].as_str() {
-        Some("search") => Side::Search,
-        Some("scm") => Side::Scm,
-        Some(id) => crate::ext::DRIVERS.iter().position(|o| o.id == id).map_or(Side::Explorer, |i| Side::View(i as u16)),
-        _ => Side::Explorer,
-    };
+    app.side = v["side"].as_str().and_then(|id| crate::ext::DRIVERS.iter().position(|o| o.id == id)).map_or(Side::EXPLORER, |i| Side::View(i as u16));
+    let Side::View(n) = app.side;
+    if crate::ext::off(app, n) {
+        app.side = Side::EXPLORER;
+    }
     app.side_visible = v["sidebar_visible"].as_bool().unwrap_or(app.side_visible);
     if let Some(w) = v["sidebar_width"].as_u64() {
         app.side_w = Some(w.clamp(12, 200) as u16);
@@ -332,7 +327,7 @@ pub fn restore(app: &mut App) {
             app.toggle(i);
         }
     }
-    let e = Side::Explorer.idx();
+    let e = Side::EXPLORER.idx();
     let last = app.tree.len().saturating_sub(1);
     app.off[e] = (v["explorer"]["scroll"].as_u64().unwrap_or(0) as usize).min(last);
     app.sel[e] = (v["explorer"]["sel"].as_u64().unwrap_or(0) as usize).min(last);
@@ -559,7 +554,7 @@ mod tests {
         let long = &mut app.groups[0].tabs[1].view;
         *long = View { cursor: Pos::new(30, 1), anchor: Some(Pos::new(28, 0)), scroll: 20, hscroll: 2, ..Default::default() };
         (app.ag, app.groups[0].active) = (0, 1);
-        app.side = Side::Search;
+        app.side = Side::SEARCH;
         (app.query, app.s_opts, app.side_w) = ("needle".into(), (true, false, true), Some(40));
         for p in ["sub", "sub/deep"] {
             let i = app.tree.iter().position(|n| n.path == p).unwrap();
@@ -577,7 +572,7 @@ mod tests {
         assert_eq!((b.ag, b.groups[0].active, b.groups[1].active), (0, 1, 1));
         assert_eq!(b.groups[0].tabs[1].view.cursor, Pos::new(30, 1));
         assert_eq!((b.groups[0].tabs[1].view.anchor, b.groups[0].tabs[1].view.scroll, b.groups[0].tabs[1].view.hscroll), (Some(Pos::new(28, 0)), 20, 2));
-        assert_eq!((b.side, b.query.as_str(), b.s_opts, b.side_w), (Side::Search, "needle", (true, false, true), Some(40)));
+        assert_eq!((b.side, b.query.as_str(), b.s_opts, b.side_w), (Side::SEARCH, "needle", (true, false, true), Some(40)));
         assert!(b.hits.is_empty(), "the query, not its results");
         assert!(b.tree.iter().any(|n| n.path == "sub/deep/x.txt"), "open folders reopened");
         // Lazily: nothing is read before the first frame, then only the shown tabs.

@@ -121,7 +121,7 @@ fn narrow_rows_cut_once_and_keep_a_gap_before_the_meta() {
     for w in [30u16, 36, 50] {
         app.side_w = Some(w);
         let mut seen = String::new();
-        for side in [Side::Explorer, Side::Scm, Side::Search] {
+        for side in [Side::EXPLORER, Side::SCM, Side::SEARCH] {
             app.show_side(side, false);
             // Drawing asks for the graph and the timeline: draw, let them land, twice.
             for _ in 0..2 {
@@ -161,11 +161,11 @@ fn one_view_changes_over_graph_collapsible_and_split_persisted() {
     let (t, r) = repo("panes", "echo a > a.txt; git add .; git commit -qm first; echo b >> a.txt");
     let mut app = app(&t, &r);
     let mut tm = term();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     let s = screen(&mut app, &mut tm);
     assert!(s.contains("WORKING TREE") && s.contains("GRAPH") && s.contains("Add commit") && s.contains("first"), "{s}");
-    assert_eq!(app.ui.activity.iter().filter(|(_, s)| !matches!(s, Side::View(_))).count(), 3, "no separate History item");
+    assert_eq!(app.ui.activity.iter().filter(|(_, Side::View(n))| crate::ext::ops(*n).code).count(), 3, "no separate History item");
     assert!(!s.contains("HISTORY"));
     // CHANGES collapses and expands from its header.
     click(&mut app, at(&tm, "WORKING TREE"));
@@ -185,7 +185,7 @@ fn one_view_changes_over_graph_collapsible_and_split_persisted() {
     let split = saved["scm"]["split"].as_u64().unwrap();
     let mut again = App::new(r.clone(), Some(t.0.join("state/layout.json")));
     assert_eq!(again.gitui.split, Some(split as u16));
-    again.show_side(Side::Scm, false);
+    again.show_side(Side::SCM, false);
     settle(&mut again);
     screen(&mut again, &mut tm);
     assert_eq!(at(&tm, "GRAPH").1, gy - 6, "restored");
@@ -204,7 +204,7 @@ fn merge_changes_group_holds_conflicts_and_stages_them() {
     );
     let mut app = app(&t, &r);
     let mut tm = term();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     let rows = app.scm_rows();
     assert!(matches!(rows[0], SRow::MergeHead(1)), "Merge Changes first");
@@ -225,10 +225,10 @@ fn git_run_in_a_shell_shows_in_the_graph_and_timeline_at_the_next_status() {
     let mut app = app(&t, &r);
     let mut tm = term();
     app.open_file(0, "f.txt", false);
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     screen(&mut app, &mut tm);
     settle(&mut app);
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     let subjects = |app: &App| app.gitui.graph.commits.iter().map(|c| c.subject.clone()).collect::<Vec<_>>();
     assert_eq!(subjects(&app), ["first"]);
@@ -258,7 +258,7 @@ fn graph_view_more_expand_and_side_by_side_diff() {
     );
     let mut app = app(&t, &r);
     let mut tm = term();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     assert_eq!((app.gitui.graph.commits.len(), app.gitui.graph.more), (100, true));
     assert_eq!(graph_rows(&app.gitui.graph).last(), Some(&GRow::More));
@@ -320,7 +320,7 @@ fn keyboard_cycles_panes_and_end_reaches_view_more() {
     let (t, r) = repo("keys", "i=1; while [ $i -le 130 ]; do echo $i > f.txt; git add f.txt; git commit -qm c$i; i=$((i+1)); done; echo x >> f.txt; echo y > y.txt");
     let mut app = app(&t, &r);
     let mut tm = term();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     app.gitui.graph_focus = true; // left over from an earlier visit: Tab must not leave the sidebar
     key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
@@ -333,7 +333,7 @@ fn keyboard_cycles_panes_and_end_reaches_view_more() {
     assert_eq!(edge(&tm, cy), crate::blocks::border(true), "the focused pane's card");
     assert_eq!(tm.backend().buffer()[(cx, cy)].fg, P.section_fg, "no second focus colour");
     key(&mut app, KeyCode::End, KeyModifiers::NONE);
-    assert_eq!(app.sel[Side::Scm.idx()], app.scm_rows().len() - 1, "End in CHANGES");
+    assert_eq!(app.sel[Side::SCM.idx()], app.scm_rows().len() - 1, "End in CHANGES");
     key(&mut app, KeyCode::BackTab, KeyModifiers::NONE);
     assert!(app.gitui.graph_focus && app.focus == Focus::Side, "Shift+Tab cycles too");
     screen(&mut app, &mut tm);
@@ -374,7 +374,7 @@ fn badges_use_the_free_room_before_collapsing() {
     let row_of = |s: &str| s.lines().find(|l| l.contains("Merge branch")).unwrap_or("").to_string();
     let mut app = app(&t, &r);
     app.side_w = Some(90);
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     // The sidebar's columns of that row (cards, lines or none alike).
     let cols = |app: &App, row: String| row.chars().skip(app.ui.sidebar.x as usize).take(app.ui.sidebar.width as usize).collect::<String>();
@@ -403,7 +403,7 @@ fn a_branch_colours_its_line_from_its_commit_down() {
     );
     let mut app = app(&t, &r);
     let mut tm = term();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     screen(&mut app, &mut tm);
     let pal = pal(&app);
@@ -426,7 +426,7 @@ fn the_focused_card_has_the_blue_border() {
     let mut tm = term();
     app.settings.blocks = crate::blocks::BlockStyle::Cards;
     app.open_file(0, "a.txt", false);
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     settle(&mut app);
     app.focus = Focus::Editor;
     // Border colours of the activity bar, sidebar and editor cards (their top-left corner).
@@ -444,7 +444,7 @@ fn the_focused_card_has_the_blue_border() {
     click(&mut app, (list.x + 2, list.y));
     assert_eq!(app.focus, Focus::Side);
     assert_eq!(borders(&mut app, &mut tm), [false, true, false], "the Explorer");
-    let search = app.ui.activity.iter().find(|(_, s)| *s == Side::Search).unwrap().0;
+    let search = app.ui.activity.iter().find(|(_, s)| *s == Side::SEARCH).unwrap().0;
     click(&mut app, (search.x + 1, search.y + 1));
     assert_eq!(borders(&mut app, &mut tm), [true, false, false], "the activity bar, just clicked");
     key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
@@ -461,7 +461,7 @@ fn references_follow_the_cursor_and_open_where_clicked() {
     let mut app = app(&t, &r);
     let mut tm = term();
     app.open_file(0, "a.c", false);
-    app.show_side(Side::Search, false);
+    app.show_side(Side::SEARCH, false);
     settle(&mut app);
     app.focus = Focus::Editor;
     let s = screen(&mut app, &mut tm);
@@ -505,7 +505,7 @@ fn the_editor_caret_hides_while_a_commit_card_is_up() {
     let mut app = app(&t, &r);
     let mut tm = term();
     app.open_file(0, "a.txt", false);
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     app.focus = Focus::Editor;
     screen(&mut app, &mut tm);
@@ -541,7 +541,7 @@ fn a_long_commit_message_scrolls_in_its_card_with_the_buttons_kept() {
     );
     let mut app = app(&t, &r);
     let mut tm = term();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     screen(&mut app, &mut tm);
     let hash = app.gitui.graph.commits[0].hash.clone();
@@ -568,7 +568,7 @@ fn a_message_with_tabs_and_escapes_keeps_its_card_whole() {
     let (t, r) = repo("card-tabs", r#"echo a > a.txt; git add .; printf 'json in it\n\n[\n\t{\n\t\tkey: 1\n\t}\n]\n\033[31mred\n' > .git/MSG; git commit -qF .git/MSG"#);
     let mut app = app(&t, &r);
     let mut tm = term();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     screen(&mut app, &mut tm);
     let hash = app.gitui.graph.commits[0].hash.clone();
@@ -592,7 +592,7 @@ fn a_cards_text_selects_by_drag_and_double_click_and_ctrl_c_copies_it() {
     let (t, r) = repo("card-sel", "echo a > a.txt; git add .; git commit -qm 'add a' -m 'the body line'");
     let mut app = app(&t, &r);
     let mut tm = term();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     screen(&mut app, &mut tm);
     let hash = app.gitui.graph.commits[0].hash.clone();
@@ -624,7 +624,7 @@ fn hover_card_after_a_rest_and_with_i_and_the_info_button() {
     let (t, r) = repo("card", "echo a > a.txt; git add .; git commit -qm 'add a' -m 'the body line'; echo b > b.txt; git add .; git commit -qm second");
     let mut app = app(&t, &r);
     let mut tm = term();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     screen(&mut app, &mut tm);
     let p = at(&tm, "add a");
@@ -789,7 +789,7 @@ fn commit_dialog_empty_nothing_staged_signoff_draft_and_amend() {
     let (t, r) = repo("dialog", "echo a > a.txt; git add .; git commit -qm first; echo b >> a.txt; echo u > u.txt");
     let mut app = app(&t, &r);
     let mut tm = term();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     settle(&mut app);
     screen(&mut app, &mut tm);
     click(&mut app, at(&tm, "Add commit"));
@@ -875,7 +875,7 @@ fn tiny_terminals_never_panic_with_git_popups() {
     for compact in [false, true] {
         let mut app = app(&t, &r);
         app.settings.compact = compact;
-        app.show_side(Side::Scm, false);
+        app.show_side(Side::SCM, false);
         settle(&mut app);
         toggle_commit(&mut app, 0);
         settle(&mut app);
@@ -885,9 +885,9 @@ fn tiny_terminals_never_panic_with_git_popups() {
                 let mut draw = |app: &mut App| {
                     tm.draw(|f| crate::ui::draw(app, f)).unwrap();
                 };
-                app.side = Side::Scm;
+                app.side = Side::SCM;
                 draw(&mut app);
-                app.side = Side::Explorer;
+                app.side = Side::EXPLORER;
                 draw(&mut app);
                 let hash = app.gitui.graph.commits[0].hash.clone();
                 open_card(&mut app, hash, Rect::new(5, 5, 10, 1));

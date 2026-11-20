@@ -4,7 +4,7 @@
 //! on threads; `drain` folds the results in on the UI thread.
 //!
 //! The CHANGES list reuses the sidebar's list state (`sel`/`off` of
-//! `Side::Scm`, `ui.side_list`), so its keys, clicks and scrollbar are the
+//! `Side::SCM`, `ui.side_list`), so its keys, clicks and scrollbar are the
 //! generic ones. GRAPH and TIMELINE keep their own state here.
 
 use crate::ui::kit::Look;
@@ -501,7 +501,7 @@ fn refs_tick(app: &mut App) -> bool {
         r.list = List::default();
         changed = true;
     }
-    if !(app.side == Side::Search && app.side_visible && app.gitui.refs.open) {
+    if !(app.side == Side::SEARCH && app.side_visible && app.gitui.refs.open) {
         return changed;
     }
     let at = cursor_symbol(app);
@@ -710,7 +710,7 @@ pub fn on_refresh(app: &mut App) {
         return;
     }
     let key = git_key(app);
-    if app.side == Side::Scm && app.side_visible {
+    if app.side == Side::SCM && app.side_visible {
         let g = &mut app.gitui.graph;
         if key != g.head || !g.loaded && !g.loading {
             g.head = key.clone();
@@ -1124,7 +1124,7 @@ pub fn click(app: &mut App, p: Position, double: bool) -> bool {
     if app.ui.scrollbars.iter().any(|s| s.track.contains(p)) {
         return false;
     }
-    if app.side == Side::Scm && app.ui.side_list.contains(p) {
+    if app.side == Side::SCM && app.ui.side_list.contains(p) {
         app.gitui.graph_focus = false;
         return false;
     }
@@ -1236,7 +1236,7 @@ pub fn drag(app: &mut App, p: Position) -> bool {
         return true;
     }
     if let Some((y, h)) = app.gitui.timeline_drag {
-        if app.side == Side::Explorer && app.side_visible && app.gitui.timeline.open {
+        if app.side == Side::EXPLORER && app.side_visible && app.gitui.timeline.open {
             app.gitui.timeline_height = Some((i32::from(h) + i32::from(y) - i32::from(p.y)).clamp(4, 500) as u16);
         }
         return true;
@@ -1565,7 +1565,7 @@ fn changes_list(app: &mut App, f: &mut Frame, list: Rect) {
     let mut lay = app.settings.spacing;
     lay.sidebar_padding = lay.sidebar_padding.saturating_sub(1) / 2;
     app.ui.side_list = list;
-    let s = Side::Scm.idx();
+    let s = Side::SCM.idx();
     let rows = app.scm_rows();
     let n = rows.len();
     let step = 1 + lay.list_gap;

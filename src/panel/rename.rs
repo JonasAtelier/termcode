@@ -132,8 +132,8 @@ impl App {
         self.reload_all();
         self.load_bases();
         if let Some(i) = self.tree.iter().position(|n| n.path == new) {
-            self.sel[Side::Explorer.idx()] = i;
-            if self.side == Side::Explorer {
+            self.sel[Side::EXPLORER.idx()] = i;
+            if self.side == Side::EXPLORER {
                 self.move_side(0); // into view
             }
         }
@@ -149,7 +149,7 @@ impl App {
         let shown = |p: &String| self.tree.iter().any(|n| &n.path == p);
         let mut v: Vec<String> = self.tree_marks.iter().filter(|p| shown(p)).cloned().collect();
         if v.is_empty() {
-            v.extend(self.tree.get(self.sel[Side::Explorer.idx()]).map(|n| n.path.clone()));
+            v.extend(self.tree.get(self.sel[Side::EXPLORER.idx()]).map(|n| n.path.clone()));
         }
         v.sort();
         v.dedup();
@@ -162,7 +162,7 @@ impl App {
     /// rows from the anchor to it. The cursor moves to it.
     pub(super) fn tree_mark(&mut self, i: usize, range: bool) {
         let Some(path) = self.tree.get(i).map(|n| n.path.clone()) else { return };
-        let s = Side::Explorer.idx();
+        let s = Side::EXPLORER.idx();
         if range {
             let anchor = self.tree_anchor.as_ref().and_then(|a| self.tree.iter().position(|n| &n.path == a)).unwrap_or(self.sel[s].min(i));
             self.tree_anchor = Some(self.tree[anchor].path.clone());
@@ -198,10 +198,10 @@ impl App {
     /// file row's folder, the root below the rows. None off the Explorer, inside one of them
     /// (a folder), and, for a move (not `copy`), where they all already are.
     pub(super) fn tree_target(&self, p: Position, rels: &[String], copy: bool) -> Option<String> {
-        if self.side != Side::Explorer || !self.side_visible || !self.ui.side_list.contains(p) {
+        if self.side != Side::EXPLORER || !self.side_visible || !self.ui.side_list.contains(p) {
             return None;
         }
-        let off = self.off[Side::Explorer.idx()];
+        let off = self.off[Side::EXPLORER.idx()];
         // A gap between rows belongs to the row above it.
         let i = self.ui.side_item(p.y, off).or_else(|| self.ui.side_item(p.y.saturating_sub(1), off));
         let into = match i.and_then(|i| self.tree.get(i)) {
@@ -287,8 +287,8 @@ impl App {
             }
         }
         if let Some(i) = self.tree.iter().position(|n| n.path == rel) {
-            self.sel[Side::Explorer.idx()] = i;
-            if self.side == Side::Explorer {
+            self.sel[Side::EXPLORER.idx()] = i;
+            if self.side == Side::EXPLORER {
                 self.move_side(0); // into view
             }
         }
@@ -310,7 +310,7 @@ impl App {
     /// folder), each as "name (1)", "name (2)" … where its name is taken; cut ones move there.
     pub(super) fn tree_paste(&mut self) {
         let Some((rels, cut)) = self.tree_clip.clone() else { return };
-        let into = match self.tree.get(self.sel[Side::Explorer.idx()]) {
+        let into = match self.tree.get(self.sel[Side::EXPLORER.idx()]) {
             Some(n) if n.dir => n.path.clone(),
             Some(n) => parent_of(&n.path).to_string(),
             None => String::new(),
@@ -528,10 +528,10 @@ impl App {
             }) {
                 self.close_tab(g, i, true);
             }
-            let at = self.sel[Side::Explorer.idx()];
+            let at = self.sel[Side::EXPLORER.idx()];
             self.tree_marks.clear();
             self.reload_all();
-            self.sel[Side::Explorer.idx()] = at.min(self.tree.len().saturating_sub(1));
+            self.sel[Side::EXPLORER.idx()] = at.min(self.tree.len().saturating_sub(1));
         }
         self.msg = match (err, gone.as_slice()) {
             (Some(e), _) => e,

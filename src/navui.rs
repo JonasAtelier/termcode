@@ -922,7 +922,7 @@ mod tests {
         draw(&mut app, &mut t);
         put(&mut app, CALL, "twice");
         press(&mut app, KeyCode::F(12), KeyModifiers::NONE);
-        app.show_side(Side::Search, true);
+        app.show_side(Side::SEARCH, true);
         finish(&mut app);
         assert!(app.nav.peek.is_none(), "no peek over the Search box");
         assert_eq!(file(&app), "net/user.c");
@@ -931,7 +931,7 @@ mod tests {
         press(&mut app, KeyCode::F(12), KeyModifiers::ALT);
         finish(&mut app);
         assert!(app.nav.peek.is_some());
-        app.show_side(Side::Search, true);
+        app.show_side(Side::SEARCH, true);
         press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         assert_eq!(app.query, "x");
         // A peek too small to draw closes instead of taking keys unseen.

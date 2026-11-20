@@ -123,7 +123,7 @@ impl App {
             .or_else(|| self.ui.outline_sash.contains(p).then_some(usize::MAX - 2)),
             outline: self.ui.outline.contains(p).then_some(p.y),
             gh: self.gh.hits.area.contains(p).then_some((p.x, p.y)),
-            activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.settings_btn.contains(p).then_some(SIDES.len())),
+            activity: self.ui.activity.iter().position(|(r, _)| r.contains(p)).or_else(|| self.ui.settings_btn.contains(p).then_some(usize::MAX)),
             kit_btn: self.ui.btns.iter().rev().find(|r| r.contains(p)).map(|r| (r.x, r.y)),
             bar_btn: self
                 .ui
@@ -230,7 +230,7 @@ impl App {
         if let Some(&(_, g, side)) = self.ui.welcome.iter().find(|(r, _, _)| r.contains(p)) {
             self.ag = g;
             if let Some(side) = side {
-                self.show_side(side, side == Side::Search);
+                self.show_side(side, side == Side::SEARCH);
             } else {
                 self.open_quick();
             }
@@ -242,7 +242,7 @@ impl App {
                 self.focus = Focus::Editor;
                 self.save_layout();
             } else {
-                self.show_side(s, s == Side::Search);
+                self.show_side(s, s == Side::SEARCH);
             }
             return;
         }
@@ -332,7 +332,7 @@ impl App {
             let Some(i) = self.ui.side_item(p.y, self.off[s]) else { return };
             if i < self.side_count() {
                 self.focus = Focus::Side;
-                if self.side == Side::Explorer {
+                if self.side == Side::EXPLORER {
                     let Some(n) = self.tree.get(i) else { return };
                     let keep = shift || self.mouse_mods.contains(KeyModifiers::CONTROL);
                     self.drag = Drag::File { rel: n.path.clone(), from: p, active: false, dir: n.dir, keep };
@@ -349,7 +349,7 @@ impl App {
                 self.sel[s] = i;
                 // Double-clicking a name edits it in place (the first click opened the file
                 // or folded the folder).
-                if double && self.side == Side::Explorer && i < self.tree.len() {
+                if double && self.side == Side::EXPLORER && i < self.tree.len() {
                     self.drag = Drag::None;
                     self.last_click = None;
                     return self.start_rename(i);
@@ -706,7 +706,7 @@ impl App {
                     self.drop = if over_tree || dir || rels.len() > 1 { None } else { self.drop_target(p, false) };
                     // Resting on a closed folder opens it (VS Code's spring-loaded folders).
                     let closed = over_tree
-                        .then(|| self.ui.side_item(p.y, self.off[Side::Explorer.idx()]))
+                        .then(|| self.ui.side_item(p.y, self.off[Side::EXPLORER.idx()]))
                         .flatten()
                         .and_then(|i| self.tree.get(i))
                         .filter(|n| n.dir && !n.open)
@@ -826,7 +826,7 @@ impl App {
                     }
                 }
             }
-            Drag::File { active: false, keep: false, .. } => self.tree_unmark(self.sel[Side::Explorer.idx()]),
+            Drag::File { active: false, keep: false, .. } => self.tree_unmark(self.sel[Side::EXPLORER.idx()]),
             Drag::File { rel, active: true, .. } => {
                 self.tree_spring = None;
                 if let Some(into) = self.tree_drop.take() {

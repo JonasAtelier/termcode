@@ -235,7 +235,7 @@ fn welcome_actions_open_existing_views_and_stay_inside_editor() {
     let s = screen(&mut app, &mut t);
     assert!(s.contains("herdr"));
     assert_eq!(app.ui.welcome.len(), 3);
-    for (i, expected) in [None, Some(Side::Search), Some(Side::Scm)].into_iter().enumerate() {
+    for (i, expected) in [None, Some(Side::SEARCH), Some(Side::SCM)].into_iter().enumerate() {
         screen(&mut app, &mut t);
         let (r, _, _) = app.ui.welcome[i];
         assert!(app.ui.groups[0].text.contains(Position::new(r.x, r.y)));
@@ -388,7 +388,7 @@ fn edit_save_find_split_and_scm_flow() {
     // Source Control: the saved edit is under Changes; diff, stage, commit.
     app.refresh();
     wait(&mut app);
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     let s = screen(&mut app, &mut t);
     assert!(s.contains("Changes") && s.contains("main.rs") && s.contains("Add commit"), "{s}");
     let i = app.scm_files.iter().position(|f| f.path == "src/main.rs").unwrap();
@@ -551,7 +551,7 @@ fn stacked_cards_share_one_border_and_the_graph_line_is_the_sash() {
         screen(&mut app, &mut t);
         assert_eq!(t.backend().buffer()[(l + 1, y)].fg, crate::blocks::border(true), "{compact}");
 
-        app.side = Side::Scm;
+        app.side = Side::SCM;
         app.focus = Focus::Editor;
         screen(&mut app, &mut t);
         let (_, gy) = cell_of(&t, "GRAPH", 0);
@@ -632,7 +632,7 @@ fn activity_items_are_tall_with_the_active_one_marked_and_hover_lit() {
         // The active item (Explorer): the indicator on the icon's row over the active
         // background, which takes half of each blank row around the icon.
         let (ex, side) = items[0];
-        assert_eq!(side, Side::Explorer);
+        assert_eq!(side, Side::EXPLORER);
         let lifted = crate::blocks::active_bg(&serde_json::Map::new());
         let ey = ex.y + off;
         assert_eq!((b[(ex.x, ey)].symbol(), b[(ex.x, ey)].fg), ("▎", crate::theme::P.activity_border));
@@ -819,14 +819,14 @@ fn c_colours_match_vscode_cpptools_and_no_cell_uses_terminal_colours() {
     assert_eq!(t.backend().buffer()[(nx, y)].fg, rgb(0x2B91AF));
     assert_all_rgb(&t, "explorer + C editor");
     // Every other view and popup, too.
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     screen(&mut app, &mut t);
     assert_eq!(fg(&t, "Changes", 0), rgb(0xCCCCCC));
     assert_all_rgb(&t, "source control");
     app.query = "port".into();
     app.start_search();
     wait(&mut app);
-    app.show_side(Side::Search, false);
+    app.show_side(Side::SEARCH, false);
     screen(&mut app, &mut t);
     assert_all_rgb(&t, "search");
     app.open_find(true);
@@ -989,7 +989,7 @@ fn sidebar_titles_share_the_top_frame_without_header_actions() {
                 }
                 assert_eq!(b[(app.ui.sidebar.right() - 1, top)].symbol(), "╮");
             }
-            app.show_side(Side::Search, true);
+            app.show_side(Side::SEARCH, true);
             screen(&mut app, &mut t);
             let input = app.ui.side_input;
             let title = cell_of(&t, "SEARCH", 0).0;
@@ -1009,7 +1009,7 @@ fn sidebar_titles_share_the_top_frame_without_header_actions() {
                     assert_ne!(app.s_opts.0, old, "toggle hit follows rendered icon");
                 }
             }
-            app.show_side(Side::Scm, false);
+            app.show_side(Side::SCM, false);
             screen(&mut app, &mut t);
             assert_eq!(cell_of(&t, "SOURCE CONTROL", 0).0, explorer_title, "SCM title matches Explorer");
             assert_eq!(cell_of(&t, "SOURCE CONTROL", 0).1, top);
@@ -1040,7 +1040,7 @@ fn narrow_search_controls_and_text_stay_inside_the_input() {
     let root = repo("narrow-alignment");
     let mut app = App::new(root.clone(), None);
     app.query = "a very long search query".into();
-    app.show_side(Side::Search, true);
+    app.show_side(Side::SEARCH, true);
     for width in [12, 18, 28] {
         for padding in [0, 3, 8] {
             app.side_w = Some(width);
@@ -1352,7 +1352,7 @@ fn tiny_terminals_never_panic() {
                 let mut draw = |app: &mut App| {
                     t.draw(|f| crate::ui::draw(app, f)).unwrap();
                 };
-                for side in [Side::Explorer, Side::Scm, Side::Search] {
+                for side in [Side::EXPLORER, Side::SCM, Side::SEARCH] {
                     app.side = side;
                     draw(&mut app);
                 }
@@ -1533,7 +1533,7 @@ fn a_press_drops_drags_whose_release_never_came() {
     mouse(&mut app, MouseEventKind::Up(MouseButton::Left), a.right() - 2, a.y + 6);
     assert_eq!(app.groups.len(), 1, "no split from the stale tab drag");
     // The same for an Explorer file drag.
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     screen(&mut app, &mut t);
     let row = app.ui.side_list.y + (app.tree.iter().position(|n| n.path == "README.md").unwrap() * (1 + app.ui.side_gap as usize)) as u16;
     let sx = app.ui.side_list.x + 4;
@@ -1701,7 +1701,7 @@ fn a_repository_whose_settings_run_programs_gets_no_git_until_trusted() {
     // Every view and a refresh: still nothing runs the hook.
     let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
     app.refresh();
-    for side in SIDES {
+    for side in [Side::EXPLORER, Side::SEARCH, Side::SCM] {
         app.side = side;
         screen(&mut app, &mut t);
         wait_idle(&mut app);
@@ -1730,7 +1730,7 @@ fn a_256_or_16_colour_terminal_gets_no_24_bit_colour() {
     for (d, ok) in [(Depth::C256, &(|c: Color| matches!(c, Color::Indexed(16..)) || c == Color::Reset) as &dyn Fn(Color) -> bool),
                     (Depth::C16, &|c: Color| !matches!(c, Color::Rgb(..) | Color::Indexed(_)))] {
         test_depth(Some(d));
-        for side in SIDES {
+        for side in [Side::EXPLORER, Side::SEARCH, Side::SCM] {
             app.side = side;
             screen(&mut app, &mut t);
             let bad: Vec<Color> = t.backend().buffer().content.iter().flat_map(|c| [c.fg, c.bg]).filter(|&c| !ok(c)).take(3).collect();
@@ -1756,7 +1756,7 @@ fn without_a_nerd_font_no_private_use_glyph_is_drawn() {
         test_icons(Some(set));
         let mut seen = Vec::new();
         // Every view: file icons, tabs, the SCM badges and pills, the graph, the status bar.
-        for side in SIDES {
+        for side in [Side::EXPLORER, Side::SEARCH, Side::SCM] {
             app.side = side;
             screen(&mut app, &mut t);
             wait_idle(&mut app);
@@ -1884,7 +1884,7 @@ fn the_pointer_lights_inactive_tabs_status_items_and_buttons() {
     app.hover = Some(Position::new(branch.x, branch.y));
     screen(&mut app, &mut t);
     assert_eq!(bg(&t, branch), P.status_hover);
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     app.hover = None;
     screen(&mut app, &mut t);
     let commit = app.ui.commit_btn;
@@ -2802,7 +2802,7 @@ fn peek_stage_stages_one_hunk_and_asks_to_save_first() {
 fn a_refresh_runs_no_git_on_the_ui_thread() {
     let root = repo("uigit");
     let mut app = App::new(root.clone(), None);
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     wait(&mut app);
     let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
     screen(&mut app, &mut t);
@@ -2831,7 +2831,7 @@ fn a_folder_without_git_has_no_scm_and_runs_no_git() {
     app.open_file(0, "sub/a.txt", false);
     app.refresh();
     wait(&mut app);
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     assert_eq!(app.focus, Focus::Side, "no commit box to type into");
     let s = screen(&mut app, &mut t);
     assert!(s.contains("The folder currently open") && s.contains("git repository."), "{s}");
@@ -3097,7 +3097,7 @@ fn sticky_scroll_caps_densities_gaps_and_off() {
     app.settings.sticky = true;
     for (w, h) in [(1, 1), (10, 3), (20, 5), (40, 8)] {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-        for side in SIDES {
+        for side in [Side::EXPLORER, Side::SEARCH, Side::SCM] {
             app.side = side;
             app.off[0] = b10;
             screen(&mut app, &mut t);
@@ -3114,7 +3114,7 @@ fn sticky_scroll_caps_densities_gaps_and_off() {
 fn changes_section_headers_stick_and_take_the_click() {
     let root = repo("stickychg");
     let mut app = App::new(root.clone(), None);
-    app.side = Side::Scm;
+    app.side = Side::SCM;
     let file = |section, path: String, letter| ScmFile { section, path, orig: None, letter };
     app.scm_files = (0..20)
         .map(|i| file(Section::Changes, format!("m{i:02}.c"), '!'))
@@ -3158,7 +3158,7 @@ fn arrows_in_search_results_show_each_match_as_they_go() {
     fs::write(root.join("a.txt"), "x\narrow_token here\n").unwrap();
     fs::write(root.join("b.txt"), "arrow_token there\n").unwrap();
     let mut app = App::new(root.clone(), None);
-    app.show_side(Side::Search, false);
+    app.show_side(Side::SEARCH, false);
     app.query = "arrow_token".into();
     app.start_search();
     wait(&mut app);
@@ -3185,7 +3185,7 @@ fn search_file_groups_fold_without_opening_files_or_losing_results() {
     fs::write(root.join("aaa.txt"), "fold_token\n".repeat(30)).unwrap();
     fs::write(root.join("zzz.txt"), "fold_token\n".repeat(2)).unwrap();
     let mut app = App::new(root.clone(), None);
-    app.show_side(Side::Search, false);
+    app.show_side(Side::SEARCH, false);
     app.query = "fold_token".into();
     app.start_search();
     wait(&mut app);
@@ -3253,13 +3253,13 @@ fn search_groups_and_scm_sections_stick_too() {
     fs::write(root.join("many.txt"), "needle\n".repeat(30)).unwrap();
     let mut app = App::new(root.clone(), None);
     let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     app.off[2] = 5;
     screen(&mut app, &mut t);
     let head = app.scm_rows().iter().position(|r| matches!(r, SRow::Head(Section::Changes, _))).unwrap();
     assert_eq!(app.ui.sticky, [head]);
     assert!(side_line(&t, &app, app.ui.side_list.y).contains("Changes"));
-    app.show_side(Side::Search, false);
+    app.show_side(Side::SEARCH, false);
     app.query = "needle".into();
     app.start_search();
     wait(&mut app);
@@ -3344,7 +3344,7 @@ fn search_groups_and_changes_sections_hold_the_first_visible_row() {
     let mut app = App::new(root.clone(), None);
     app.hits = (0..40).map(|i| Hit { path: format!("f{}.c", i / [1, 7, 2, 13][i % 4].max(1)), line: i + 1, col: 1, text: "x".into() }).collect();
     app.hits.sort_by(|a, b| a.path.cmp(&b.path));
-    app.side = Side::Search;
+    app.side = Side::SEARCH;
     let rows = app.search_rows();
     let depth = |j: usize| rows.get(j).map(|r| matches!(r, HRow::Hit(_)) as usize);
     for cap in [1, 2] {
@@ -3358,7 +3358,7 @@ fn search_groups_and_changes_sections_hold_the_first_visible_row() {
         .chain((0..1).map(|i| file(Section::Staged, format!("s{i}"), 'M')))
         .chain((0..4).map(|i| file(Section::Changes, format!("c{i}"), 'M')))
         .collect();
-    app.side = Side::Scm;
+    app.side = Side::SCM;
     let rows = app.scm_rows();
     let depth = |j: usize| rows.get(j).map(|r| matches!(r, SRow::File(_)) as usize);
     for off in 0..rows.len() {
@@ -3406,7 +3406,7 @@ fn tiny_terminals_scrolled_into_a_sticky_state() {
     for h in 1..=12 {
         for w in [1, 6, 12, 24, 40] {
             let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-            app.side = Side::Explorer;
+            app.side = Side::EXPLORER;
             app.off[0] = b10;
             screen(&mut app, &mut t);
             let l = app.ui.side_list;
@@ -4105,7 +4105,7 @@ fn frame_time_with_big_lists() {
     let label = format!("Explorer, {} rows, off {}", app.tree.len(), app.off[0]);
     frame(&mut app, &label);
     app.hits = (0..5000).map(|i| Hit { path: "big.c".into(), line: i + 1, col: 1, text: format!("needle {i}") }).collect();
-    (app.side, app.query, app.off[1]) = (Side::Search, "needle".into(), 4990);
+    (app.side, app.query, app.off[1]) = (Side::SEARCH, "needle".into(), 4990);
     frame(&mut app, "Search, 1 file x 5000 hits, off 4990");
     app.hits = (0..5000).map(|i| Hit { path: format!("dir/f{:03}.c", i / 10), line: i + 1, col: 1, text: format!("needle {i}") }).collect();
     app.off[1] = 5400;
@@ -4751,7 +4751,7 @@ fn buttons_badges_and_the_search_field_are_pills() {
     let mut app = App::new(root.clone(), None);
     app.refresh();
     wait(&mut app);
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
     screen(&mut app, &mut t);
     let ends = |t: &Terminal<TestBackend>, r: Rect| {
@@ -4777,7 +4777,7 @@ fn buttons_badges_and_the_search_field_are_pills() {
     pill_on_row(&t, scm.x, scm.right(), by, crate::blocks::active_bg(&serde_json::Map::new()));
     assert_ne!(t.backend().buffer()[(scm.x, by)].symbol(), "\u{e0b6}", "the indicator column stays");
     // The Search field: caps at its ends, a click on one focuses it.
-    app.show_side(Side::Search, false);
+    app.show_side(Side::SEARCH, false);
     app.focus = Focus::Editor;
     screen(&mut app, &mut t);
     let inp = app.ui.side_input;
@@ -5191,7 +5191,7 @@ fn source_control_groups_fold_from_their_header() {
     fs::write(root.join("new.txt"), "n\n").unwrap();
     let mut app = App::new(root.clone(), None);
     wait(&mut app);
-    app.show_side(Side::Scm, false);
+    app.show_side(Side::SCM, false);
     let mut t = Terminal::new(TestBackend::new(110, 24)).unwrap();
     screen(&mut app, &mut t);
     let files = |app: &App| app.scm_rows().iter().filter(|r| matches!(r, SRow::File(_))).count();
@@ -5687,7 +5687,7 @@ fn code_and_each_view_keep_their_own_editor_areas() {
     assert!(!s.contains("alpha") && s.contains("ttyX9"), "{s}");
     assert!(app.ui.groups[0].area.is_empty() && app.ui.term.is_empty(), "the code group and the terminal hidden");
     // Back to the Explorer: the code tab, its group active again, the terminal back.
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     let s = screen(&mut app, &mut t);
     assert!(s.contains("alpha") && !s.contains("ttyX9"));
     assert_eq!((app.ag, app.groups[app.ag].space), (0, Space::Code));
@@ -6143,7 +6143,7 @@ fn the_search_query_selects_whole_by_ctrl_a_or_double_click_to_copy_cut_or_repla
     let root = repo("search-sel");
     let mut app = App::new(root.clone(), None);
     let mut t = Terminal::new(TestBackend::new(110, 26)).unwrap();
-    app.show_side(Side::Search, true);
+    app.show_side(Side::SEARCH, true);
     typ(&mut app, "needle");
     // Ctrl+A, Ctrl+C: the whole query copied, shown selected, still there.
     key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
@@ -6412,7 +6412,7 @@ fn a_long_query_scrolls_and_leaves_the_caret_a_blank_cell_before_the_toggles() {
     let mut t = Terminal::new(TestBackend::new(110, 20)).unwrap();
     let long = "a_very_long_search_query_that_runs_past_the_box_end_XYZ";
     // Search: the end of the query, then the caret on a blank cell, then the toggles.
-    app.show_side(Side::Search, true);
+    app.show_side(Side::SEARCH, true);
     typ(&mut app, long);
     screen(&mut app, &mut t);
     let caret = t.get_cursor_position().unwrap();
@@ -6663,7 +6663,7 @@ fn the_github_item_sits_above_settings_and_shows_the_account_in_any_repository()
             let b = t.backend().buffer();
             (icon.saturating_sub(2)..icon + 3).map(|y| (b[(r.x + 2, y)].symbol().to_string(), b[(r.x + 2, y)].bg)).collect::<Vec<_>>()
         };
-        let (explorer, github) = (shape(&mut app, &mut t, Side::Explorer), shape(&mut app, &mut t, Side::GITHUB));
+        let (explorer, github) = (shape(&mut app, &mut t, Side::EXPLORER), shape(&mut app, &mut t, Side::GITHUB));
         let lit = |v: &[(String, ratatui::style::Color)]| v.iter().map(|(s, bg)| (s.as_str() == "▄" || s.as_str() == "▀" || *bg != crate::theme::P.activity_bg) as u8).collect::<Vec<_>>();
         // Comfortable: half a row above, the icon's, half below; compact: the icon's and below.
         let rows = if compact { 2..4 } else { 1..4 };
@@ -6822,7 +6822,7 @@ fn dragging_an_explorer_item_onto_a_folder_moves_it_once_confirmed() {
     let mut app = App::new(root.clone(), None);
     app.open_file(0, "notes.md", false);
     wait(&mut app);
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
     screen(&mut app, &mut t);
     let x = app.ui.side_list.x + 4;
@@ -6869,7 +6869,7 @@ fn explorer_copy_cut_and_paste_number_the_copies() {
     fs::write(root.join("a.tar.gz"), "z").unwrap();
     fs::write(root.join(".env"), "e").unwrap();
     let mut app = App::new(root.clone(), None);
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     let ctrl = |app: &mut App, c: char| key(app, KeyCode::Char(c), KeyModifiers::CONTROL);
     let select = |app: &mut App, path: &str| app.sel[0] = app.tree.iter().position(|n| n.path == path).unwrap();
     // A file copied next to itself: (1), then (2), the extension kept last.
@@ -6918,7 +6918,7 @@ fn delete_moves_to_the_trash_once_asked_and_shift_delete_removes_for_good() {
     wait(&mut app);
     app.focus = Focus::Editor;
     typ(&mut app, "edited "); // kept.txt has unsaved edits
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     let select = |app: &mut App, path: &str| app.sel[0] = app.tree.iter().position(|n| n.path == path).unwrap();
     // Delete: asked; Move to Trash: in the Trash with what restores it.
     select(&mut app, "a b.txt");
@@ -6974,7 +6974,7 @@ fn ctrl_z_takes_back_explorer_moves_copies_and_deletes_and_ctrl_y_redoes_them() 
     app.trash = trash.clone();
     app.open_file(0, "notes.md", false);
     wait(&mut app);
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     app.focus = Focus::Side;
     let ctrl = |app: &mut App, c: char, shift: bool| {
         let m = if shift { KeyModifiers::CONTROL | KeyModifiers::SHIFT } else { KeyModifiers::CONTROL };
@@ -7032,7 +7032,7 @@ fn delete_on_another_disk_goes_to_that_disks_trash_and_ctrl_z_brings_it_back() {
     assert!(fs::read_to_string(disk_trash.join("info/a.txt.trashinfo")).unwrap().contains("/a.txt"));
     assert_eq!(fs::metadata(&disk_trash).unwrap().mode() & 0o777, 0o700);
     app.focus = Focus::Side;
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert!(root.join("a.txt").exists() && !disk_trash.join("files/a.txt").exists(), "{}", app.msg);
     let _ = fs::remove_dir_all(&disk_trash);
@@ -7062,7 +7062,7 @@ fn explorer_multi_select_moves_copies_and_deletes_together_and_ctrl_z_takes_all_
     }
     let mut app = App::new(root.clone(), None);
     app.trash = trash.clone();
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
     screen(&mut app, &mut t);
     let x = app.ui.side_list.x + 4;
@@ -7277,7 +7277,7 @@ fn esc_stops_a_paste_and_takes_out_what_it_half_copied() {
         fs::write(big.join(format!("f{i}")), "data").unwrap();
     }
     let mut app = App::new(root.clone(), None);
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     app.focus = Focus::Side;
     app.sel[0] = app.tree.iter().position(|n| n.path == "src").unwrap();
     app.tree_clip = Some((vec!["big".into()], false));
@@ -7449,7 +7449,7 @@ fn the_explorer_shows_the_active_editors_file() {
     fs::write(root.join("top.c"), "int top;\n").unwrap();
     let mut app = App::new(root.clone(), None);
     wait(&mut app);
-    app.show_side(Side::Explorer, false);
+    app.show_side(Side::EXPLORER, false);
     app.auto_reveal();
     let at = |app: &App, p: &str| app.tree.iter().position(|n| n.path == p);
     // A file deep in folders: they open, it is selected.

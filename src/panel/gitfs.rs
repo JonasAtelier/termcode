@@ -156,7 +156,7 @@ impl App {
             i += 1;
         }
         self.files.clear();
-        if self.side == Side::Scm {
+        if self.side == Side::SCM {
             crate::scm::load_graph(self, true);
         }
     }

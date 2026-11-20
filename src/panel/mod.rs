@@ -441,31 +441,29 @@ impl Drop for Tip {
 /// backups are its own.
 const PANEL_COMM: &[&str] = &["termcode", "herdr-code"];
 
+/// The view the side bar shows: a driver's (ext/), by its number. Every view is one, the
+/// code views (Explorer, Search, Source Control) too.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
-    Explorer,
-    Search,
-    Scm,
-    /// A driver's view (ext.rs), by its number: Serial, the Programmer, GitHub, the
-    /// Extensions view (in-tree), then the installed extensions.
     View(u16),
 }
 impl Side {
+    pub const EXPLORER: Side = Side::View(crate::ext::EXPLORER);
+    pub const SEARCH: Side = Side::View(crate::ext::SEARCH);
+    pub const SCM: Side = Side::View(crate::ext::SCM);
     pub const PROGRAMMER: Side = Side::View(crate::ext::PROGRAMMER);
     pub const GITHUB: Side = Side::View(crate::ext::GITHUB);
 
-    /// Its place in the per-view arrays (`sel`, `off`, which only the first three use).
+    /// Its place in the per-view arrays (`sel`, `off`: the code views' lists).
     pub fn idx(self) -> usize {
         match self {
-            Side::Explorer => 0,
-            Side::Search => 1,
-            Side::Scm => 2,
+            Side::EXPLORER => 0,
+            Side::SEARCH => 1,
+            Side::SCM => 2,
             Side::View(_) => 3,
         }
     }
 }
-/// Activity bar order (VS Code's).
-pub const SIDES: [Side; 3] = [Side::Explorer, Side::Search, Side::Scm];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
@@ -588,8 +586,8 @@ impl Space {
 
     pub fn of_side(s: Side) -> Space {
         match s {
+            Side::View(n) if crate::ext::ops(n).code => Space::Code,
             Side::View(n) => Space::View(n),
-            Side::Explorer | Side::Search | Side::Scm => Space::Code,
         }
     }
 
@@ -908,9 +906,9 @@ pub const COMMANDS: &[(&str, Cmd, &str)] = &[
     ("Go Forward", Cmd::Nav(crate::navui::Act::Forward), "Alt+→"),
     ("Markdown: Toggle Preview", Cmd::MdPreview(false), "Ctrl+Shift+V"),
     ("Markdown: Open Preview to the Side", Cmd::MdPreview(true), "Ctrl+K V"),
-    ("View: Show Explorer", Cmd::ShowSide(Side::Explorer), "Alt+1, Ctrl+E"),
-    ("View: Show Search", Cmd::ShowSide(Side::Search), "Alt+4, F4"),
-    ("View: Show Source Control", Cmd::ShowSide(Side::Scm), "Alt+2, F2, Ctrl+G"),
+    ("View: Show Explorer", Cmd::ShowSide(Side::EXPLORER), "Alt+1, Ctrl+E"),
+    ("View: Show Search", Cmd::ShowSide(Side::SEARCH), "Alt+4, F4"),
+    ("View: Show Source Control", Cmd::ShowSide(Side::SCM), "Alt+2, F2, Ctrl+G"),
     ("View: Show GitHub", Cmd::ShowSide(Side::GITHUB), ""),
     ("View: Show Programmer", Cmd::ShowSide(Side::PROGRAMMER), ""),
     ("View: Split Editor Right", Cmd::Split(false), "Ctrl+T \\"),
@@ -2117,7 +2115,7 @@ impl App {
             token: None,
             repo,
             branch: String::new(),
-            side: Side::Explorer,
+            side: Side::EXPLORER,
             side_visible: saved["sidebar_visible"].as_bool().unwrap_or(true),
             // Only a dragged width is kept (older files saved the default too).
             side_w: saved["sidebar_width"]
@@ -2150,7 +2148,7 @@ impl App {
             api: None,
             api_gate: crate::api::Gate::from_env(),
             space_ag: std::collections::HashMap::new(),
-            code_side: Side::Explorer,
+            code_side: Side::EXPLORER,
             exts: crate::ext::Exts::load(),
             tab: false,
             reroot: None,
@@ -2418,7 +2416,7 @@ impl App {
     pub(crate) fn run_command(&mut self, c: Cmd) {
         let on_off = |b: bool| if b { "on" } else { "off" };
         match c {
-            Cmd::ShowSide(side) => self.show_side(side, side == Side::Search),
+            Cmd::ShowSide(side) => self.show_side(side, side == Side::SEARCH),
             Cmd::Prog(op) => crate::programmer::command(self, op),
             Cmd::Quit => self.request_quit(),
             Cmd::Find(replace) => self.open_find(replace),

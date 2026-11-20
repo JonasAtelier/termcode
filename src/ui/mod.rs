@@ -12,7 +12,7 @@ use crate::icons::{file_icon, folder_icon};
 use crate::settings::Spacing;
 use crate::panel::{
     base, App, DiffDoc, DiffId, Doc, Drag, Find, FindBtn, Focus, GroupHit, HRow, Hits, MiniHit, PeekBtn, ScmAct, ScrollHit,
-    ScrollTarget, Side, SRow, Zone, COMMANDS, SIDES,
+    ScrollTarget, Side, SRow, Zone, COMMANDS,
 };
 use crate::blocks::BlockStyle;
 use crate::theme::{git_color, icons, Rgba, P};
@@ -528,7 +528,8 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
     }
     // Upward from Settings, where the code views leave room: the Extensions view (+), the
     // installed extensions, GitHub, the Programmer; each lit down to the icon below it.
-    let fits = |q: Rect| q.y >= r.y + ih * SIDES.len() as u16 && r.width > 0;
+    let top_items = crate::ext::top_items(app);
+    let fits = |q: Rect| q.y >= r.y + ih * top_items.len() as u16 && r.width > 0;
     let mut views_end = bottom.y;
     let mut below = siy;
     let mut low = Vec::new();
@@ -540,30 +541,29 @@ fn activity_bar(app: &mut App, f: &mut Frame, r: Rect) {
         let active = app.side == Side::View(n) && app.side_visible && !settings_open;
         let hot = app.hover.is_some_and(|p| q.contains(p));
         item(f, q.y + off, active, hot, &icon, below);
+        let count = crate::ext::badge(app, n);
+        if count > 0 {
+            activity_badge(f, r, q, (ix, q.y + off), count, if active { active_bg } else { P.activity_bg });
+        }
         below = q.y + off;
         views_end = q.y;
         low.push((q, Side::View(n)));
     }
-    for (i, s) in SIDES.iter().enumerate() {
+    for (i, (n, icon)) in top_items.iter().enumerate() {
         let y = r.y + i as u16 * ih;
         if y + ih > views_end || r.width == 0 {
             break;
         }
         let item_r = Rect::new(r.x, y, r.width, ih);
-        let active = *s == app.side && app.side_visible && !settings_open;
+        let active = app.side == Side::View(*n) && app.side_visible && !settings_open;
         let hot = app.hover.is_some_and(|p| item_r.contains(p));
-        let icon = match s {
-            Side::Explorer => ic.files,
-            Side::Search => ic.search,
-            Side::Scm => ic.scm,
-            Side::View(_) => continue,
-        };
         let iy = y + off;
         item(f, iy, active, hot, icon, bottom.y);
-        if *s == Side::Scm && !app.scm_files.is_empty() {
-            activity_badge(f, r, item_r, (ix, iy), app.scm_files.len(), if active { active_bg } else { P.activity_bg });
+        let count = crate::ext::badge(app, *n);
+        if count > 0 {
+            activity_badge(f, r, item_r, (ix, iy), count, if active { active_bg } else { P.activity_bg });
         }
-        app.ui.activity.push((item_r, *s));
+        app.ui.activity.push((item_r, Side::View(*n)));
     }
     app.ui.activity.extend(low);
 }
@@ -623,29 +623,29 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
     let st = app.settings.blocks;
     let bg = if st == BlockStyle::Cards { crate::blocks::gutter() } else { P.sidebar_bg };
     fill(f, col, bg);
-    let title = match app.side {
-        Side::Explorer => "EXPLORER",
-        Side::Search => "SEARCH",
-        Side::Scm => "SOURCE CONTROL",
-        Side::View(_) => "",
-    };
     let title_row = Rect::new(col.x, col.y, col.width, 1);
     let top = col.y + if st == BlockStyle::Cards { 0 } else { 1 + lay.s.section_gap };
-    // A driver's view (ext.rs): its side bar, its title.
-    if let Side::View(n) = app.side {
-        crate::ext::side(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)), n);
-        let t = crate::ext::title(app, n);
-        side_title(app, f, title_row, &t, lay, bg);
-        return;
-    }
-    if app.side == Side::Scm {
-        crate::scm::draw_scm(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)));
-        side_title(app, f, title_row, title, lay, bg);
-        return;
-    }
+    // The view's driver fills the side bar under its title (ext/): every view alike.
+    let Side::View(n) = app.side;
+    crate::ext::side(app, f, Rect::new(col.x, top, col.width, col.bottom().saturating_sub(top)), n);
+    let t = crate::ext::title(app, n);
+    side_title(app, f, title_row, &t, lay, bg);
+}
+
+/// Explorer's and Search's side bar (their drivers' `side`) in `r`, under the title: the
+/// list (the Explorer's files, Search's input and results), the TIMELINE or REFERENCES
+/// pane under it.
+pub(crate) fn list_side(app: &mut App, f: &mut Frame, r: Rect) {
+    let mut lay = lay(app);
+    lay.pad = lay.pad.saturating_sub(1) / 2;
+    let st = app.settings.blocks;
+    // The whole column, the title row too (the panes below are shared out of it).
+    let lead = if st == BlockStyle::Cards { 0 } else { 1 + lay.s.section_gap };
+    let col = Rect::new(r.x, r.y.saturating_sub(lead), r.width, r.height + lead);
+    let top = r.y;
     // The Explorer's TIMELINE pane, Search's REFERENCES, takes the bottom of the sidebar.
     let (main, timeline) = match app.side {
-        Side::Explorer => crate::scm::split_timeline(app, col),
+        Side::EXPLORER => crate::scm::split_timeline(app, col),
         _ => crate::scm::split_refs(app, col),
     };
     let main = Rect::new(col.x, top, col.width, main.bottom().saturating_sub(top));
@@ -659,14 +659,14 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
     let m = lay.pad.min(r.width / 2);
     let field = |y: u16, h: u16| Rect::new(r.x + m, y, r.width.saturating_sub(2 * m), h);
     match app.side {
-        Side::Explorer => {
+        Side::EXPLORER => {
             let hr = Rect::new(r.x, y, r.width, 1);
             fill(f, hr, P.section_bg);
             let hdr = format!(" {}{}{}", ic.chev_down, sp(crate::blocks::icon_gap(lay.s.icon_gap) / 2), app.repo.to_uppercase());
             row(f, inset(hr, lay.pad), P.section_bg, vec![Span::styled(hdr, Style::new().fg(P.section_fg).bold())]);
             y += 1;
         }
-        Side::Search => {
+        Side::SEARCH => {
             let inp = field(y, 1);
             let focused = app.focus == crate::panel::Focus::SearchInput;
             let controls = if inp.width >= 8 { 6 } else { 0 };
@@ -704,8 +704,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
                 y += 1;
             }
         }
-        Side::Scm => {}
-        Side::View(_) => {}
+        _ => {}
     }
     let list = Rect::new(r.x, y, r.width, r.bottom().saturating_sub(y));
     app.ui.side_list = list;
@@ -719,11 +718,11 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
     app.sel[s] = app.sel[s].min(n.saturating_sub(1));
     app.off[s] = app.off[s].min(n.saturating_sub(1));
     let hover_row = app.hover.filter(|p| list.contains(*p)).and_then(|p| app.ui.side_item(p.y, app.off[s]));
-    let search_rows = if app.side == Side::Search { app.search_rows() } else { Vec::new() };
+    let search_rows = if app.side == Side::SEARCH { app.search_rows() } else { Vec::new() };
     for k in 0..h {
         let i = app.off[s] + k;
         if i >= n {
-            if i == 0 && app.side == Side::Search && app.query.is_empty() {
+            if i == 0 && app.side == Side::SEARCH && app.query.is_empty() {
                 let hint = Span::styled("  Type and press Enter (F4/Alt+4)", Style::new().fg(P.dim));
                 row(f, inset(Rect::new(list.x, list.y, list.width, 1), lay.pad), P.sidebar_bg, vec![hint]);
             }
@@ -731,10 +730,10 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         }
         let rr = Rect::new(list.x, list.y + k as u16 * step, list.width, 1);
         // A drag's target folder lights up with what shows inside it (the root: all).
-        let dropping = app.side == Side::Explorer
+        let dropping = app.side == Side::EXPLORER
             && app.tree_drop.as_deref().is_some_and(|t| t.is_empty() || app.tree.get(i).is_some_and(|n| n.path == t || n.path.starts_with(&format!("{t}/"))));
         // Ctrl+click / Shift+click selections light up as the cursor's row does.
-        let marked = app.side == Side::Explorer && app.tree.get(i).is_some_and(|n| app.tree_marks.contains(&n.path));
+        let marked = app.side == Side::EXPLORER && app.tree.get(i).is_some_and(|n| app.tree_marks.contains(&n.path));
         let bg = if dropping {
             P.drop_bg
         } else if (i == app.sel[s] || marked) && app.focus == Focus::Side {
@@ -749,7 +748,7 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
         fill(f, rr, bg);
         let ir = inset(rr, lay.pad);
         match app.side {
-            Side::Explorer => {
+            Side::EXPLORER => {
                 let (tip, field) = explorer_row(app, f, ir, bg, i);
                 if let Some((full, x, file, link)) = tip {
                     app.ui.tips.push((ir, full, x, file, link));
@@ -758,8 +757,8 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
                     (app.ui.rename, app.ui.rename_field) = (ir, field);
                 }
             }
-            Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
-            Side::Scm => {}
+            Side::SEARCH => search_row(app, f, ir, bg, &search_rows[i], i),
+            Side::SCM => {}
             Side::View(_) => {}
         }
     }
@@ -771,13 +770,12 @@ fn sidebar(app: &mut App, f: &mut Frame, col: Rect, mut lay: Lay) {
     if !timeline.is_empty() {
         let inner = crate::blocks::card(st, f, timeline, P.sidebar_bg, false);
         crate::blocks::seam(st, f, main, timeline, focused);
-        if app.side == Side::Explorer {
+        if app.side == Side::EXPLORER {
             crate::scm::draw_timeline(app, f, inner);
         } else {
             crate::scm::draw_refs(app, f, inner);
         }
     }
-    side_title(app, f, title_row, title, lay, bg);
 }
 
 /// VS Code's tree sticky scroll over the list just drawn: the folders (Search file
@@ -805,7 +803,7 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
     app.ui.scm_btns.retain(|(b, _)| !area.contains(b.as_position()));
     let hover = app.hover.filter(|p| area.contains(*p)).and_then(|p| app.ui.sticky_at(p.y));
     // CHANGES shares the sidebar's focus with GRAPH.
-    let focused = app.focus == Focus::Side && !(app.side == Side::Scm && app.gitui.graph_focus);
+    let focused = app.focus == Focus::Side && !(app.side == Side::SCM && app.gitui.graph_focus);
     for (k, &i) in pinned.iter().enumerate() {
         let bg = if i == app.sel[s] && focused {
             P.list_active_bg
@@ -823,8 +821,8 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
         fill(f, Rect::new(list.x, y, list.width, step), bg);
         let ir = inset(Rect::new(list.x, y, list.width, 1), pad);
         match app.side {
-            Side::Explorer if cap == 1 => breadcrumb_row(app, f, ir, bg, i),
-            Side::Explorer => {
+            Side::EXPLORER if cap == 1 => breadcrumb_row(app, f, ir, bg, i),
+            Side::EXPLORER => {
                 let (tip, field) = explorer_row(app, f, ir, bg, i);
                 if let Some((full, x, file, link)) = tip {
                     app.ui.tips.push((ir, full, x, file, link));
@@ -833,8 +831,8 @@ pub(crate) fn sticky_rows(app: &mut App, f: &mut Frame, list: Rect, pad: u16, ga
                     (app.ui.rename, app.ui.rename_field) = (ir, field);
                 }
             }
-            Side::Search => search_row(app, f, ir, bg, &search_rows[i], i),
-            Side::Scm => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
+            Side::SEARCH => search_row(app, f, ir, bg, &search_rows[i], i),
+            Side::SCM => scm_row(app, f, ir, bg, &scm_rows[i], hover == Some(i)),
             Side::View(_) => {}
         }
     }
@@ -1460,7 +1458,7 @@ fn group(app: &mut App, f: &mut Frame, g: usize, area: Rect, lay: Lay, border_y:
         if start < body.bottom() {
             f.render_widget(Paragraph::new("herdr").alignment(Alignment::Center).style(Style::new().fg(P.dim).bold()), Rect::new(body.x, start, body.width, 1));
         }
-        for (i, (label, side)) in [("Open File       Ctrl+P", None), ("Search          F4", Some(Side::Search)), ("Source Control  F2", Some(Side::Scm))].into_iter().enumerate() {
+        for (i, (label, side)) in [("Open File       Ctrl+P", None), ("Search          F4", Some(Side::SEARCH)), ("Source Control  F2", Some(Side::SCM))].into_iter().enumerate() {
             let y = start + 2 + i as u16 * 2;
             if y >= body.bottom() { break; }
             let label = fit(label, body.width as usize);

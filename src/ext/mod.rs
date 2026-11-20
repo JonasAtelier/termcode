@@ -2,13 +2,15 @@
 //! bar, the editor area's tabs, the right and bottom panels, mouse, keys, layout); each view
 //! is a driver filling it through one table of ops, `Ops` (DSA's `dsa_switch_ops`).
 //!
-//! In-tree drivers are Rust, built in: the Programmer (programmer.rs), GitHub (github/),
-//! and the Extensions view (manager.rs). Out-of-tree drivers are
+//! In-tree drivers are Rust, built in: the code views (core.rs: Explorer, Search, Source
+//! Control), the Programmer (programmer.rs), GitHub (github/), and the Extensions view
+//! (manager.rs). Out-of-tree drivers are
 //! programs (process.rs), installed with `termcode ext` (install.rs) or the Extensions
 //! view, filling slots with rows over JSON-RPC; one table of ops serves them all.
 //! A view is numbered (`Side::View`, `Space::View`): in-tree first, then extensions.
 //! Guides: doc/extensions.md (people), skills/termcode-extension/SKILL.md (agents).
 
+mod core;
 mod install;
 mod manager;
 mod process;
@@ -30,9 +32,12 @@ use std::sync::Mutex;
 pub const PROGRAMMER: u16 = 0;
 pub const GITHUB: u16 = 1;
 pub const EXTENSIONS: u16 = 2;
+pub const EXPLORER: u16 = 3;
+pub const SEARCH: u16 = 4;
+pub const SCM: u16 = 5;
 
 /// The in-tree drivers, by number.
-pub static DRIVERS: [&Ops; 3] = [&crate::programmer::OPS, &crate::github::OPS, &manager::OPS];
+pub static DRIVERS: [&Ops; 6] = [&crate::programmer::OPS, &crate::github::OPS, &manager::OPS, &core::EXPLORER, &core::SEARCH, &core::SCM];
 
 /// A view's number: the in-tree ones fixed, extensions' given as their ids are first met.
 pub fn num(id: &str) -> u16 {
@@ -65,8 +70,12 @@ pub struct Ops {
     pub title: &'static str,
     pub about: &'static str,
     pub hint: &'static str,
-    /// Its activity bar icon (the theme's).
+    /// Its activity bar icon (the theme's), and the count on it (0: none) for view `n`.
     pub icon: fn() -> &'static str,
+    pub badge: fn(&App, u16) -> usize,
+    /// It shares the code editor area (Explorer, Search, Source Control): at the top of
+    /// the activity bar, its tabs code's. Else its own editor area, from Settings up.
+    pub code: bool,
     /// The side bar, while its view shows; its view just shown.
     pub side: fn(&mut App, &mut Frame, Rect),
     pub shown: fn(&mut App),
@@ -141,6 +150,9 @@ fn no_overlay(_: &mut App, _: &mut Frame) {}
 fn no_icon() -> &'static str {
     ""
 }
+fn no_badge(_: &App, _: u16) -> usize {
+    0
+}
 
 impl Ops {
     pub const NONE: Ops = Ops {
@@ -150,6 +162,8 @@ impl Ops {
         about: "",
         hint: "",
         icon: no_icon,
+        badge: no_badge,
+        code: false,
         side: no_draw,
         shown: no_app,
         owns: no_str,
@@ -195,14 +209,34 @@ pub fn title(app: &App, n: u16) -> String {
     }
 }
 
-/// The activity bar's views below the code ones, upward from Settings: the Extensions
-/// view (+), the installed extensions right above it, then GitHub and the Programmer.
+/// View `n` is turned off (the + view's Turn off). Explorer and the + view never are.
+pub fn off(app: &App, n: u16) -> bool {
+    n != EXPLORER && n != EXTENSIONS && app.exts.off.contains(id_of(app, n))
+}
+
+/// View `n`'s id: an in-tree driver's, else its extension's.
+pub fn id_of(app: &App, n: u16) -> &str {
+    DRIVERS.get(n as usize).map(|o| o.id).or_else(|| app.exts.by_num(n).map(|i| app.exts.list[i].m.id.as_str())).unwrap_or("")
+}
+
+/// The activity bar's code views, top down: Explorer, Search, Source Control (those on).
 /// Each: number, icon (the icon set's).
+pub fn top_items(app: &App) -> Vec<(u16, String)> {
+    (0..DRIVERS.len() as u16).filter(|&n| DRIVERS[n as usize].code && !off(app, n)).map(|n| (n, (DRIVERS[n as usize].icon)().to_string())).collect()
+}
+
+/// The activity bar's other views, upward from Settings: the Extensions view (+), the
+/// installed extensions right above it, then GitHub and the Programmer. Each: number,
+/// icon (the icon set's).
 pub fn bottom_items(app: &App) -> Vec<(u16, String)> {
-    let on = |id: &str| !app.exts.off.contains(id);
     let builtin = |n: u16| (n, (DRIVERS[n as usize].icon)().to_string());
-    let installed = app.exts.list.iter().filter(|e| on(&e.m.id)).map(|e| (e.n, e.m.icon.get().to_string()));
-    std::iter::once(builtin(EXTENSIONS)).chain(installed).chain([GITHUB, PROGRAMMER].into_iter().filter(|&n| on(DRIVERS[n as usize].id)).map(builtin)).collect()
+    let installed = app.exts.list.iter().filter(|e| !off(app, e.n)).map(|e| (e.n, e.m.icon.get().to_string()));
+    std::iter::once(builtin(EXTENSIONS)).chain(installed).chain([GITHUB, PROGRAMMER].into_iter().filter(|&n| !off(app, n)).map(builtin)).collect()
+}
+
+/// The count on view `n`'s activity bar icon.
+pub fn badge(app: &App, n: u16) -> usize {
+    (ops(n).badge)(app, n)
 }
 
 /// The editor area's hint while view `space` has no tab.
@@ -231,9 +265,8 @@ pub fn terminal_here(app: &App) -> bool {
 }
 
 pub fn shown(app: &mut App, s: Side) {
-    if let Side::View(n) = s {
-        (ops(n).shown)(app);
-    }
+    let Side::View(n) = s;
+    (ops(n).shown)(app);
 }
 
 pub fn side(app: &mut App, f: &mut Frame, r: Rect, n: u16) {

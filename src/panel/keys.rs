@@ -110,7 +110,7 @@ impl App {
         // Ctrl+Shift+F only arrives distinctly with kitty keyboard support; legacy
         // terminals send it as Ctrl+F, which is in-file find (VS Code's Ctrl+F).
         if ctrl && shift && is('f') {
-            return self.show_side(Side::Search, true);
+            return self.show_side(Side::SEARCH, true);
         }
         // Like Ctrl+Shift+F, these two arrive distinctly only with kitty keyboard support.
         if ctrl && shift && is('o') {
@@ -123,10 +123,10 @@ impl App {
             return self.run_command(Cmd::ToggleWrap);
         }
         if ctrl && is('e') {
-            return self.show_side(Side::Explorer, false);
+            return self.show_side(Side::EXPLORER, false);
         }
         if ctrl && is('g') {
-            return self.show_side(Side::Scm, false);
+            return self.show_side(Side::SCM, false);
         }
         if ctrl && is('f') {
             return self.open_find(false);
@@ -148,11 +148,11 @@ impl App {
         }
         match k.code {
             KeyCode::F(1) => return self.open_palette(),
-            KeyCode::F(2) => return self.show_side(Side::Scm, false),
+            KeyCode::F(2) => return self.show_side(Side::SCM, false),
             KeyCode::F(4) => {
                 // VS Code seeds Find in Files with a one-line selection (editor or diff).
                 let seed = self.active_selection().filter(|s| !s.is_empty() && !s.contains('\n'));
-                self.show_side(Side::Search, true);
+                self.show_side(Side::SEARCH, true);
                 if let Some(s) = seed {
                     self.query = s;
                 }
@@ -166,11 +166,11 @@ impl App {
             KeyCode::F(7) => return self.peek_step(if shift { -1 } else { 1 }),
             KeyCode::Char(c @ ('1' | '2' | '4')) if alt => {
                 let s = match c {
-                    '1' => Side::Explorer,
-                    '2' => Side::Scm,
-                    _ => Side::Search,
+                    '1' => Side::EXPLORER,
+                    '2' => Side::SCM,
+                    _ => Side::SEARCH,
                 };
-                return self.show_side(s, s == Side::Search);
+                return self.show_side(s, s == Side::SEARCH);
             }
             KeyCode::Char(c @ '1'..='3') if ctrl => {
                 let g = c as usize - '1' as usize;
@@ -435,21 +435,24 @@ impl App {
     }
 
     pub(super) fn side_key(&mut self, k: KeyEvent) {
-        if self.side == Side::Scm && crate::scm::key(self, k) {
+        // The view's own keys first (Source Control's, a driver's); the code views'
+        // lists take the rest.
+        let Side::View(n) = self.side;
+        if crate::ext::key(self, n, k) {
             return;
         }
-        if let Side::View(n) = self.side {
-            if !crate::ext::key(self, n, k) && k.code == KeyCode::Esc {
+        if !crate::ext::ops(n).code {
+            if k.code == KeyCode::Esc {
                 self.focus = Focus::Editor;
             }
             return;
         }
         // Delete: to the Trash; Shift+Delete: for good (each asked first).
-        if self.side == Side::Explorer && k.code == KeyCode::Delete {
+        if self.side == Side::EXPLORER && k.code == KeyCode::Delete {
             return self.ask_delete(k.modifiers.contains(KeyModifiers::SHIFT));
         }
         // Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z): the Explorer's file operations taken back or redone.
-        if self.side == Side::Explorer && k.modifiers.contains(KeyModifiers::CONTROL) {
+        if self.side == Side::EXPLORER && k.modifiers.contains(KeyModifiers::CONTROL) {
             let shift = k.modifiers.contains(KeyModifiers::SHIFT);
             match k.code {
                 KeyCode::Char('z') if !shift => return self.undo_file_op(),
@@ -459,7 +462,7 @@ impl App {
             }
         }
         // The Explorer's file clipboard: Ctrl+C, Ctrl+X, Ctrl+V.
-        if self.side == Side::Explorer && k.modifiers == KeyModifiers::CONTROL {
+        if self.side == Side::EXPLORER && k.modifiers == KeyModifiers::CONTROL {
             match k.code {
                 KeyCode::Char('c') => return self.tree_copy(false),
                 KeyCode::Char('x') => return self.tree_copy(true),
@@ -467,8 +470,8 @@ impl App {
                 _ => {}
             }
         }
-        if self.side == Side::Explorer {
-            let e = Side::Explorer.idx();
+        if self.side == Side::EXPLORER {
+            let e = Side::EXPLORER.idx();
             match k.code {
                 // Shift+↑↓: the selection grows from the anchor.
                 KeyCode::Up | KeyCode::Down if k.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -501,25 +504,25 @@ impl App {
             KeyCode::Home => self.step_side(-1_000_000),
             KeyCode::End => self.step_side(1_000_000),
             KeyCode::Enter => self.activate_side(self.sel[s], true),
-            KeyCode::Char(' ') if self.side == Side::Search && matches!(self.search_rows().get(self.sel[s]), Some(HRow::File(..))) => {
+            KeyCode::Char(' ') if self.side == Side::SEARCH && matches!(self.search_rows().get(self.sel[s]), Some(HRow::File(..))) => {
                 self.toggle_search_group(self.sel[s]);
             }
             KeyCode::Char(' ') => self.activate_side(self.sel[s], false),
-            KeyCode::Left | KeyCode::Right if self.side == Side::Search => {
+            KeyCode::Left | KeyCode::Right if self.side == Side::SEARCH => {
                 let i = self.sel[s];
                 if matches!(self.search_rows().get(i), Some(HRow::File(p, _)) if self.search_closed.contains(p) == (k.code == KeyCode::Right)) {
                     self.toggle_search_group(i);
                 }
             }
-            KeyCode::Left | KeyCode::Right if self.side == Side::Explorer => {
+            KeyCode::Left | KeyCode::Right if self.side == Side::EXPLORER => {
                 let i = self.sel[s];
                 if self.tree.get(i).is_some_and(|n| n.dir && n.open == (k.code == KeyCode::Left)) {
                     self.toggle(i);
                 }
             }
-            KeyCode::Char('/') if self.side == Side::Search => (self.focus, self.query_all) = (Focus::SearchInput, false),
+            KeyCode::Char('/') if self.side == Side::SEARCH => (self.focus, self.query_all) = (Focus::SearchInput, false),
             // h: the file's history, in the TIMELINE under the tree.
-            KeyCode::Char('h') if self.side == Side::Explorer => {
+            KeyCode::Char('h') if self.side == Side::EXPLORER => {
                 if let Some(n) = self.tree.get(self.sel[s]).filter(|n| !n.dir) {
                     let p = n.path.clone();
                     self.open_file(self.ag, &p, true);
@@ -528,11 +531,11 @@ impl App {
             }
             KeyCode::Char('r') => self.reload_all(),
             // Source Control list: + stage, - unstage, Delete discard (row or section header).
-            KeyCode::Left | KeyCode::Right if self.side == Side::Scm => {
+            KeyCode::Left | KeyCode::Right if self.side == Side::SCM => {
                 let i = self.sel[s];
                 self.fold_scm(i, Some(k.code == KeyCode::Left));
             }
-            KeyCode::Char('+' | '-') | KeyCode::Delete if self.side == Side::Scm => {
+            KeyCode::Char('+' | '-') | KeyCode::Delete if self.side == Side::SCM => {
                 let op = match k.code {
                     KeyCode::Char(c) => c,
                     _ => 'd',

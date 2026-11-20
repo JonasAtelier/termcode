@@ -159,8 +159,11 @@ fn draw(app: &mut App, f: &mut Frame, r: Rect) {
         })
         .filter(|it| hit(it))
         .collect();
+    // The code views first (Explorer, Search, Source Control), then the others.
     let builtin: Vec<Item> = DRIVERS
         .iter()
+        .filter(|o| o.code)
+        .chain(DRIVERS.iter().filter(|o| !o.code))
         .filter(|o| o.id != OPS.id)
         .map(|o| {
             let meta = if x.off.contains(o.id) { ("Disabled".to_string(), Some("warning")) } else { ("Built in".to_string(), Some("dim")) };
@@ -266,7 +269,8 @@ fn page(app: &mut App, f: &mut Frame, r: Rect, key: &str) {
         rows.push(line(vec![text("   Built in", Some("dim")), text(if off { "  · Disabled" } else { "" }.to_string(), Some("warning"))]));
         rows.push(line(vec![text(format!("   {}", o.about), None)]));
         rows.push(Row::default());
-        rows.push(line(vec![text("   ", None), toggle]));
+        // The Explorer stays: something must show the workspace.
+        rows.push(line(vec![text("   ", None), if o.id == DRIVERS[super::EXPLORER as usize].id { text("Always on", Some("dim")) } else { toggle }]));
     } else if id == "xcomm" {
         // Recommended, not installed: what it is, and Install.
         rows.push(line(vec![text(format!("{}  ", crate::theme::icons().plus), Some("accent")), Cell { text: "Serial (xcomm)".into(), bold: true, ..Cell::default() }]));
@@ -314,9 +318,15 @@ pub(super) fn action(app: &mut App, action: &str) {
             app.show_tab(app.ag, format!("{KEY}{id}"), true);
             (app.side, app.side_visible, app.focus) = (side, visible, Focus::Side);
         }
+        "toggle" if id == DRIVERS[super::EXPLORER as usize].id => {}
         "toggle" => {
             let off = !app.exts.off.contains(&id);
             app.exts.set_off(&id, off);
+            // The view shown turned off: the Explorer instead.
+            let Side::View(n) = app.side;
+            if off && super::id_of(app, n) == id {
+                app.show_side(Side::EXPLORER, false);
+            }
             if off {
                 if let Some(e) = app.exts.list.iter_mut().find(|e| e.m.id == id) {
                     e.stop();
@@ -556,6 +566,44 @@ mod tests {
     fn frame(app: &mut App) {
         let mut t = ratatui::Terminal::new(TestBackend::new(140, 50)).unwrap();
         t.draw(|f| crate::ui::draw(app, f)).unwrap();
+    }
+
+    #[test]
+    fn every_view_is_a_driver_a_code_view_turns_off_and_an_extension_shows_a_badge() {
+        let d = std::env::temp_dir().join(format!("termcode-ext-views-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut app = App::new(d.clone(), None);
+        frame(&mut app);
+        let icons = |app: &App| app.ui.activity.iter().map(|(_, s)| *s).collect::<Vec<_>>();
+        assert_eq!(icons(&app)[..3], [Side::EXPLORER, Side::SEARCH, Side::SCM], "the code views on top, from their drivers");
+        // Source Control off: its icon gone, the Explorer shown instead, F2 refused.
+        app.show_side(Side::SCM, false);
+        action(&mut app, "toggle:scm");
+        frame(&mut app);
+        assert!(!icons(&app).contains(&Side::SCM) && app.side == Side::EXPLORER);
+        app.show_side(Side::SCM, false);
+        assert!(app.side == Side::EXPLORER && app.msg.contains("turned off"), "{}", app.msg);
+        // The Explorer stays, whatever asks.
+        action(&mut app, "toggle:explorer");
+        frame(&mut app);
+        assert!(icons(&app).contains(&Side::EXPLORER));
+        action(&mut app, "toggle:scm");
+        frame(&mut app);
+        assert!(icons(&app).contains(&Side::SCM));
+        // An extension's count on its icon, as Source Control's.
+        app.exts.list.push(crate::ext::test_ext("badged", &["t"]));
+        let n = crate::ext::num("badged");
+        let c = crate::api::Client { ext: Some("badged".into()), ..crate::api::Client::default() };
+        assert!(crate::ext::call(&mut app, &c, "view.badge", &serde_json::json!({"count": "x"})).is_err());
+        crate::ext::call(&mut app, &c, "view.badge", &serde_json::json!({"count": 7})).unwrap();
+        assert_eq!(crate::ext::badge(&app, n), 7);
+        let mut t = ratatui::Terminal::new(TestBackend::new(140, 50)).unwrap();
+        let buf = t.draw(|f| crate::ui::draw(&mut app, f)).unwrap().buffer.clone();
+        let q = app.ui.activity.iter().find(|(_, s)| *s == Side::View(n)).expect("its icon").0;
+        let seen: String = (q.y.saturating_sub(1)..q.bottom()).flat_map(|y| (q.x..q.right()).map(move |x| (x, y))).map(|p| buf[p].symbol().to_string()).collect();
+        assert!(seen.contains('7'), "the badge drawn: {seen:?}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -273,11 +273,13 @@ pub struct Ext {
     /// The last `view.shown` sent; the tab last said to be in front.
     shown: bool,
     front: Option<String>,
+    /// The count on its activity bar icon (`view.badge`; 0: none).
+    pub(super) badge: usize,
 }
 
 impl Ext {
     pub fn new(m: Manifest) -> Ext {
-        Ext { n: num(&m.id), m, out: None, done: Arc::new(AtomicBool::new(false)), started: false, error: None, left: Vec::new(), main: Vec::new(), right: None, bottom: None, shown: false, front: None }
+        Ext { n: num(&m.id), m, out: None, done: Arc::new(AtomicBool::new(false)), started: false, error: None, left: Vec::new(), main: Vec::new(), right: None, bottom: None, shown: false, front: None, badge: 0 }
     }
 
     /// Right or bottom (the side bar has sections, the editor area tabs).
@@ -655,7 +657,13 @@ pub fn call(app: &mut App, client: &Client, method: &str, p: &Value) -> Result<V
             open_tab(app, i, &tab, true);
             Ok(json!({"shown": true}))
         }
-        _ => Err(format!("unknown method {method:?} (view.set, view.append, view.clear, view.open)")),
+        // The count on its activity bar icon, as Source Control's changes (0: none).
+        "view.badge" => {
+            let n = p["count"].as_u64().ok_or("\"count\": a number (0: no badge)")?;
+            app.exts.list[i].badge = n.min(9999) as usize;
+            Ok(json!({"badge": app.exts.list[i].badge}))
+        }
+        _ => Err(format!("unknown method {method:?} (view.set, view.append, view.clear, view.open, view.badge)")),
     }
 }
 
@@ -1191,10 +1199,10 @@ pub fn takes(app: &mut App, k: ratatui::crossterm::event::KeyEvent) -> bool {
         return false;
     }
     let n = match slot {
-        Slot::Left => match app.side {
-            Side::View(n) => n,
-            _ => return false,
-        },
+        Slot::Left => {
+            let Side::View(n) = app.side;
+            n
+        }
         _ => match app.space() {
             Space::View(n) => n,
             _ => return false,
@@ -1230,15 +1238,14 @@ pub fn test_ext(id: &str, tabs: &[&str]) -> Ext {
 /// The ops serving every extension (the view shown, or the panes clicked, says which).
 pub(super) const OPS: Ops = Ops {
     id: "extensions-host",
+    badge: |app, n| app.exts.by_num(n).map_or(0, |i| app.exts.list[i].badge),
     side: |app, f, r| {
-        if let Side::View(n) = app.side {
-            draw_side(app, f, r, n);
-        }
+        let Side::View(n) = app.side;
+        draw_side(app, f, r, n);
     },
     shown: |app| {
-        if let Side::View(n) = app.side {
-            shown(app, n);
-        }
+        let Side::View(n) = app.side;
+        shown(app, n);
     },
     owns: |key| key.starts_with(PREFIX),
     tab: |app, f, _, r, key, _| {

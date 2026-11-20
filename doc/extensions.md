@@ -86,6 +86,7 @@ Your extension calls termcode (requests, with an `id`; each gets a reply):
 | `view.append` | the same | adds rows at the end (a log; it follows the end until scrolled up) |
 | `view.clear` | `slot`, `section`? / `tab`? | removes the pane (left without `section`: every section; a tab: closed) |
 | `view.open` | `tab`? | shows your view and that tab, in front (needs `edit`) |
+| `view.badge` | `count` | a count on your activity bar icon, as Source Control's changes (0: none) |
 | `ui.input` | `text`, `value`? | asks the user for a line (`{"text"}`, null if closed; needs `edit`) |
 | `ui.pick` | `text`, `items`: labels or `{label, detail}` | asks the user to pick one (`{"index", "label"}`; needs `edit`) |
 | every API method | | `state.get`, `editor.open`, `buffer.edit`, `ui.notify`, `ui.prompt`, `events.watch`, … ([api.md](api.md)) |
@@ -178,11 +179,15 @@ it serves (`serial.output`) to `events.watch` clients. termcode's own namespaces
 
 ## Built-in views are drivers too
 
-As in DSA, in-tree and out-of-tree drivers plug into the same subsystem. The Programmer
-(`src/programmer.rs`), GitHub (`src/github/`) and the **+** view (`src/ext/manager.rs`)
-are Rust drivers built into termcode: each fills one
-`ext::Ops` table (`src/ext/mod.rs`, like `dsa_switch_ops`) and is listed in
-`ext::DRIVERS`. termcode's frame has no special case for any of them. A built-in view
+As in DSA, in-tree and out-of-tree drivers plug into the same subsystem. Every view is a
+driver: Explorer, Search and Source Control (`src/ext/core.rs`, `code: true`: they share
+the code editor area and sit at the top of the activity bar), the Programmer
+(`src/programmer.rs`), GitHub (`src/github/`) and the **+** view (`src/ext/manager.rs`).
+Each fills one `ext::Ops` table (`src/ext/mod.rs`, like `dsa_switch_ops`: side bar,
+title, icon, badge, tabs, keys, mouse) and is listed in `ext::DRIVERS`. termcode's frame
+has no special case for any of them; each but the Explorer and **+** can be turned off in
+the + view. Their widgets come from one UI kit (`src/ui/kit.rs`), as an extension's
+buttons and headers do. A built-in view
 can draw anything (a terminal screen, pictures); an extension draws rows, from any
 language, without rebuilding termcode. Extensions themselves are served by one more
 table of ops, `src/ext/process.rs`.

@@ -375,7 +375,7 @@ pub fn drain(app: &mut App, m: Msg) {
                 }
             }
             app.refresh();
-            if app.side == Side::Scm && app.side_visible {
+            if app.side == Side::SCM && app.side_visible {
                 crate::scm::load_graph(app, true);
             }
         }
@@ -401,7 +401,7 @@ pub fn drain(app: &mut App, m: Msg) {
             }
             app.refresh();
             // Fetch and push move remote refs without moving HEAD: redraw the graph's badges too.
-            if app.side == Side::Scm && app.side_visible {
+            if app.side == Side::SCM && app.side_visible {
                 crate::scm::load_graph(app, true);
             }
         }
@@ -1621,7 +1621,7 @@ mod tests {
         assert!(ok(&mut app), "blame back on the blamed line");
         assert!(app.gitui.due().is_none(), "nothing left to wait for");
         // A resting pointer: the card opens and its timer is gone; leaving clears a fresh one.
-        app.show_side(Side::Scm, false);
+        app.show_side(Side::SCM, false);
         settle(&mut app);
         screen(&mut app, &mut tm);
         let row = at(&tm, "first");
@@ -1673,9 +1673,9 @@ mod tests {
                     sync_clicked(&mut app);
                     draw(&mut app);
                     app.prompt = None;
-                    app.side = Side::Scm;
+                    app.side = Side::SCM;
                     draw(&mut app);
-                    app.side = Side::Explorer;
+                    app.side = Side::EXPLORER;
                     app.gitui.cmds.toast = None;
                 }
             }
