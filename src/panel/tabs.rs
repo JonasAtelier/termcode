@@ -219,11 +219,12 @@ impl App {
                 v.scroll = v.cursor.line + 1 - h;
             }
             let text = diff_cell(d, v.cursor.line, v.side).unwrap_or("");
+            // No caret in a diff: a selection may end on the right edge, its last char shown.
             let x = editor::display_col(text, v.cursor.col);
             if x < v.hscroll {
                 v.hscroll = x;
-            } else if x >= v.hscroll + w {
-                v.hscroll = x + 1 - w;
+            } else if x > v.hscroll + w {
+                v.hscroll = x - w;
             }
             return;
         }

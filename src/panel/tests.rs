@@ -7912,6 +7912,11 @@ fn screenshots() {
     snap(&mut app, &mut t, "commit.png");
     app.gitui.dlg = None;
     wait_idle(&mut app);
+    app.show_side(Side::SCM, false);
+    let i = app.scm_files.iter().position(|f| f.path == "src/main.rs").unwrap();
+    app.open_diff(i, true);
+    wait(&mut app);
+    snap(&mut app, &mut t, "diff.png");
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -8028,6 +8033,37 @@ fn every_pane_resizes_from_either_side_of_its_edge_and_groups_from_the_line_betw
     let top2 = app.ui.groups.iter().map(|gh| gh.area).find(|r| r.x == top.x && r.y == top.y).unwrap();
     assert_eq!(top2.height, top.height + 3);
     assert!(crate::panel::tiles(&app.groups.iter().filter(|g| g.space == app.space()).map(|g| g.frac).collect::<Vec<_>>()), "the groups still tile the area");
+    wait_idle(&mut app);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_selection_ending_on_a_diff_sides_right_edge_does_not_scroll_the_diff() {
+    let root = repo("diff-edge");
+    fs::write(root.join("src/main.rs"), format!("fn main() {{\n    let s = \"{}\";\n}}\n", "word ".repeat(40))).unwrap();
+    let mut app = App::new(root.clone(), None);
+    let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    app.refresh();
+    wait(&mut app);
+    let i = app.scm_files.iter().position(|f| f.path == "src/main.rs").unwrap();
+    app.open_diff(i, false);
+    wait(&mut app);
+    screen(&mut app, &mut t);
+    let [_, r] = app.ui.groups[0].diff_text.expect("a diff's two text areas");
+    let w = r.width as usize;
+    let sel = |app: &mut App, end: usize| {
+        let a = app.groups[0].active;
+        let v = &mut app.groups[0].tabs[a].view;
+        (v.side, v.anchor, v.cursor) = (1, Some(Pos::new(1, end - 4)), Pos::new(1, end));
+        app.reveal();
+        app.groups[0].tabs[a].view.hscroll
+    };
+    // A word (double-click) ending on the edge: all of it shows, a diff has no caret to show.
+    assert_eq!(sel(&mut app, w), 0, "no scroll for the cell after the edge");
+    screen(&mut app, &mut t);
+    assert_eq!(t.backend().buffer()[(r.x, r.y)].symbol(), "f", "the first char shows");
+    // One past it: scrolled to show it.
+    assert_eq!(sel(&mut app, w + 1), 1);
     wait_idle(&mut app);
     fs::remove_dir_all(&root).unwrap();
 }
