@@ -939,3 +939,23 @@ fn in_a_kitty_terminal_the_graph_is_a_picture_and_the_subjects_line_up() {
     screen(&mut app, &mut tm);
     assert!(at(&tm, "g").0 >= xs[0], "a file row clears the picture");
 }
+
+#[test]
+fn a_card_over_the_terminal_takes_its_own_clicks() {
+    let (t, r) = repo("cardterm", "echo a > a.txt; git add .; git commit -qm 'add a'");
+    let mut app = app(&t, &r);
+    let mut tm = term();
+    app.show_side(Side::SCM, false);
+    app.toggle_terminal();
+    settle(&mut app);
+    screen(&mut app, &mut tm);
+    let term = app.ui.term;
+    let hash = app.gitui.graph.commits[0].hash.clone();
+    open_card(&mut app, hash.clone(), Rect::new(1, term.bottom() - 1, 30, 1));
+    settle(&mut app);
+    screen(&mut app, &mut tm);
+    let c = at(&tm, "Copy hash");
+    assert!(term.contains(c.into()), "the card's buttons over the terminal: {:?} in {term:?}", c);
+    click(&mut app, c);
+    assert!(app.msg.starts_with(&format!("copied {}", &hash[..7])), "{:?}", app.msg);
+}

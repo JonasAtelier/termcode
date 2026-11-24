@@ -1980,6 +1980,12 @@ pub(crate) fn clipboard_set(text: &str) -> &'static str {
     if cfg!(test) {
         return "test";
     }
+    let osc52 = || {
+        let mut out = io::stdout();
+        let _ = write!(out, "\x1b]52;c;{}\x07", parse::base64(text.as_bytes()));
+        let _ = out.flush();
+    };
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some() && !HEADLESS.load(Ordering::SeqCst);
     for argv in [&["wl-copy"][..], &["xclip", "-selection", "clipboard"][..]] {
         let Ok(mut c) = Command::new(argv[0])
             .args(&argv[1..])
@@ -1994,15 +2000,19 @@ pub(crate) fn clipboard_set(text: &str) -> &'static str {
             let _ = i.write_all(text.as_bytes());
         }
         if c.wait().is_ok_and(|s| s.success()) {
+            // xclip on Wayland reaches X apps only (GNOME may not pass it on): the
+            // terminal sets the Wayland clipboard too.
+            if argv[0] == "xclip" && wayland {
+                osc52();
+                return "xclip + OSC 52";
+            }
             return argv[0];
         }
     }
     if HEADLESS.load(Ordering::SeqCst) {
         return "nothing (headless)";
     }
-    let mut out = io::stdout();
-    let _ = write!(out, "\x1b]52;c;{}\x07", parse::base64(text.as_bytes()));
-    let _ = out.flush();
+    osc52();
     "OSC 52"
 }
 

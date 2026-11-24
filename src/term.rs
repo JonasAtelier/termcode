@@ -775,7 +775,9 @@ impl App {
         // A drag begun elsewhere (the panel's top edge, a scrollbar) keeps its events
         // over the terminal: the sash dragged down crosses into it.
         let theirs = !ours && !matches!(self.drag, Drag::None);
-        if theirs || area.is_empty() || !(area.contains(p) || ours) || self.terms.is_empty() || self.prog.log_shown {
+        // A commit card or a git toast drawn over the terminal takes its own clicks.
+        let covered = !ours && (self.gitui.hits.card.contains(p) || self.gitui.hits.toast.contains(p));
+        if theirs || covered || area.is_empty() || !(area.contains(p) || ours) || self.terms.is_empty() || self.prog.log_shown {
             return None;
         }
         let at = (p.y.clamp(area.y, area.bottom() - 1) - area.y, p.x.clamp(area.x, area.right() - 1) - area.x);

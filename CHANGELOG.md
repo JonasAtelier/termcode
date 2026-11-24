@@ -47,6 +47,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - Settings in a small window: the quick keys' keyboard no longer draws past the window;
   categories that do not fit get a slider and go by the wheel, a long name is cut before
   its count; the keyboard's legend gives way to its prefix.
+- Copy hash on a commit card drawn over the terminal copies the hash: the terminal
+  no longer takes the click (and its selection the clipboard).
+- Copying on Wayland without wl-copy (Copy hash, Ctrl+C...) reaches Wayland apps too:
+  after xclip the terminal is asked by OSC 52 as well.
 - A diff no longer scrolls one column sideways (its first characters gone) when a
   selection ends on a side's right edge, as a double-clicked word there.
 - A quick key's command list stays whole over Settings' footer (drawn last, as tall as
