@@ -44,6 +44,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   ELF and map reports' bars (a memory region's green, amber past 75%, red past 90%).
 
 ### Fixed
+- Settings in a small window: the quick keys' keyboard no longer draws past the window;
+  categories that do not fit get a slider and go by the wheel, a long name is cut before
+  its count; the keyboard's legend gives way to its prefix.
+- A quick key's command list stays whole over Settings' footer (drawn last, as tall as
+  its commands), and Apply and Save under it take no clicks.
 - A view's right panel (Serial's settings, an extension's) resizes by its left edge, as
   the Outline does; its edge lights under the pointer.
 - The editor's caret (or a field's behind it) no longer blinks through the Settings and

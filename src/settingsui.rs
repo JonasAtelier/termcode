@@ -355,6 +355,8 @@ struct Hits {
     options: Vec<(Rect, usize)>,
     content: Rect,
     search: Rect,
+    /// The categories' list (its wheel goes through them).
+    nav: Rect,
     /// The quick keys' keyboard: its keys, the command list's rows and frame.
     keys: Vec<(Rect, Chord)>,
     picks: Vec<(Rect, String)>,
@@ -1140,6 +1142,10 @@ impl Dialog {
                     pk.at = if m.kind == MouseEventKind::ScrollDown { (pk.at + 3).min(last) } else { pk.at.saturating_sub(3) };
                 }
             }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if !self.confirm && self.hits.nav.contains(p) && self.commit_edit() => {
+                let n = if m.kind == MouseEventKind::ScrollDown { (self.category + 1).min(CATEGORIES.len() - 1) } else { self.category.saturating_sub(1) };
+                self.category(n);
+            }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 if !self.confirm && self.hits.content.contains(p) && self.commit_edit() =>
             {
@@ -1336,13 +1342,20 @@ pub fn draw(app: &mut App, f: &mut Frame) {
             st
         };
         fill(f, row, style.bg.unwrap_or(P.widget_bg));
-        text(f, row, &format!(" {label}"), style);
         let count = format!("{n} ");
+        // The name cut (with "…") before its count, a blank between them.
+        let room = (row.width as usize).saturating_sub(count.width() + 1);
+        text(f, Rect::new(row.x, y, room as u16, 1), &format!(" {label}"), style);
         text(f, Rect::new(row.right() - count.width() as u16, y, count.width() as u16, 1), &count, style.fg(if current && d.focus == Focus::Categories { P.button_fg } else { P.dim }));
         if current {
             crate::ui::pixels::round_box(f, row, P.widget_bg);
         }
         d.hits.categories.push((row, i));
+    }
+    // More than fit (a small window): a slider says so, the wheel goes through them.
+    d.hits.nav = Rect::new(r.x + 1, top + 1, nav_w - 1, nav_count as u16);
+    if CATEGORIES.len() > nav_count {
+        crate::ui::kit::slider(f, Rect::new(divider_x - 1, top + 1, 1, nav_count as u16), CATEGORIES.len(), nav_count, nav_off);
     }
     // The settings: a heading (the category, or the search), then each one as VS Code lists
     // them: its name (a bar left of it when set in the file), what it does, its control.
@@ -1385,7 +1398,10 @@ pub fn draw(app: &mut App, f: &mut Frame) {
             shown += 1;
             let field = &FIELDS[row];
             let selected = rows[d.selected] == row && d.focus == Focus::Fields;
-            let block = Rect::new(content.x - 1, y, content.width + 1, fh - 1);
+            // Within the list: a setting taller than it (the quick keys' keyboard in a small
+            // window) is cut at its bottom, not drawn past the window.
+            let shown_h = (fh - 1).min(content.bottom().saturating_sub(y));
+            let block = Rect::new(content.x - 1, y, content.width + 1, shown_h);
             if selected {
                 fill(f, block, P.list_inactive_bg);
             }
@@ -1447,7 +1463,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
                     let at = Rect::new(control.x, control.y, control.width, content.bottom().saturating_sub(control.y));
                     let frame = draw_keyboard(d, f, at, hover);
                     keyboard = Some(frame);
-                    d.hits.rows.push((Rect::new(content.x, y, content.width, fh - 1), frame, row));
+                    d.hits.rows.push((Rect::new(content.x, y, content.width, shown_h), frame, row));
                 }
                 Text(_) | Json(_) => {
                     let r2 = Rect::new(control.x, control.y, control.width.min(56), 1);
@@ -1477,9 +1493,6 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         if rows.len() > shown && content.height > 0 {
             crate::ui::kit::slider(f, Rect::new(r.right() - 2, content.y, 1, content.height), rows.len(), shown, d.scroll);
         }
-    }
-    if let Some(frame) = keyboard {
-        draw_pick(d, f, frame, r);
     }
     if let Some(area) = preview {
         if !d.palette.as_ref().is_some_and(|(draft, _)| draft == &d.draft) {
@@ -1513,6 +1526,11 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         let button = Rect::new(r.right() - 21 + index as u16 * 10, footer_y + 2, 9, 1);
         crate::ui::kit::button(f, button, label, if index == 1 { Look::Primary } else { Look::Secondary }, P.widget_bg, d.focus == focus);
         d.hits.buttons.push((button, index));
+    }
+    // A quick key's command list over all of it, the footer too (drawn after it, so it
+    // stays whole on top).
+    if let Some(frame) = keyboard {
+        draw_pick(d, f, frame, r);
     }
     if let Some(option) = d.dropdown {
         if let Choice(options) = FIELDS[selected_row].kind {
@@ -1650,10 +1668,11 @@ fn draw_keyboard(d: &mut Dialog, f: &mut Frame, at: Rect, hover: Option<Position
         }
         None => Line::styled(" Point at a key to see its command; click it to change it ", st.fg(P.dim)),
     };
-    let block = popup_block(case, P.widget_fg, (0, 0))
-        .title(Span::styled(prefix, st.fg(P.sidebar_title).bold()))
-        .title(legend)
-        .title_bottom(info);
+    let mut block = popup_block(case, P.widget_fg, (0, 0)).title(Span::styled(prefix.clone(), st.fg(P.sidebar_title).bold())).title_bottom(info);
+    // The legend where it fits beside the prefix (a narrow window: the prefix alone).
+    if usize::from(frame.width) >= prefix.width() + legend.width() + 4 {
+        block = block.title(legend);
+    }
     f.render_widget(block, frame);
     let inner = Rect::new(frame.x + 1, frame.y + 1, frame.width.saturating_sub(2), frame.height.saturating_sub(2));
     for (r, c, label) in keys {
@@ -1695,13 +1714,17 @@ fn draw_pick(d: &mut Dialog, f: &mut Frame, frame: Rect, dlg: Rect) {
     let room = dlg.bottom().saturating_sub(frame.bottom() + 1);
     let w = 52.min(dlg.width.saturating_sub(2));
     let x = kr.x.saturating_sub(2).min(dlg.right().saturating_sub(w + 1)).max(dlg.x + 1);
-    let panel = if room >= 6 { Rect::new(x, frame.bottom(), w, room.min(14)) } else { below(Rect::new(x, frame.y, kr.width, frame.height), w, 14, dlg) };
+    // As tall as its commands need (its box, a blank, them), 14 rows at most.
+    let want = (items.len() as u16 + 4).clamp(7, 14);
+    let panel = if room >= 6 { Rect::new(x, frame.bottom(), w, room.min(want)) } else { below(Rect::new(x, frame.y, kr.width, frame.height), w, want, dlg) };
     f.render_widget(Clear, panel);
     let title = Span::styled(format!(" {} runs ", crate::parse::chord_label(sel)), st.fg(P.sidebar_title).bold());
     let block = popup_block(P.widget_bg, P.widget_fg, (1, 0)).title(title);
     let inner = block.inner(panel);
     f.render_widget(block, panel);
     d.hits.pick = panel;
+    // What it covers takes no clicks (Apply and Save under it).
+    d.hits.buttons.retain(|(b, _)| !b.intersects(panel));
     if inner.height < 3 {
         return;
     }
@@ -1983,6 +2006,321 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// What is wrong on the screen with Settings open, after `what`: anything drawn outside
+    /// its window (the screen without it, cell by cell), anything over its frame, a place to
+    /// click outside it, two controls on one cell.
+    fn faults(app: &mut App, t: &mut Terminal<TestBackend>, what: &str, out: &mut Vec<String>) {
+        let snap = |app: &mut App, t: &mut Terminal<TestBackend>| {
+            let mut b = None;
+            t.draw(|f| {
+                crate::ui::draw(app, f);
+                b = Some(f.buffer_mut().clone());
+            })
+            .unwrap();
+            b.unwrap()
+        };
+        let with = snap(app, t);
+        let Some(d) = app.settings_dlg.take() else { return };
+        let without = snap(app, t);
+        let r = d.hits.area;
+        let mut bad = |m: String| out.push(format!("{what}: {m}"));
+        let pic = |s: &str| s.contains('\u{10EEEE}') || s.contains('\u{1b}');
+        // (The activity bar lights Settings while it is open.)
+        let bar = app.ui.activity.iter().map(|a| a.0.right() + 1).max().unwrap_or(0);
+        for p in with.area.positions().filter(|p| !r.contains(*p) && p.x >= bar) {
+            let (a, b) = (&with[p], &without[p]);
+            if !pic(a.symbol()) && (a.symbol(), a.fg, a.bg, a.modifier) != (b.symbol(), b.fg, b.bg, b.modifier) {
+                bad(format!("drawn outside the window at {p:?}: {:?} over {:?}", a.symbol(), b.symbol()));
+                break;
+            }
+        }
+        if r.width >= 28 && r.height >= 10 {
+            let frame = |x: u16, y: u16, ok: &[&str]| pic(with[(x, y)].symbol()) || ok.contains(&with[(x, y)].symbol());
+            for y in r.y + 1..r.bottom() - 1 {
+                for x in [r.x, r.right() - 1] {
+                    if !frame(x, y, &["│", "├", "┤", "┼"]) {
+                        bad(format!("{:?} over the frame at ({x}, {y})", with[(x, y)].symbol()));
+                    }
+                }
+            }
+            for x in r.x + 1..r.right() - 1 {
+                if !frame(x, r.bottom() - 1, &["─", "┴", "┬", "┼"]) {
+                    bad(format!("{:?} over the frame's bottom at ({x}, {})", with[(x, r.bottom() - 1)].symbol(), r.bottom() - 1));
+                }
+            }
+            for (x, y, c) in [(r.x, r.y, "╭"), (r.right() - 1, r.y, "╮"), (r.x, r.bottom() - 1, "╰"), (r.right() - 1, r.bottom() - 1, "╯")] {
+                if !frame(x, y, &[c]) {
+                    bad(format!("corner {c} is {:?}", with[(x, y)].symbol()));
+                }
+            }
+            let h = &d.hits;
+            let mut rects: Vec<(&str, Rect)> = vec![("search", h.search), ("nav", h.nav), ("content", h.content), ("pick", h.pick), ("close", h.close), ("title", h.title)];
+            rects.extend(h.categories.iter().map(|c| ("category", c.0)));
+            rects.extend(h.rows.iter().flat_map(|row| [("row", row.0), ("control", row.1)]));
+            rects.extend(h.buttons.iter().map(|b| ("button", b.0)));
+            rects.extend(h.options.iter().map(|o| ("option", o.0)));
+            rects.extend(h.keys.iter().map(|k| ("key", k.0)));
+            rects.extend(h.picks.iter().map(|k| ("pick row", k.0)));
+            for (name, x) in rects.into_iter().filter(|(_, x)| !x.is_empty()) {
+                if x.intersection(r) != x {
+                    bad(format!("{name} {x:?} outside the window {r:?}"));
+                }
+            }
+            // (A dropdown's options are over the page: only each other's; the question before
+            // closing is over all of it.)
+            let sets = if d.confirm { Vec::new() } else { vec![h.rows.iter().map(|row| row.1).chain(h.buttons.iter().map(|b| b.0)).collect::<Vec<_>>(), h.options.iter().map(|o| o.0).collect()] };
+            for set in sets {
+                let set: Vec<Rect> = set.into_iter().filter(|x| !x.is_empty()).collect();
+                for (i, a) in set.iter().enumerate() {
+                    if let Some(b) = set[i + 1..].iter().find(|b| a.intersects(**b)) {
+                        bad(format!("controls {a:?} and {b:?} overlap"));
+                    }
+                }
+            }
+        }
+        app.settings_dlg = Some(d);
+        // The screen as the user has it again (the dialog's places from it).
+        snap(app, t);
+    }
+
+    fn at(app: &mut App, kind: MouseEventKind, x: u16, y: u16) {
+        app.on_mouse(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE });
+    }
+
+    fn tap(app: &mut App, r: Rect) {
+        let (x, y) = (r.x + r.width / 2, r.y + r.height / 2);
+        at(app, MouseEventKind::Moved, x, y);
+        at(app, MouseEventKind::Down(MouseButton::Left), x, y);
+        at(app, MouseEventKind::Up(MouseButton::Left), x, y);
+    }
+
+    /// Every click Settings takes, each checked (`faults`): the categories; every setting's
+    /// control (a check twice, a number's track at its ends and middle and dragged, a
+    /// choice's every option, a text typed into and let go, every quick key with its list);
+    /// the search; moving the window; closing with changes (Cancel, then Discard).
+    fn sweep(app: &mut App, t: &mut Terminal<TestBackend>, out: &mut Vec<String>) {
+        fn dlg(app: &mut App) -> &mut Dialog {
+            app.settings_dlg.as_mut().unwrap()
+        }
+        faults(app, t, "opened", out);
+        for (c, &cat) in CATEGORIES.iter().enumerate() {
+            // Not in view (a small window): the wheel over the list goes to it.
+            for _ in 0..CATEGORIES.len() {
+                if dlg(app).hits.categories.iter().any(|(_, i)| *i == c) {
+                    break;
+                }
+                let nav = dlg(app).hits.nav;
+                at(app, MouseEventKind::ScrollDown, nav.x + 1, nav.y + 1);
+                faults(app, t, &format!("categories wheeled to {c}"), out);
+            }
+            let Some(&(cr, _)) = dlg(app).hits.categories.iter().find(|(_, i)| *i == c) else {
+                out.push(format!("category {c} not on screen"));
+                continue;
+            };
+            tap(app, cr);
+            faults(app, t, cat, out);
+            for k in 0..dlg(app).rows().len() {
+                let row = dlg(app).rows()[k];
+                let field = &FIELDS[row];
+                (dlg(app).selected, dlg(app).focus) = (k, Focus::Fields);
+                faults(app, t, &format!("{cat} / {} selected", field.label), out);
+                let Some(&(_, ctl, _)) = dlg(app).hits.rows.iter().find(|x| x.2 == row) else {
+                    out.push(format!("{cat} / {}: selected but not on screen", field.label));
+                    continue;
+                };
+                let name = format!("{cat} / {}", field.label);
+                match field.kind {
+                    Check(_) => {
+                        for n in 0..2 {
+                            tap(app, Rect::new(ctl.x, ctl.y, 2, 1));
+                            faults(app, t, &format!("{name}: clicked {}", n + 1), out);
+                        }
+                    }
+                    Number(..) => {
+                        for x in [ctl.x, ctl.x + ctl.width / 2, ctl.right() - 1] {
+                            tap(app, Rect::new(x, ctl.y, 1, 1));
+                            faults(app, t, &format!("{name}: track at {x}"), out);
+                        }
+                        at(app, MouseEventKind::Down(MouseButton::Left), ctl.x, ctl.y);
+                        at(app, MouseEventKind::Drag(MouseButton::Left), ctl.x + ctl.width / 3, ctl.y);
+                        faults(app, t, &format!("{name}: dragged"), out);
+                        at(app, MouseEventKind::Up(MouseButton::Left), ctl.x + ctl.width / 3, ctl.y);
+                    }
+                    Choice(options) => {
+                        for (o, option) in options.iter().enumerate() {
+                            tap(app, ctl);
+                            faults(app, t, &format!("{name}: opened"), out);
+                            let Some(&(or, _)) = dlg(app).hits.options.iter().find(|(_, i)| *i == o) else {
+                                out.push(format!("{name}: option {option} not on screen"));
+                                break;
+                            };
+                            tap(app, or);
+                            faults(app, t, &format!("{name}: chose {option}"), out);
+                        }
+                    }
+                    Json(_) if field.key == QUICK => {
+                        let keys: Vec<Rect> = dlg(app).hits.keys.iter().map(|k| k.0).collect();
+                        for (i, kr) in keys.iter().enumerate() {
+                            tap(app, *kr);
+                            faults(app, t, &format!("{name}: key {i}"), out);
+                            if i % 12 == 0 {
+                                for ch in "wrap".chars() {
+                                    press(app, KeyCode::Char(ch));
+                                }
+                                faults(app, t, &format!("{name}: key {i}, a command looked for"), out);
+                                if let Some(pr) = dlg(app).hits.picks.first().map(|p| p.0) {
+                                    tap(app, pr);
+                                    faults(app, t, &format!("{name}: key {i} given a command"), out);
+                                }
+                            }
+                            // Its list let go with Esc (a second Esc would close Settings).
+                            if dlg(app).board.as_ref().is_some_and(|b| b.pick.is_some()) {
+                                press(app, KeyCode::Esc);
+                                faults(app, t, &format!("{name}: key {i} let go"), out);
+                            }
+                            if app.settings_dlg.is_none() {
+                                return out.push(format!("{name}: Esc closed Settings"));
+                            }
+                            if dlg(app).hits.keys.is_empty() {
+                                // The keyboard went with the list: back to its setting.
+                                (dlg(app).selected, dlg(app).focus) = (k, Focus::Fields);
+                                faults(app, t, &format!("{name}: back"), out);
+                            }
+                        }
+                    }
+                    Text(_) | Json(_) => {
+                        tap(app, ctl);
+                        faults(app, t, &format!("{name}: editing"), out);
+                        for ch in "x9".chars() {
+                            press(app, KeyCode::Char(ch));
+                        }
+                        faults(app, t, &format!("{name}: typed"), out);
+                        press(app, KeyCode::Esc);
+                        faults(app, t, &format!("{name}: let go"), out);
+                        if app.settings_dlg.is_none() {
+                            return out.push(format!("{name}: Esc closed Settings"));
+                        }
+                    }
+                }
+            }
+        }
+        // The search: found, none found, cleared.
+        let sr = dlg(app).hits.search;
+        tap(app, sr);
+        for (q, what) in [("minimap", "found"), ("zzzz", "none found")] {
+            for ch in q.chars() {
+                press(app, KeyCode::Char(ch));
+            }
+            faults(app, t, &format!("search {what}"), out);
+            for _ in 0..q.len() {
+                press(app, KeyCode::Backspace);
+            }
+        }
+        faults(app, t, "search cleared", out);
+        // The window moved by its title, then back.
+        let tr = dlg(app).hits.title;
+        let (x, y) = (tr.x + 3, tr.y);
+        at(app, MouseEventKind::Down(MouseButton::Left), x, y);
+        at(app, MouseEventKind::Drag(MouseButton::Left), x.saturating_sub(8), y + 2);
+        faults(app, t, "moved", out);
+        at(app, MouseEventKind::Drag(MouseButton::Left), x + 200, y + 200);
+        faults(app, t, "moved past the screen's corner", out);
+        at(app, MouseEventKind::Up(MouseButton::Left), x + 200, y + 200);
+        // Closed with changes: asked; Cancel keeps it, Discard closes it.
+        let close = dlg(app).hits.close;
+        tap(app, close);
+        faults(app, t, "asked before closing", out);
+        for (label, n) in [("Cancel", 0), ("Discard", 1)] {
+            let Some(&(br, _)) = app.settings_dlg.as_ref().and_then(|d| d.hits.buttons.iter().find(|(_, i)| *i == n)) else {
+                return out.push(format!("no {label} button"));
+            };
+            tap(app, br);
+            if app.settings_dlg.is_some() {
+                faults(app, t, label, out);
+                if n == 0 {
+                    let close = dlg(app).hits.close;
+                    tap(app, close);
+                }
+            }
+        }
+        if app.settings_dlg.is_some() {
+            out.push("Discard left Settings open".into());
+        }
+    }
+
+    /// Pictures of Settings' states to look at (`$TERMCODE_SHOTS`): a dropdown open, a
+    /// text typed into, the quick keys' list, asking before closing, and a small window.
+    #[test]
+    #[ignore]
+    fn settings_screenshots() {
+        let Some(dir) = std::env::var_os("TERMCODE_SHOTS").map(std::path::PathBuf::from) else { return };
+        fs::create_dir_all(&dir).unwrap();
+        let shot = |app: &mut App, t: &mut Terminal<TestBackend>, name: &str| crate::panel::tests::screenshot(app, t, &dir.join(name));
+        fn dlg(app: &mut App) -> &mut Dialog {
+            app.settings_dlg.as_mut().unwrap()
+        }
+        fn select(app: &mut App, t: &mut Terminal<TestBackend>, cat: &str, key: &str) -> Rect {
+            screen(app, t);
+            let c = CATEGORIES.iter().position(|c| *c == cat).unwrap();
+            if let Some(cr) = dlg(app).hits.categories.iter().find(|x| x.1 == c).map(|x| x.0) {
+                tap(app, cr);
+            }
+            let k = dlg(app).rows().iter().position(|&i| FIELDS[i].key == key).unwrap();
+            (dlg(app).selected, dlg(app).focus) = (k, Focus::Fields);
+            screen(app, t);
+            let row = dlg(app).rows()[k];
+            dlg(app).hits.rows.iter().find(|x| x.2 == row).unwrap().1
+        }
+        for (tag, w, h) in [("big", 110u16, 36u16), ("small", 64, 20)] {
+            let (mut app, _, path) = setup(&format!("shots-{tag}"));
+            app.media.kitty_cells_for_tests((10, 22));
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            let ctl = select(&mut app, &mut t, "Appearance", "termcode.blocks.style");
+            tap(&mut app, ctl);
+            shot(&mut app, &mut t, &format!("{tag}-dropdown.png"));
+            press(&mut app, KeyCode::Esc);
+            let ctl = select(&mut app, &mut t, "Appearance", "workbench.colorTheme");
+            tap(&mut app, ctl);
+            for ch in " (mine)".chars() {
+                press(&mut app, KeyCode::Char(ch));
+            }
+            shot(&mut app, &mut t, &format!("{tag}-editing.png"));
+            press(&mut app, KeyCode::Esc);
+            select(&mut app, &mut t, "Keys", QUICK);
+            let key = { let k = &dlg(&mut app).hits.keys; k[14.min(k.len() - 1)].0 };
+            tap(&mut app, key);
+            for ch in "split".chars() {
+                press(&mut app, KeyCode::Char(ch));
+            }
+            shot(&mut app, &mut t, &format!("{tag}-quick-keys.png"));
+            press(&mut app, KeyCode::Esc);
+            let close = dlg(&mut app).hits.close;
+            tap(&mut app, close);
+            shot(&mut app, &mut t, &format!("{tag}-closing.png"));
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn every_click_in_settings_draws_inside_its_window_at_any_size_text_or_pixels() {
+        let mut out = Vec::new();
+        for (tag, w, h, pixels) in [("big", 110, 36, false), ("small", 80, 24, false), ("narrow", 64, 20, false), ("pixels", 110, 36, true)] {
+            let (mut app, _, path) = setup(&format!("sweep-{tag}"));
+            if pixels {
+                app.media.kitty_cells_for_tests((10, 22));
+            }
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            let before = fs::read_to_string(&path).unwrap();
+            let mut faults = Vec::new();
+            sweep(&mut app, &mut t, &mut faults);
+            out.extend(faults.into_iter().map(|f| format!("[{tag} {w}x{h}] {f}")));
+            assert_eq!(fs::read_to_string(&path).unwrap(), before, "{tag}: discarded, the file as it was");
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+        out.dedup();
+        assert!(out.is_empty(), "{} faults:\n{}", out.len(), out.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
     }
 
     fn setup(tag: &str) -> (App, Terminal<TestBackend>, std::path::PathBuf) {
