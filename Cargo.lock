@@ -1622,7 +1622,7 @@ dependencies = [
 
 [[package]]
 name = "termcode"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "fancy-regex 0.16.2",
  "fontdue",
