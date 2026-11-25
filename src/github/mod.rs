@@ -57,8 +57,9 @@ pub const BOTTOM: usize = 1;
 const ACCOUNT: usize = 0;
 const REPO_GRAPH: usize = 1;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Checks {
+    #[default]
     None,
     Pass,
     Fail,
@@ -234,6 +235,8 @@ enum Msg {
     Branches(String, Result<Vec<String>, String>),
     /// A repository page's insights.
     Stats(String, Result<page::Stats, String>),
+    /// A repository page's About, lists and traffic: the repository, the revision, what came.
+    About(String, String, Result<Box<page::About>, String>),
 }
 
 /// A change on GitHub, run once confirmed.
@@ -1025,6 +1028,7 @@ pub fn tick(app: &mut App) -> bool {
             Msg::Blob(repo, rev, path, text) => page::blob_came(app, repo, rev, path, text),
             Msg::Branches(repo, b) => page::branches_came(app, repo, b),
             Msg::Stats(repo, st) => page::stats_came(app, repo, st),
+            Msg::About(repo, rev, a) => page::about_came(app, repo, rev, a),
             Msg::Done(res) => {
                 app.gh.acting = None;
                 app.msg = res.unwrap_or_else(|e| format!("GitHub: {e}"));
@@ -1144,7 +1148,12 @@ fn qr_tick(app: &mut App) -> bool {
 
 /// Open `url` in the browser; with none (over SSH), the link goes to the clipboard.
 fn open_url(app: &mut App, url: &str) {
-    let opened = Command::new("xdg-open").arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    // Tests never open the user's browser.
+    let opened = if cfg!(test) {
+        Err(std::io::Error::other("test"))
+    } else {
+        Command::new("xdg-open").arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+    };
     match opened {
         Ok(c) if !cfg!(test) => {
             crate::nav::reap(c, None);

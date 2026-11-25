@@ -65,6 +65,9 @@ pub struct Page {
     stats_asked: bool,
     /// A README rendered for a width: (folder, width, lines).
     readme: Option<(String, u16, Vec<Line<'static>>)>,
+    /// The main page's About, lists and traffic (of a revision), and the revision asked.
+    pub about: Option<(String, Result<About, String>)>,
+    about_asked: Option<String>,
 }
 
 impl Page {
@@ -100,6 +103,47 @@ pub struct Stats {
     pub people: Vec<(String, u64)>,
 }
 
+/// The main page's facts besides the files and insights: GitHub's About, the shown
+/// revision's commits and checks, the counts of branches, tags and releases, the latest
+/// release, the open pull requests and issues, the latest runs, and the past two weeks'
+/// traffic (None without push access).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct About {
+    pub description: String,
+    pub homepage: String,
+    pub topics: Vec<String>,
+    pub license: String,
+    /// "Public", "Private" or "Internal"; the repository it forks; archived.
+    pub visibility: String,
+    pub parent: String,
+    pub archived: bool,
+    /// Its size in KB (GitHub's diskUsage), when created and last pushed.
+    pub size_kb: u64,
+    pub created: i64,
+    pub pushed: i64,
+    pub commits: u64,
+    pub checks: Checks,
+    pub branches: u64,
+    pub tags: u64,
+    pub releases: u64,
+    /// The latest release: its name, tag, time, a prerelease, its page.
+    pub release: Option<(String, String, i64, bool, String)>,
+    pub prs: Vec<Pr>,
+    /// Each issue with its labels (name, colour).
+    pub issues: Vec<(Issue, Vec<(String, Color)>)>,
+    pub runs: Vec<Run>,
+    pub views: Option<Traffic>,
+    pub clones: Option<Traffic>,
+}
+
+/// Two weeks of views or clones: all, unique, and each day's (date, all, unique).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Traffic {
+    pub all: u64,
+    pub unique: u64,
+    pub days: Vec<(String, u64, u64)>,
+}
+
 /// What a click on the page does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
@@ -115,6 +159,8 @@ pub enum Target {
     Main,
     /// The header's branch: pick another.
     Branches,
+    /// A pull request, issue, run, release or the homepage: in the browser.
+    Url(String),
 }
 
 pub fn tab_key(repo: &str) -> String {
@@ -243,11 +289,6 @@ pub(super) fn load_stats(bin: &Path, root: &Path, repo: &str) -> Result<Stats, S
         return Err(v["errors"][0]["message"].as_str().unwrap_or("no such repository").to_string());
     }
     let n = |v: &Value| v.as_u64().unwrap_or(0);
-    let hex = |c: &str| {
-        let c = c.trim_start_matches('#');
-        let b = |i: usize| u8::from_str_radix(c.get(i..i + 2)?, 16).ok();
-        Some(Color::Rgb(b(0)?, b(2)?, b(4)?))
-    };
     let languages = r["languages"]["edges"]
         .as_array()
         .into_iter()
@@ -291,6 +332,126 @@ pub(super) fn load_stats(bin: &Path, root: &Path, repo: &str) -> Result<Stats, S
         churn,
         people,
     })
+}
+
+/// A colour written "#rrggbb" or "rrggbb".
+fn hex(c: &str) -> Option<Color> {
+    let c = c.trim_start_matches('#');
+    let b = |i: usize| u8::from_str_radix(c.get(i..i + 2)?, 16).ok();
+    Some(Color::Rgb(b(0)?, b(2)?, b(4)?))
+}
+
+/// `repo`'s About and the shown revision's counts in one query; its lists and traffic
+/// beside it, each left out when it fails (traffic needs push access).
+pub(super) fn load_about(bin: &Path, root: &Path, repo: &str, rev: &str) -> Result<About, String> {
+    let q = format!(
+        "query=query {{ {} {{ description homepageUrl visibility isArchived parent {{ nameWithOwner }} diskUsage createdAt pushedAt \
+         licenseInfo {{ spdxId name }} repositoryTopics(first: 20) {{ nodes {{ topic {{ name }} }} }} \
+         branches: refs(refPrefix: \"refs/heads/\", first: 1) {{ totalCount }} tags: refs(refPrefix: \"refs/tags/\", first: 1) {{ totalCount }} \
+         releases(first: 1, orderBy: {{field: CREATED_AT, direction: DESC}}) {{ totalCount nodes {{ name tagName publishedAt isPrerelease url }} }} \
+         rev: object(expression: {}) {{ ... on Commit {{ history(first: 1) {{ totalCount }} statusCheckRollup {{ state }} }} }} }} }}",
+        repo_q(repo)?,
+        lit(rev)
+    );
+    let n = |v: &Value| v.as_u64().unwrap_or(0);
+    std::thread::scope(|s| {
+        let get = |args: Vec<String>| s.spawn(move || gh_json(bin, root, &args.iter().map(String::as_str).collect::<Vec<_>>()).ok());
+        let list = |what: &str, fields: &str| get(["--repo", repo, "--limit", "5", "--json", fields].iter().fold(vec![what.to_string(), "list".into()], |mut v, a| {
+            v.push(a.to_string());
+            v
+        }));
+        let prs_h = list("pr", "number,title,author,isDraft,headRefName,statusCheckRollup,updatedAt,url");
+        let issues_h = list("issue", "number,title,author,updatedAt,url,labels");
+        let runs_h = list("run", "databaseId,displayTitle,workflowName,headBranch,status,conclusion,updatedAt,url");
+        let views_h = get(vec!["api".into(), format!("repos/{repo}/traffic/views")]);
+        let clones_h = get(vec!["api".into(), format!("repos/{repo}/traffic/clones")]);
+        let v = gh_json(bin, root, &["api", "graphql", "-f", &q]).map_err(Fail::text)?;
+        let join = |h: std::thread::ScopedJoinHandle<'_, Option<Value>>| h.join().ok().flatten();
+        let (prs_v, issues_v, runs_v, views_v, clones_v) = (join(prs_h), join(issues_h), join(runs_h), join(views_h), join(clones_h));
+        let r = &v["data"]["repository"];
+        if r.is_null() {
+            return Err(v["errors"][0]["message"].as_str().unwrap_or("no such repository").to_string());
+        }
+        let checks = match r["rev"]["statusCheckRollup"]["state"].as_str().unwrap_or("") {
+            "SUCCESS" => Checks::Pass,
+            "FAILURE" | "ERROR" => Checks::Fail,
+            "PENDING" | "EXPECTED" => Checks::Pending,
+            _ => Checks::None,
+        };
+        let rel = &r["releases"]["nodes"][0];
+        let issues = issues_v.map_or_else(Vec::new, |v| {
+            let labels = v.as_array().into_iter().flatten().map(|i| {
+                i["labels"].as_array().into_iter().flatten().map(|l| (str_of(l, "name"), hex(&str_of(l, "color")).unwrap_or(P.dim))).collect()
+            });
+            super::issues(&v, repo).into_iter().zip(labels).collect()
+        });
+        let traffic = |v: Option<Value>, k: &str| {
+            let v = v.filter(|v| v["count"].is_u64())?;
+            // "2026-11-10T00:00:00Z" -> "Nov 10".
+            let date = |t: &str| {
+                let m = t.get(5..7).and_then(|m| m.parse::<usize>().ok()).filter(|m| (1..=12).contains(m)).unwrap_or(1);
+                format!("{} {}", super::draw::MONTHS[m - 1], t.get(8..10).unwrap_or("").trim_start_matches('0'))
+            };
+            let days = v[k].as_array().into_iter().flatten().map(|d| (date(&str_of(d, "timestamp")), n(&d["count"]), n(&d["uniques"]))).collect();
+            Some(Traffic { all: n(&v["count"]), unique: n(&v["uniques"]), days })
+        };
+        Ok(About {
+            description: str_of(r, "description"),
+            homepage: str_of(r, "homepageUrl"),
+            topics: r["repositoryTopics"]["nodes"].as_array().into_iter().flatten().map(|t| str_of(&t["topic"], "name")).collect(),
+            license: r["licenseInfo"]["spdxId"].as_str().filter(|s| *s != "NOASSERTION").map_or_else(|| str_of(&r["licenseInfo"], "name"), str::to_string),
+            visibility: str_of(r, "visibility"),
+            parent: str_of(&r["parent"], "nameWithOwner"),
+            archived: r["isArchived"].as_bool().unwrap_or(false),
+            size_kb: n(&r["diskUsage"]),
+            created: iso_time(&str_of(r, "createdAt")),
+            pushed: iso_time(&str_of(r, "pushedAt")),
+            commits: n(&r["rev"]["history"]["totalCount"]),
+            checks,
+            branches: n(&r["branches"]["totalCount"]),
+            tags: n(&r["tags"]["totalCount"]),
+            releases: n(&r["releases"]["totalCount"]),
+            release: (!rel.is_null())
+                .then(|| (str_of(rel, "name"), str_of(rel, "tagName"), iso_time(&str_of(rel, "publishedAt")), rel["isPrerelease"].as_bool().unwrap_or(false), str_of(rel, "url"))),
+            prs: prs_v.map(|v| super::prs(&v, repo)).unwrap_or_default(),
+            issues,
+            runs: runs_v.map(|v| super::runs(&v)).unwrap_or_default(),
+            views: traffic(views_v, "views"),
+            clones: traffic(clones_v, "clones"),
+        })
+    })
+}
+
+/// The About of the shown revision asked for, unless it came or is coming.
+fn want_about(app: &mut App, repo: &str) {
+    let page = app.gh.pages.entry(repo.to_string()).or_default();
+    let rev = page.rev();
+    if page.about.as_ref().is_some_and(|(r, _)| *r == rev) || page.about_asked.as_ref() == Some(&rev) {
+        return;
+    }
+    page.about_asked = Some(rev.clone());
+    let (bin, root, tx) = (app.gh.bin.clone(), cwd(app), app.gh.tx.clone());
+    let repo = repo.to_string();
+    std::thread::spawn(move || {
+        let a = load_about(&bin, &root, &repo, &rev).map(Box::new);
+        let _ = tx.send(Msg::About(repo, rev, a));
+    });
+}
+
+/// The About came (`tick`).
+pub(super) fn about_came(app: &mut App, repo: String, rev: String, a: Result<Box<About>, String>) {
+    let page = app.gh.pages.entry(repo).or_default();
+    if page.about_asked.as_ref() == Some(&rev) {
+        page.about_asked = None;
+    }
+    page.about = Some((rev, a.map(|a| *a)));
+}
+
+impl Page {
+    /// The About when it is of the shown revision (its counts and checks are).
+    fn about_now(&self) -> Option<&About> {
+        self.about.as_ref().filter(|(r, _)| *r == self.rev()).and_then(|(_, a)| a.as_ref().ok())
+    }
 }
 
 fn want_stats(app: &mut App, repo: &str) {
@@ -414,18 +575,25 @@ fn insights(st: &Stats, w: usize) -> Vec<Line<'static>> {
             v.push(Line::from(l));
         }
     }
-    // Lines added and removed a week, as many weeks as fit.
+    // Lines added and removed a week on the label's line: two sparklines (a column a
+    // week, as many weeks as fit), each with its total.
     if st.churn.iter().any(|&(a, d)| a + d > 0) {
-        let n = w.saturating_sub(18).min(st.churn.len());
+        let all = st.churn.iter().fold((0u64, 0u64), |(a, d), w| (a + w.0, d + w.1));
+        let texts = format!(" +{} added", all.0).width() + format!(" -{} removed", all.1).width();
+        let n = (w.saturating_sub(16 + texts + 3 + 1) / 2).min(st.churn.len());
         let weeks = &st.churn[st.churn.len() - n..];
         let max = weeks.iter().map(|&(a, d)| a.max(d)).max().unwrap_or(0).max(1);
         let ticks: Vec<char> = if crate::theme::ascii() { " .:-=+*#".chars().collect() } else { " ▁▂▃▄▅▆▇█".chars().collect() };
         let spark = |x: u64| ticks[((x as f64 / max as f64) * (ticks.len() - 1) as f64).round() as usize];
         let (added, removed): (u64, u64) = weeks.iter().fold((0, 0), |(a, d), w| (a + w.0, d + w.1));
         v.push(Line::raw(""));
-        v.push(Line::from(vec![label("Code changes"), Span::styled(format!("+{added} / -{removed} lines, a column a week"), dim)]));
-        v.push(Line::from(vec![Span::styled(format!("  {:<14}", "added"), dim), Span::styled(weeks.iter().map(|w| spark(w.0)).collect::<String>(), Style::new().fg(P.gh_green))]));
-        v.push(Line::from(vec![Span::styled(format!("  {:<14}", "removed"), dim), Span::styled(weeks.iter().map(|w| spark(w.1)).collect::<String>(), Style::new().fg(P.error_fg))]));
+        v.push(Line::from(vec![
+            label("Code changes"),
+            Span::styled(weeks.iter().map(|w| spark(w.0)).collect::<String>(), Style::new().fg(P.gh_green)),
+            Span::styled(format!(" +{added} added   "), dim),
+            Span::styled(weeks.iter().map(|w| spark(w.1)).collect::<String>(), Style::new().fg(P.error_fg)),
+            Span::styled(format!(" -{removed} removed"), dim),
+        ]));
     }
     if !st.people.is_empty() {
         let max = st.people.iter().map(|p| p.1).max().unwrap_or(1).max(1);
@@ -441,6 +609,291 @@ fn insights(st: &Stats, w: usize) -> Vec<Line<'static>> {
         }
     }
     v
+}
+
+/// A rule across the page (`w` columns), as the README's and the files' boundary.
+fn rule(w: usize) -> Line<'static> {
+    Line::styled(format!("  {}", (if crate::theme::ascii() { "-" } else { "─" }).repeat(w.saturating_sub(4))), Style::new().fg(P.group_border))
+}
+
+/// A chip: `text` on `bg`, in black or white, whichever reads.
+fn chip(text: &str, bg: Color) -> Span<'static> {
+    let fg = match bg {
+        Color::Rgb(r, g, b) if u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114 > 150_000 => Color::Rgb(0, 0, 0),
+        _ => Color::Rgb(255, 255, 255),
+    };
+    Span::styled(format!(" {text} "), Style::new().fg(fg).bg(bg))
+}
+
+/// `text` in lines of at most `w` columns, cut at spaces.
+fn wrap(text: &str, w: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match out.last_mut() {
+            Some(l) if l.width() + 1 + word.width() <= w => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => out.push(fit(word, w)),
+        }
+    }
+    out
+}
+
+/// One row of a list: its icon, its title (cut to fit), what it carries after the title
+/// (chips), its meta on the right; a click opens `url`.
+fn list_row(icon: (&str, Color), title: &str, chips: Vec<Span<'static>>, meta: &str, url: &str, w: usize) -> (Line<'static>, Option<Target>) {
+    let used: usize = chips.iter().map(|c| c.content.width() + 1).sum();
+    let room = w.saturating_sub(4 + icon.0.width() + used + meta.width() + 3);
+    let title = fit(title, room);
+    let pad = room.saturating_sub(title.width());
+    let mut spans = vec![Span::raw("  "), Span::styled(icon.0.to_string(), Style::new().fg(icon.1)), Span::raw(" "), Span::styled(title, Style::new().fg(P.editor_fg))];
+    for c in chips {
+        spans.push(Span::raw(" "));
+        spans.push(c);
+    }
+    spans.push(Span::raw(" ".repeat(pad + 2)));
+    spans.push(Span::styled(format!("{meta} "), Style::new().fg(P.dim)));
+    (Line::from(spans), (!url.is_empty()).then(|| Target::Url(url.to_string())))
+}
+
+/// A traffic chart: its rows of bars, a day's columns (a two-cell bar and a gap), the
+/// y axis' columns before the bars; its lines: a title, the bars, the dates.
+const CHART_ROWS: u16 = 5;
+const DAY_W: u16 = 3;
+const AXIS_W: usize = 7;
+const CHART_LINES: usize = CHART_ROWS as usize + 2;
+
+/// Where a traffic chart's bars are among the page's lines: the first bar row, the first
+/// column, the days drawn (`chart_px` draws them again in pixels).
+pub struct ChartAt {
+    pub line: usize,
+    pub x: u16,
+    pub t: Traffic,
+}
+
+/// The unique part of a bar, solid; the rest of all, light.
+fn chart_colors() -> (Color, Color) {
+    (P.gh_green, crate::ui::pixels::opaque(P.gh_green).alpha(0.4).over(P.editor_bg))
+}
+
+/// A bar's height in eighths of a cell for `n` of `max` (one at least when there is any).
+fn eighths(n: u64, max: u64) -> u16 {
+    let full = u64::from(CHART_ROWS) * 8;
+    if n == 0 { 0 } else { ((n * full + max / 2) / max.max(1)).clamp(1, full) as u16 }
+}
+
+/// Views or clones as GitHub's traffic graph: a title with its totals, a bar a day (its
+/// unique part solid) over a y axis to the busiest day, the first and last dates under
+/// it. CHART_LINES lines, each `width` columns.
+fn chart(name: &str, t: &Traffic) -> (Vec<Vec<Span<'static>>>, usize) {
+    let (solid, light) = chart_colors();
+    let dim = Style::new().fg(P.dim);
+    let sq = if crate::theme::ascii() { "#" } else { "■" };
+    let width = 2 + AXIS_W + t.days.len() * DAY_W as usize;
+    let mut out = vec![vec![
+        Span::styled(format!("  {name}  "), Style::new().fg(P.editor_fg).bold()),
+        Span::styled(format!("{sq} "), Style::new().fg(light)),
+        Span::styled(format!("{} total  ", t.all), dim),
+        Span::styled(format!("{sq} "), Style::new().fg(solid)),
+        Span::styled(format!("{} unique", t.unique), dim),
+    ]];
+    let max = t.days.iter().map(|d| d.1).max().unwrap_or(0);
+    let blocks: Vec<char> = if crate::theme::ascii() { " .:-=+*##".chars().collect() } else { " ▁▂▃▄▅▆▇█".chars().collect() };
+    for row in (0..CHART_ROWS).rev() {
+        let tick = match row {
+            r if r == CHART_ROWS - 1 => max.to_string(),
+            0 => "0".into(),
+            _ => String::new(),
+        };
+        let mut l = vec![Span::styled(format!("  {tick:>w$} ", w = AXIS_W - 1), dim)];
+        for (_, all, unique) in &t.days {
+            let lo = row * 8;
+            let (a, u) = (eighths(*all, max).saturating_sub(lo).min(8), eighths(*unique, max).saturating_sub(lo).min(8));
+            let c = if u > 0 && u * 2 >= a { solid } else { light };
+            let g = blocks[a as usize];
+            l.push(Span::styled(format!("{g}{g} "), Style::new().fg(c)));
+        }
+        out.push(l);
+    }
+    // The first and last days' dates, under their bars.
+    let mut axis = format!("  {:w$}", "", w = AXIS_W);
+    if let (Some(first), Some(last)) = (t.days.first(), t.days.last()) {
+        let span = t.days.len() * DAY_W as usize;
+        let gap = span.saturating_sub(first.0.width() + last.0.width() + 1);
+        axis.push_str(&format!("{}{}{}", first.0, " ".repeat(gap), if t.days.len() > 1 { last.0.as_str() } else { "" }));
+    }
+    out.push(vec![Span::styled(axis, dim)]);
+    (out, width)
+}
+
+/// The bars of `t` in pixels, `cell` (w, h) a cell: as `chart` draws them, to the pixel,
+/// their tops rounded, over a faint line at the busiest day's height and the baseline.
+fn chart_px(t: &Traffic, cell: (u16, u16)) -> image::RgbaImage {
+    let (cw, ch) = (u32::from(cell.0), u32::from(cell.1));
+    let (w, h) = (t.days.len() as u32 * u32::from(DAY_W) * cw, u32::from(CHART_ROWS) * ch);
+    let mut img = image::RgbaImage::new(w.max(1), h.max(1));
+    let px = |c: Color| {
+        let crate::theme::Rgba(r, g, b, a) = crate::ui::pixels::opaque(c);
+        image::Rgba([r, g, b, a])
+    };
+    let (solid, light) = chart_colors();
+    let (solid, light, grid) = (px(solid), px(light), px(P.guide));
+    for x in 0..w {
+        img.put_pixel(x, 0, grid);
+        img.put_pixel(x, h - 1, grid);
+    }
+    let max = t.days.iter().map(|d| d.1).max().unwrap_or(0).max(1);
+    let tall = |n: u64| if n == 0 { 0 } else { ((n * u64::from(h) + max / 2) / max).clamp(2, u64::from(h)) as u32 };
+    for (i, (_, all, unique)) in t.days.iter().enumerate() {
+        let x0 = i as u32 * u32::from(DAY_W) * cw + 1;
+        let bw = 2 * cw - 2;
+        let (ha, hu) = (tall(*all), tall(*unique).min(tall(*all)));
+        for y in h - ha..h {
+            for x in x0..x0 + bw {
+                // The top corners cut: a rounded bar.
+                let corner = y == h - ha && (x == x0 || x == x0 + bw - 1);
+                if !corner {
+                    img.put_pixel(x, y, if y >= h - hu { solid } else { light });
+                }
+            }
+        }
+    }
+    img
+}
+
+/// The main page's ABOUT (with the latest release and the traffic), then its open pull
+/// requests and issues and its latest runs: each row of a list opens it in the browser.
+fn about_lines(a: &About, open: (u64, u64), w: usize, link: Color, now: i64) -> (Vec<(Line<'static>, Option<Target>)>, Vec<ChartAt>) {
+    let dim = Style::new().fg(P.dim);
+    let title = |t: &str| Span::styled(format!("  {t}  "), Style::new().fg(P.sidebar_title).bold());
+    let label = |t: &str| Span::styled(format!("  {t:<14}"), Style::new().fg(P.editor_fg).bold());
+    let ic = icons();
+    let mut v: Vec<(Line<'static>, Option<Target>)> = Vec::new();
+    let mut head = vec![title("ABOUT")];
+    if !a.visibility.is_empty() {
+        let vis = a.visibility[..1].to_string() + &a.visibility[1..].to_lowercase();
+        head.push(chip(&vis, if a.visibility == "PUBLIC" { P.gh_green } else { P.gh_yellow }));
+    }
+    if a.archived {
+        head.push(Span::raw(" "));
+        head.push(chip("Archived", P.error_fg));
+    }
+    if !a.parent.is_empty() {
+        head.push(Span::styled(format!("  {} forked from {}", ic.gh[FORK], a.parent), dim));
+    }
+    v.push((Line::from(head), None));
+    if a.description.is_empty() {
+        v.push((Line::styled("  No description.", dim), None));
+    }
+    for l in wrap(&a.description, w.saturating_sub(4)) {
+        v.push((Line::styled(format!("  {l}"), Style::new().fg(P.editor_fg)), None));
+    }
+    if !a.homepage.is_empty() {
+        v.push((Line::from(vec![Span::styled(format!("  {} ", ic.gh[OPEN]), dim), Span::styled(fit(&a.homepage, w.saturating_sub(6)), Style::new().fg(link).underlined())]), Some(Target::Url(a.homepage.clone()))));
+    }
+    // The topics as GitHub's pills, as many rows as they take.
+    let mut row: Vec<Span<'static>> = vec![Span::raw("  ")];
+    let mut used = 2;
+    for t in &a.topics {
+        if used + t.width() + 3 > w && used > 2 {
+            v.push((Line::from(std::mem::replace(&mut row, vec![Span::raw("  ")])), None));
+            used = 2;
+        }
+        row.push(Span::styled(format!(" {t} "), Style::new().fg(link).bg(P.widget_bg)));
+        row.push(Span::raw(" "));
+        used += t.width() + 3;
+    }
+    if row.len() > 1 {
+        v.push((Line::from(row), None));
+    }
+    let mut facts = Vec::new();
+    if !a.license.is_empty() {
+        facts.push(format!("{} license", a.license));
+    }
+    facts.push(crate::size::human(a.size_kb * 1024));
+    facts.push(format!("created {}", crate::scm::ago(a.created, now)));
+    facts.push(format!("pushed {}", crate::scm::ago(a.pushed, now)));
+    v.push((Line::styled(format!("  {}", facts.join(" · ")), dim), None));
+    // The latest release.
+    v.push((Line::raw(""), None));
+    match &a.release {
+        Some((name, tag, t, pre, url)) => {
+            let shown = if name.is_empty() || name == tag { tag.clone() } else { format!("{name} ({tag})") };
+            let mut l = vec![label("Releases"), Span::styled(format!("{} ", a.releases), dim), Span::styled(shown, Style::new().fg(P.editor_fg).bold()), Span::raw(" ")];
+            l.push(if *pre { chip("Pre-release", P.gh_yellow) } else { chip("Latest", P.gh_green) });
+            l.push(Span::styled(format!("  {}", crate::scm::ago(*t, now)), dim));
+            v.push((Line::from(l), (!url.is_empty()).then(|| Target::Url(url.clone()))));
+        }
+        None => v.push((Line::from(vec![label("Releases"), Span::styled("none published", dim)]), None)),
+    }
+    // Views and clones over two weeks, where the account may see them: side by side
+    // when they fit, else one under the other.
+    let mut charts = Vec::new();
+    let shown: Vec<(&str, &Traffic)> = [("Views", &a.views), ("Clones", &a.clones)].into_iter().filter_map(|(n, t)| Some((n, t.as_ref()?))).collect();
+    if !shown.is_empty() {
+        v.push((Line::raw(""), None));
+        v.push((Line::from(vec![title("TRAFFIC"), Span::styled("past 14 days".to_string(), dim)]), None));
+        let built: Vec<_> = shown.iter().map(|(n, t)| chart(n, t)).collect();
+        let together = built.iter().map(|b| b.1 + 4).sum::<usize>() <= w;
+        let groups: Vec<Vec<usize>> = if together { vec![(0..built.len()).collect()] } else { (0..built.len()).map(|i| vec![i]).collect() };
+        for group in groups {
+            let first = v.len();
+            let mut x = 0usize;
+            let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new(); CHART_LINES];
+            for &i in &group {
+                let (lines, width) = &built[i];
+                for (row, l) in rows.iter_mut().zip(lines) {
+                    let used: usize = row.iter().map(|s| s.content.width()).sum();
+                    row.push(Span::raw(" ".repeat(x.saturating_sub(used))));
+                    row.extend(l.iter().cloned());
+                }
+                charts.push(ChartAt { line: first + 1, x: (x + 2 + AXIS_W) as u16, t: shown[i].1.clone() });
+                x += width + 4;
+            }
+            v.extend(rows.into_iter().map(|r| (Line::from(r), None)));
+        }
+    }
+    // The open pull requests and issues, the latest runs.
+    let green = P.gh_green;
+    v.push((Line::raw(""), None));
+    v.push((Line::from(vec![title("PULL REQUESTS"), Span::styled(format!("{} open", open.0.max(a.prs.len() as u64)), dim)]), None));
+    if a.prs.is_empty() {
+        v.push((Line::styled("  None open.", dim), None));
+    }
+    for p in &a.prs {
+        let icon = if p.draft { (ic.gh[PR_DRAFT], P.dim) } else { (ic.gh[PR], green) };
+        let check = match p.checks {
+            Checks::Pass => vec![Span::styled(ic.gh[PASS].to_string(), Style::new().fg(green))],
+            Checks::Fail => vec![Span::styled(ic.gh[FAIL].to_string(), Style::new().fg(P.error_fg))],
+            Checks::Pending => vec![Span::styled(ic.gh[RUNNING].to_string(), Style::new().fg(P.gh_yellow))],
+            Checks::None => Vec::new(),
+        };
+        let mut chips = check;
+        if p.draft {
+            chips.push(chip("Draft", P.dim));
+        }
+        v.push(list_row(icon, &format!("#{} {}", p.number, p.title), chips, &format!("{} · {}", p.author, crate::scm::ago_short(p.updated, now)), &p.url, w));
+    }
+    v.push((Line::raw(""), None));
+    v.push((Line::from(vec![title("ISSUES"), Span::styled(format!("{} open", open.1.max(a.issues.len() as u64)), dim)]), None));
+    if a.issues.is_empty() {
+        v.push((Line::styled("  None open.", dim), None));
+    }
+    for (i, labels) in &a.issues {
+        let chips = labels.iter().take(3).map(|(n, c)| chip(n, *c)).collect();
+        v.push(list_row((ic.gh[ISSUE], green), &format!("#{} {}", i.number, i.title), chips, &format!("{} · {}", i.author, crate::scm::ago_short(i.updated, now)), &i.url, w));
+    }
+    v.push((Line::raw(""), None));
+    v.push((Line::from(vec![title("ACTIONS"), Span::styled("latest runs".to_string(), dim)]), None));
+    if a.runs.is_empty() {
+        v.push((Line::styled("  No runs.", dim), None));
+    }
+    for r in &a.runs {
+        let meta = format!("{} · {}", r.branch, crate::scm::ago_short(r.updated, now));
+        v.push(list_row(super::draw::run_icon(r.state), &format!("{} · {}", r.workflow, r.title), Vec::new(), &meta, &r.url, w));
+    }
+    (v, charts)
 }
 
 /// The repository's page in the active group (a preview tab unless `pin`), on its main page.
@@ -650,6 +1103,7 @@ pub fn click(app: &mut App, p: Position, _double: bool) -> bool {
         Target::File(path) => show_file(app, &repo, &path),
         Target::Main => show_main(app, &repo, ""),
         Target::Branches => pick_branch(app, &repo),
+        Target::Url(u) => super::open_url(app, &u),
         Target::Symbol(line) => {
             if let Some(t) = app.active_tab() {
                 (t.view.cursor, t.view.anchor) = (Pos::new(line, 0), None);
@@ -733,10 +1187,18 @@ pub fn draw_frame(app: &mut App, f: &mut Frame, g: usize, repo: &str, body: Rect
         }
         None => page.dirs.get("").and_then(|d| d.as_ref().ok()).and_then(|d| d.head.clone()),
     };
+    // The branch's checks before its latest commit's hash, as GitHub's tick or cross.
+    let check = match page.about_now().filter(|_| page.file.is_none()).map(|a| a.checks) {
+        Some(Checks::Pass) => Some((icons().gh[PASS], P.gh_green)),
+        Some(Checks::Fail) => Some((icons().gh[FAIL], P.error_fg)),
+        Some(Checks::Pending) => Some((icons().gh[RUNNING], P.gh_yellow)),
+        _ => None,
+    };
     if let Some((who, msg, hash, t)) = last.filter(|_| mid.height > 2) {
         let right = if hash.is_empty() { format!("{} ", crate::scm::ago(t, now)) } else { format!("{hash} · {} ", crate::scm::ago(t, now)) };
         let left = if who.is_empty() { "  ".to_string() } else { format!("  {who}  ") };
-        let room = (mid.width as usize).saturating_sub(left.width() + right.width() + 1);
+        let mark = check.map_or(Span::raw(""), |(g, c)| Span::styled(format!("{g} "), Style::new().fg(c)));
+        let room = (mid.width as usize).saturating_sub(left.width() + mark.width() + right.width() + 1);
         let r = Rect::new(mid.x, mid.y + 1, mid.width, 1);
         fill(f, r, P.widget_bg);
         f.render_widget(
@@ -744,6 +1206,7 @@ pub fn draw_frame(app: &mut App, f: &mut Frame, g: usize, repo: &str, body: Rect
                 Span::styled(left, Style::new().fg(P.widget_fg).bold()),
                 Span::styled(format!("{:<room$}", fit(&msg, room)), Style::new().fg(P.widget_fg)),
                 Span::raw(" "),
+                mark,
                 Span::styled(right, dim),
             ]),
             r,
@@ -847,12 +1310,27 @@ pub fn draw_main(app: &mut App, f: &mut Frame, g: usize, repo: &str, area: Rect)
     want_dir(app, repo, &folder);
     if folder.is_empty() {
         want_stats(app, repo);
+        want_about(app, repo);
     }
     let Some(page) = app.gh.pages.get_mut(repo) else { return 0 };
     let dim = Style::new().fg(P.dim);
     let w = area.width as usize;
     let now = crate::scm::now();
-    let mut lines: Vec<(Line<'static>, Option<Target>)> = vec![(Line::raw(""), None)];
+    // The root's counts over its files, as GitHub's: its branches pick one.
+    let counts = page.about_now().filter(|_| page.folder.is_empty() && page.file.is_none()).map(|a| {
+        // Codicons' git-commit and tag; plain marks without them.
+        let (commit, tag) = if crate::theme::ascii() { ("o", "#") } else { ("\u{eafc}", "\u{ea66}") };
+        let fg = Style::new().fg(P.editor_fg);
+        Line::from(vec![
+            Span::styled(format!("  {commit} {} commits", a.commits), fg),
+            Span::styled(format!("   {} {} branches", icons().branch, a.branches), fg),
+            Span::styled(format!("   {tag} {} tags", a.tags), fg),
+        ])
+    });
+    let mut charts: Vec<ChartAt> = Vec::new();
+    let mut rules: Vec<usize> = Vec::new();
+    let pick = counts.is_some().then_some(Target::Branches);
+    let mut lines: Vec<(Line<'static>, Option<Target>)> = vec![(counts.unwrap_or_default(), pick)];
     match (&page.file, page.dirs.get(&page.folder)) {
         (Some(p), _) => lines.push((Line::styled(format!("  Loading {p}…"), dim), None)),
         (None, None) => lines.push((Line::styled("  Loading…", dim), None)),
@@ -884,8 +1362,24 @@ pub fn draw_main(app: &mut App, f: &mut Frame, g: usize, repo: &str, area: Rect)
             if d.entries.is_empty() {
                 lines.push((Line::styled("  (an empty folder)", dim), None));
             }
-            // The root's insights, under its files.
+            // The root's About and lists, then its insights, under its files: a rule
+            // between them.
             if page.folder.is_empty() {
+                lines.push((Line::raw(""), None));
+                rules.push(lines.len());
+                lines.push((rule(w), None));
+                lines.push((Line::raw(""), None));
+                match &page.about {
+                    None => lines.push((Line::styled("  ABOUT  loading…", dim), None)),
+                    Some((_, Err(e))) => lines.push((Line::styled(format!("  ABOUT  {e}"), dim), None)),
+                    Some((_, Ok(a))) => {
+                        let open = page.stats.as_ref().and_then(|s| s.as_ref().ok()).map_or((0, 0), |s| (s.prs[0], s.issues[0]));
+                        let (more, at) = about_lines(a, open, w, link, now);
+                        let base = lines.len();
+                        charts.extend(at.into_iter().map(|c| ChartAt { line: base + c.line, ..c }));
+                        lines.extend(more);
+                    }
+                }
                 lines.push((Line::raw(""), None));
                 match &page.stats {
                     None => lines.push((Line::styled("  INSIGHTS  working them out…", dim), None)),
@@ -896,7 +1390,8 @@ pub fn draw_main(app: &mut App, f: &mut Frame, g: usize, repo: &str, area: Rect)
             if let Some((name, text)) = &d.readme {
                 lines.push((Line::raw(""), None));
                 lines.push((Line::from(vec![Span::styled(format!("  {} ", icons().outline), dim), Span::styled(name.clone(), Style::new().fg(P.editor_fg).bold())]), None));
-                lines.push((Line::styled(format!("  {}", "─".repeat(w.saturating_sub(4))), Style::new().fg(P.guide)), None));
+                rules.push(lines.len());
+                lines.push((rule(w), None));
                 let width = area.width.saturating_sub(4);
                 if page.readme.as_ref().is_none_or(|(fo, rw, _)| *fo != page.folder || *rw != width) {
                     let src: Vec<String> = text.lines().map(str::to_string).collect();
@@ -916,7 +1411,8 @@ pub fn draw_main(app: &mut App, f: &mut Frame, g: usize, repo: &str, area: Rect)
     let active = grp.active;
     let v = &mut grp.tabs[active].view;
     v.scroll = v.scroll.min(n.saturating_sub(h));
-    for (row, (line, t)) in lines.into_iter().skip(v.scroll).take(h).enumerate() {
+    let scroll = v.scroll;
+    for (row, (line, t)) in lines.into_iter().skip(scroll).take(h).enumerate() {
         let r = Rect::new(area.x, area.y + row as u16, area.width, 1);
         if t.is_some() && hover.is_some_and(|p| r.contains(p)) {
             fill(f, r, P.list_hover_bg);
@@ -926,5 +1422,59 @@ pub fn draw_main(app: &mut App, f: &mut Frame, g: usize, repo: &str, area: Rect)
             app.gh.hits.page.push((r, t));
         }
     }
+    // With Kitty graphics, the traffic bars again in pixels over their cells: the rows
+    // of them on screen.
+    if let Some(cell) = crate::media::pixel_cell(app).filter(|_| !charts.is_empty() || !rules.is_empty()) {
+        // The rules as one crisp pixel line through their row's middle.
+        let cols = area.width.saturating_sub(4);
+        for (k, &line) in rules.iter().enumerate().filter(|(_, l)| (scroll..scroll + h).contains(*l) && cols > 0) {
+            let (w, ch) = (u32::from(cols) * u32::from(cell.0), u32::from(cell.1));
+            let crate::theme::Rgba(r, gr, b, a) = crate::ui::pixels::opaque(P.group_border);
+            let img = image::RgbaImage::from_fn(w, ch, |_, y| image::Rgba(if y == ch / 2 { [r, gr, b, a] } else { [0; 4] }));
+            let at = Rect::new(area.x + 2, area.y + (line - scroll) as u16, cols, 1);
+            crate::media::show_pixels(app, f, &format!("rule:{g}:{k}"), at, &img, &|_| P.editor_bg);
+        }
+        for (k, c) in charts.iter().enumerate() {
+            let (top, bottom) = (c.line.max(scroll), (c.line + CHART_ROWS as usize).min(scroll + h));
+            let cols = (c.t.days.len() as u16 * DAY_W).min(area.width.saturating_sub(c.x));
+            if top >= bottom || cols == 0 {
+                continue;
+            }
+            let img = chart_px(&c.t, cell);
+            let (y0, rows) = ((top - c.line) as u32, (bottom - top) as u32);
+            let part = image::imageops::crop_imm(&img, 0, y0 * u32::from(cell.1), u32::from(cols) * u32::from(cell.0), rows * u32::from(cell.1)).to_image();
+            let r = Rect::new(area.x + c.x, area.y + (top - scroll) as u16, cols, rows as u16);
+            crate::media::show_pixels(app, f, &format!("traffic:{g}:{k}"), r, &part, &|_| P.editor_bg);
+        }
+    }
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn traffic_bars_in_pixels_stand_by_their_counts_their_unique_part_solid() {
+        let t = Traffic { all: 12, unique: 3, days: vec![("Nov 10".into(), 4, 1), ("Nov 11".into(), 8, 2), ("Nov 12".into(), 0, 0)] };
+        let img = chart_px(&t, (10, 22));
+        assert_eq!(img.dimensions(), (3 * u32::from(DAY_W) * 10, u32::from(CHART_ROWS) * 22));
+        if let Some(d) = std::env::var_os("TERMCODE_SHOTS") {
+            img.save(std::path::Path::new(&d).join("traffic-bars.png")).unwrap();
+        }
+        let h = img.height();
+        let (solid, light) = chart_colors();
+        let px = |c: Color| {
+            let crate::theme::Rgba(r, g, b, a) = crate::ui::pixels::opaque(c);
+            image::Rgba([r, g, b, a])
+        };
+        // A bar's column: its height, and where solid gives way to light.
+        let column = |x: u32| (0..h - 1).rev().take_while(|&y| img.get_pixel(x, y).0[3] > 0 && *img.get_pixel(x, y) != px(P.guide)).count() as u32 + 1;
+        let (day0, day1) = (5, u32::from(DAY_W) * 10 + 5);
+        assert_eq!(column(day1), h, "the busiest day: to the top");
+        assert_eq!(column(day0), h / 2, "half of it: half as tall");
+        assert_eq!(*img.get_pixel(day1, h - 2), px(solid), "its unique part at the bottom, solid");
+        assert_eq!(*img.get_pixel(day1, 2), px(light), "the rest light");
+        assert_eq!(img.get_pixel(2 * u32::from(DAY_W) * 10 + 5, h / 2).0[3], 0, "a day without any: no bar");
+    }
 }

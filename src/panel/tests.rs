@@ -6458,6 +6458,7 @@ repo=""; prev=""
 for a in "$@"; do [ "$prev" = "--repo" ] && repo="$a"; prev="$a"; done
 # A repository page: a folder (its entries, then their last commits and the README), a file.
 case "$*" in
+  *homepageUrl*) printf '%s\n' '{"data":{"repository":{"description":"A small editor for the terminal","homepageUrl":"https://proj.example","visibility":"PUBLIC","isArchived":false,"parent":null,"diskUsage":2048,"createdAt":"2024-11-01T00:00:00Z","pushedAt":"2026-11-12T00:00:00Z","licenseInfo":{"spdxId":"MIT","name":"MIT License"},"repositoryTopics":{"nodes":[{"topic":{"name":"rust"}},{"topic":{"name":"tui"}}]},"branches":{"totalCount":2},"tags":{"totalCount":4},"releases":{"totalCount":3,"nodes":[{"name":"First","tagName":"v1.0.0","publishedAt":"2026-11-11T00:00:00Z","isPrerelease":false,"url":"https://github.com/tester/proj/releases/tag/v1.0.0"}]},"rev":{"history":{"totalCount":42},"statusCheckRollup":{"state":"FAILURE"}}}}}'; exit 0 ;;
   *isBinary*) printf '%s\n' '{"data":{"repository":{"object":{"text":"fn main() {}\n","isBinary":false,"byteSize":13}}}}'; exit 0 ;;
   *'history('*) printf '%s\n' '{"data":{"repository":{"object":{"e0":{"nodes":[{"messageHeadline":"Add the sources","committedDate":"2026-11-10T00:00:00Z"}]},"e1":{"nodes":[{"messageHeadline":"Say hello","committedDate":"2026-11-12T00:00:00Z"}]}},"readme":{"text":"Proj\n====\n\nHello **world** from the README.\n"}}}}'; exit 0 ;;
   *stargazerCount*) printf '%s\n' '{"data":{"repository":{"stargazerCount":7,"forkCount":2,"watchers":{"totalCount":3},"open":{"totalCount":2},"merged":{"totalCount":30},"closed":{"totalCount":5},"openIssues":{"totalCount":1},"closedIssues":{"totalCount":9},"languages":{"edges":[{"size":900,"node":{"name":"Rust","color":"\u0023dea584"}},{"size":100,"node":{"name":"Shell","color":"\u002389e051"}}]}}}}'; exit 0 ;;
@@ -6483,13 +6484,15 @@ case "$1 $2" in
   "api notifications") echo '[{"reason":"mention","updated_at":"2026-11-13T00:00:00Z","subject":{"title":"You were mentioned","type":"Issue","url":"https://api.github.com/repos/o/lib/issues/4"},"repository":{"full_name":"o/lib","html_url":"https://github.com/o/lib"}}]' ;;
   "pr list") echo '[{"number":12,"title":"Fix the thing in '"$repo"'","author":{"login":"ann"},"isDraft":false,"headRefName":"fix","updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/'"$repo"'/pull/12","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]},
                     {"number":13,"title":"Draft work","author":{"login":"bob"},"isDraft":true,"headRefName":"wip","updatedAt":"2026-11-12T00:00:00Z","url":"https://github.com/'"$repo"'/pull/13","statusCheckRollup":[]}]' ;;
-  "issue list") echo '[{"number":8,"title":"It breaks","author":{"login":"cy"},"updatedAt":"2026-11-10T00:00:00Z","url":"https://github.com/'"$repo"'/issues/8"}]' ;;
+  "issue list") echo '[{"number":8,"title":"It breaks","author":{"login":"cy"},"updatedAt":"2026-11-10T00:00:00Z","url":"https://github.com/'"$repo"'/issues/8","labels":[{"name":"bug","color":"d73a4a"}]}]' ;;
   "run list") echo '[{"databaseId":71,"displayTitle":"Fix the thing","workflowName":"CI","headBranch":"fix","status":"completed","conclusion":"failure","updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/'"$repo"'/actions/runs/71"},
                      {"databaseId":72,"displayTitle":"nightly","workflowName":"Nightly","headBranch":"main","status":"in_progress","conclusion":"","updatedAt":"2026-11-13T00:00:00Z","url":"https://github.com/'"$repo"'/actions/runs/72"}]' ;;
   "api repos/"*"/stats/commit_activity") echo '[{"days":[0,2,0,0,0,0,0],"total":2,"week":1793491200},{"days":[1,0,0,0,0,0,0],"total":1,"week":1794096000}]' ;;
   "api repos/"*"/stats/punch_card") echo '[[1,9,4],[1,10,2],[3,14,7]]' ;;
   "api repos/"*"/stats/code_frequency") echo '[[1793491200,120,-30],[1794096000,40,-80]]' ;;
   "api repos/"*"/languages") echo '{"Rust":900,"Shell":100}' ;;
+  "api repos/"*"/traffic/views") echo '{"count":120,"uniques":34,"views":[{"timestamp":"2026-11-10T00:00:00Z","count":3,"uniques":1},{"timestamp":"2026-11-11T00:00:00Z","count":8,"uniques":2},{"timestamp":"2026-11-12T00:00:00Z","count":5,"uniques":2},{"timestamp":"2026-11-13T00:00:00Z","count":0,"uniques":0},{"timestamp":"2026-11-14T00:00:00Z","count":12,"uniques":4},{"timestamp":"2026-11-15T00:00:00Z","count":22,"uniques":6},{"timestamp":"2026-11-16T00:00:00Z","count":18,"uniques":5},{"timestamp":"2026-11-17T00:00:00Z","count":9,"uniques":3},{"timestamp":"2026-11-18T00:00:00Z","count":4,"uniques":1},{"timestamp":"2026-11-19T00:00:00Z","count":0,"uniques":0},{"timestamp":"2026-11-20T00:00:00Z","count":6,"uniques":2},{"timestamp":"2026-11-21T00:00:00Z","count":15,"uniques":4},{"timestamp":"2026-11-22T00:00:00Z","count":10,"uniques":3},{"timestamp":"2026-11-23T00:00:00Z","count":8,"uniques":2}]}' ;;
+  "api repos/"*"/traffic/clones") echo '{"count":15,"uniques":9,"clones":[{"timestamp":"2026-11-10T00:00:00Z","count":1,"uniques":1},{"timestamp":"2026-11-11T00:00:00Z","count":0,"uniques":0},{"timestamp":"2026-11-12T00:00:00Z","count":2,"uniques":1},{"timestamp":"2026-11-13T00:00:00Z","count":0,"uniques":0},{"timestamp":"2026-11-14T00:00:00Z","count":0,"uniques":0},{"timestamp":"2026-11-15T00:00:00Z","count":5,"uniques":3},{"timestamp":"2026-11-16T00:00:00Z","count":1,"uniques":1},{"timestamp":"2026-11-17T00:00:00Z","count":0,"uniques":0},{"timestamp":"2026-11-18T00:00:00Z","count":3,"uniques":2},{"timestamp":"2026-11-19T00:00:00Z","count":0,"uniques":0},{"timestamp":"2026-11-20T00:00:00Z","count":0,"uniques":0},{"timestamp":"2026-11-21T00:00:00Z","count":2,"uniques":1},{"timestamp":"2026-11-22T00:00:00Z","count":1,"uniques":1},{"timestamp":"2026-11-23T00:00:00Z","count":0,"uniques":0}]}' ;;
   "api repos/"*"/contributors"*) echo '[{"login":"ann","contributions":12}]' ;;
   *) exit 0 ;;
 esac
@@ -7335,9 +7338,41 @@ fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch(
     // Under the files, the insights: counts, the year's commits, when they land, churn.
     gh_settle(&mut app, &|a| a.gh.pages["tester/proj"].stats.is_some());
     let s = screen(&mut app, &mut t);
-    for want in ["INSIGHTS", "7 stars", "2 open · 30 merged · 5 closed", "1 open · 9 closed", "Rust 90%", "Commits", "When", "Code changes", "+160 / -110", "Contributors"] {
+    for want in ["INSIGHTS", "7 stars", "2 open · 30 merged · 5 closed", "1 open · 9 closed", "Rust 90%", "Commits", "When", "Code changes", "+160 added", "-110 removed", "Contributors"] {
         assert!(s.contains(want), "{want}: {s}");
     }
+    // Over the files: the counts; under them: About, the latest release, traffic, then
+    // the open pull requests and issues and the latest runs; the branch's checks failed.
+    gh_settle(&mut app, &|a| a.gh.pages["tester/proj"].about.is_some());
+    let s = screen(&mut app, &mut t);
+    for want in [
+        "42 commits", "2 branches", "4 tags", "ABOUT", " Public ", "A small editor for the terminal", "proj.example", " rust ", " tui ", "MIT license",
+        "2.0 MB", "First (v1.0.0)", " Latest ", "TRAFFIC", "Views", "120 total", "34 unique", "Clones", "15 total", "9 unique", "Nov 10", "Nov 23", "PULL REQUESTS", "#12 Fix the thing in tester/proj", " Draft ",
+        "ISSUES", "#8 It breaks", " bug ", "ACTIONS", "CI · Fix the thing", "Nightly · nightly",
+    ] {
+        assert!(s.contains(want), "{want}: {s}");
+    }
+    if let Some(d) = std::env::var_os("TERMCODE_SHOTS") {
+        screenshot(&mut app, &mut t, &Path::new(&d).join("repo-page.png"));
+    }
+    // A rule between the files and ABOUT.
+    let about = s.lines().position(|l| l.contains("ABOUT")).unwrap() as u16;
+    let ruled = |s: &str, y: u16| s.lines().nth(y as usize).unwrap().matches('─').count() > 40;
+    assert!(ruled(&s, about - 2) && s.lines().nth(about as usize - 4).unwrap().contains("README.md"), "{s}");
+    // With Kitty graphics the bars are a picture over their cells, the rule a pixel line.
+    let views = s.lines().position(|l| l.contains("Views") && l.contains("total")).unwrap() as u16;
+    app.media.kitty_cells_for_tests((10, 22));
+    screen(&mut app, &mut t);
+    let b = t.backend().buffer();
+    let pic = |y: u16| (0..b.area.width).any(|x| b[(x, y)].symbol().contains('\u{10EEEE}'));
+    assert!(pic(views + 1) && pic(views + 5) && !pic(views) && !pic(views + 6), "the bar rows only");
+    assert!(pic(about - 2) && !pic(about - 1), "the rule's row");
+    let commit = s.lines().find(|l| l.contains("abcdef1")).unwrap();
+    assert!(commit.contains(&format!("{} abcdef1", crate::theme::icons().gh[5])), "the failed checks' mark: {commit}");
+    // A pull request's row opens it (here, with no browser, its link is copied).
+    let r = hit(&app, &Target::Url("https://github.com/tester/proj/pull/12".into()));
+    press(&mut app, r);
+    assert_eq!(app.clip, "https://github.com/tester/proj/pull/12");
     // The list's src: listed in the middle (with ..), and opened in the tree.
     press(&mut app, list_src);
     gh_settle(&mut app, &|a| a.gh.pages["tester/proj"].dirs.contains_key("src"));

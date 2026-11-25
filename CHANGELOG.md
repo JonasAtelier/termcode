@@ -9,6 +9,12 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ## [Unreleased]
 
 ### Added
+- A repository's page says more on its main page: its commits, branches and tags over the
+  files (the branches pick one), the branch's checks by its latest commit, under a rule an ABOUT
+  (description, homepage, topics, license, size, public or private, fork, archived), the
+  latest release, the past two weeks' views and clones as bar charts (unique visitors
+  solid, in pixels with Kitty graphics; with push access), and its open
+  pull requests and issues (labels as chips) and latest runs, each opening in the browser.
 - The line between editor groups drags: their widths (or heights) follow, in the code
   view and in a view's own (Serial's channels side by side). With cards, a pane's edge
   takes either border there (the side bar's, the editors', a panel's).
