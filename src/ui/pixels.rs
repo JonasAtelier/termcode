@@ -111,12 +111,18 @@ fn icon_font() -> Option<&'static fontdue::Font> {
     .as_ref()
 }
 
+/// Whether `c` can go out as a picture: the icon font has it (fc-match finds some font
+/// anywhere, one without the icons where no Nerd Font is installed, as on CI).
+pub(crate) fn has_icon(c: char) -> bool {
+    icon_font().is_some_and(|font| font.lookup_glyph_index(c) != 0)
+}
+
 /// `glyph` (a Nerd Font icon the kit drew in `at`) again in pixels, `size` of `at`'s
 /// height: bigger than the font draws it. Other icon sets, and a font without it: text.
 pub(crate) fn icon(f: &mut Frame, at: Rect, glyph: &str, color: Color, size: f32) {
     let mut cs = glyph.chars();
     let (Some(c), None) = (cs.next(), cs.next()) else { return };
-    if cell().is_none() || !crate::theme::nerd() || !icon_font().is_some_and(|font| font.lookup_glyph_index(c) != 0) {
+    if cell().is_none() || !crate::theme::nerd() || !has_icon(c) {
         return;
     }
     let at = at.intersection(f.area());
@@ -655,8 +661,8 @@ mod tests {
         let b = out.unwrap();
         let pic = |x: u16| b[(x, 0)].symbol().contains('\u{10EEEE}');
         assert!(!pic(3), "not one glyph: text");
-        // Without the font (CI), it stays the font's glyph; here, a picture 0.9 of the row high.
-        if icon_font().is_none() {
+        // Without the icon font (CI), it stays the font's glyph; here, a picture 0.9 of the row high.
+        if !has_icon(glyph.chars().next().unwrap()) {
             assert_eq!(b[(0, 0)].symbol(), glyph);
         } else {
             assert!(pic(0) && pic(1), "the icon's two cells, in pixels");
