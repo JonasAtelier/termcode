@@ -50,6 +50,7 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   ELF and map reports' bars (a memory region's green, amber past 75%, red past 90%).
 
 ### Fixed
+- The activity bar's icons in pixels sit in its middle (they were half a cell right).
 - Settings in a small window: the quick keys' keyboard no longer draws past the window;
   categories that do not fit get a slider and go by the wheel, a long name is cut before
   its count; the keyboard's legend gives way to its prefix.

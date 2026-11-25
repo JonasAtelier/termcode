@@ -8102,3 +8102,31 @@ fn a_selection_ending_on_a_diff_sides_right_edge_does_not_scroll_the_diff() {
     wait_idle(&mut app);
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn the_activity_bars_icons_in_pixels_sit_in_its_middle() {
+    let root = repo("activity-px");
+    let mut app = App::new(root.clone(), None);
+    app.media.kitty_cells_for_tests((10, 22));
+    let mut t = Terminal::new(TestBackend::new(120, 36)).unwrap();
+    for width in [5, 4] {
+        app.settings.spacing.activity_width = width;
+        crate::ui::pixels::SHOTS.set(Some(Vec::new()));
+        t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+        let shots = crate::ui::pixels::SHOTS.take().unwrap_or_default();
+        let bar = app.ui.activity[0].0;
+        let mid = f32::from(bar.x) * 10.0 + f32::from(bar.width) * 5.0;
+        let mut seen = 0;
+        for (r, _) in &app.ui.activity {
+            // The icon's picture on the item's row: its ink's middle on the bar's.
+            let Some((at, pic)) = shots.iter().find(|(at, _)| r.contains(at.as_position()) && at.y == r.y + r.height.saturating_sub(1).min(1)) else { continue };
+            let ink: Vec<u32> = (0..pic.width()).filter(|&x| (0..pic.height()).any(|y| pic.get_pixel(x, y).0[3] > 0)).collect();
+            let (a, b) = (ink[0] as f32, *ink.last().unwrap() as f32 + 1.0);
+            let centre = f32::from(at.x) * 10.0 + (a + b) / 2.0;
+            assert!((centre - mid).abs() <= 1.0, "width {width}: icon at {centre}px, the bar's middle {mid}px");
+            seen += 1;
+        }
+        assert!(seen >= 3, "width {width}: the views' icons in pixels ({seen})");
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
