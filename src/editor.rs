@@ -2113,7 +2113,7 @@ pub fn read_backup(bak: &Path, file: &Path) -> Option<serde_json::Value> {
 // hides that backup until the other one exits. A per-panel flock if that bites.
 pub fn orphan_backups(dir: &Path, live: &[&str]) -> Vec<(PathBuf, serde_json::Value)> {
     let running = |v: &serde_json::Value| {
-        v["pid"].as_u64().is_some_and(|p| fs::read_to_string(format!("/proc/{p}/comm")).is_ok_and(|c| live.contains(&c.trim_end())))
+        v["pid"].as_u64().is_some_and(|p| i32::try_from(p).ok().and_then(crate::api::proc_stat).is_some_and(|(c, _, _)| live.contains(&c.as_str())))
     };
     let mut v: Vec<(PathBuf, serde_json::Value)> = fs::read_dir(dir)
         .into_iter()
@@ -2216,7 +2216,7 @@ mod tests {
             fs::write(bak.join(format!("{name}.json")), r.to_string()).unwrap();
         }
         fs::write(bak.join("x.tmp"), "{}").unwrap();
-        let comm = fs::read_to_string("/proc/self/comm").unwrap();
+        let comm = crate::api::proc_stat(std::process::id() as i32).unwrap().0;
         let names = |live: &[&str]| -> Vec<String> {
             orphan_backups(&bak, live).iter().map(|(p, _)| p.file_stem().unwrap().to_string_lossy().into_owned()).collect()
         };

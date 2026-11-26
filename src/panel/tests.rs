@@ -1777,7 +1777,7 @@ fn without_a_nerd_font_no_private_use_glyph_is_drawn() {
 fn input_wait_tells_idle_ready_and_a_closed_terminal_apart() {
     let (mut master, mut slave) = (0, 0);
     // SAFETY: valid out pointers; the name, termios and winsize arguments may be null.
-    let opened = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) };
+    let opened = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
     assert_eq!(opened, 0);
     // SAFETY: both descriptors are open. A child forked by another test must not inherit them.
     unsafe {

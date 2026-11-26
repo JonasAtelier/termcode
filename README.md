@@ -124,3 +124,11 @@ From this checkout on Linux, run `cargo run -- .`. To register it with herdr 0.9
 <!-- /dev -->
 
 Default colors come from Microsoft’s VS Code and file icons from Jesse Weed’s Seti UI, both under MIT. The Debian package includes its terms and dependency licenses in `/usr/share/doc/termcode/copyright` and `/usr/share/doc/termcode/THIRD-PARTY-LICENSES`.
+
+## macOS (experimental)
+
+Build from this checkout with `cargo install --locked --path . -j2`, then run
+`termcode .`. The editor, integrated terminal, API and clipboard have macOS
+compatibility support. API client labels use `ps` output. Serial speeds above
+230400 and Linux-specific tool integrations are not supported by this port.
+Physical hardware integrations have not been validated on macOS.

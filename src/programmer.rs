@@ -1887,15 +1887,19 @@ mod tests {
         let (mut app, mut t, dir) = setup("serial");
         let (mut m, mut sl) = (0, 0);
         // SAFETY: valid out pointers; name, termios and winsize may be null.
-        assert_eq!(unsafe { libc::openpty(&mut m, &mut sl, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) }, 0);
+        assert_eq!(unsafe { libc::openpty(&mut m, &mut sl, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) }, 0);
         // SAFETY: openpty opened both; each File owns one.
         let (mut board, _slave) = unsafe { (<fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(m), <fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(sl)) };
-        app.prog.tty = Some(fs::read_link(format!("/proc/self/fd/{sl}")).unwrap());
+        let mut name = [0i8; 1024];
+        // SAFETY: sl is an open PTY and name is a writable buffer.
+        assert_eq!(unsafe { libc::ttyname_r(sl, name.as_mut_ptr(), name.len()) }, 0);
+        app.prog.tty = Some(PathBuf::from(unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_str().unwrap()));
         app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);
         press(&mut app, &mut t, "Serial Console");
         assert!(entered(&mut app, Field::Baud, "12345").is_err());
-        entered(&mut app, Field::Baud, "921600").unwrap();
+        let baud = if cfg!(target_os = "macos") { "230400" } else { "921600" };
+        entered(&mut app, Field::Baud, baud).unwrap();
         app.on_key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)); // the page's main action
         assert!(app.prog.serial.is_some() && app.prog.serial_tab);
         use std::io::Write as _;
@@ -1912,7 +1916,7 @@ mod tests {
         };
         shown(&mut app, &mut t, "temp=21");
         let s = screen(&mut app, &mut t);
-        assert!(s.contains(" Serial ") && s.contains(" boot ok") && s.contains("at 921600 baud") && !s.contains("[32m"), "colours dropped, the coming line shown\n{s}");
+        assert!(s.contains(" Serial ") && s.contains(" boot ok") && s.contains(&format!("at {baud} baud")) && !s.contains("[32m"), "colours dropped, the coming line shown\n{s}");
         entered(&mut app, Field::Send, "led on").unwrap();
         assert!(app.gitui.cmds.picker.is_some(), "ready for the next line");
         let mut got = [0u8; 7];
@@ -2069,10 +2073,13 @@ mod tests {
         // The board: a pseudo-terminal, the console on it.
         let (mut m, mut sl) = (0, 0);
         // SAFETY: valid out pointers; name, termios and winsize may be null.
-        assert_eq!(unsafe { libc::openpty(&mut m, &mut sl, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) }, 0);
+        assert_eq!(unsafe { libc::openpty(&mut m, &mut sl, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) }, 0);
         // SAFETY: openpty opened both; each File owns one.
         let _board = unsafe { (<fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(m), <fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(sl)) };
-        let tty = fs::read_link(format!("/proc/self/fd/{sl}")).unwrap();
+        let mut name = [0i8; 1024];
+        // SAFETY: sl is an open PTY and name is a writable buffer.
+        assert_eq!(unsafe { libc::ttyname_r(sl, name.as_mut_ptr(), name.len()) }, 0);
+        let tty = PathBuf::from(unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_str().unwrap());
         (app.prog.idf.root, app.prog.idf.checked, app.prog.tty) = (Some(fw.clone()), true, Some(tty.clone()));
         app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);

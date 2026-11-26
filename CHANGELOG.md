@@ -6,6 +6,15 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
+## Unreleased
+
+### Added
+
+- Use macOS socket credentials, process information and PTY signatures.
+- Preserve live sessions, backups and API sockets without Linux `/proc`.
+- Use pbcopy/pbpaste for the macOS clipboard.
+- Detect macOS serial ports; offer baud rates up to 230400.
+
 ## [1.2.1] - 2026-11-26
 
 ### Changed

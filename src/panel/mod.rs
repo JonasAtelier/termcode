@@ -1694,6 +1694,12 @@ pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Resul
 /// that fails.
 fn reexec(reroot: Option<String>) -> io::Error {
     use std::os::unix::process::CommandExt;
+    #[cfg(target_os = "macos")]
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    #[cfg(not(target_os = "macos"))]
     let exe = match fs::read_link("/proc/self/exe") {
         Ok(l) => replaced(&l).unwrap_or(l),
         Err(e) => return e,
@@ -1975,8 +1981,8 @@ fn write_token(path: &Path) -> io::Result<String> {
     Ok(token)
 }
 
-/// Put text on the system clipboard: wl-copy, then xclip, then OSC 52 (which
-/// herdr forwards to the outer terminal; not every terminal honours it).
+/// Put text on the system clipboard: pbcopy on macOS, wl-copy/xclip on Linux,
+/// then OSC 52 (which herdr forwards to the outer terminal; not every terminal honours it).
 pub(crate) fn clipboard_set(text: &str) -> &'static str {
     // Tests never touch the user's clipboard (they read `App::clip`).
     if cfg!(test) {
@@ -1988,7 +1994,11 @@ pub(crate) fn clipboard_set(text: &str) -> &'static str {
         let _ = out.flush();
     };
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some() && !HEADLESS.load(Ordering::SeqCst);
-    for argv in [&["wl-copy"][..], &["xclip", "-selection", "clipboard"][..]] {
+    #[cfg(target_os = "macos")]
+    let tools = [&["pbcopy"][..]];
+    #[cfg(not(target_os = "macos"))]
+    let tools = [&["wl-copy"][..], &["xclip", "-selection", "clipboard"][..]];
+    for argv in tools {
         let Ok(mut c) = Command::new(argv[0])
             .args(&argv[1..])
             .stdin(Stdio::piped())
@@ -2018,7 +2028,7 @@ pub(crate) fn clipboard_set(text: &str) -> &'static str {
     "OSC 52"
 }
 
-/// System clipboard text via wl-paste or xclip, each given 500 ms.
+/// System clipboard text via pbpaste or wl-paste/xclip, each given 500 ms.
 pub(crate) fn clipboard_get() -> Option<String> {
     // Tests never read the user's clipboard either (`App::clip` stands in).
     if cfg!(test) {
@@ -2027,9 +2037,12 @@ pub(crate) fn clipboard_get() -> Option<String> {
     // The tool that worked last time first: a missing or hung first one is not waited for
     // on every paste.
     static LAST: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(target_os = "macos")]
+    let tools = [&["pbpaste"][..]];
+    #[cfg(not(target_os = "macos"))]
     let tools = [&["wl-paste", "-n"][..], &["xclip", "-o", "-selection", "clipboard"][..]];
     let first = LAST.load(Ordering::Relaxed);
-    for k in [first, 1 - first] {
+    for k in (0..tools.len()).map(|offset| (first + offset) % tools.len()) {
         let argv = tools[k];
         let Ok(mut c) = Command::new(argv[0])
             .args(&argv[1..])

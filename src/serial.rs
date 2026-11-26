@@ -10,7 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// The rates a port opens at.
+#[cfg(not(target_os = "macos"))]
 pub const BAUDS: [u32; 13] = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1000000, 2000000];
+
+#[cfg(target_os = "macos")]
+pub const BAUDS: [u32; 9] = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400];
 
 fn speed(baud: u32) -> Option<libc::speed_t> {
     Some(match baud {
@@ -23,9 +27,13 @@ fn speed(baud: u32) -> Option<libc::speed_t> {
         57600 => libc::B57600,
         115200 => libc::B115200,
         230400 => libc::B230400,
+        #[cfg(not(target_os = "macos"))]
         460800 => libc::B460800,
+        #[cfg(not(target_os = "macos"))]
         921600 => libc::B921600,
+        #[cfg(not(target_os = "macos"))]
         1000000 => libc::B1000000,
+        #[cfg(not(target_os = "macos"))]
         2000000 => libc::B2000000,
         _ => return None,
     })
@@ -142,7 +150,7 @@ fn list_ports() -> Vec<(PathBuf, String)> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| ["ttyACM", "ttyUSB"].iter().any(|p| e.file_name().to_string_lossy().starts_with(p)))
+        .filter(|e| ["ttyACM", "ttyUSB", "cu."].iter().any(|p| e.file_name().to_string_lossy().starts_with(p)))
         .filter(|e| !seen.contains(&e.path()))
         .map(|e| (e.path(), e.file_name().to_string_lossy().into_owned()))
         .collect();
@@ -159,6 +167,14 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn every_advertised_baud_rate_can_be_selected() {
+        for baud in BAUDS {
+            assert!(speed(baud).is_some(), "{baud}");
+        }
+        assert!(speed(12345).is_none());
+    }
+
+    #[test]
     fn by_id_names_read_as_the_device() {
         assert_eq!(nice("usb-STMicroelectronics_STM32_STLink_0123ABCD-if02"), "STMicroelectronics STM32 STLink 0123ABCD");
         assert_eq!(nice("usb-FTDI_FT232R_USB_UART_A0000001-if00-port0"), "FTDI FT232R USB UART A0000001");
@@ -170,10 +186,13 @@ mod tests {
         // A pseudo-terminal stands in for the board: its slave is the port.
         let (mut m, mut s) = (0, 0);
         // SAFETY: valid out pointers; name, termios and winsize may be null.
-        assert_eq!(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) }, 0);
+        assert_eq!(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) }, 0);
         // SAFETY: openpty opened both; each File owns one.
         let (mut board, slave) = unsafe { (File::from_raw_fd(m), File::from_raw_fd(s)) };
-        let path = fs::read_link(format!("/proc/self/fd/{s}")).unwrap();
+        let mut name = [0i8; 1024];
+        // SAFETY: s is an open PTY slave and name is a writable buffer.
+        assert_eq!(unsafe { libc::ttyname_r(s, name.as_mut_ptr(), name.len()) }, 0);
+        let path = PathBuf::from(unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_str().unwrap());
         assert!(Port::open(&path, 12345, Box::new(|_| {})).is_err(), "not a rate");
         let (tx, rx) = channel();
         let mut port = Port::open(&path, 115200, Box::new(move |e| {
