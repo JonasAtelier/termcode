@@ -8193,3 +8193,47 @@ fn a_moving_picture_in_a_markdown_preview_asks_for_its_next_frame_a_still_one_do
     }
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn a_click_on_or_beside_a_change_mark_on_the_diffs_scrollbar_goes_to_that_change() {
+    let d = std::env::temp_dir().join(format!("termcode-diff-marks-{}", std::process::id()));
+    fs::create_dir_all(&d).unwrap();
+    let mut app = App::new(d.canonicalize().unwrap(), None);
+    let rows = open_big_diff(&mut app);
+    let mut t = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    screen(&mut app, &mut t);
+    let sb = *app.ui.scrollbars.iter().find(|s| s.target == ScrollTarget::Editor(0)).expect("the diff's scrollbar");
+    let ins = rows.iter().position(|r| r.kind == diff::Kind::Ins).unwrap();
+    let h = app.ui.groups[0].text.height as usize;
+    let view = |app: &App| app.groups[0].tabs[app.groups[0].active].view.clone();
+    // Where the five inserted lines' mark is (below the slider: the view is at the top).
+    let mark = crate::decor::mark_row(sb.track.height, rows.len() + sb.track.height as usize - 1, sb.track.height as usize, ins, 0, rows.len() - 1);
+    assert!(mark > sb.slider.0 + sb.slider.1 + 2, "off the slider");
+    let click = |app: &mut App, y: u16| {
+        mouse(app, MouseEventKind::Down(MouseButton::Left), sb.track.x, sb.track.y + y);
+        mouse(app, MouseEventKind::Up(MouseButton::Left), sb.track.x, sb.track.y + y);
+    };
+    // On it: there, centred, marked for F7.
+    click(&mut app, mark);
+    let v = view(&app);
+    assert_eq!((v.cursor.line, v.scroll, v.want_x), (ins, ins - h / 2, Some(0)));
+    // A row beside it (as they are hard to hit), from the top again.
+    app.groups[0].tabs[0].view = Default::default();
+    screen(&mut app, &mut t);
+    click(&mut app, mark + 1);
+    assert_eq!(view(&app).cursor.line, ins, "a row below the mark");
+    // Far from every mark: a page, as before.
+    app.groups[0].tabs[0].view = Default::default();
+    screen(&mut app, &mut t);
+    let empty = (sb.slider.0 + sb.slider.1..sb.track.height)
+        .find(|&y| crate::scm::change_at_mark(&rows, 0, sb.track.height, y, 1).is_none())
+        .expect("a row with no change near");
+    click(&mut app, empty);
+    let v = view(&app);
+    assert!(v.want_x.is_none() && v.scroll == sb.page.min(sb.max_off), "paged: {}", v.scroll);
+    // On the slider: it drags, whatever is under it.
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), sb.track.x, sb.track.y + sb.slider.0);
+    assert!(matches!(app.drag, Drag::Scroll(..)));
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), sb.track.x, sb.track.y + sb.slider.0);
+    let _ = fs::remove_dir_all(&d);
+}

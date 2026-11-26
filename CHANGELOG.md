@@ -13,6 +13,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   repository (beside the README, or by a GitHub address of a file) and GitHub's own come
   through gh and are kept; half blocks, or real pixels with Kitty graphics. Another
   site's picture (a badge) still shows as its name.
+- A click on a change's mark on a diff's scrollbar (green, red), or a row beside it, goes
+  to that change, centred as F7 does; the slider still drags.
 - Markdown pictures as GitHub draws them, in the preview and a repository's page: an
   animated GIF plays, a `width="96%"` is of the pane, a `<video>` shows ▶ video.
 

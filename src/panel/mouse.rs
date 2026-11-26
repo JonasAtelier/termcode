@@ -460,7 +460,18 @@ impl App {
     pub(super) fn scrollbar_click(&mut self, sb: ScrollHit, p: Position) {
         let cur = self.scroll_of(sb.target);
         let at = if matches!(sb.target, ScrollTarget::EditorHorizontal(_)) { p.x - sb.track.x } else { p.y - sb.track.y };
-        match decor::track_hit(at, sb.slider) {
+        let hit = decor::track_hit(at, sb.slider);
+        // A diff's scrollbar off its slider: a change's mark there, or a row from it, goes
+        // to that change.
+        if let (ScrollTarget::Editor(g), TrackHit::PageUp | TrackHit::PageDown) = (sb.target, hit) {
+            let tab = self.groups.get(g).and_then(|grp| grp.tabs.get(grp.active));
+            if let Some((Some(Doc::Diff(d)), scroll)) = tab.map(|t| (self.docs.get(&t.key), t.view.scroll)) {
+                if let Some(i) = crate::scm::change_at_mark(&d.rows, scroll, sb.track.height, at, MARK_NEAR) {
+                    return crate::scm::go_to_change(self, g, i);
+                }
+            }
+        }
+        match hit {
             TrackHit::PageUp => self.set_scroll(sb.target, cur.saturating_sub(sb.page)),
             TrackHit::PageDown => self.set_scroll(sb.target, (cur + sb.page).min(sb.max_off)),
             TrackHit::Slider(grab) => self.drag = Drag::Scroll(sb, grab),
@@ -1085,6 +1096,9 @@ pub(crate) fn diff_pos_in(d: &DiffDoc, v: &View, p: Position, texts: [Rect; 2], 
     let col = diff_cell(d, row, side).map_or(0, |t| if past { t.len() } else { editor::byte_at_display(t, x) });
     Some(Pos::new(row, col))
 }
+
+/// How many rows of a diff's scrollbar either side of a change's mark still go to it.
+const MARK_NEAR: u16 = 1;
 
 /// How often a held minimap slider steps the editor on.
 pub(crate) const MINI_STEP: Duration = Duration::from_millis(30);

@@ -970,20 +970,53 @@ pub fn next_change(rows: &[diff::Row], from: Option<usize>, dir: isize) -> Optio
 /// F7 in the active diff tab. The view's `want_x` marks that a jump happened
 /// and `cursor.line` holds its row (diff views have no caret of their own).
 pub fn jump_change(app: &mut App, dir: isize) {
-    let h = app.ui.groups.get(app.ag).map_or(20, |g| g.text.height as usize);
-    let Some(grp) = app.groups.get_mut(app.ag) else { return };
-    let Some(tab) = grp.tabs.get_mut(grp.active) else { return };
+    let Some(grp) = app.groups.get(app.ag) else { return };
+    let Some(tab) = grp.tabs.get(grp.active) else { return };
     let Some(Doc::Diff(d)) = app.docs.get(&tab.key) else { return };
     let from = tab.view.want_x.map(|_| tab.view.cursor.line);
     match next_change(&d.rows, from, dir) {
-        Some(i) => {
-            tab.view.cursor.line = i;
-            tab.view.want_x = Some(0);
-            // Revealed centred, as VS Code's diff editor does.
-            tab.view.scroll = i.saturating_sub(h / 2);
-        }
+        Some(i) => go_to_change(app, app.ag, i),
         None => app.msg = "No changes".into(),
     }
+}
+
+/// Group `g`'s diff at the change starting at row `i`: revealed centred, as VS Code's diff
+/// editor does, and marked on the scrollbar (F7 goes on from it).
+pub fn go_to_change(app: &mut App, g: usize, i: usize) {
+    let h = app.ui.groups.get(g).map_or(20, |gh| gh.text.height as usize);
+    let Some(tab) = app.groups.get_mut(g).and_then(|grp| grp.tabs.get_mut(grp.active)) else { return };
+    tab.view.cursor.line = i;
+    tab.view.want_x = Some(0);
+    tab.view.scroll = i.saturating_sub(h / 2);
+}
+
+/// The change a click at row `y` of a diff's scrollbar (`track` rows, the view at
+/// `scroll`) is on, or within `near` rows of: its first row. Its marks lie where the
+/// overview ruler draws them (ui::diffs::diff_overview); the nearest wins.
+pub fn change_at_mark(rows: &[diff::Row], scroll: usize, track: u16, y: u16, near: u16) -> Option<usize> {
+    let (n, th) = (rows.len(), usize::from(track));
+    if n == 0 || th == 0 {
+        return None;
+    }
+    let row_of = |i: usize| crate::decor::mark_row(track, n + th - 1, th, i, scroll, n - 1).min(track - 1);
+    let mut best: Option<(u16, usize)> = None;
+    let mut i = 0;
+    while i < n {
+        if rows[i].kind == diff::Kind::Same {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && rows[i].kind != diff::Kind::Same {
+            i += 1;
+        }
+        let (top, bottom) = (row_of(start), row_of(i - 1));
+        let off = if y < top { top - y } else { y.saturating_sub(bottom) };
+        if off <= near && best.is_none_or(|(b, _)| off < b) {
+            best = Some((off, start));
+        }
+    }
+    best.map(|b| b.1)
 }
 
 // ---------------------------------------------------------------- rows and actions
