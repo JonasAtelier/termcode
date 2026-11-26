@@ -5,10 +5,10 @@ search across them, and see edits side by side with the last commit. You can als
 editor as a Code tab in herdr.
 
 <!-- dev -->
-**Contents** · [Run from source](#run-from-source) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Serial ports](#serial-ports) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
+**Contents** · [Install](#install) · [Run from source](#run-from-source) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Serial ports](#serial-ports) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
 <!-- /dev -->
 <!-- user
-**Contents** · [Install on Debian or Ubuntu](#install-on-debian-or-ubuntu) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Serial ports](#serial-ports) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
+**Contents** · [Install](#install) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Serial ports](#serial-ports) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
 user -->
 
 ![termcode showing the file explorer, editor and integrated terminal](doc/screenshots/editor.png)
@@ -26,24 +26,24 @@ cargo run -- .
 To install this checkout, run `cargo install --locked --path .`
 and put Cargo’s bin directory (normally `~/.cargo/bin`) on your PATH. From this
 checkout, `herdr plugin link "$PWD"` adds the optional integration for herdr 0.9.1+.
-
-Packaged binaries are available from [Releases](https://github.com/JonasAtelier/termcode-releases/releases).
 <!-- /dev -->
-<!-- user
-## Install on Debian or Ubuntu
 
-Run `dpkg --print-architecture` to find your architecture (`amd64` or `arm64`).
-Download the matching `.deb` from the [latest release](https://github.com/JonasAtelier/termcode-releases/releases/latest).
-In the folder containing that package, install it and check the version.
+## Install
+
+On Debian or Ubuntu (amd64 or arm64), add termcode's signed apt repository; new versions
+then come with `sudo apt upgrade`.
 
 ```sh
-sudo apt install ./termcode_*.deb
-termcode --version
+sudo curl -fsSLo /usr/share/keyrings/termcode.gpg https://jonasatelier.github.io/termcode/termcode.gpg
+echo "deb [signed-by=/usr/share/keyrings/termcode.gpg] https://jonasatelier.github.io/termcode stable main" \
+  | sudo tee /etc/apt/sources.list.d/termcode.list
+sudo apt update && sudo apt install termcode
 ```
 
-The release notes also explain how to add the signed apt repository for updates.
-For a Code tab in herdr 0.9.1+, run `herdr plugin link /usr/share/termcode`.
-user -->
+Or download the `.deb` for your machine (`dpkg --print-architecture` says `amd64` or
+`arm64`) from the [latest release](https://github.com/JonasAtelier/termcode/releases/latest)
+and run `sudo apt install ./termcode_*.deb`. For a Code tab in herdr 0.9.1+, run
+`herdr plugin link /usr/share/termcode`.
 
 <a id="open-your-first-file"></a>
 
@@ -112,7 +112,7 @@ Writing one: [doc/extensions.md](doc/extensions.md); for agents, `termcode ext -
 ## Help and settings
 
 **Ctrl+,** opens Settings. The Debian package includes `man termcode`. The
-[0.4.0 user guide](https://github.com/JonasAtelier/termcode-releases/blob/6fcfc0078c2f0a48eac95b96a0446457dde30b53/README.md)
+[0.4.0 user guide](https://github.com/JonasAtelier/termcode/blob/v0.4.0/README.md)
 covers shortcuts, previews, optional tools and troubleshooting. To report a problem,
 run **Help: Report Issue** from F1 and review the copied diagnostics before posting
 to the [issue tracker](https://github.com/JonasAtelier/termcode/issues/new/choose).

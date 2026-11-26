@@ -24,8 +24,8 @@ Tests live beside implementation in `src/`; `target/` contains ignored build out
 - `cargo test -j2 parse::tests`: run a focused module's tests.
 - `cargo run -- .`: open this repository in an interactive terminal.
 - `cargo run -- --tab .`: open a herdr workspace tab.
-- `README.md` is for both: blocks between `<!-- dev -->` and `<!-- /dev -->` (and table rows ending `<!--dev-->`) are for building termcode; `<!-- user` ... `user -->` blocks are for people who install it. `scripts/user-readme.sh` writes the installed copy (`--releases`: the termcode-releases front page, which the release workflow updates).
-- `scripts/apt-repo.sh DIR debs...`: add packages to the apt repository (termcode-releases, branch `gh-pages`, served by GitHub Pages) and sign it; CI signs with the `APT_SIGNING_KEY` secret (keep an offline copy of the key).
+- `README.md` is for both: blocks between `<!-- dev -->` and `<!-- /dev -->` (and table rows ending `<!--dev-->`) are for building termcode; `<!-- user` ... `user -->` blocks are for people who install it. `scripts/user-readme.sh` writes the installed copy.
+- `scripts/apt-repo.sh DIR debs...`: add packages to the apt repository (this repository's branch `gh-pages`, served by GitHub Pages at https://jonasatelier.github.io/termcode) and sign it; CI signs with the `APT_SIGNING_KEY` secret (keep an offline copy of the key).
 - `scripts/deb.sh`: build the static amd64 and arm64 `.deb`s (no build-machine paths in the binary).
 - Changes worth telling users go under the next version in `CHANGELOG.md`. Version `X.Y.Z`: X for a new feature or a huge change (a new view in the side bar, a new kind of page), Y for a change to a pane or view (the minimap, quick keys), Z for bug fixes. A release bumps only the largest kind it holds, the lower numbers back to 0 (1.4.2 with a fix and a minimap change: 1.5.0).
 - CI builds with the Rust pinned in `.github/workflows/release.yml` (1.97.1, as here); bump it on purpose, after `cargo clippy --all-targets -- -D warnings` passes with the new one.

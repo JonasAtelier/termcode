@@ -1,12 +1,12 @@
 #!/bin/sh
-# Adds .deb packages to the apt repository in DIR (the termcode-releases Pages tree),
+# Adds .deb packages to the apt repository in DIR (termcode's Pages tree, branch gh-pages),
 # rebuilds its indexes and signs them:
 #   scripts/apt-repo.sh DIR target/deb/debian/termcode_*.deb
 # The signing key is the one in $GNUPGHOME, or APT_SIGNING_KEY (an armored private key,
 # as the release workflow has it), imported into a throwaway keyring. The public half is
 # written beside the indexes as termcode.gpg (binary) and termcode.asc (armored), so
 # users can fetch it from the same place:
-#   deb [signed-by=/usr/share/keyrings/termcode.gpg] https://jonasatelier.github.io/termcode-releases stable main
+#   deb [signed-by=/usr/share/keyrings/termcode.gpg] https://jonasatelier.github.io/termcode stable main
 set -eu
 dir=$(cd "$1" && pwd)
 shift

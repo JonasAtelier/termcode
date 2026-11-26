@@ -9,6 +9,11 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 ## [Unreleased]
 
 ### Changed
+- termcode is published from its own repository: releases at
+  https://github.com/JonasAtelier/termcode/releases and the apt repository at
+  https://jonasatelier.github.io/termcode (the same signing key). If you added the old
+  one, point apt at the new address once:
+  `sudo sed -i 's#/termcode-releases #/termcode #' /etc/apt/sources.list.d/termcode.list`
 - Problems and ideas go to termcode's own issues (Help: Report Issue, the crash note, the
   README, the package's upstream contact), with the bug and feature forms.
 

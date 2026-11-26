@@ -1,14 +1,14 @@
 # A release, run when a version tag is pushed (git tag v0.2.0 && git push origin v0.2.0):
 # lint and test, build the static amd64 and arm64 packages, install them on older and
-# newer Debian and Ubuntu, then publish them on the public termcode-releases repository:
-# a GitHub release, its front page, and the signed apt repository its Pages serve.
+# newer Debian and Ubuntu (job `release`), then publish them here (job `publish`): a
+# GitHub release and the signed apt repository that this repository's Pages serve
+# (branch gh-pages, https://jonasatelier.github.io/termcode).
 # Ordinary pushes and pull requests run ci.yml (lint and test) instead.
 #
-# Secrets (repository settings, Actions):
-#   RELEASES_TOKEN   fine-grained token, Contents: read and write on termcode-releases only
+# Secret (repository settings, Actions):
 #   APT_SIGNING_KEY  the apt repository's armored private key (scripts/apt-repo.sh)
-# Only the publishing steps get them: a crate's build script runs during the build and
-# the tests, and must never see either.
+# Only `publish` gets it, and write access: a crate's build script runs during the build
+# and the tests, and must never see either.
 name: release
 
 on:
@@ -27,6 +27,8 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Tools the tests use
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep shellcheck clang apt-utils
@@ -83,47 +85,60 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: termcode-debs
-          path: target/deb/debian/*.deb
+          path: |
+            target/deb/debian/*.deb
+            target-notes.md
+          if-no-files-found: ignore
 
-      # Says only whether both secrets are set (a secret cannot be tested in `if`).
+  # Publishing, apart from the build: only this job may write here and has the key.
+  publish:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: termcode-debs
+          path: out
+
+      - name: Tools the apt repository needs
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq apt-utils
+
+      # Says only whether the key is set (a secret cannot be tested in `if`).
       - name: Ready to publish?
         id: ready
-        if: startsWith(github.ref, 'refs/tags/')
         env:
-          TOKEN: ${{ secrets.RELEASES_TOKEN }}
           KEY: ${{ secrets.APT_SIGNING_KEY }}
         run: |
-          if [ -n "$TOKEN" ] && [ -n "$KEY" ]; then echo "publish=yes" >> "$GITHUB_OUTPUT"
-          else echo "::warning::RELEASES_TOKEN or APT_SIGNING_KEY is not set: built and tested, not published"; fi
+          if [ -n "$KEY" ]; then echo "publish=yes" >> "$GITHUB_OUTPUT"
+          else echo "::warning::APT_SIGNING_KEY is not set: built and tested, not published"; fi
 
-      - name: Publish on termcode-releases
+      - name: The GitHub release
         if: steps.ready.outputs.publish == 'yes'
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          { echo; cat doc/release-install.md; } >> target-notes.md
-          gh release create "$GITHUB_REF_NAME" target/deb/debian/*.deb \
-            --repo JonasAtelier/termcode-releases \
+          { cat out/target-notes.md; echo; cat doc/release-install.md; } > notes.md
+          gh release create "$GITHUB_REF_NAME" out/target/deb/debian/*.deb \
+            --repo "$GITHUB_REPOSITORY" \
             --title "termcode ${GITHUB_REF_NAME#v}" \
-            --notes-file target-notes.md
-          # The front page follows this release's README, with its screenshots.
-          git clone -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/JonasAtelier/termcode-releases.git" releases-page
-          scripts/user-readme.sh --releases > releases-page/README.md
-          rm -rf releases-page/doc/screenshots && mkdir -p releases-page/doc && cp -r doc/screenshots releases-page/doc/
-          cd releases-page
-          git config user.name JonasAtelier
-          git config user.email 98136255+JonasAtelier@users.noreply.github.com
-          git add -A
-          git diff --cached --quiet || { git commit -qm "README for termcode ${GITHUB_REF_NAME#v}" && git push -q; }
+            --notes-file notes.md
 
       - name: Update the apt repository
         if: steps.ready.outputs.publish == 'yes'
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
         run: |
-          git clone -q --depth 1 --branch gh-pages "https://x-access-token:${GH_TOKEN}@github.com/JonasAtelier/termcode-releases.git" apt-pages
-          scripts/apt-repo.sh apt-pages target/deb/debian/termcode_*.deb
+          git clone -q --depth 1 --branch gh-pages "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apt-pages
+          scripts/apt-repo.sh apt-pages out/target/deb/debian/termcode_*.deb
           cd apt-pages
           git config user.name JonasAtelier
           git config user.email 98136255+JonasAtelier@users.noreply.github.com

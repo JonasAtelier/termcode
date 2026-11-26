@@ -81,8 +81,8 @@ if have termcode; then
 else
     note "termcode: its apt repository, then the package (git, ripgrep, xclip, shellcheck with it)."
     if part termcode "Install termcode?" y; then
-        run "sudo curl -fsSLo /usr/share/keyrings/termcode.gpg https://jonasatelier.github.io/termcode-releases/termcode.gpg"
-        run "echo 'deb [signed-by=/usr/share/keyrings/termcode.gpg] https://jonasatelier.github.io/termcode-releases stable main' | sudo tee /etc/apt/sources.list.d/termcode.list >/dev/null"
+        run "sudo curl -fsSLo /usr/share/keyrings/termcode.gpg https://jonasatelier.github.io/termcode/termcode.gpg"
+        run "echo 'deb [signed-by=/usr/share/keyrings/termcode.gpg] https://jonasatelier.github.io/termcode stable main' | sudo tee /etc/apt/sources.list.d/termcode.list >/dev/null"
         run "sudo apt-get update"
         apt_install termcode
         DONE="$DONE termcode"
