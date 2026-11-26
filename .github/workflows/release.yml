@@ -2,8 +2,7 @@
 # lint and test, build the static amd64 and arm64 packages, install them on older and
 # newer Debian and Ubuntu, then publish them on the public termcode-releases repository:
 # a GitHub release, its front page, and the signed apt repository its Pages serve.
-# Nothing runs on ordinary pushes: this repository is private, and its Actions minutes
-# come out of the account's monthly allowance.
+# Ordinary pushes and pull requests run ci.yml (lint and test) instead.
 #
 # Secrets (repository settings, Actions):
 #   RELEASES_TOKEN   fine-grained token, Contents: read and write on termcode-releases only

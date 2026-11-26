@@ -23,7 +23,7 @@ source control and ripgrep (`rg`) for project search. Run the editor from the re
 cargo run -- .
 ```
 
-Install the published crate with `cargo install termcode`. To install this checkout, run `cargo install --locked --path .`
+To install this checkout, run `cargo install --locked --path .`
 and put Cargo’s bin directory (normally `~/.cargo/bin`) on your PATH. From this
 checkout, `herdr plugin link "$PWD"` adds the optional integration for herdr 0.9.1+.
 
@@ -115,7 +115,7 @@ Writing one: [doc/extensions.md](doc/extensions.md); for agents, `termcode ext -
 [0.4.0 user guide](https://github.com/JonasAtelier/termcode-releases/blob/6fcfc0078c2f0a48eac95b96a0446457dde30b53/README.md)
 covers shortcuts, previews, optional tools and troubleshooting. To report a problem,
 run **Help: Report Issue** from F1 and review the copied diagnostics before posting
-to the [issue tracker](https://github.com/JonasAtelier/termcode-releases/issues/new/choose).
+to the [issue tracker](https://github.com/JonasAtelier/termcode/issues/new/choose).
 
 <!-- dev -->
 Developers can find the test commands and release workflow in [AGENTS.md](AGENTS.md)

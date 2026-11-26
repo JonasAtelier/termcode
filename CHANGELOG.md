@@ -8,6 +8,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 
 ## [Unreleased]
 
+### Changed
+- Problems and ideas go to termcode's own issues (Help: Report Issue, the crash note, the
+  README, the package's upstream contact), with the bug and feature forms.
+
 ### Added
 - A repository's page draws its README's pictures as GitHub shows them: those in the
   repository (beside the README, or by a GitHub address of a file) and GitHub's own come

@@ -33,7 +33,7 @@ text() { sed -e 's/^$/./' -e 's/^/ /' "$1"; }
 {
     printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n'
     printf 'Upstream-Name: termcode\n'
-    printf 'Upstream-Contact: https://github.com/JonasAtelier/termcode-releases/issues\n'
+    printf 'Upstream-Contact: https://github.com/JonasAtelier/termcode/issues\n'
     printf 'Comment: The Rust crates built into termcode, with their copyright and\n'
     printf ' license texts, are listed in /usr/share/doc/termcode/THIRD-PARTY-LICENSES.\n\n'
     printf 'Files: *\nCopyright: 2026 JonasAtelier\nLicense: MIT\n'

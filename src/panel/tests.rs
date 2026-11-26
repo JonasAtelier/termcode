@@ -1676,7 +1676,7 @@ fn report_issue_copies_the_setup_and_names_where_to_report() {
     let root = repo("report");
     let mut app = App::new(root.clone(), None);
     app.run_command(Cmd::ReportIssue);
-    assert!(app.msg.contains("https://github.com/JonasAtelier/termcode-releases/issues/new/choose"), "{}", app.msg);
+    assert!(app.msg.contains("https://github.com/JonasAtelier/termcode/issues/new/choose"), "{}", app.msg);
     let text = &app.clip;
     assert!(text.starts_with(&format!("termcode {}\n", env!("CARGO_PKG_VERSION"))), "{text}");
     for part in ["OS: ", "Terminal: TERM=", "Settings: icons ", "Tools: git "] {

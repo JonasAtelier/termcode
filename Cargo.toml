@@ -5,7 +5,7 @@ edition = "2021"
 description = "A VS Code-style code editor and Git panel in the terminal"
 rust-version = "1.93"
 repository = "https://github.com/JonasAtelier/termcode"
-# Releases (.debs, the apt repository) and issues.
+# Releases (.debs, the apt repository).
 homepage = "https://github.com/JonasAtelier/termcode-releases"
 license = "MIT"
 readme = "README.md"
