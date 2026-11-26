@@ -69,14 +69,12 @@ follows. The `crates-io` environment is what makes a person approve; it was made
     gh api -X POST repos/JonasAtelier/termcode/environments/crates-io/deployment-branch-policies \
       -f name='v*' -f type=tag
 
-The first version on crates.io goes out with a token (Trusted Publishing is set in a crate's
-settings, so the crate must exist): a token for `termcode` only, scopes `publish-new` and
-`publish-update`, kept as the environment secret `CARGO_REGISTRY_TOKEN`
-(`gh secret set CARGO_REGISTRY_TOKEN --env crates-io --repo JonasAtelier/termcode`). The
-publish job uses it while it exists. After that release: add the configuration above on
-crates.io, delete the secret (`gh secret delete CARGO_REGISTRY_TOKEN --env crates-io --repo
-JonasAtelier/termcode`), revoke the token on crates.io (Account Settings, API Tokens), and turn
-on "require Trusted Publishing" in the crate's settings, so no token can publish it any more.
+The first version on crates.io (1.2.0) went out with a token, as Trusted Publishing is set in
+a crate's settings and the crate must exist: a token for `termcode` only (`publish-new`,
+`publish-update`), kept as the environment secret `CARGO_REGISTRY_TOKEN` for that release.
+Then the configuration above was added on crates.io, the secret deleted, the token revoked,
+and "require Trusted Publishing" turned on: no token can publish termcode any more. The
+publish job's "stored token" step still uses such a secret if one is ever set again.
 
 ## Coding Style & Naming Conventions
 
