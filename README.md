@@ -1,37 +1,35 @@
-# termcode
-
-Edit code and review Git changes in a Linux terminal. Open a project to browse its files,
-search across them, and see edits side by side with the last commit. You can also open the
-editor as a Code tab in herdr.
-
 <!-- dev -->
-**Contents** · [Install](#install) · [Run from source](#run-from-source) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Serial ports](#serial-ports) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
+<h1 align="right"><img src="doc/media/termcode-panel.gif" width="96%" alt="termcode"></h1>
+
+<p align="center">
+  <a href="https://crates.io/crates/termcode"><img src="https://img.shields.io/crates/v/termcode" alt="crates.io version"></a>
+  <a href="https://github.com/JonasAtelier/termcode/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/JonasAtelier/termcode/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/crates/l/termcode" alt="MIT license"></a>
+</p>
+
+![A C file open in termcode, with its Git timeline on the left and a shell running the weather station sample below the editor.](doc/media/workspace.png)
 <!-- /dev -->
 <!-- user
-**Contents** · [Install](#install) · [Edit a file](#edit-a-file) · [Review changes](#review-changes) · [Serial ports](#serial-ports) · [Scripts and AI agents](#scripts-and-ai-agents) · [Help and settings](#help-and-settings) · [License and credits](#license-and-credits)
+# termcode
 user -->
 
-![termcode showing the file explorer, editor and integrated terminal](doc/screenshots/editor.png)
-
-<!-- dev -->
-## Run from source
-
-On x86_64 or arm64 Linux, install Rust 1.93 or newer and a C linker. Install Git for
-source control and ripgrep (`rg`) for project search. Run the editor from the repository root.
-
-```sh
-cargo run -- .
-```
-
-To install this checkout, run `cargo install --locked --path .`
-and put Cargo’s bin directory (normally `~/.cargo/bin`) on your PATH. From this
-checkout, `herdr plugin link "$PWD"` adds the optional integration for herdr 0.9.1+.
-<!-- /dev -->
+Edit code, run it and review the diff in one Linux terminal. Open a project folder to get a file explorer, split editors, a shell and a Git commit graph. termcode also runs as a Code tab in herdr.
 
 ## Install
 
-On Debian or Ubuntu (amd64 or arm64), add termcode's signed apt repository; new versions
-then come with `sudo apt upgrade`.
+With Rust 1.93 or newer and a C linker on Linux, install the published crate and open your project folder.
+
+```sh
+cargo install termcode --locked
+termcode .
+```
+
+Git enables Source Control and ripgrep (`rg`) enables project search. Press **Ctrl+P** to open a file, **Ctrl+S** to save, **F1** to see commands and **Ctrl+Q** to quit. To open directly at a line, run `termcode README.md:12`.
+
+<details>
+<summary>Debian, Ubuntu and herdr</summary>
+
+On Debian or Ubuntu (amd64 or arm64), the signed apt repository delivers updates through `sudo apt upgrade`.
 
 ```sh
 sudo curl -fsSLo /usr/share/keyrings/termcode.gpg https://jonasatelier.github.io/termcode/termcode.gpg
@@ -40,94 +38,98 @@ echo "deb [signed-by=/usr/share/keyrings/termcode.gpg] https://jonasatelier.gith
 sudo apt update && sudo apt install termcode
 ```
 
-Or download the `.deb` for your machine (`dpkg --print-architecture` says `amd64` or
-`arm64`) from the [latest release](https://github.com/JonasAtelier/termcode/releases/latest)
-and run `sudo apt install ./termcode_*.deb`. For a Code tab in herdr 0.9.1+, run
-`herdr plugin link /usr/share/termcode`.
+For a one-time install, check your architecture with `dpkg --print-architecture`, download the matching package and run `sudo apt install ./termcode_*.deb`. [Latest release](https://github.com/JonasAtelier/termcode/releases/latest)
 
-With Rust 1.93 or newer, on any Linux: `cargo install termcode --locked`.
+To add a Code tab in herdr 0.9.1+ from the Debian package, run `herdr plugin link /usr/share/termcode`, then `termcode --tab .`.
+
+</details>
+
+## See it in action
+
+The three demos follow a small weather station from a temperature threshold in the source to the output of the compiled program.
+<!-- user
+
+[Watch the animated demos on GitHub](https://github.com/JonasAtelier/termcode#see-it-in-action)
+user -->
 
 <a id="open-your-first-file"></a>
+<a id="edit-a-file"></a>
 
-## Edit a file
+### Find your way around a project
 
-From a project folder, run `termcode .` (or `termcode --tab .` in herdr). Press
-**Ctrl+P**, type part of a filename and select it. **Ctrl+S** saves, **F1** lists
-commands, and **Ctrl+Q** returns to the shell.
+- **Quick Open.** Press **Ctrl+P** and type part of a filename to open `station.c`.
+- **Go to Symbol.** Type `@station` in Quick Open and press **Enter** to jump to `station_status`.
+- **Project search.** Press **Ctrl+T**, then **S**, and search for `HEAT_LIMIT` to see where the threshold is defined and used.
+- **Markdown preview.** Open the README, press **Ctrl+K**, then **V**. The temperature table renders beside its Markdown source.
 
-| Task | How to do it |
-| --- | --- |
-| Open a file at a known line | Run `termcode README.md:12` from the folder containing that file. |
-| Find a function | Press **Ctrl+P** in the editor and type `@` to browse functions in the current file. |
-| Preview Markdown | Open a Markdown file and press **Ctrl+Shift+V** to switch between source and preview. |
+<!-- dev -->
+![Quick Open finds station.c and its station_status function. Search finds two uses of HEAT_LIMIT, then a split editor shows the Markdown table beside its source.](doc/media/navigate.gif)
+<!-- /dev -->
 
-## Review changes
+<a id="review-changes"></a>
 
-Save an edit, press **Ctrl+G** to open **Source Control**, and select the changed
-file. Read the old and new versions side by side.
+### Run and review a change
 
-When a repository’s Git settings can start external programs, Source Control asks you
-to trust the repository before enabling Git. Only grant trust if you know its origin.
+- **Integrated terminal.** Press **Ctrl+T**, then **T**, to open a shell under the code. In the demo, `make check` runs three sample readings and prints a heat alert at 30 °C.
+- **Side-by-side diff.** Press **Ctrl+G** and select the changed file. The red and green lines show the heat threshold moving from 32 to 30.
+- **Commit graph.** Expand a commit under **Graph**, then select a file to read the changes introduced by that commit.
+
+<!-- dev -->
+![The terminal prints the three temperature bands. Source Control compares the old and new threshold, then opens the README added by an earlier commit.](doc/media/review.gif)
+<!-- /dev -->
+
+If a repository's Git settings can run external programs, Source Control asks you to trust it before enabling Git.
+
+### Inspect logs, binaries and editor state
+
+- **Log viewer.** Open a `.log` file and choose **log** on its toolbar. Press **/** and type `sensor` to isolate the connection and timeout messages. **F8** jumps to the next problem.
+- **ELF inspector.** Open a compiled Linux binary to see its architecture and shared libraries. With `readelf` from GNU binutils installed, you can switch between the report, section sizes and a hexdump.
+- **Editor API.** From termcode’s terminal, read the branch and changed paths that Source Control sees. The API returns JSON for a script or agent to consume.
+
+```sh
+termcode api state.get '{"path":"/git"}'
+```
+
+<!-- dev -->
+![The log narrows to two sensor events. The ELF report lists libc, and an API call in the terminal reports src/station.c as modified.](doc/media/inspect.gif)
+<!-- /dev -->
 
 ## Serial ports
 
-The **Serial (xcomm)** extension: click **+** above Settings, then Install beside it
-under SUGGESTED (or `termcode ext install https://github.com/JonasAtelier/termcode#extensions/xcomm`;
-it builds with cargo). Its view: the ports and the open channels. **Monitor** a port
-to watch it (read only) in a tab you can split like code; **Attach** turns typing on;
-its line settings (baud, format, DTR/RTS, break, capture, agents) sit on the right.
-Ports are taken as [xcomm](https://crates.io/crates/xcomm) takes them (a UUCP lock, an
-exclusive open) and opened again after an unplug; a port another xcomm holds is shared
-with it. Dots: green reads and writes, yellow is on hold (it still reads), red is
-disconnected. ✎ writes a note beside a port ("router console"); rest the pointer on a
-port for everything about it. Agents drive ports through termcode's `serial.*` API or
-with `xcomm ctl`.
+Install **Serial (xcomm)** from the **+** view or run the command below. Cargo builds the extension.
+
+```sh
+termcode ext install https://github.com/JonasAtelier/termcode#extensions/xcomm
+```
+
+Choose **Monitor** to watch a port in an editor tab and **Attach** to send input. The panel beside the tab controls baud rate, line format, DTR/RTS and capture. A disconnected adapter reopens when reattached. Add a note to identify a device, or drive an open channel with `serial.*` API calls or `xcomm ctl`. [xcomm](https://crates.io/crates/xcomm)
 
 ## Scripts and AI agents
 
-`termcode api` drives a running termcode: run any F1 command, read open files and their
-problems, edit as one undo step, type into its terminal. Reading needs no approval;
-before a program changes files or runs anything, termcode asks you (Allow, Allow once,
-Deny). `termcode api --help` lists the methods and `termcode api --skill` prints the
-guide for agents. Set `termcode.api` to `"read-only"` or `"off"` in Settings to limit it.
-`termcode mcp` serves the same as MCP tools; `termcode --headless` runs one with no
-terminal (`--api-stdio`: the API on stdin and stdout).
+Scripts can read unsaved buffers and diagnostics, apply edits as one undo step, and use the integrated terminal. termcode asks before an external program changes files or runs commands. Set `termcode.api` to `"read-only"` or `"off"` in Settings to limit access.
+
+`termcode api --skill` prints the agent guide. `termcode mcp` serves the tools over MCP. For a session without a terminal UI, run `termcode --headless --api-stdio`.
 
 ## Extensions
 
-An extension adds its own view: an activity bar icon, side bar sections, a tab, right
-and bottom panels. termcode draws and lays them out; the extension, a program in any
-language, fills them with rows and handles clicks and keys.
-
-Click **+** above Settings to install one (a git URL or a folder), turn any view off,
-or remove one. From a shell:
-
-```bash
-termcode ext install https://github.com/someone/termcode-thing   # shows what it may do, asks
-termcode ext list
-termcode ext remove thing
-termcode ext new mine                                             # a start for your own
-```
-
-Writing one: [doc/extensions.md](doc/extensions.md); for agents, `termcode ext --skill`.
+The **+** view lists installed, built-in and suggested views. Install from a Git URL or local folder, enable or disable a view, or remove an extension. To build one, run `termcode ext new mine` for a starter or `termcode ext --skill` for the authoring guide. [Extension guide](https://github.com/JonasAtelier/termcode/blob/main/doc/extensions.md)
 
 ## Help and settings
 
-**Ctrl+,** opens Settings. The Debian package includes `man termcode`. The
-[0.4.0 user guide](https://github.com/JonasAtelier/termcode/blob/v0.4.0/README.md)
-covers shortcuts, previews, optional tools and troubleshooting. To report a problem,
-run **Help: Report Issue** from F1 and review the copied diagnostics before posting
-to the [issue tracker](https://github.com/JonasAtelier/termcode/issues/new/choose).
+**Ctrl+,** opens Settings. The Debian package includes `man termcode`. For more shortcuts, previews and troubleshooting, see the [0.4.0 user guide](https://github.com/JonasAtelier/termcode/blob/v0.4.0/README.md).
+
+To report a problem, press **F1**, choose **Help: Report Issue** and review the copied diagnostics. [Issue tracker](https://github.com/JonasAtelier/termcode/issues/new/choose)
 
 <!-- dev -->
-Developers can find the test commands and release workflow in [AGENTS.md](AGENTS.md)
-and version history in the [changelog](CHANGELOG.md).
+## Run from source
+
+From this checkout on Linux, run `cargo run -- .`. To register it with herdr 0.9.1+, run `herdr plugin link "$PWD"`. [Development guide](AGENTS.md) · [Changelog](CHANGELOG.md)
 <!-- /dev -->
 
 ## License and credits
 
 <!-- dev -->
-The current source is available under the [MIT license](LICENSE).
+© 2026 JonasAtelier · [MIT license](LICENSE)
 <!-- /dev -->
-For packaged releases, see the terms shipped in `/usr/share/doc/termcode/copyright` and the dependency licenses in `/usr/share/doc/termcode/THIRD-PARTY-LICENSES`. Default colors come from Microsoft’s
-VS Code and file icons from Jesse Weed’s Seti UI, both under MIT.
+
+Default colors come from Microsoft’s VS Code and file icons from Jesse Weed’s Seti UI, both under MIT. The Debian package includes its terms and dependency licenses in `/usr/share/doc/termcode/copyright` and `/usr/share/doc/termcode/THIRD-PARTY-LICENSES`.
