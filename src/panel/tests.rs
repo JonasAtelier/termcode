@@ -6458,9 +6458,10 @@ repo=""; prev=""
 for a in "$@"; do [ "$prev" = "--repo" ] && repo="$a"; prev="$a"; done
 # A repository page: a folder (its entries, then their last commits and the README), a file.
 case "$*" in
+  *'/contents/'*) echo 'iVBORw0KGgoAAAANSUhEUgAAAFAAAAAoCAIAAADmAupWAAAATklEQVR42u3PQREAIAwEsYIQlFQM0hCGGGTcg6yBnYzbXYn2OpHvrM8CBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBk73AJfTAsJ0lPxIAAAAAElFTkSuQmCC' | base64 -d; exit 0 ;;
   *homepageUrl*) printf '%s\n' '{"data":{"repository":{"description":"A small editor for the terminal","homepageUrl":"https://proj.example","visibility":"PUBLIC","isArchived":false,"parent":null,"diskUsage":2048,"createdAt":"2024-11-01T00:00:00Z","pushedAt":"2026-11-12T00:00:00Z","licenseInfo":{"spdxId":"MIT","name":"MIT License"},"repositoryTopics":{"nodes":[{"topic":{"name":"rust"}},{"topic":{"name":"tui"}}]},"branches":{"totalCount":2},"tags":{"totalCount":4},"releases":{"totalCount":3,"nodes":[{"name":"First","tagName":"v1.0.0","publishedAt":"2026-11-11T00:00:00Z","isPrerelease":false,"url":"https://github.com/tester/proj/releases/tag/v1.0.0"}]},"rev":{"history":{"totalCount":42},"statusCheckRollup":{"state":"FAILURE"}}}}}'; exit 0 ;;
   *isBinary*) printf '%s\n' '{"data":{"repository":{"object":{"text":"fn main() {}\n","isBinary":false,"byteSize":13}}}}'; exit 0 ;;
-  *'history('*) printf '%s\n' '{"data":{"repository":{"object":{"e0":{"nodes":[{"messageHeadline":"Add the sources","committedDate":"2026-11-10T00:00:00Z"}]},"e1":{"nodes":[{"messageHeadline":"Say hello","committedDate":"2026-11-12T00:00:00Z"}]}},"readme":{"text":"Proj\n====\n\nHello **world** from the README.\n"}}}}'; exit 0 ;;
+  *'history('*) printf '%s\n' '{"data":{"repository":{"object":{"e0":{"nodes":[{"messageHeadline":"Add the sources","committedDate":"2026-11-10T00:00:00Z"}]},"e1":{"nodes":[{"messageHeadline":"Say hello","committedDate":"2026-11-12T00:00:00Z"}]}},"readme":{"text":"Proj\n====\n\nHello **world** from the README.\n\n![shot](docs/shot.png)\n\n<p align=\"center\"><img src=\"https://raw.githubusercontent.com/tester/proj/main/logo.png\" width=\"200\"></p>\n\n![badge](https://img.shields.io/badge/x-y-green)\n"}}}}'; exit 0 ;;
   *stargazerCount*) printf '%s\n' '{"data":{"repository":{"stargazerCount":7,"forkCount":2,"watchers":{"totalCount":3},"open":{"totalCount":2},"merged":{"totalCount":30},"closed":{"totalCount":5},"openIssues":{"totalCount":1},"closedIssues":{"totalCount":9},"languages":{"edges":[{"size":900,"node":{"name":"Rust","color":"\u0023dea584"}},{"size":100,"node":{"name":"Shell","color":"\u002389e051"}}]}}}}'; exit 0 ;;
   *'refs('*) echo '{"data":{"repository":{"refs":{"nodes":[{"name":"main"},{"name":"dev"}]}}}}'; exit 0 ;;
   *'"dev:"'*) echo '{"data":{"repository":{"defaultBranchRef":{"name":"main"},"head":{"oid":"abcdef1234567","messageHeadline":"Say hello","committedDate":"2026-11-12T00:00:00Z","author":{"name":"Ann","user":{"login":"ann"}}},"object":{"entries":[{"name":"src","type":"tree","path":"src"},{"name":"DEV.md","type":"blob","path":"DEV.md"}]}}}}'; exit 0 ;;
@@ -7355,6 +7356,24 @@ fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch(
     if let Some(d) = std::env::var_os("TERMCODE_SHOTS") {
         screenshot(&mut app, &mut t, &Path::new(&d).join("repo-page.png"));
     }
+    // The README's pictures: fetched through gh from the repository (beside it, and by a
+    // raw address), drawn as half blocks here; another site's (a badge) only named.
+    gh_settle(&mut app, &|_| fs::read_to_string(fake.join("gh.log")).unwrap_or_default().contains("contents/logo.png?ref=main"));
+    let log = fs::read_to_string(fake.join("gh.log")).unwrap();
+    assert!(log.contains("repos/tester/proj/contents/docs/shot.png") && !log.contains("shields"), "{log}");
+    gh_settle(&mut app, &|a| a.gh.pictures.join("tester_proj/HEAD/docs/shot.png").is_file() && a.gh.pictures.join("tester_proj/main/logo.png").is_file());
+    crate::github::tick(&mut app);
+    let scroll = |app: &mut App, to: usize| {
+        let a = app.groups[app.ag].active;
+        app.groups[app.ag].tabs[a].view.scroll = to;
+    };
+    scroll(&mut app, usize::MAX / 2);
+    let s = screen(&mut app, &mut t);
+    let readme = s.lines().position(|l| l.contains("Hello world from the README.")).unwrap();
+    let after: Vec<&str> = s.lines().skip(readme).collect();
+    assert!(after.iter().filter(|l| l.contains("▀▀▀")).count() >= 6 && after.iter().any(|l| l.contains("badge")), "{s}");
+    scroll(&mut app, 0);
+    let s = screen(&mut app, &mut t);
     // A rule between the files and ABOUT.
     let about = s.lines().position(|l| l.contains("ABOUT")).unwrap() as u16;
     let ruled = |s: &str, y: u16| s.lines().nth(y as usize).unwrap().matches('─').count() > 40;
@@ -7367,6 +7386,14 @@ fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch(
     let pic = |y: u16| (0..b.area.width).any(|x| b[(x, y)].symbol().contains('\u{10EEEE}'));
     assert!(pic(views + 1) && pic(views + 5) && !pic(views) && !pic(views + 6), "the bar rows only");
     assert!(pic(about - 2) && !pic(about - 1), "the rule's row");
+    scroll(&mut app, usize::MAX / 2);
+    let s2 = screen(&mut app, &mut t);
+    let shot = s2.lines().position(|l| l.contains("Hello world from the README.")).unwrap() as u16 + 2;
+    let b = t.backend().buffer();
+    let pic = |y: u16| (0..b.area.width).any(|x| b[(x, y)].symbol().contains('\u{10EEEE}'));
+    assert!(pic(shot) && pic(shot + 2) && !pic(shot - 1), "the README's picture in pixels, from its first row");
+    scroll(&mut app, 0);
+    screen(&mut app, &mut t);
     let commit = s.lines().find(|l| l.contains("abcdef1")).unwrap();
     assert!(commit.contains(&format!("{} abcdef1", crate::theme::icons().gh[5])), "the failed checks' mark: {commit}");
     // A pull request's row opens it (here, with no browser, its link is copied).
@@ -7407,6 +7434,7 @@ fn a_repository_page_has_a_main_page_a_tree_a_files_code_and_a_branch_to_switch(
     let s = screen(&mut app, &mut t);
     assert!(s.contains("DEV.md") && s.contains(" dev ") && app.gh.pages["tester/proj"].branch.as_deref() == Some("dev"), "{s}");
     let _ = fs::remove_dir_all(&fake);
+    let _ = fs::remove_dir_all(&app.gh.pictures);
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -8131,6 +8159,37 @@ fn the_activity_bars_icons_in_pixels_sit_in_its_middle() {
             seen += 1;
         }
         assert!(seen >= 3, "width {width}: the views' icons in pixels ({seen})");
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
+
+#[test]
+fn a_moving_picture_in_a_markdown_preview_asks_for_its_next_frame_a_still_one_does_not() {
+    use image::codecs::gif::GifEncoder;
+    use image::{Delay, Frame, Rgba, RgbaImage};
+    let root = repo("md-gif");
+    let frame = |c: [u8; 4]| Frame::from_parts(RgbaImage::from_pixel(80, 40, Rgba(c)), 0, 0, Delay::from_numer_denom_ms(80, 1));
+    let mut enc = GifEncoder::new(fs::File::create(root.join("moving.gif")).unwrap());
+    enc.encode_frames([frame([255, 0, 0, 255]), frame([0, 0, 255, 255])]).unwrap();
+    drop(enc);
+    RgbaImage::from_pixel(80, 40, Rgba([0, 200, 0, 255])).save(root.join("still.png")).unwrap();
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    for (name, moves) in [("still.png", false), ("moving.gif", true)] {
+        fs::write(root.join("README.md"), format!("# Pic\n\n![a]({name})\n")).unwrap();
+        let mut app = App::new(root.clone(), None);
+        app.open_file(0, "README.md", false);
+        app.run_command(Cmd::MdPreview(false));
+        let s = screen(&mut app, &mut t);
+        assert!(s.contains('▀'), "{name}: drawn: {s}");
+        assert_eq!(app.anim_due.is_some(), moves, "{name}");
+        if moves {
+            // Its cells show one of its frames whole (red or blue), not a blend.
+            let b = t.backend().buffer();
+            let frame = |c: Color| matches!(c, Color::Rgb(255, 0, 0) | Color::Rgb(0, 0, 255));
+            let cells: Vec<_> = b.area.positions().filter(|&p| b[p].symbol() == "▀" && (frame(b[p].fg) || frame(b[p].bg))).collect();
+            assert!(cells.len() > 20 && cells.iter().all(|&p| b[p].fg == b[cells[0]].fg && b[p].bg == b[cells[0]].fg), "one frame's colour");
+        }
     }
     fs::remove_dir_all(&root).unwrap();
 }

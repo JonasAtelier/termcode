@@ -237,6 +237,8 @@ enum Msg {
     Stats(String, Result<page::Stats, String>),
     /// A repository page's About, lists and traffic: the repository, the revision, what came.
     About(String, String, Result<Box<page::About>, String>),
+    /// Pictures of a repository page's README came (into `GitHub::pictures`).
+    Pics(String),
 }
 
 /// A change on GitHub, run once confirmed.
@@ -344,6 +346,8 @@ pub struct GitHub {
     pub here: Option<String>,
     /// The GitHub CLI to run (tests point it at a fake one).
     pub bin: PathBuf,
+    /// Where pictures of READMEs are kept once fetched (tests: their own folder).
+    pub pictures: PathBuf,
     pub state: State,
     pub data: Option<Data>,
     pub loading: bool,
@@ -408,6 +412,11 @@ impl GitHub {
             // Tests never reach the real gh (the network, the user's account): theirs is a
             // fake they set.
             bin: PathBuf::from(if cfg!(test) { "/nonexistent/gh" } else { "gh" }),
+            pictures: if cfg!(test) {
+                std::env::temp_dir().join(format!("termcode-gh-pictures-{}", std::process::id()))
+            } else {
+                crate::data_dir(true).join("github-pictures")
+            },
             state: State::Loading,
             data: None,
             loading: false,
@@ -1029,6 +1038,7 @@ pub fn tick(app: &mut App) -> bool {
             Msg::Branches(repo, b) => page::branches_came(app, repo, b),
             Msg::Stats(repo, st) => page::stats_came(app, repo, st),
             Msg::About(repo, rev, a) => page::about_came(app, repo, rev, a),
+            Msg::Pics(repo) => page::pics_came(app, &repo),
             Msg::Done(res) => {
                 app.gh.acting = None;
                 app.msg = res.unwrap_or_else(|e| format!("GitHub: {e}"));

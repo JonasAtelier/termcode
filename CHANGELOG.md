@@ -6,6 +6,16 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
+## [Unreleased]
+
+### Added
+- A repository's page draws its README's pictures as GitHub shows them: those in the
+  repository (beside the README, or by a GitHub address of a file) and GitHub's own come
+  through gh and are kept; half blocks, or real pixels with Kitty graphics. Another
+  site's picture (a badge) still shows as its name.
+- Markdown pictures as GitHub draws them, in the preview and a repository's page: an
+  animated GIF plays, a `width="96%"` is of the pane, a `<video>` shows ▶ video.
+
 ## [1.1.0] - 2026-11-25
 
 ### Added

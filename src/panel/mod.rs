@@ -1318,6 +1318,8 @@ pub struct App {
     pub tree_anchor: Option<String>,
     /// A dragged item resting on this closed folder opens it at this time.
     pub tree_spring: Option<(String, Instant)>,
+    /// A moving picture's next frame is due (set while one shows, each frame).
+    pub anim_due: Option<Instant>,
     /// A paste running on its thread.
     pub file_job: Option<rename::FileJob>,
     /// The last mouse event's modifiers (Ctrl+click, a Ctrl+drag's copy).
@@ -2161,6 +2163,7 @@ impl App {
             patch_stamps: HashMap::new(),
             tree_anchor: None,
             tree_spring: None,
+            anim_due: None,
             file_job: None,
             mouse_mods: KeyModifiers::NONE,
             // Tests never reach the user's Trash.

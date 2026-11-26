@@ -204,6 +204,8 @@ pub struct State {
     /// Pictures kept in the terminal whole (a Markdown preview's, the chrome's): key ->
     /// (image id, pixels).
     kept: HashMap<u64, (u32, u32)>,
+    /// Moving pictures' frames, apart (their own budget): by key, (id, pixels).
+    frames: HashMap<u64, (u32, u32)>,
     /// Pictures swapped in place (a minimap): by slot, the image id shown and its pixels' digest.
     swaps: HashMap<String, (u32, u64)>,
 }
@@ -211,7 +213,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         let (tx, rx) = channel();
-        State { views: HashMap::new(), gfx: None, tx, rx, hits: Vec::new(), tools: None, trash: Vec::new(), trash_old: Vec::new(), next_id: 0, kept: HashMap::new(), swaps: HashMap::new() }
+        State { views: HashMap::new(), gfx: None, tx, rx, hits: Vec::new(), tools: None, trash: Vec::new(), trash_old: Vec::new(), next_id: 0, kept: HashMap::new(), frames: HashMap::new(), swaps: HashMap::new() }
     }
 }
 
@@ -1038,26 +1040,41 @@ pub fn cell(app: &mut App) -> (u16, u16) {
 /// A picture kept in the terminal whole by `key` (Kitty), `cols`×`rows` cells: its image
 /// id, and the sequence sending it when new (to go out with this frame); its pixels from
 /// `make(w, h)`, once. None: no Kitty graphics here.
-pub fn kept(app: &mut App, key: u64, (cols, rows): (u16, u16), make: impl FnOnce((u32, u32)) -> Option<RgbaImage>) -> Option<(u32, String)> {
+pub fn kept(app: &mut App, key: u64, cells: (u16, u16), make: impl FnOnce((u32, u32)) -> Option<RgbaImage>) -> Option<(u32, String)> {
+    keep(app, key, cells, make, false)
+}
+
+/// A frame of a moving picture (an animated GIF), kept as `kept` keeps a picture but
+/// apart: its frames come round again, and must not push the still ones out.
+pub fn kept_frame(app: &mut App, key: u64, cells: (u16, u16), make: impl FnOnce((u32, u32)) -> Option<RgbaImage>) -> Option<(u32, String)> {
+    keep(app, key, cells, make, true)
+}
+
+fn keep(app: &mut App, key: u64, (cols, rows): (u16, u16), make: impl FnOnce((u32, u32)) -> Option<RgbaImage>, frame: bool) -> Option<(u32, String)> {
     let (tiles, cell) = app.media.gfx.as_ref().map(|g| (g.tiles(), g.cell()))?;
     if !tiles {
         return None;
     }
-    if let Some(&(id, _)) = app.media.kept.get(&key) {
+    let held = if frame { &app.media.frames } else { &app.media.kept };
+    if let Some(&(id, _)) = held.get(&key) {
         return Some((id, String::new()));
     }
     let img = make((u32::from(cols) * u32::from(cell.0), u32::from(rows) * u32::from(cell.1)))?;
     // ponytail: all go at once past 128 pictures or 8M pixels (32 MB in the terminal); the
     // chrome's icons and caps are a few dozen small ones, a README has a few big ones.
+    // Frames: 2048 or 48M pixels (a few moving pictures' every frame).
+    let (most, budget) = if frame { (2048, 48u64 << 20) } else { (128, 8 << 20) };
     let px = img.width() * img.height();
-    let held: u64 = app.media.kept.values().map(|&(_, n)| u64::from(n)).sum();
-    if app.media.kept.len() >= 128 || held + u64::from(px) > 8 << 20 {
-        let old: Vec<u32> = app.media.kept.drain().map(|(_, (id, _))| id).collect();
+    let store = if frame { &mut app.media.frames } else { &mut app.media.kept };
+    let sum: u64 = store.values().map(|&(_, n)| u64::from(n)).sum();
+    if store.len() >= most || sum + u64::from(px) > budget {
+        let old: Vec<u32> = store.drain().map(|(_, (id, _))| id).collect();
         app.media.trash.extend(old);
     }
     let id = app.media.new_id();
     let seq = app.media.gfx.as_ref()?.transmit(id, &img, cols, rows);
-    app.media.kept.insert(key, (id, px));
+    let store = if frame { &mut app.media.frames } else { &mut app.media.kept };
+    store.insert(key, (id, px));
     Some((id, seq))
 }
 

@@ -63,8 +63,10 @@ pub struct Page {
     /// The main page's insights (the default branch's), once asked for.
     pub stats: Option<Result<Stats, String>>,
     stats_asked: bool,
-    /// A README rendered for a width: (folder, width, lines).
-    readme: Option<(String, u16, Vec<Line<'static>>)>,
+    /// A README rendered for a width: (folder, width, its lines and pictures).
+    readme: Option<(String, u16, crate::mdpreview::Rendered)>,
+    /// Its pictures asked for (fetched or failed: never asked again).
+    pics_asked: HashSet<PathBuf>,
     /// The main page's About, lists and traffic (of a revision), and the revision asked.
     pub about: Option<(String, Result<About, String>)>,
     about_asked: Option<String>,
@@ -451,6 +453,117 @@ impl Page {
     /// The About when it is of the shown revision (its counts and checks are).
     fn about_now(&self) -> Option<&About> {
         self.about.as_ref().filter(|(r, _)| *r == self.rev()).and_then(|(_, a)| a.as_ref().ok())
+    }
+}
+
+/// Where a README's picture comes from: a file of a repository at a revision ("HEAD":
+/// its default branch), or one of GitHub's own image addresses.
+#[derive(Clone, Debug, PartialEq)]
+enum PicSource {
+    File(String, String, String),
+    Url(String),
+}
+
+/// `src` of a picture in a README in `folder` of `repo` at `rev`: a path in the repository
+/// (beside the README, or from its root with "/"), a GitHub page or raw address of a
+/// repository's file, or an image GitHub hosts. None: another site's, not fetched.
+fn pic_source(src: &str, repo: &str, rev: &str, folder: &str) -> Option<PicSource> {
+    let src = src.split(['?', '#']).next().unwrap_or(src);
+    if src.is_empty() || src.starts_with("data:") {
+        return None;
+    }
+    let Some((scheme, rest)) = src.split_once("://") else {
+        let mut parts: Vec<&str> = if src.starts_with('/') { Vec::new() } else { folder.split('/').filter(|p| !p.is_empty()).collect() };
+        for p in src.split('/') {
+            match p {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                p => parts.push(p),
+            }
+        }
+        return Some(PicSource::File(repo.into(), rev.into(), parts.join("/")));
+    };
+    if scheme != "https" {
+        return None;
+    }
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let seg: Vec<&str> = path.split('/').collect();
+    match host {
+        // raw.githubusercontent.com/o/n/REF/path, github.com/o/n/(blob|raw)/REF/path.
+        "raw.githubusercontent.com" if seg.len() >= 4 => Some(PicSource::File(format!("{}/{}", seg[0], seg[1]), seg[2].into(), seg[3..].join("/"))),
+        "github.com" if seg.len() >= 5 && matches!(seg[2], "blob" | "raw") => Some(PicSource::File(format!("{}/{}", seg[0], seg[1]), seg[3].into(), seg[4..].join("/"))),
+        "github.com" if seg.first() == Some(&"user-attachments") => Some(PicSource::Url(src.into())),
+        h if h.ends_with(".githubusercontent.com") => Some(PicSource::Url(src.into())),
+        _ => None,
+    }
+}
+
+/// Where `s` is kept under `dir`.
+fn pic_path(dir: &Path, s: &PicSource) -> PathBuf {
+    let safe = |t: &str| t.chars().map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' }).collect::<String>();
+    match s {
+        PicSource::File(repo, rev, path) => {
+            let mut p = dir.join(safe(repo)).join(safe(rev));
+            for part in path.split('/').filter(|p| !p.is_empty() && *p != "..") {
+                p.push(safe(part));
+            }
+            p
+        }
+        PicSource::Url(u) => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            u.hash(&mut h);
+            dir.join("web").join(format!("{:016x}", h.finish()))
+        }
+    }
+}
+
+/// A path for an address: its unreserved characters as they are, the rest %-escaped.
+fn escaped(path: &str) -> String {
+    path.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~/".contains(&b) { char::from(b).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
+/// A picture's bytes through gh: a repository's file raw (its default branch for
+/// "HEAD"), an address as it is; only a picture (by its first bytes), 20 MB at most.
+fn fetch_pic(bin: &Path, root: &Path, s: &PicSource) -> Option<Vec<u8>> {
+    let bytes = match s {
+        PicSource::File(repo, rev, path) => {
+            let at = if rev == "HEAD" { String::new() } else { format!("?ref={}", escaped(rev)) };
+            gh(bin, root, &["api", "-H", "Accept: application/vnd.github.raw", &format!("repos/{repo}/contents/{}{at}", escaped(path))]).ok()?
+        }
+        PicSource::Url(u) => gh(bin, root, &["api", u]).ok()?,
+    };
+    (bytes.len() <= 20 << 20 && image::guess_format(&bytes).is_ok()).then_some(bytes)
+}
+
+/// The README's pictures not kept yet, fetched once each in the background.
+fn want_pics(app: &mut App, repo: &str, wanted: Vec<PicSource>) {
+    let dir = app.gh.pictures.clone();
+    let page = app.gh.pages.entry(repo.to_string()).or_default();
+    let new: Vec<(PicSource, PathBuf)> = wanted.into_iter().map(|s| (pic_path(&dir, &s), s)).filter(|(p, _)| page.pics_asked.insert(p.clone())).map(|(p, s)| (s, p)).collect();
+    if new.is_empty() {
+        return;
+    }
+    let (bin, root, tx, repo) = (app.gh.bin.clone(), cwd(app), app.gh.tx.clone(), repo.to_string());
+    std::thread::spawn(move || {
+        let _ = crate::private_dirs(&[dir]);
+        for (s, path) in new {
+            let Some(bytes) = fetch_pic(&bin, &root, &s) else { continue };
+            let tmp = path.with_extension("part");
+            if path.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&tmp, bytes).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+        }
+        let _ = tx.send(Msg::Pics(repo));
+    });
+}
+
+/// Pictures came (`tick`): the README is drawn again with them.
+pub(super) fn pics_came(app: &mut App, repo: &str) {
+    if let Some(page) = app.gh.pages.get_mut(repo) {
+        page.readme = None;
     }
 }
 
@@ -1307,6 +1420,11 @@ pub fn draw_main(app: &mut App, f: &mut Frame, g: usize, repo: &str, area: Rect)
     let fi = app.settings.file_icons.clone();
     let hover = app.hover;
     let folder = app.gh.pages.get(repo).map(|p| p.folder.clone()).unwrap_or_default();
+    // A cell's size in pixels sizes the README's pictures (as the Markdown preview's).
+    let cell = crate::media::cell(app);
+    let pictures = app.gh.pictures.clone();
+    let mut wanted: Vec<PicSource> = Vec::new();
+    let mut readme_pics: Option<(usize, Vec<crate::mdpreview::Pic>)> = None;
     want_dir(app, repo, &folder);
     if folder.is_empty() {
         want_stats(app, repo);
@@ -1395,15 +1513,35 @@ pub fn draw_main(app: &mut App, f: &mut Frame, g: usize, repo: &str, area: Rect)
                 let width = area.width.saturating_sub(4);
                 if page.readme.as_ref().is_none_or(|(fo, rw, _)| *fo != page.folder || *rw != width) {
                     let src: Vec<String> = text.lines().map(str::to_string).collect();
-                    page.readme = Some((page.folder.clone(), width, crate::mdpreview::render(&src, width as usize, link)));
+                    // Its pictures from where they are kept; those not yet: fetched, then
+                    // it is drawn again.
+                    let (rev, at) = (page.rev(), page.folder.clone());
+                    let missing = std::cell::RefCell::new(Vec::new());
+                    let find = |src: &str| {
+                        let s = pic_source(src, repo, &rev, &at)?;
+                        let p = pic_path(&pictures, &s);
+                        if p.is_file() {
+                            return Some(p);
+                        }
+                        missing.borrow_mut().push(s);
+                        None
+                    };
+                    let doc = crate::mdpreview::render_doc(&src, width as usize, link, Some((&find, cell)));
+                    wanted = missing.into_inner();
+                    page.readme = Some((page.folder.clone(), width, doc));
                 }
-                for l in &page.readme.as_ref().expect("rendered above").2 {
+                let doc = &page.readme.as_ref().expect("rendered above").2;
+                readme_pics = Some((lines.len(), doc.pics.clone()));
+                for l in &doc.lines {
                     let mut spans = vec![Span::raw("  ")];
                     spans.extend(l.spans.iter().cloned());
                     lines.push((Line::from(spans), None));
                 }
             }
         }
+    }
+    if !wanted.is_empty() {
+        want_pics(app, repo, wanted);
     }
     let n = lines.len();
     let h = area.height as usize;
@@ -1421,6 +1559,11 @@ pub fn draw_main(app: &mut App, f: &mut Frame, g: usize, repo: &str, area: Rect)
         if let Some(t) = t {
             app.gh.hits.page.push((r, t));
         }
+    }
+    // The README's pictures (two columns in, as its lines), in pixels where they can be.
+    if let Some((first, pics)) = readme_pics {
+        let pics: Vec<_> = pics.into_iter().map(|p| crate::mdpreview::Pic { row: p.row + first, ..p }).collect();
+        crate::ui::panels::md_pictures(app, f, &pics, Rect { x: area.x + 2, width: area.width.saturating_sub(2), ..area }, scroll, cell);
     }
     // With Kitty graphics, the traffic bars again in pixels over their cells: the rows
     // of them on screen.
@@ -1453,6 +1596,28 @@ pub fn draw_main(app: &mut App, f: &mut Frame, g: usize, repo: &str, area: Rect)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_readmes_pictures_come_from_its_repository_or_github_and_no_other_site() {
+        let f = |src: &str, folder: &str| pic_source(src, "o/r", "HEAD", folder);
+        let file = |repo: &str, rev: &str, path: &str| Some(PicSource::File(repo.into(), rev.into(), path.into()));
+        assert_eq!(f("docs/a.png", ""), file("o/r", "HEAD", "docs/a.png"));
+        assert_eq!(f("./a.png?raw=1", "sub"), file("o/r", "HEAD", "sub/a.png"));
+        assert_eq!(f("../img/a.png", "sub/deep"), file("o/r", "HEAD", "sub/img/a.png"));
+        assert_eq!(f("/img/a.png", "sub"), file("o/r", "HEAD", "img/a.png"), "from the root");
+        assert_eq!(f("https://raw.githubusercontent.com/x/y/main/a/b.png", ""), file("x/y", "main", "a/b.png"));
+        assert_eq!(f("https://github.com/x/y/blob/v2/b.png?raw=true", ""), file("x/y", "v2", "b.png"));
+        let url = "https://github.com/user-attachments/assets/1234";
+        assert_eq!(f(url, ""), Some(PicSource::Url(url.into())));
+        assert!(matches!(f("https://user-images.githubusercontent.com/1/2.png", ""), Some(PicSource::Url(_))));
+        for other in ["https://img.shields.io/badge/a-b-c", "http://raw.githubusercontent.com/x/y/m/a.png", "data:image/png;base64,AA", ""] {
+            assert_eq!(f(other, ""), None, "{other}");
+        }
+        // Kept by repository and revision; nothing climbs out of the folder.
+        let dir = Path::new("/k");
+        assert_eq!(pic_path(dir, &PicSource::File("o/r".into(), "fix/x".into(), "a/../b c.png".into())), Path::new("/k/o_r/fix_x/a/b_c.png"));
+        assert_eq!(escaped("a b/ü.png"), "a%20b/%C3%BC.png");
+    }
 
     #[test]
     fn traffic_bars_in_pixels_stand_by_their_counts_their_unique_part_solid() {

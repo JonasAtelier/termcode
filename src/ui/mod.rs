@@ -49,7 +49,7 @@ mod visual_tests {
 mod diffs;
 pub(crate) mod kit;
 pub(crate) mod pixels;
-mod panels;
+pub(crate) mod panels;
 mod text;
 
 pub(crate) use kit::{section_head, popup_block, sash, scrollbar, slider_color, paint_slider, pill, round_ends, badge, input, select_all, input_marked};
@@ -283,6 +283,8 @@ fn prefix_hint(app: &App, f: &mut Frame) {
 
 fn draw_frame(app: &mut App, f: &mut Frame) {
     app.ui = Hits::default();
+    // A moving picture on screen asks again for its next frame.
+    app.anim_due = None;
     app.gitui.hits = Default::default();
     app.gh.hits = Default::default();
     app.prog.clear_hits();

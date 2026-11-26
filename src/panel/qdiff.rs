@@ -368,6 +368,11 @@ impl App {
             self.refresh();
             *dirty = true;
         }
+        // A moving picture's next frame.
+        if self.anim_due.is_some_and(|t| Instant::now() >= t) {
+            self.anim_due = None;
+            *dirty = true;
+        }
         // Source Control timers: the resting-pointer card, the blame delay, the op spinner.
         if self.poll_status && self.status_poll_due.is_none_or(|t| Instant::now() >= t) {
             if !self.loading.contains_key(STATUS_KEY) {
@@ -465,7 +470,7 @@ impl App {
         let tip_due = self.tip.as_ref().filter(|t| !t.shown).map(|t| t.since + TIP_DELAY);
         let upgrade_due = self.upgrade.next.filter(|_| self.upgrade.watch);
         let poll_due = self.status_poll_due.filter(|_| self.poll_status);
-        for t in [self.tree_spring.as_ref().map(|s| s.1), self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due, self.search_due, poll_due, self.lints.due()].into_iter().flatten() {
+        for t in [self.tree_spring.as_ref().map(|s| s.1), self.anim_due, self.qdiff_due, self.gitui.due(), self.refresh_due, self.session.due, self.nav.hover.due, tip_due, upgrade_due, self.search_due, poll_due, self.lints.due()].into_iter().flatten() {
             wait = wait.min(t.saturating_duration_since(Instant::now()));
         }
         // A far jump's first highlighting catches up one budgeted slice per frame

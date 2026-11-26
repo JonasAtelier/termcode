@@ -71,9 +71,14 @@ pub struct Rendered {
     pub pics: Vec<Pic>,
 }
 
-/// Where pictures come from: the file's folder and a cell's size in pixels. None: none
-/// drawn (the GitHub view's README, from the web).
-pub type Pics<'a> = Option<(&'a Path, (u16, u16))>;
+/// Where pictures come from: each one's file by its `src` (None: not drawn, its name
+/// shows), and a cell's size in pixels. None: no pictures at all.
+pub type Pics<'a> = Option<(&'a dyn Fn(&str) -> Option<PathBuf>, (u16, u16))>;
+
+/// The pictures of a Markdown file in `dir`: the files beside it, never one from the web.
+pub fn beside(dir: &Path) -> impl Fn(&str) -> Option<PathBuf> + '_ {
+    move |src| (!src.contains("://") && !src.starts_with("data:") && !src.is_empty()).then(|| dir.join(src.split(['?', '#']).next().unwrap_or(src)))
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Align {
@@ -140,21 +145,23 @@ impl R<'_> {
                 _ => return false,
             }
         } else if t.starts_with("<img") && t.ends_with('>') && t.matches('<').count() == 1 {
-            (attr(t, "src").unwrap_or_default(), attr(t, "width").and_then(|w| w.trim_end_matches("px").parse().ok()))
+            (attr(t, "src").unwrap_or_default(), attr(t, "width"))
         } else {
             return false;
         };
         self.picture(&src, width, Align::Left)
     }
 
-    /// The picture at `src` (a file beside the Markdown), `width` pixels wide (else its
-    /// own), placed `align`; false: not one to draw (from the web, not a picture).
-    fn picture(&mut self, src: &str, width: Option<u32>, align: Align) -> bool {
-        let Some((dir, cell)) = self.env else { return false };
-        if src.contains("://") || src.starts_with("data:") || src.is_empty() {
-            return false;
-        }
-        let path = dir.join(src.split(['?', '#']).next().unwrap_or(src));
+    /// The picture at `src` (its file from the env), `width` wide (pixels, or "96%" of the
+    /// pane as GitHub sizes it; else its own), placed `align`; false: not one to draw
+    /// (none for it, not a picture).
+    fn picture(&mut self, src: &str, width: Option<String>, align: Align) -> bool {
+        let Some((find, cell)) = self.env else { return false };
+        let Some(path) = find(src) else { return false };
+        let width = width.and_then(|w| match w.trim().strip_suffix('%') {
+            Some(pct) => pct.trim().parse::<f64>().ok().map(|p| (p.clamp(0.0, 100.0) / 100.0 * self.width as f64 * f64::from(cell.0)).round() as u32),
+            None => w.trim().trim_end_matches("px").parse().ok(),
+        });
         let Some((cols, rows)) = pic_size(&path, width, self.width, cell) else { return false };
         let Some(cells) = half_blocks(&path, cols, rows) else { return false };
         let col = match align {
@@ -181,11 +188,6 @@ impl R<'_> {
             self.out.push(Line::styled("─".repeat(self.width), self.lk.rule));
         }
     }
-}
-
-/// The preview of `src` as lines, `width` wide (no pictures).
-pub fn render(src: &[String], width: usize, link: Color) -> Vec<Line<'static>> {
-    render_doc(src, width, link, None).lines
 }
 
 pub fn render_doc(src: &[String], width: usize, link: Color, env: Pics) -> Rendered {
@@ -514,9 +516,9 @@ fn html(r: &mut R, block: &str) {
             "img" if !closing => {
                 let align = aligns.last().copied().unwrap_or(Align::Left);
                 let src = attr(tag, "src").unwrap_or_default();
-                let width = attr(tag, "width").and_then(|w| w.trim_end_matches("px").parse().ok());
+                let width = attr(tag, "width");
                 let alone = strip_tags(&text).trim().is_empty();
-                if alone && r.env.is_some() && !src.contains("://") {
+                if alone && r.env.is_some_and(|(find, _)| find(&src).is_some()) {
                     flush(r, &mut text, &aligns, level, &mut lead);
                     if r.picture(&src, width, align) {
                         continue;
@@ -723,6 +725,8 @@ fn inline(text: &str, base: Style, lk: &Look) -> Vec<Span<'static>> {
                 match (name.as_str(), style, closing) {
                     ("br", ..) => out.push(Span::raw("\n")),
                     ("img", ..) => out.push(chip(&attr(tag, "alt").filter(|a| !a.is_empty()).unwrap_or_else(|| "picture".into()), lk)),
+                    // A video plays on GitHub only: its mark.
+                    ("video", _, false) => out.push(chip("▶ video", lk)),
                     (_, Some(st), false) => {
                         let close = format!("</{name}>");
                         let (body, after) = match rest.to_ascii_lowercase().find(&close) {
@@ -1044,17 +1048,7 @@ pub(crate) fn half_blocks(path: &Path, cols: u16, rows: u16) -> Option<Vec<Line<
     if let Some((_, lines)) = kept.iter().find(|(k, _)| *k == key) {
         return Some(lines.clone());
     }
-    let img = image::open(path).ok()?.to_rgba8();
-    let small = imageops::resize(&img, u32::from(cols), u32::from(rows) * 2, imageops::FilterType::Triangle);
-    let bg = crate::settingsgraphics::pixel(P.editor_bg);
-    let over = |p: &Rgba<u8>| {
-        let a = u16::from(p[3]);
-        let mix = |c: usize| ((u16::from(p[c]) * a + u16::from(bg[c]) * (255 - a)) / 255) as u8;
-        Color::Rgb(mix(0), mix(1), mix(2))
-    };
-    let lines: Vec<Line<'static>> = (0..u32::from(rows))
-        .map(|y| Line::from((0..u32::from(cols)).map(|x| Span::styled("▀", Style::new().fg(over(small.get_pixel(x, 2 * y))).bg(over(small.get_pixel(x, 2 * y + 1))))).collect::<Vec<_>>()))
-        .collect();
+    let lines = half_block_lines(&image::open(path).ok()?.to_rgba8(), cols, rows);
     // ponytail: the 16 latest; a README has a few pictures.
     if kept.len() >= 16 {
         kept.remove(0);
@@ -1063,13 +1057,91 @@ pub(crate) fn half_blocks(path: &Path, cols: u16, rows: u16) -> Option<Vec<Line<
     Some(lines)
 }
 
+/// `img` as half-blocks: `rows` lines `cols` wide, over the editor's background.
+pub(crate) fn half_block_lines(img: &RgbaImage, cols: u16, rows: u16) -> Vec<Line<'static>> {
+    let small = imageops::resize(img, u32::from(cols), u32::from(rows) * 2, imageops::FilterType::Triangle);
+    let bg = crate::settingsgraphics::pixel(P.editor_bg);
+    let over = |p: &Rgba<u8>| {
+        let a = u16::from(p[3]);
+        let mix = |c: usize| ((u16::from(p[c]) * a + u16::from(bg[c]) * (255 - a)) / 255) as u8;
+        Color::Rgb(mix(0), mix(1), mix(2))
+    };
+    (0..u32::from(rows))
+        .map(|y| Line::from((0..u32::from(cols)).map(|x| Span::styled("▀", Style::new().fg(over(small.get_pixel(x, 2 * y))).bg(over(small.get_pixel(x, 2 * y + 1))))).collect::<Vec<_>>()))
+        .collect()
+}
+
+/// A moving picture's frames: each whole, with how long it shows.
+pub(crate) type Frames = std::sync::Arc<Vec<(RgbaImage, std::time::Duration)>>;
+
+/// `path`'s frames when it moves (an animated GIF); None: a still picture. Kept by file
+/// and time. A browser's floor for a frame (under 20 ms: 100 ms); 300 frames and 40M
+/// pixels at most, past that it stays still.
+pub(crate) fn frames(path: &Path) -> Option<Frames> {
+    use image::AnimationDecoder;
+    type Key = (PathBuf, Option<std::time::SystemTime>);
+    static KEPT: std::sync::Mutex<Vec<(Key, Option<Frames>)>> = std::sync::Mutex::new(Vec::new());
+    let key: Key = (path.to_path_buf(), std::fs::metadata(path).and_then(|m| m.modified()).ok());
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, f)) = kept.iter().find(|(k, _)| *k == key) {
+        return f.clone();
+    }
+    let decode = || -> Option<Frames> {
+        let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+        if image::ImageReader::new(file).with_guessed_format().ok()?.format() != Some(image::ImageFormat::Gif) {
+            return None;
+        }
+        let dec = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?)).ok()?;
+        let mut out = Vec::new();
+        let mut px = 0u64;
+        for f in dec.into_frames().take(301) {
+            let f = f.ok()?;
+            let (n, d) = f.delay().numer_denom_ms();
+            let ms = n.checked_div(d).unwrap_or(0);
+            let img = f.into_buffer();
+            px += u64::from(img.width() * img.height());
+            if out.len() == 300 || px > 40 << 20 {
+                return None;
+            }
+            out.push((img, std::time::Duration::from_millis(if ms < 20 { 100 } else { u64::from(ms) })));
+        }
+        (out.len() > 1).then(|| std::sync::Arc::new(out))
+    };
+    let f = decode();
+    // ponytail: the 8 latest; a README has a few moving pictures.
+    if kept.len() >= 8 {
+        kept.remove(0);
+    }
+    kept.push((key, f.clone()));
+    f
+}
+
+/// Which of `frames` shows now (all of them play from one moment, round and round), and
+/// how long until the next.
+pub(crate) fn frame_now(frames: &[(RgbaImage, std::time::Duration)]) -> (usize, std::time::Duration) {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let total: u128 = frames.iter().map(|f| f.1.as_millis()).sum::<u128>().max(1);
+    let mut t = START.get_or_init(std::time::Instant::now).elapsed().as_millis() % total;
+    for (i, (_, d)) in frames.iter().enumerate() {
+        if t < d.as_millis() {
+            return (i, std::time::Duration::from_millis((d.as_millis() - t) as u64));
+        }
+        t -= d.as_millis();
+    }
+    (0, frames[0].1)
+}
+
 /// A picture's pixels for the terminal (Kitty): `w`×`h`, over the editor's background.
-pub fn pixels(path: &Path, (w, h): (u32, u32)) -> Option<RgbaImage> {
-    let img = image::open(path).ok()?.to_rgba8();
-    let img = imageops::resize(&img, w, h, imageops::FilterType::CatmullRom);
+pub fn pixels(path: &Path, wh: (u32, u32)) -> Option<RgbaImage> {
+    Some(pixels_of(&image::open(path).ok()?.to_rgba8(), wh))
+}
+
+/// `img` scaled to `w`×`h` over the editor's background.
+pub(crate) fn pixels_of(img: &RgbaImage, (w, h): (u32, u32)) -> RgbaImage {
+    let img = imageops::resize(img, w, h, imageops::FilterType::CatmullRom);
     let mut canvas = RgbaImage::from_pixel(w, h, crate::settingsgraphics::pixel(P.editor_bg));
     imageops::overlay(&mut canvas, &img, 0, 0);
-    Some(canvas)
+    canvas
 }
 
 #[cfg(test)]
@@ -1078,7 +1150,7 @@ mod tests {
 
     fn text(src: &str, width: usize) -> Vec<String> {
         let lines: Vec<String> = src.lines().map(str::to_string).collect();
-        render(&lines, width, Color::Blue).iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim_end().to_string()).collect()
+        render_doc(&lines, width, Color::Blue, None).lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim_end().to_string()).collect()
     }
 
     #[test]
@@ -1156,7 +1228,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         RgbaImage::from_pixel(80, 40, Rgba([255, 0, 0, 255])).save(dir.join("logo.png")).unwrap();
         let src: Vec<String> = "<p align=\"center\">\n  <img src=\"logo.png\" width=\"80\">\n</p>\n<h1 align=\"center\">Name</h1>\n<p align=\"center\">\n  <a href=\"x\"><img src=\"https://badge\" alt=\"CI\"></a> fast &amp; small<br>two\n</p>\n\n<details>\n<summary>More</summary>\n\nhidden text\n</details>\n\n![shot](logo.png)\n".lines().map(str::to_string).collect();
-        let doc = render_doc(&src, 40, Color::Blue, Some((&dir, (8, 16))));
+        let doc = render_doc(&src, 40, Color::Blue, Some((&beside(&dir), (8, 16))));
         let rows: Vec<String> = doc.lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim_end().to_string()).collect();
         // The logo: 80 px = 10 cells at 8 px, centered; 40 px tall = 20 px a 10-cell row → 3 rows (of 16 px).
         assert_eq!(doc.pics[0], Pic { row: 0, col: 15, cols: 10, rows: 3, path: dir.join("logo.png") });
@@ -1170,6 +1242,32 @@ mod tests {
         assert!(rows.iter().any(|r| r.trim() == "two"), "<br>");
         assert!(rows.iter().any(|r| r.starts_with("▾ More")) && rows.iter().any(|r| r == "hidden text"), "{rows:#?}");
         assert_eq!(doc.pics.len(), 2, "the Markdown picture too");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_gif_moves_frame_by_frame_and_a_width_in_percent_is_of_the_pane() {
+        use image::codecs::gif::GifEncoder;
+        use image::{Delay, Frame};
+        let dir = std::env::temp_dir().join(format!("termcode-md-frames-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let frame = |c: [u8; 4], ms: u32| Frame::from_parts(RgbaImage::from_pixel(40, 20, Rgba(c)), 0, 0, Delay::from_numer_denom_ms(ms, 1));
+        let mut enc = GifEncoder::new(std::fs::File::create(dir.join("moving.gif")).unwrap());
+        enc.encode_frames([frame([255, 0, 0, 255], 50), frame([0, 0, 255, 255], 150), frame([0, 255, 0, 255], 0)]).unwrap();
+        drop(enc);
+        RgbaImage::from_pixel(40, 20, Rgba([9, 9, 9, 255])).save(dir.join("still.png")).unwrap();
+        let fr = frames(&dir.join("moving.gif")).expect("three frames");
+        let delays: Vec<u128> = fr.iter().map(|f| f.1.as_millis()).collect();
+        assert_eq!(delays, [50, 150, 100], "a frame under 20 ms shows 100 ms, as in a browser");
+        assert_eq!(fr[1].0.get_pixel(5, 5).0[2], 255, "each frame whole");
+        assert!(frames(&dir.join("still.png")).is_none(), "a still picture");
+        let (i, left) = frame_now(&fr);
+        assert!(i < 3 && left <= fr[i].1, "a frame now, the next within its time");
+        // 50% of a 40-column pane at 8 px a cell: 20 columns, whatever its own size.
+        let doc = render_doc(&["<img src=\"still.png\" width=\"50%\">".into()], 40, Color::Blue, Some((&beside(&dir), (8, 16))));
+        assert_eq!(doc.pics[0].cols, 20);
+        let doc = render_doc(&["<p>a <video src=\"https://x/v.mp4\"></video></p>".into()], 40, Color::Blue, None);
+        assert!(doc.lines.iter().any(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().contains("▶ video")), "a video's mark");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
