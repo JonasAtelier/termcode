@@ -29,16 +29,7 @@ Git enables Source Control and ripgrep (`rg`) enables project search. Press **Ct
 <details>
 <summary>Debian, Ubuntu and herdr</summary>
 
-On Debian or Ubuntu (amd64 or arm64), the signed apt repository delivers updates through `sudo apt upgrade`.
-
-```sh
-sudo curl -fsSLo /usr/share/keyrings/termcode.gpg https://jonasatelier.github.io/termcode/termcode.gpg
-echo "deb [signed-by=/usr/share/keyrings/termcode.gpg] https://jonasatelier.github.io/termcode stable main" \
-  | sudo tee /etc/apt/sources.list.d/termcode.list
-sudo apt update && sudo apt install termcode
-```
-
-For a one-time install, check your architecture with `dpkg --print-architecture`, download the matching package and run `sudo apt install ./termcode_*.deb`. [Latest release](https://github.com/JonasAtelier/termcode/releases/latest)
+On Debian or Ubuntu, check your architecture with `dpkg --print-architecture`, download the matching package and run `sudo apt install ./termcode_*.deb`. [Latest release](https://github.com/JonasAtelier/termcode/releases/latest)
 
 To add a Code tab in herdr 0.9.1+ from the Debian package, run `herdr plugin link /usr/share/termcode`, then `termcode --tab .`.
 
