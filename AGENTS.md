@@ -28,11 +28,55 @@ Tests live beside implementation in `src/`; `target/` contains ignored build out
 - `scripts/apt-repo.sh DIR debs...`: add packages to the apt repository (this repository's branch `gh-pages`, served by GitHub Pages at https://jonasatelier.github.io/termcode) and sign it; CI signs with the `APT_SIGNING_KEY` secret (keep an offline copy of the key).
 - `scripts/deb.sh`: build the static amd64 and arm64 `.deb`s (no build-machine paths in the binary).
 - Changes worth telling users go under the next version in `CHANGELOG.md`. Version `X.Y.Z`: X for a new feature or a huge change (a new view in the side bar, a new kind of page), Y for a change to a pane or view (the minimap, quick keys), Z for bug fixes. A release bumps only the largest kind it holds, the lower numbers back to 0 (1.4.2 with a fix and a minimap change: 1.5.0).
-- CI builds with the Rust pinned in `.github/workflows/release.yml` (1.97.1, as here); bump it on purpose, after `cargo clippy --all-targets -- -D warnings` passes with the new one.
-- Release: date that `CHANGELOG.md` section, bump the version in `Cargo.toml` and `herdr-plugin.toml`, then push a `vX.Y.Z` tag; `.github/workflows/release.yml` (tags only) lints with `-D warnings`, tests, packages, install-tests and publishes.
+- CI and releases build with the Rust pinned as `RUSTUP_TOOLCHAIN` in `.github/workflows/ci.yml` and `release.yml` (1.97.1, as here; a release checks they agree); bump them together, on purpose, after `cargo clippy --all-targets -- -D warnings` passes with the new one. `rust-version` in `Cargo.toml` (1.93) is checked by ci.yml's `msrv` job.
+- Release: date that `CHANGELOG.md` section, bump the version in `Cargo.toml` and `herdr-plugin.toml`, then push a `vX.Y.Z` tag on main; see "Releases" below.
 - `cargo install --path . --root ~/.local -j2`: install locally; then `herdr plugin link "$PWD"` registers the plugin. Keep `~/.local/bin` on `PATH`.
 
 Check `free -m` before builds; adjust concurrency to available memory. Git and ripgrep (`rg`) support repository operations and search.
+
+## Releases
+
+`.github/workflows/ci.yml` checks every push to main and every pull request (lint, tests, the
+package as crates.io would get it, `rust-version`), with read-only permissions and no
+secrets. `.github/workflows/release.yml` runs on a `v*` tag: those checks, the tag against
+`Cargo.toml`, `herdr-plugin.toml` and `CHANGELOG.md`, a check that the `crates-io` environment
+requires a reviewer, the `.deb`s (built, installed and run on Debian and Ubuntu), then
+`cargo publish` once the owner approves, then the GitHub Release (that version's CHANGELOG
+section and the `.deb`s) and the apt repository (branch `gh-pages`, signed with the
+`APT_SIGNING_KEY` secret; keep an offline copy of that key). Actions are pinned by commit SHA;
+Dependabot (`.github/dependabot.yml`) proposes their updates once a month. A release refuses a
+`.cargo/config*` or a `rust-toolchain*` file in the repository: they would run beside the
+token. From the Actions tab, release.yml only checks and builds; it never publishes.
+
+crates.io: the publish job uses Trusted Publishing: `rust-lang/crates-io-auth-action` trades
+GitHub's OIDC token for a crates.io token that lasts 30 minutes and is revoked when the job
+ends. crates.io trusts only what the crate's configuration names (crates.io, termcode,
+Settings, Trusted Publishing, GitHub):
+
+    Repository owner   JonasAtelier
+    Repository name    termcode
+    Workflow filename  release.yml
+    Environment        crates-io
+
+Renaming the workflow file or the environment breaks publishing until the configuration
+follows. The `crates-io` environment is what makes a person approve; it was made once with
+(the owner as reviewer, only `v*` tags may use it):
+
+    gh api -X PUT repos/JonasAtelier/termcode/environments/crates-io --input - <<EOF
+    {"reviewers": [{"type": "User", "id": $(gh api user -q .id)}],
+     "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+    EOF
+    gh api -X POST repos/JonasAtelier/termcode/environments/crates-io/deployment-branch-policies \
+      -f name='v*' -f type=tag
+
+The first version on crates.io goes out with a token (Trusted Publishing is set in a crate's
+settings, so the crate must exist): a token for `termcode` only, scopes `publish-new` and
+`publish-update`, kept as the environment secret `CARGO_REGISTRY_TOKEN`
+(`gh secret set CARGO_REGISTRY_TOKEN --env crates-io --repo JonasAtelier/termcode`). The
+publish job uses it while it exists. After that release: add the configuration above on
+crates.io, delete the secret (`gh secret delete CARGO_REGISTRY_TOKEN --env crates-io --repo
+JonasAtelier/termcode`), revoke the token on crates.io (Account Settings, API Tokens), and turn
+on "require Trusted Publishing" in the crate's settings, so no token can publish it any more.
 
 ## Coding Style & Naming Conventions
 

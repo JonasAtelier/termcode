@@ -1,68 +1,105 @@
-# A release, run when a version tag is pushed (git tag v0.2.0 && git push origin v0.2.0):
-# lint and test, build the static amd64 and arm64 packages, install them on older and
-# newer Debian and Ubuntu (job `release`), then publish them here (job `publish`): a
-# GitHub release and the signed apt repository that this repository's Pages serve
-# (branch gh-pages, https://jonasatelier.github.io/termcode).
-# Ordinary pushes and pull requests run ci.yml (lint and test) instead.
+# A release, run when a version tag is pushed on main (git tag v1.2.0 && git push origin
+# v1.2.0): ci.yml's checks on that commit; the tag must name Cargo.toml's (and
+# herdr-plugin.toml's) version, be on main, and CHANGELOG.md must date it; the `crates-io`
+# environment must require a reviewer; the static amd64 and arm64 .debs built and installed
+# on older and newer Debian and Ubuntu; then, once the owner approves, `cargo publish`; then
+# a GitHub Release with that version's CHANGELOG section and the .debs, and the signed apt
+# repository this repository's Pages serve (branch gh-pages, jonasatelier.github.io/termcode).
 #
-# Secret (repository settings, Actions):
-#   APT_SIGNING_KEY  the apt repository's armored private key (scripts/apt-repo.sh)
-# Only `publish` gets it, and write access: a crate's build script runs during the build
-# and the tests, and must never see either.
+# Run from the Actions tab (workflow_dispatch), on a branch or on a tag, it only checks (the
+# checks and the environment) and builds the .debs, which stay on the run's page: every
+# publishing job requires a tag *push*.
+#
+# Setup (the environment, its reviewer, crates.io's Trusted Publishing configuration, the
+# apt key): AGENTS.md, "Releases". The publish job gets a crates.io token for 30 minutes; the
+# github-release job alone may write here and has APT_SIGNING_KEY. A partial release
+# (published, no GitHub Release) is finished with "Re-run failed jobs", which leaves the
+# publish alone.
 name: release
 
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch: # a dry run from the Actions tab: everything but publishing
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  release:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  # The `crates-io` environment must make a person approve. crates.io's Trusted Publishing
+  # configuration names this environment, so only a job in it can get a token; this job makes
+  # sure the environment still needs a person (a job naming an environment that does not exist
+  # creates it, unprotected). No token here, and it fails closed: an environment it cannot
+  # read, or without a required reviewer, stops the release before the approval prompt. It runs
+  # from the Actions tab too, to check the setup before a tag.
+  guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read # reading an environment (GET /repos/{repo}/environments/{name})
+    steps:
+      - name: The crates-io environment requires a reviewer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rules=$(gh api "repos/$GITHUB_REPOSITORY/environments/crates-io" --jq '.protection_rules[]?.type') ||
+            { echo "::error::cannot read the crates-io environment (missing, or no permission)"; exit 1; }
+          grep -qx required_reviewers <<< "$rules" ||
+            { echo "::error::the crates-io environment has no required reviewer: set it up as AGENTS.md says"; exit 1; }
+          echo "crates-io: a reviewer must approve"
+
+  tag:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # main's history, for the check below
+
+      - name: The tag names the version, is on main, and CHANGELOG.md dates it
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "::error::tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
+          grep -qx "version = \"$version\"" herdr-plugin.toml || { echo "::error::herdr-plugin.toml: set version = \"$version\""; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+          head=$(grep -m1 "^## \[$version\]" CHANGELOG.md) || { echo "::error::CHANGELOG.md has no ## [$version] section"; exit 1; }
+          if grep -qi unreleased <<< "$head"; then echo "::error::CHANGELOG.md: date the $version section"; exit 1; fi
+          awk -v h="## [$version]" 'index($0, h) == 1 { on = 1; next } /^## \[/ { on = 0 } on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || { echo "::error::the $version section is empty"; exit 1; }
+          # Every job's Rust is the one ci.yml checked with.
+          pin() { grep -oE 'RUSTUP_TOOLCHAIN: [0-9][0-9.]*' "$1" | sort -u || true; }
+          rust=$(pin .github/workflows/ci.yml)
+          test -n "$rust" && test "$rust" = "$(pin .github/workflows/release.yml)" ||
+            { echo "::error::ci.yml and release.yml pin different Rust"; exit 1; }
+          echo "termcode $version: tag, main and CHANGELOG agree; $rust"
+
+  # The .debs: static (musl) amd64 and arm64 binaries, installed and run on older and newer
+  # Debian and Ubuntu. Read-only and without secrets; kept on the run's page, attached to the
+  # Release by github-release.
+  debs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
       CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.97.1
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Tools the tests use
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep shellcheck clang apt-utils
-
-      # The Rust this is developed with (rustc --version), so a release builds and lints as
-      # it did here; a newer stable's new lints would otherwise fail a tag. Bump on purpose.
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.97.1
-          components: clippy
-          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: The tag names the version in Cargo.toml, and CHANGELOG.md dates it
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Rust and cargo-deb
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
-          grep -qx "version = \"$version\"" herdr-plugin.toml || { echo "herdr-plugin.toml: set version = \"$version\""; exit 1; }
-          head=$(grep -m1 "^## \[$version\]" CHANGELOG.md) || { echo "CHANGELOG.md has no ## [$version] section"; exit 1; }
-          case "$head" in *unreleased*) echo "CHANGELOG.md: date the $version section"; exit 1;; esac
-          # This version's section, for the release notes.
-          awk -v h="## [$version]" 'index($0, h) == 1 {on = 1; next} /^## \[/ {on = 0} on' CHANGELOG.md > target-notes.md
-
-      - name: Lint
-        run: cargo clippy --locked --all-targets -- -D warnings
-
-      - name: Test
-        run: cargo test --locked
-
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deb
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          cargo install cargo-deb --version 3.8.0 --locked
 
       - name: Build the packages
         run: scripts/deb.sh
@@ -82,63 +119,118 @@ jobs:
             '
           done
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: termcode-debs
-          path: |
-            target/deb/debian/*.deb
-            target-notes.md
-          if-no-files-found: ignore
+          path: target/deb/debian/*.deb
 
-  # Publishing, apart from the build: only this job may write here and has the key.
+  # crates.io, after the owner's click: the `crates-io` environment requires their review
+  # and only v* tags may use it. Trusted Publishing: crates.io takes GitHub's OIDC token for
+  # this workflow file in this environment and gives back a token for 30 minutes, which the
+  # auth action's post step revokes when the job ends, failed or not.
+  #
+  # id-token: write lets any step of this job ask GitHub for such an OIDC token, so nothing in
+  # it runs the repository's code: GitHub's checkout, rustup, the auth action (rust-lang's,
+  # pinned), and cargo of RUSTUP_TOOLCHAIN packing this commit's files with --no-verify (no
+  # build, so no build script; the build was ci's `cargo publish --dry-run --locked` on this
+  # same commit, needs: ci). The repository's cargo and rustup configuration would run too (a
+  # toolchain file can name its own binaries, a cargo config a credential provider that gets
+  # the token), so a release refuses it, first, before any token exists.
   publish:
-    needs: release
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [ci, tag, guard, debs] # ci: `cargo publish --dry-run --locked` on this same commit
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
+    environment: crates-io
     permissions:
-      contents: write
+      contents: read
+      id-token: write # the OIDC token crates.io exchanges; this job only
+    env:
+      # The Rust of ci.yml's dry run (the tag job checks the two agree). The variable wins
+      # over any toolchain file.
+      RUSTUP_TOOLCHAIN: 1.97.1
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v7
+      - name: No cargo or rustup configuration from the repository
+        run: |
+          for f in .cargo/config .cargo/config.toml rust-toolchain rust-toolchain.toml; do
+            if [ -e "$f" ] || [ -L "$f" ]; then echo "::error::$f in a release: refused"; exit 1; fi
+          done
+
+      - name: Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      # The first release only: Trusted Publishing is set up in a crate's settings, so the crate
+      # must exist; its first version goes out with a token kept in this environment
+      # (CARGO_REGISTRY_TOKEN). Then AGENTS.md, "Releases": Trusted Publishing on, the secret
+      # deleted, the token revoked, and this step finds nothing.
+      - name: A stored token (the first release only)
+        id: stored
+        env:
+          TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: if [ -n "$TOKEN" ]; then echo "found=yes" >> "$GITHUB_OUTPUT"; fi
+
+      # Fails the job with crates.io's reason when the Trusted Publishing configuration does
+      # not match (owner, repository, workflow file, environment). Nothing runs between this
+      # and the publish.
+      - name: A crates.io token (Trusted Publishing)
+        id: auth
+        if: steps.stored.outputs.found != 'yes'
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+
+      - name: Publish on crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked --no-verify
+
+  # The GitHub Release (this version's CHANGELOG section, the .debs) and the apt repository:
+  # the only job that writes here, and the only one with the apt signing key.
+  github-release:
+    needs: [publish, debs]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # the Release, and the apt repository's branch
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: termcode-debs
-          path: out
+          path: debs
 
       - name: Tools the apt repository needs
         run: sudo apt-get update -qq && sudo apt-get install -y -qq apt-utils
 
       # Says only whether the key is set (a secret cannot be tested in `if`).
-      - name: Ready to publish?
-        id: ready
+      - name: The apt signing key
         env:
           KEY: ${{ secrets.APT_SIGNING_KEY }}
-        run: |
-          if [ -n "$KEY" ]; then echo "publish=yes" >> "$GITHUB_OUTPUT"
-          else echo "::warning::APT_SIGNING_KEY is not set: built and tested, not published"; fi
+        run: test -n "$KEY" || { echo "::error::APT_SIGNING_KEY is not set"; exit 1; }
 
-      - name: The GitHub release
-        if: steps.ready.outputs.publish == 'yes'
+      - name: GitHub Release with this version's CHANGELOG section and the .debs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { cat out/target-notes.md; echo; cat doc/release-install.md; } > notes.md
-          gh release create "$GITHUB_REF_NAME" out/target/deb/debian/*.deb \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "termcode ${GITHUB_REF_NAME#v}" \
-            --notes-file notes.md
+          version=${GITHUB_REF_NAME#v}
+          { awk -v h="## [$version]" 'index($0, h) == 1 { on = 1; next } /^## \[/ { on = 0 } on' CHANGELOG.md
+            echo; cat doc/release-install.md; } > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" debs/*.deb --repo "$GITHUB_REPOSITORY" \
+            --title "termcode $version" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
 
       - name: Update the apt repository
-        if: steps.ready.outputs.publish == 'yes'
         env:
           GH_TOKEN: ${{ github.token }}
           APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
         run: |
           git clone -q --depth 1 --branch gh-pages "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apt-pages
-          scripts/apt-repo.sh apt-pages out/target/deb/debian/termcode_*.deb
+          scripts/apt-repo.sh apt-pages debs/termcode_*.deb
           cd apt-pages
           git config user.name JonasAtelier
           git config user.email 98136255+JonasAtelier@users.noreply.github.com

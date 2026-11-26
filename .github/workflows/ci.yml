@@ -1,37 +1,73 @@
-# Every push to main and every pull request: lint and test, as a release does (release.yml).
-# No secrets here: a pull request's code runs in this job.
+# The checks: on pushes to main, on pull requests, and as the first job of a release
+# (release.yml calls this file).
+#
+# Anything a contributor's pull request can trigger runs here, so everything here runs with
+# `permissions: contents: read` and no secrets: no step reads `secrets.*`, the trigger is
+# `pull_request` (never `pull_request_target`), and the checkout keeps no token.
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash # -e -o pipefail: a failing command fails the step, inside a pipe too
+
 jobs:
-  test:
+  check:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
+      # The Rust this is developed with (rustc --version): a newer stable's new lints would
+      # otherwise fail a release. Bump on purpose, here and in release.yml's jobs (a release
+      # checks they agree).
+      RUSTUP_TOOLCHAIN: 1.97.1
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Tools the tests use
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep shellcheck clang apt-utils
 
-      # The Rust release.yml pins, so a green CI means a tag would lint and test the same.
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.97.1
-          components: clippy
-
-      - uses: Swatinem/rust-cache@v2
+      - name: Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy
 
       - name: Lint
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Test
         run: cargo test --locked
+
+      # The crate as crates.io would get it, built from the packaged files alone. A release
+      # publishes this same commit with `--no-verify` (release.yml), relying on this step.
+      - name: Package
+        run: cargo publish --dry-run --locked
+
+  # Cargo.toml's rust-version is a promise: the oldest Rust that builds termcode. "1.93"
+  # means 1.93.0, so that exact release is checked, read from Cargo.toml.
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check with rust-version
+        run: |
+          v=$(sed -n 's/^rust-version = "\([0-9.]*\)"$/\1/p' Cargo.toml)
+          test -n "$v"
+          case $v in *.*.*) ;; *) v=$v.0 ;; esac
+          echo "rust-version: $v"
+          rustup toolchain install "$v" --profile minimal
+          cargo "+$v" check --all-targets --locked
