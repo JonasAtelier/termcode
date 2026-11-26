@@ -51,6 +51,33 @@ jobs:
       - name: Package
         run: cargo publish --dry-run --locked
 
+  # The experimental macOS port: the same lint and tests on a Mac runner. Reported, not
+  # required: a few tests still assume Linux, and a red Mac run must not stop a push's
+  # checks or a release (release.yml calls this file).
+  check-macos:
+    runs-on: macos-15
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.97.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tools the tests use
+        run: brew install ripgrep shellcheck
+
+      - name: Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy
+
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
   # Cargo.toml's rust-version is a promise: the oldest Rust that builds termcode. "1.93"
   # means 1.93.0, so that exact release is checked, read from Cargo.toml.
   msrv:

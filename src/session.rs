@@ -63,7 +63,7 @@ pub fn reload_file(file: &Path) -> PathBuf {
 /// What a reload killed before its exec left behind: reload sessions and terminal screens
 /// named for a process that is gone.
 pub fn clean_stale(state_dir: &Path) {
-    let gone = |pid: &str| pid.parse::<u32>().is_ok_and(|p| p != std::process::id() && !Path::new(&format!("/proc/{p}")).exists());
+    let gone = |pid: &str| pid.parse::<u32>().is_ok_and(|p| p != std::process::id() && !crate::api::process_alive(p));
     let names = |dir: PathBuf| std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| (e.path(), e.file_name().to_string_lossy().into_owned()));
     for (path, name) in names(state_dir.join("sessions")) {
         if name.strip_suffix(".json").and_then(|n| n.rsplit_once(".reload-")).is_some_and(|(_, pid)| gone(pid)) {

@@ -308,7 +308,7 @@ pub fn start(dir: &Path) -> Option<Server> {
     // Those of termcodes gone without cleaning up (killed hard, the power cut).
     for e in fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.strip_suffix(".sock").and_then(|pid| pid.parse::<u32>().ok()).is_some_and(|pid| !Path::new(&format!("/proc/{pid}")).exists()) {
+        if name.strip_suffix(".sock").and_then(|pid| pid.parse::<u32>().ok()).is_some_and(|pid| !process_alive(pid)) {
             let _ = fs::remove_file(e.path());
         }
     }
@@ -356,7 +356,28 @@ pub fn start(dir: &Path) -> Option<Server> {
     Some(Server { rx, wake, path: p, waits: Vec::new(), watchers: Vec::new(), last: None, tx: keep_tx, poke: keep_poke })
 }
 
+/// Whether a process still exists, without sending it a signal.
+pub(crate) fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else { return false };
+    if pid == 0 { return false }
+    #[cfg(target_os = "macos")]
+    {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+        let mut len = 0;
+        // SAFETY: sysctl first sizes, then fills an allocated byte buffer. A failed
+        // query is treated as alive, so cleanup never removes a live process's files.
+        unsafe {
+            if libc::sysctl(mib.as_mut_ptr(), 4, std::ptr::null_mut(), &mut len, std::ptr::null_mut(), 0) != 0 { return true }
+            let mut info = vec![0u8; len];
+            libc::sysctl(mib.as_mut_ptr(), 4, info.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) != 0 || len > 0
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    { Path::new(&format!("/proc/{pid}")).exists() }
+}
+
 /// The connecting process: its pid and uid (SO_PEERCRED).
+#[cfg(not(target_os = "macos"))]
 fn peer(s: &UnixStream) -> Option<(i32, u32)> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -365,8 +386,62 @@ fn peer(s: &UnixStream) -> Option<(i32, u32)> {
     (r == 0).then_some((cred.pid, cred.uid))
 }
 
+#[cfg(target_os = "macos")]
+fn peer(s: &UnixStream) -> Option<(i32, u32)> {
+    let (mut uid, mut gid, mut pid) = (0, 0, 0i32);
+    let mut len = std::mem::size_of_val(&pid) as libc::socklen_t;
+    // SAFETY: an open socket and valid output buffers of the specified sizes.
+    let ok = unsafe {
+        libc::getpeereid(s.as_raw_fd(), &mut uid, &mut gid) == 0
+            && libc::getsockopt(s.as_raw_fd(), libc::SOL_LOCAL, libc::LOCAL_PEERPID, (&raw mut pid).cast(), &mut len) == 0
+    };
+    (ok && len as usize == std::mem::size_of_val(&pid) && pid > 0).then_some((pid, uid))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn proc_stat(pid: i32) -> Option<(String, i32, u64)> {
+    // SAFETY: proc_bsdinfo is plain data and proc_pidinfo receives its exact size.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of_val(&info) as i32;
+    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    if n != size { return None }
+    let name: Vec<u8> = info.pbi_comm.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+    Some((String::from_utf8_lossy(&name).into_owned(), info.pbi_ppid as i32, info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec))
+}
+
+/// A process's arguments (KERN_PROCARGS2: argc, the executable's path, NULs, then argv).
+#[cfg(target_os = "macos")]
+fn cmdline(pid: i32) -> Vec<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut len = 0;
+    // SAFETY: the first call only sizes; the second fills a buffer of that many bytes.
+    let mut buf = unsafe {
+        if libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut len, std::ptr::null_mut(), 0) != 0 {
+            return Vec::new();
+        }
+        let mut buf = vec![0u8; len];
+        if libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) != 0 {
+            return Vec::new();
+        }
+        buf
+    };
+    buf.truncate(len);
+    parse_procargs(&buf)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_procargs(buf: &[u8]) -> Vec<String> {
+    let Some((argc, rest)) = buf.split_first_chunk::<4>() else { return Vec::new() };
+    let argc = usize::try_from(i32::from_ne_bytes(*argc)).unwrap_or(0);
+    let Some(path_end) = rest.iter().position(|&b| b == 0) else { return Vec::new() };
+    let args = &rest[path_end..];
+    let start = args.iter().position(|&b| b != 0).unwrap_or(args.len());
+    args[start..].split(|&b| b == 0).take(argc).map(|a| String::from_utf8_lossy(a).into_owned()).collect()
+}
+
 /// A process's name, parent and start time (/proc/PID/stat).
-fn proc_stat(pid: i32) -> Option<(String, i32, u64)> {
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn proc_stat(pid: i32) -> Option<(String, i32, u64)> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let (head, rest) = stat.rsplit_once(')')?;
     let comm = head.split_once('(')?.1.to_string();
@@ -374,6 +449,7 @@ fn proc_stat(pid: i32) -> Option<(String, i32, u64)> {
     Some((comm, f.get(1)?.parse().ok()?, f.get(19)?.parse().ok()?))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn cmdline(pid: i32) -> Vec<String> {
     fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default().split(|&b| b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect()
 }
@@ -1158,6 +1234,30 @@ pub fn remove() {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn procargs_give_argv_without_the_executable_path_or_environment() {
+        let mut buf = 3i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/usr/local/bin/termcode\0\0\0\0termcode\0api\0a b\0HOME=/h\0");
+        assert_eq!(parse_procargs(&buf), ["termcode", "api", "a b"]);
+        assert!(parse_procargs(&buf[..2]).is_empty());
+        #[cfg(target_os = "macos")]
+        assert_eq!(cmdline(std::process::id() as i32).first(), std::env::args().next().as_ref());
+    }
+
+    #[test]
+    fn socket_peer_identity_and_process_liveness_are_preserved() {
+        let dir = std::env::temp_dir().join(format!("termcode-peer-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let listener = UnixListener::bind(dir.join("peer.sock")).unwrap();
+        let _client = UnixStream::connect(dir.join("peer.sock")).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        assert_eq!(peer(&server), Some((std::process::id() as i32, unsafe { libc::geteuid() })));
+        assert!(process_alive(std::process::id()));
+        assert!(process_alive(1));
+        assert!(!process_alive(u32::MAX));
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn a_watching_connection_gets_each_change_as_an_event() {

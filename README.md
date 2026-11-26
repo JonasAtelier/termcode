@@ -124,3 +124,11 @@ From this checkout on Linux, run `cargo run -- .`. To register it with herdr 0.9
 <!-- /dev -->
 
 Default colors come from Microsoft’s VS Code and file icons from Jesse Weed’s Seti UI, both under MIT. The Debian package includes its terms and dependency licenses in `/usr/share/doc/termcode/copyright` and `/usr/share/doc/termcode/THIRD-PARTY-LICENSES`.
+
+## macOS (experimental)
+
+Build from this checkout with `cargo install --locked --path . -j2`, then run
+`termcode .`. The editor, integrated terminal, API, clipboard, Trash (Finder's),
+links (`open`) and serial ports (`/dev/cu.usb*`, up to 2000000 baud) work on macOS.
+Picture icons need a Nerd Font found by fontconfig (`brew install fontconfig`).
+Physical hardware integrations have not been validated on macOS.

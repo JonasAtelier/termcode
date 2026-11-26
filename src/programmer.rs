@@ -411,7 +411,9 @@ fn detect() -> Option<PathBuf> {
         fs::read_dir(e.path().join("plugins")).into_iter().flatten().flatten().filter(|p| p.file_name().to_string_lossy().contains("externaltools.cubeprogrammer")).map(|p| p.path().join("tools/bin"))
     });
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .chain([home.join("STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin"), "/opt/st/stm32cubeprogrammer/bin".into(), "/usr/local/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin".into()])
+        .chain([home.join("STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin"), "/opt/st/stm32cubeprogrammer/bin".into(), "/usr/local/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin".into(),
+            // macOS: inside the app the installer puts in /Applications.
+            "/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/STM32CubeProgrammer.app/Contents/MacOs/bin".into()])
         .chain(ide)
         .map(|d| d.join(CLI))
         .find(|p| is_exe(p))
@@ -1121,6 +1123,11 @@ fn select(app: &mut App, i: usize) {
 fn install(app: &mut App) {
     app.prog.log_shown = false;
     // ST's download needs a sign-in: its installer comes from ~/Downloads, or the page opens.
+    #[cfg(target_os = "macos")]
+    let cmd = format!(
+        "sh -c 'z=$(ls -t \"$HOME\"/Downloads/en.stm32cubeprg-mac*.zip 2>/dev/null | head -n 1); if [ -n \"$z\" ]; then d=$(mktemp -d) && unzip -q \"$z\" -d \"$d\" && open -W \"$d\"/SetupSTM32CubeProgrammer*.app; else echo \"Download STM32CubeProgrammer for macOS (ST asks you to sign in), then press Install again: {DOWNLOAD}\"; open {DOWNLOAD} >/dev/null 2>&1; fi'"
+    );
+    #[cfg(not(target_os = "macos"))]
     let cmd = format!(
         "sh -c 'z=$(ls -t \"$HOME\"/Downloads/en.stm32cubeprg-lin*.zip 2>/dev/null | head -n 1); if [ -n \"$z\" ]; then d=$(mktemp -d) && unzip -q \"$z\" -d \"$d\" && \"$d\"/SetupSTM32CubeProgrammer*.linux; else echo \"Download STM32CubeProgrammer for Linux (ST asks you to sign in), then press Install again: {DOWNLOAD}\"; xdg-open {DOWNLOAD} >/dev/null 2>&1; fi'"
     );
@@ -1786,7 +1793,7 @@ mod tests {
         crate::gitcmds::pick(&mut app, 3);
         assert_eq!(app.prog.file.as_deref(), Some(dir.join("build/fw.bin").as_path()));
         let s = screen(&mut app, &mut t);
-        assert!(s.contains("fw.bin") && s.contains("Command") && s.contains("$ STM32_Programmer_CLI -c port=SWD mode=NORMAL -d") && s.contains("-v -rst"), "the command it runs\n{s}");
+        assert!(s.contains("fw.bin") && s.contains("Command") && s.contains("$ STM32_Programmer_CLI -c port=SWD mode=NORMAL -d") && s.contains(" -v") && s.contains("-rst"), "the command it runs\n{s}");
         press(&mut app, &mut t, "Start Programming");
         assert!(screen(&mut app, &mut t).contains("▶ Programming fw.bin"), "running");
         settle(&mut app);
@@ -1887,15 +1894,19 @@ mod tests {
         let (mut app, mut t, dir) = setup("serial");
         let (mut m, mut sl) = (0, 0);
         // SAFETY: valid out pointers; name, termios and winsize may be null.
-        assert_eq!(unsafe { libc::openpty(&mut m, &mut sl, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) }, 0);
+        assert_eq!(unsafe { libc::openpty(&mut m, &mut sl, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) }, 0);
         // SAFETY: openpty opened both; each File owns one.
         let (mut board, _slave) = unsafe { (<fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(m), <fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(sl)) };
-        app.prog.tty = Some(fs::read_link(format!("/proc/self/fd/{sl}")).unwrap());
+        let mut name = [0i8; 1024];
+        // SAFETY: sl is an open PTY and name is a writable buffer.
+        assert_eq!(unsafe { libc::ttyname_r(sl, name.as_mut_ptr(), name.len()) }, 0);
+        app.prog.tty = Some(PathBuf::from(unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_str().unwrap()));
         app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);
         press(&mut app, &mut t, "Serial Console");
         assert!(entered(&mut app, Field::Baud, "12345").is_err());
-        entered(&mut app, Field::Baud, "921600").unwrap();
+        let baud = if cfg!(target_os = "macos") { "230400" } else { "921600" };
+        entered(&mut app, Field::Baud, baud).unwrap();
         app.on_key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)); // the page's main action
         assert!(app.prog.serial.is_some() && app.prog.serial_tab);
         use std::io::Write as _;
@@ -1912,7 +1923,7 @@ mod tests {
         };
         shown(&mut app, &mut t, "temp=21");
         let s = screen(&mut app, &mut t);
-        assert!(s.contains(" Serial ") && s.contains(" boot ok") && s.contains("at 921600 baud") && !s.contains("[32m"), "colours dropped, the coming line shown\n{s}");
+        assert!(s.contains(" Serial ") && s.contains(" boot ok") && s.contains(&format!("at {baud} baud")) && !s.contains("[32m"), "colours dropped, the coming line shown\n{s}");
         entered(&mut app, Field::Send, "led on").unwrap();
         assert!(app.gitui.cmds.picker.is_some(), "ready for the next line");
         let mut got = [0u8; 7];
@@ -2069,10 +2080,13 @@ mod tests {
         // The board: a pseudo-terminal, the console on it.
         let (mut m, mut sl) = (0, 0);
         // SAFETY: valid out pointers; name, termios and winsize may be null.
-        assert_eq!(unsafe { libc::openpty(&mut m, &mut sl, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) }, 0);
+        assert_eq!(unsafe { libc::openpty(&mut m, &mut sl, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) }, 0);
         // SAFETY: openpty opened both; each File owns one.
         let _board = unsafe { (<fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(m), <fs::File as std::os::unix::io::FromRawFd>::from_raw_fd(sl)) };
-        let tty = fs::read_link(format!("/proc/self/fd/{sl}")).unwrap();
+        let mut name = [0i8; 1024];
+        // SAFETY: sl is an open PTY and name is a writable buffer.
+        assert_eq!(unsafe { libc::ttyname_r(sl, name.as_mut_ptr(), name.len()) }, 0);
+        let tty = PathBuf::from(unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_str().unwrap());
         (app.prog.idf.root, app.prog.idf.checked, app.prog.tty) = (Some(fw.clone()), true, Some(tty.clone()));
         app.show_side(Side::PROGRAMMER, false);
         settle(&mut app);

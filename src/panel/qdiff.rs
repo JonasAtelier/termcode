@@ -383,7 +383,7 @@ impl App {
         }
         if self.upgrade.watch && self.upgrade.next.is_none_or(|t| Instant::now() >= t) {
             self.upgrade.next = Some(Instant::now() + UPGRADE_CHECK);
-            let installed = fs::read_link("/proc/self/exe").ok().and_then(|l| replaced(&l));
+            let installed = replaced_exe();
             let told = self.upgrade.told;
             self.upgrade_tick(installed);
             *dirty |= self.upgrade.told != told;

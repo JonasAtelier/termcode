@@ -1162,7 +1162,7 @@ fn open_url(app: &mut App, url: &str) {
     let opened = if cfg!(test) {
         Err(std::io::Error::other("test"))
     } else {
-        Command::new("xdg-open").arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
     };
     match opened {
         Ok(c) if !cfg!(test) => {

@@ -37,6 +37,19 @@ pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+#[cfg(target_os = "macos")]
+fn children(pid: i32) -> Vec<i32> {
+    // SAFETY: a null buffer queries the required size; the second call writes into
+    // an allocated pid array. Extra room allows children created between calls.
+    let count = unsafe { libc::proc_listchildpids(pid, std::ptr::null_mut(), 0) };
+    if count < 0 { return Vec::new() }
+    let mut pids = vec![0i32; count as usize + 32];
+    let count = unsafe { libc::proc_listchildpids(pid, pids.as_mut_ptr().cast(), std::mem::size_of_val(pids.as_slice()) as i32) };
+    pids.truncate((count.max(0) as usize).min(pids.len()));
+    pids.retain(|&pid| pid > 0);
+    pids
+}
+
 pub fn fds() -> Vec<i32> {
     FDS.with(|f| f.borrow().clone())
 }
@@ -119,10 +132,10 @@ impl Term {
     /// `shell` in `cwd`, on a new PTY of `rows` x `cols`.
     pub fn spawn(shell: &str, cwd: &Path, rows: u16, cols: u16) -> io::Result<Term> {
         let (rows, cols) = (rows.max(2), cols.max(2));
-        let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+        let mut ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
         let (mut m, mut s) = (0, 0);
         // SAFETY: valid out pointers and winsize; the name and termios may be null.
-        if unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null(), &ws) } != 0 {
+        if unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut ws) } != 0 {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: openpty just opened both; each File now owns one.
@@ -305,14 +318,22 @@ impl Term {
     /// job (the terminal's process group, as tmux names a pane), else a background child.
     pub fn running(&self) -> Option<String> {
         let pid = self.pid;
+        #[cfg(target_os = "macos")]
+        let name = |p: i32| crate::api::proc_stat(p).map_or_else(|| "a program".into(), |s| s.0);
+        #[cfg(not(target_os = "macos"))]
         let name = |p: i32| std::fs::read_to_string(format!("/proc/{p}/comm")).map_or_else(|_| "a program".into(), |s| s.trim().to_string());
         // SAFETY: an open PTY master.
         let fg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
         if fg > 0 && fg != pid {
             return Some(name(fg));
         }
-        let kids = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).ok()?;
-        kids.split_whitespace().next()?.parse().ok().map(name)
+        #[cfg(target_os = "macos")]
+        { children(pid).first().copied().map(name) }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let kids = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).ok()?;
+            kids.split_whitespace().next()?.parse().ok().map(name)
+        }
     }
 
     /// Whether the program in it asked for the mouse (vim's mouse=a, htop, less --mouse).
@@ -599,6 +620,12 @@ impl App {
     /// for, so none lingers as a zombie. The terminals' shells are their own terminals'.
     pub fn reap_strays(&self) {
         let shells: Vec<i32> = self.terms.iter().map(|t| t.pid).collect();
+        #[cfg(target_os = "macos")]
+        for pid in children(std::process::id() as i32).into_iter().filter(|p| !shells.contains(p)) {
+            // SAFETY: waitpid on a child; only this worker thread blocks.
+            std::thread::spawn(move || unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) });
+        }
+        #[cfg(not(target_os = "macos"))]
         for task in fs::read_dir("/proc/self/task").into_iter().flatten().flatten() {
             let Ok(kids) = fs::read_to_string(task.path().join("children")) else { continue };
             for pid in kids.split_whitespace().filter_map(|p| p.parse::<i32>().ok()).filter(|p| !shells.contains(p)) {
@@ -948,6 +975,15 @@ pub fn key_bytes(k: KeyEvent, app_cursor: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_background_job_is_detected_before_closing_the_terminal() {
+        let mut child = Command::new("sleep").arg("0.5").spawn().unwrap();
+        let found = children(std::process::id() as i32).contains(&(child.id() as i32));
+        let _ = child.wait();
+        assert!(found);
+    }
 
     #[test]
     fn the_output_log_is_plain_text_even_with_escapes_split_across_reads() {

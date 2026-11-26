@@ -1777,7 +1777,7 @@ fn without_a_nerd_font_no_private_use_glyph_is_drawn() {
 fn input_wait_tells_idle_ready_and_a_closed_terminal_apart() {
     let (mut master, mut slave) = (0, 0);
     // SAFETY: valid out pointers; the name, termios and winsize arguments may be null.
-    let opened = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) };
+    let opened = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
     assert_eq!(opened, 0);
     // SAFETY: both descriptors are open. A child forked by another test must not inherit them.
     unsafe {
@@ -6945,8 +6945,9 @@ fn delete_moves_to_the_trash_once_asked_and_shift_delete_removes_for_good() {
     assert_eq!((p.text[0].as_str(), p.buttons[0].0.as_str()), ("Are you sure you want to delete 'a b.txt'?", "Move to Trash"));
     assert!(root.join("a b.txt").exists(), "nothing before it is confirmed");
     app.run_prompt(p.buttons[0].1.clone());
-    assert!(!root.join("a b.txt").exists() && trash.join("files/a b.txt").exists());
-    let info = fs::read_to_string(trash.join("info/a b.txt.trashinfo")).unwrap();
+    assert!(!root.join("a b.txt").exists() && rename::trashed(&trash, "a b.txt").exists());
+    // freedesktop records where it came from; macOS's Trash keeps no info file.
+    let info = if cfg!(target_os = "macos") { None } else { Some(fs::read_to_string(trash.join("info/a b.txt.trashinfo")).unwrap()) };
     let abs = root.canonicalize().unwrap().join("a%20b.txt");
     // A symlink trashed is recorded where the link was, not where it pointed: restoring
     // never lands on the file it points to.
@@ -6956,16 +6957,19 @@ fn delete_moves_to_the_trash_once_asked_and_shift_delete_removes_for_good() {
     select(&mut app, "link.txt");
     key(&mut app, KeyCode::Delete, KeyModifiers::NONE);
     app.run_prompt(app.prompt.as_ref().unwrap().buttons[0].1.clone());
-    let link_info = fs::read_to_string(trash.join("info/link.txt.trashinfo")).unwrap();
-    assert!(link_info.contains(&format!("Path={}\n", root.canonicalize().unwrap().join("link.txt").display())) && root.join("target.txt").exists(), "{link_info}");
-    assert!(info.starts_with("[Trash Info]\nPath=") && info.contains(&format!("Path={}", abs.display())) && info.contains("DeletionDate=20"), "{info}");
+    assert!(root.join("target.txt").exists() && rename::trashed(&trash, "link.txt").symlink_metadata().is_ok_and(|m| m.is_symlink()));
+    if let Some(info) = info {
+        let link_info = fs::read_to_string(trash.join("info/link.txt.trashinfo")).unwrap();
+        assert!(link_info.contains(&format!("Path={}\n", root.canonicalize().unwrap().join("link.txt").display())), "{link_info}");
+        assert!(info.starts_with("[Trash Info]\nPath=") && info.contains(&format!("Path={}", abs.display())) && info.contains("DeletionDate=20"), "{info}");
+    }
     assert!(!app.groups[0].tabs.iter().any(|t| t.key == "file:a b.txt"), "its editor closed");
     // A second one of the name: NAME.2.
     fs::write(root.join("a b.txt"), "again").unwrap();
     app.reload_all();
     select(&mut app, "a b.txt");
     app.delete_paths(&["a b.txt".into()], false);
-    assert_eq!(fs::read_to_string(trash.join("files/a b.txt.2")).unwrap(), "again");
+    assert_eq!(fs::read_to_string(rename::trashed(&trash, "a b.txt.2")).unwrap(), "again");
     // An editor with unsaved edits stays open.
     select(&mut app, "kept.txt");
     app.delete_paths(&["kept.txt".into()], false);
@@ -6976,7 +6980,7 @@ fn delete_moves_to_the_trash_once_asked_and_shift_delete_removes_for_good() {
     let p = app.prompt.as_ref().unwrap();
     assert_eq!(p.text[0], "Are you sure you want to permanently delete 'old' and its contents?");
     app.run_prompt(p.buttons[0].1.clone());
-    assert!(!root.join("old").exists() && !trash.join("files/old").exists());
+    assert!(!root.join("old").exists() && !rename::trashed(&trash, "old").exists());
     fs::remove_dir_all(&trash).unwrap();
     fs::remove_dir_all(&root).unwrap();
 }
@@ -7012,7 +7016,7 @@ fn ctrl_z_takes_back_explorer_moves_copies_and_deletes_and_ctrl_y_redoes_them() 
     file_settle(&mut app);
     assert!(at("docs/README.md"));
     ctrl(&mut app, 'z', false);
-    assert!(!at("docs/README.md") && trash.join("files/README.md").exists(), "{}", app.msg);
+    assert!(!at("docs/README.md") && rename::trashed(&trash, "README.md").exists(), "{}", app.msg);
     ctrl(&mut app, 'z', true);
     file_settle(&mut app);
     assert!(at("docs/README.md"), "{}", app.msg);
@@ -7046,13 +7050,13 @@ fn delete_on_another_disk_goes_to_that_disks_trash_and_ctrl_z_brings_it_back() {
     app.trash = std::env::temp_dir().join(format!("termcode-trash-disk-{}", std::process::id()));
     app.delete_paths(&["a.txt".into()], false);
     assert!(app.prompt.is_none(), "not asked to delete it for good");
-    assert!(!root.join("a.txt").exists() && disk_trash.join("files/a.txt").exists(), "{}", app.msg);
+    assert!(!root.join("a.txt").exists() && rename::trashed(&disk_trash, "a.txt").exists(), "{}", app.msg);
     assert!(fs::read_to_string(disk_trash.join("info/a.txt.trashinfo")).unwrap().contains("/a.txt"));
     assert_eq!(fs::metadata(&disk_trash).unwrap().mode() & 0o777, 0o700);
     app.focus = Focus::Side;
     app.show_side(Side::EXPLORER, false);
     key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
-    assert!(root.join("a.txt").exists() && !disk_trash.join("files/a.txt").exists(), "{}", app.msg);
+    assert!(root.join("a.txt").exists() && !rename::trashed(&disk_trash, "a.txt").exists(), "{}", app.msg);
     let _ = fs::remove_dir_all(&disk_trash);
     let _ = fs::remove_dir_all(&app.trash);
     fs::remove_dir_all(&root).unwrap();
@@ -7136,7 +7140,7 @@ fn explorer_multi_select_moves_copies_and_deletes_together_and_ctrl_z_takes_all_
     let p = app.prompt.as_ref().unwrap();
     assert_eq!(p.text[0], "Are you sure you want to delete the following 2 items?");
     app.run_prompt(p.buttons[0].1.clone());
-    assert!(!at("box/b.txt") && !at("box/c.txt") && trash.join("files/b.txt").exists(), "{}", app.msg);
+    assert!(!at("box/b.txt") && !at("box/c.txt") && rename::trashed(&trash, "b.txt").exists(), "{}", app.msg);
     key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert!(at("box/b.txt") && at("box/c.txt"), "{}", app.msg);
     assert_eq!(app.msg, "took back 2 file operations");

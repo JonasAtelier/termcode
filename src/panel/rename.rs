@@ -567,16 +567,17 @@ pub(super) fn trash(path: &Path, home: &Path) -> io::Result<(PathBuf, String)> {
     }
 }
 
-/// `$topdir/.Trash-$uid` for `path`'s disk, made (0700) if missing; None when it is not
+/// `$topdir/.Trash-$uid` (macOS: `$topdir/.Trashes/$uid`) for `path`'s disk, made (0700) if missing; None when it is not
 /// ours to use (a symlink, someone else's) or cannot be made.
 fn disk_trash(path: &Path) -> Option<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
     // Tests keep to a Trash of their own.
-    let name = if cfg!(test) { format!(".Trash-test-{}", std::process::id()) } else { format!(".Trash-{uid}") };
+    // Finder's is `.Trashes/$uid` on another disk; freedesktop's `.Trash-$uid`.
+    let name = if cfg!(test) { format!(".Trash-test-{}", std::process::id()) } else if cfg!(target_os = "macos") { format!(".Trashes/{uid}") } else { format!(".Trash-{uid}") };
     let dir = mount_top(path)?.join(name);
-    match fs::DirBuilder::new().mode(0o700).create(&dir) {
+    match fs::DirBuilder::new().mode(0o700).recursive(cfg!(target_os = "macos")).create(&dir) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(_) => return None,
@@ -596,6 +597,7 @@ fn mount_top(path: &Path) -> Option<PathBuf> {
 /// Moves `path` into the freedesktop Trash `trash` (what file managers restore from): the
 /// item to files/NAME, its origin and time to info/NAME.trashinfo, NAME made free first
 /// ("NAME.2", "NAME.3" …) by creating its info file. Same disk only: a rename. Returns NAME.
+#[cfg(not(target_os = "macos"))]
 fn trash_in(path: &Path, trash: &Path) -> io::Result<String> {
     let (files, info) = (trash.join("files"), trash.join("info"));
     fs::create_dir_all(&files)?;
@@ -625,7 +627,36 @@ fn trash_in(path: &Path, trash: &Path) -> io::Result<String> {
     unreachable!("a free name")
 }
 
+/// Moves `path` into the macOS Trash `trash` (what Finder shows): as NAME, else NAME.2,
+/// NAME.3 … when taken. Same disk only: a rename that never replaces. Returns NAME.
+#[cfg(target_os = "macos")]
+fn trash_in(path: &Path, trash: &Path) -> io::Result<String> {
+    use std::os::unix::ffi::OsStrExt;
+    fs::create_dir_all(trash)?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let from = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    for k in 1u32.. {
+        let n = if k == 1 { name.clone() } else { format!("{name}.{k}") };
+        let to = std::ffi::CString::new(trash.join(&n).as_os_str().as_bytes())?;
+        // SAFETY: both are NUL-terminated paths; RENAME_EXCL fails rather than replace.
+        if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
+            return Ok(n);
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::AlreadyExists {
+            return Err(e);
+        }
+    }
+    unreachable!("a free name")
+}
+
+/// Where item NAME lies in the Trash `dir`: files/NAME (freedesktop), NAME itself (macOS).
+pub(crate) fn trashed(dir: &Path, name: &str) -> PathBuf {
+    if cfg!(target_os = "macos") { dir.join(name) } else { dir.join("files").join(name) }
+}
+
 /// A path as the Trash writes it: bytes but unreserved ones and "/" as %XX.
+#[cfg(not(target_os = "macos"))]
 fn percent(s: &str) -> String {
     s.bytes()
         .map(|b| if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
@@ -633,6 +664,7 @@ fn percent(s: &str) -> String {
 }
 
 /// Local "YYYY-MM-DDTHH:MM:SS" (a .trashinfo's DeletionDate).
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn local_iso(t: i64) -> String {
     #[allow(deprecated)] // libc marks musl's time_t for a future change; it is 64-bit here
     let tt = t as libc::time_t;
@@ -759,9 +791,9 @@ impl App {
             Copied { to, .. } if exists(to) => trash(&self.root.join(to), &self.trash)
                 .map_err(|e| e.to_string())
                 .map(|_| format!("took back the copy {} (it is in the Trash)", base(to))),
-            Trashed { rel, name, dir } if !exists(rel) && dir.join("files").join(name).exists() => {
+            Trashed { rel, name, dir } if !exists(rel) && trashed(dir, name).exists() => {
                 let to = self.root.join(rel);
-                let restored = to.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::rename(dir.join("files").join(name), &to));
+                let restored = to.parent().map_or(Ok(()), fs::create_dir_all).and_then(|()| fs::rename(trashed(dir, name), &to));
                 restored.map_err(|e| e.to_string()).map(|()| {
                     let _ = fs::remove_file(dir.join("info").join(format!("{name}.trashinfo")));
                     format!("restored {}", base(rel))

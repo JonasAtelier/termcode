@@ -329,7 +329,23 @@ impl Lints {
     }
 }
 
+/// Free memory, MB: the share of RAM macOS counts as free (`memory_pressure`'s figure).
+#[cfg(target_os = "macos")]
+fn mem_available_mb() -> Option<u64> {
+    fn read<T: Default>(name: &std::ffi::CStr) -> Option<T> {
+        let mut v = T::default();
+        let mut len = std::mem::size_of::<T>();
+        // SAFETY: v is a T-sized buffer and len says so.
+        let r = unsafe { libc::sysctlbyname(name.as_ptr(), (&raw mut v).cast(), &mut len, std::ptr::null_mut(), 0) };
+        (r == 0 && len == std::mem::size_of::<T>()).then_some(v)
+    }
+    let percent: u32 = read(c"kern.memorystatus_level")?;
+    let total: u64 = read(c"hw.memsize")?;
+    Some(total / 100 * u64::from(percent) / (1024 * 1024))
+}
+
 /// Free memory, MB (MemAvailable).
+#[cfg(not(target_os = "macos"))]
 fn mem_available_mb() -> Option<u64> {
     let info = std::fs::read_to_string("/proc/meminfo").ok()?;
     info.lines().find_map(|l| l.strip_prefix("MemAvailable:")).and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok()).map(|kb| kb / 1024)
@@ -971,6 +987,12 @@ fn parses(a: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_memory_is_read_and_under_the_total() {
+        let mb = mem_available_mb().expect("free memory");
+        assert!(mb > 0 && mb < 16 * 1024 * 1024, "{mb} MB");
+    }
 
     #[test]
     fn cargo_checks_messages_land_on_their_files_lines() {
