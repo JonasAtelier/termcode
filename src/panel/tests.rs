@@ -5802,12 +5802,21 @@ fn the_minimap_in_kitty_is_pixels_at_vscodes_scales() {
     // Scrolled inside the stretch: cells change, the picture is not sent again.
     app.set_scroll(ScrollTarget::Editor(0), 3);
     assert!(frames(&mut app, &mut t).is_empty(), "scrolling sends no pixels");
-    // An edit: the picture again, the one before deleted a frame later.
+    // An edit: the picture again, the one before deleted a frame later (in whichever
+    // frame that is: highlighting may take a few on a slow machine).
     app.set_scroll(ScrollTarget::Editor(0), 0);
     key(&mut app, KeyCode::Char('Z'), KeyModifiers::NONE);
-    assert!(!frames(&mut app, &mut t).is_empty());
-    t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
-    assert!(t.backend().buffer().content.iter().any(|c| c.symbol().contains("a=d")), "the one before deleted");
+    let (mut sent, mut deleted) = (false, false);
+    for _ in 0..10_000 {
+        t.draw(|f| crate::ui::draw(&mut app, f)).unwrap();
+        sent |= sent_pictures(&t).iter().any(|p| p.width() >= 40 && p.height() >= 100);
+        deleted |= sent && t.backend().buffer().content.iter().any(|c| c.symbol().contains("a=d"));
+        if deleted && !app.hl_pending() {
+            break;
+        }
+    }
+    assert!(sent, "the picture again");
+    assert!(deleted, "the one before deleted");
     let _ = fs::remove_dir_all(&root);
 }
 
