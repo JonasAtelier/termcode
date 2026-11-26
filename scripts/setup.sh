@@ -79,12 +79,23 @@ fi
 if have termcode; then
     note "termcode: $(termcode --version 2>/dev/null) is installed."
 else
-    note "termcode: its apt repository, then the package (git, ripgrep, xclip, shellcheck with it)."
+    note "termcode: install the Debian package for this machine from GitHub Releases."
     if part termcode "Install termcode?" y; then
-        run "sudo curl -fsSLo /usr/share/keyrings/termcode.gpg https://jonasatelier.github.io/termcode/termcode.gpg"
-        run "echo 'deb [signed-by=/usr/share/keyrings/termcode.gpg] https://jonasatelier.github.io/termcode stable main' | sudo tee /etc/apt/sources.list.d/termcode.list >/dev/null"
-        run "sudo apt-get update"
-        apt_install termcode
+        arch=$(dpkg --print-architecture)
+        case "$arch" in
+            amd64|arm64) ;;
+            *) echo "No Debian package for $arch. Use cargo install termcode --locked." >&2; exit 1 ;;
+        esac
+        apt_install curl jq
+        note "Download the latest termcode .deb for $arch and install it with apt-get."
+        if [ "$DRY" = 0 ]; then (
+            tmp=$(mktemp -d)
+            trap 'rm -rf "$tmp"' EXIT
+            curl -fsSL https://api.github.com/repos/JonasAtelier/termcode/releases/latest -o "$tmp/release.json"
+            url=$(jq -er --arg suffix "_$arch.deb" '.assets[] | select(.name | startswith("termcode_") and endswith($suffix)) | .browser_download_url' "$tmp/release.json")
+            curl -fL "$url" -o "$tmp/termcode.deb"
+            sudo apt-get install -y "$tmp/termcode.deb"
+        ); fi
         DONE="$DONE termcode"
     fi
 fi

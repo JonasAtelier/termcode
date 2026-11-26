@@ -35,7 +35,7 @@ jobs:
           persist-credentials: false
 
       - name: Tools the tests use
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep shellcheck clang apt-utils
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep shellcheck clang
 
       - name: Rust
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy

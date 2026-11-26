@@ -3,16 +3,15 @@
 # herdr-plugin.toml's) version, be on main, and CHANGELOG.md must date it; the `crates-io`
 # environment must require a reviewer; the static amd64 and arm64 .debs built and installed
 # on older and newer Debian and Ubuntu; then, once the owner approves, `cargo publish`; then
-# a GitHub Release with that version's CHANGELOG section and the .debs, and the signed apt
-# repository this repository's Pages serve (branch gh-pages, jonasatelier.github.io/termcode).
+# a GitHub Release with that version's CHANGELOG section and the .debs.
 #
 # Run from the Actions tab (workflow_dispatch), on a branch or on a tag, it only checks (the
 # checks and the environment) and builds the .debs, which stay on the run's page: every
 # publishing job requires a tag *push*.
 #
-# Setup (the environment, its reviewer, crates.io's Trusted Publishing configuration, the
-# apt key): AGENTS.md, "Releases". The publish job gets a crates.io token for 30 minutes; the
-# github-release job alone may write here and has APT_SIGNING_KEY. A partial release
+# See AGENTS.md, "Releases", for the environment, reviewer and Trusted Publishing setup.
+# The publish job gets a crates.io token for 30 minutes; the
+# github-release job alone may write here. A partial release
 # (published, no GitHub Release) is finished with "Re-run failed jobs", which leaves the
 # publish alone.
 name: release
@@ -187,15 +186,14 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --locked --no-verify
 
-  # The GitHub Release (this version's CHANGELOG section, the .debs) and the apt repository:
-  # the only job that writes here, and the only one with the apt signing key.
+  # Only this job writes to the repository, to create the GitHub Release.
   github-release:
     needs: [publish, debs]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      contents: write # the Release, and the apt repository's branch
+      contents: write # create the Release and attach the .debs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -206,15 +204,6 @@ jobs:
           name: termcode-debs
           path: debs
 
-      - name: Tools the apt repository needs
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq apt-utils
-
-      # Says only whether the key is set (a secret cannot be tested in `if`).
-      - name: The apt signing key
-        env:
-          KEY: ${{ secrets.APT_SIGNING_KEY }}
-        run: test -n "$KEY" || { echo "::error::APT_SIGNING_KEY is not set"; exit 1; }
-
       - name: GitHub Release with this version's CHANGELOG section and the .debs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -224,16 +213,3 @@ jobs:
             echo; cat doc/release-install.md; } > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" debs/*.deb --repo "$GITHUB_REPOSITORY" \
             --title "termcode $version" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
-
-      - name: Update the apt repository
-        env:
-          GH_TOKEN: ${{ github.token }}
-          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
-        run: |
-          git clone -q --depth 1 --branch gh-pages "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apt-pages
-          scripts/apt-repo.sh apt-pages debs/termcode_*.deb
-          cd apt-pages
-          git config user.name JonasAtelier
-          git config user.email 98136255+JonasAtelier@users.noreply.github.com
-          git add -A
-          git commit -qm "termcode ${GITHUB_REF_NAME#v}" && git push -q

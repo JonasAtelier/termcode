@@ -1,12 +1,10 @@
 ### Install
 
-With apt, on Debian or Ubuntu (new versions then come with `sudo apt upgrade`):
+On Linux with Rust 1.93 or newer, run `cargo install termcode --locked`.
+
+On Debian or Ubuntu, run `dpkg --print-architecture`, download the matching
+`amd64` or `arm64` package from this release, then install it from the download folder.
 
 ```sh
-sudo curl -fsSLo /usr/share/keyrings/termcode.gpg https://jonasatelier.github.io/termcode/termcode.gpg
-echo "deb [signed-by=/usr/share/keyrings/termcode.gpg] https://jonasatelier.github.io/termcode stable main" \
-  | sudo tee /etc/apt/sources.list.d/termcode.list
-sudo apt update && sudo apt install termcode
+sudo apt install ./termcode_*.deb
 ```
-
-Or download the `.deb` for your machine below (`dpkg --print-architecture` says `amd64` or `arm64`), then `sudo apt install ./termcode_*.deb`.

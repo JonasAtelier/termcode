@@ -25,7 +25,6 @@ Tests live beside implementation in `src/`; `target/` contains ignored build out
 - `cargo run -- .`: open this repository in an interactive terminal.
 - `cargo run -- --tab .`: open a herdr workspace tab.
 - `README.md` is for both: blocks between `<!-- dev -->` and `<!-- /dev -->` (and table rows ending `<!--dev-->`) are for building termcode; `<!-- user` ... `user -->` blocks are for people who install it. `scripts/user-readme.sh` writes the installed copy.
-- `scripts/apt-repo.sh DIR debs...`: add packages to the apt repository (this repository's branch `gh-pages`, served by GitHub Pages at https://jonasatelier.github.io/termcode) and sign it; CI signs with the `APT_SIGNING_KEY` secret (keep an offline copy of the key).
 - `scripts/deb.sh`: build the static amd64 and arm64 `.deb`s (no build-machine paths in the binary).
 - Changes worth telling users go under the next version in `CHANGELOG.md`. Version `X.Y.Z`: X for a new feature or a huge change (a new view in the side bar, a new kind of page), Y for a change to a pane or view (the minimap, quick keys), Z for bug fixes. A release bumps only the largest kind it holds, the lower numbers back to 0 (1.4.2 with a fix and a minimap change: 1.5.0).
 - CI and releases build with the Rust pinned as `RUSTUP_TOOLCHAIN` in `.github/workflows/ci.yml` and `release.yml` (1.97.1, as here; a release checks they agree); bump them together, on purpose, after `cargo clippy --all-targets -- -D warnings` passes with the new one. `rust-version` in `Cargo.toml` (1.93) is checked by ci.yml's `msrv` job.
@@ -42,8 +41,7 @@ secrets. `.github/workflows/release.yml` runs on a `v*` tag: those checks, the t
 `Cargo.toml`, `herdr-plugin.toml` and `CHANGELOG.md`, a check that the `crates-io` environment
 requires a reviewer, the `.deb`s (built, installed and run on Debian and Ubuntu), then
 `cargo publish` once the owner approves, then the GitHub Release (that version's CHANGELOG
-section and the `.deb`s) and the apt repository (branch `gh-pages`, signed with the
-`APT_SIGNING_KEY` secret; keep an offline copy of that key). Actions are pinned by commit SHA;
+section and the `.deb`s). Actions are pinned by commit SHA;
 Dependabot (`.github/dependabot.yml`) proposes their updates once a month. A release refuses a
 `.cargo/config*` or a `rust-toolchain*` file in the repository: they would run beside the
 token. From the Actions tab, release.yml only checks and builds; it never publishes.

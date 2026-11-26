@@ -6,6 +6,14 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
+## [1.2.1] - 2026-11-26
+
+### Changed
+- Install with `cargo install termcode --locked` or download the Debian package from
+  GitHub Releases. If you used the retired apt repository, disable its entry in
+  `/etc/apt/sources.list.d/termcode.list` before your next `apt update`.
+- The README shows ten features in three animated demos.
+
 ## [1.2.0] - 2026-11-26
 
 ### Changed
