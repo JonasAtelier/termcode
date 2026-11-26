@@ -109,7 +109,8 @@ jobs:
           for image in ubuntu:22.04 ubuntu:24.04 debian:12; do
             echo "== $image"
             docker run --rm -v "$PWD/target/deb/debian:/pkg:ro" "$image" sh -ec '
-              apt-get update -qq >/dev/null
+              # A mirror mid-sync fails an update now and then: three tries.
+              for try in 1 2 3; do apt-get update -qq >/dev/null && break; [ "$try" = 3 ] && exit 1; sleep 20; done
               DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /pkg/termcode_*_amd64.deb >/dev/null
               termcode --version
               git init -q /tmp/p && echo hi > /tmp/p/a.txt
