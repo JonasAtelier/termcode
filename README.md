@@ -45,6 +45,8 @@ Or download the `.deb` for your machine (`dpkg --print-architecture` says `amd64
 and run `sudo apt install ./termcode_*.deb`. For a Code tab in herdr 0.9.1+, run
 `herdr plugin link /usr/share/termcode`.
 
+With Rust 1.93 or newer, on any Linux: `cargo install termcode --locked`.
+
 <a id="open-your-first-file"></a>
 
 ## Edit a file

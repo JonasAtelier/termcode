@@ -6,9 +6,10 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
-## [Unreleased]
+## [1.2.0] - 2026-11-26
 
 ### Changed
+- termcode is on crates.io: `cargo install termcode --locked` (Rust 1.93 or newer).
 - termcode is published from its own repository: releases at
   https://github.com/JonasAtelier/termcode/releases and the apt repository at
   https://jonasatelier.github.io/termcode (the same signing key). If you added the old
