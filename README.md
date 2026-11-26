@@ -128,7 +128,7 @@ Default colors come from Microsoft’s VS Code and file icons from Jesse Weed’
 ## macOS (experimental)
 
 Build from this checkout with `cargo install --locked --path . -j2`, then run
-`termcode .`. The editor, integrated terminal, API and clipboard have macOS
-compatibility support. API client labels use `ps` output. Serial speeds above
-230400 and Linux-specific tool integrations are not supported by this port.
+`termcode .`. The editor, integrated terminal, API, clipboard, Trash (Finder's),
+links (`open`) and serial ports (`/dev/cu.usb*`, up to 2000000 baud) work on macOS.
+Picture icons need a Nerd Font found by fontconfig (`brew install fontconfig`).
 Physical hardware integrations have not been validated on macOS.

@@ -304,12 +304,12 @@ pub fn glyphs(scale: u8) -> Option<&'static Glyphs> {
     MADE[usize::from(scale) - 1].get_or_init(|| make_glyphs(&font_bytes()?, usize::from(scale), usize::from(scale) * 2)).as_ref()
 }
 
-/// The monospace font fontconfig picks (else the common ones).
+/// The monospace font fontconfig picks (else the common ones; macOS has no fontconfig).
 fn font_bytes() -> Option<Vec<u8>> {
     let picked = std::process::Command::new("fc-match").args(["-f", "%{file}", "monospace"]).stderr(std::process::Stdio::null()).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
     picked
         .into_iter()
-        .chain(["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf".to_string(), "/usr/share/fonts/TTF/DejaVuSansMono.ttf".to_string()])
+        .chain(["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono.ttf", "/System/Library/Fonts/Monaco.ttf"].map(String::from))
         .filter(|p| p.ends_with(".ttf") || p.ends_with(".otf"))
         .find_map(|p| std::fs::read(p).ok())
 }

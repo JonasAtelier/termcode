@@ -13,7 +13,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - Use macOS socket credentials, process information and PTY signatures.
 - Preserve live sessions, backups and API sockets without Linux `/proc`.
 - Use pbcopy/pbpaste for the macOS clipboard.
-- Detect macOS serial ports; offer baud rates up to 230400.
+- Detect macOS USB serial ports (`/dev/cu.usb*`), at every baud rate (IOSSIOSPEED above 230400).
+- On macOS, Delete moves to Finder's Trash, links open with `open`, the minimap draws
+  with Monaco, a new install is noticed, and Rust checks see the free memory.
+- Help: Report Issue names the macOS version.
 
 ## [1.2.1] - 2026-11-26
 

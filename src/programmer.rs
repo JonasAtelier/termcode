@@ -411,7 +411,9 @@ fn detect() -> Option<PathBuf> {
         fs::read_dir(e.path().join("plugins")).into_iter().flatten().flatten().filter(|p| p.file_name().to_string_lossy().contains("externaltools.cubeprogrammer")).map(|p| p.path().join("tools/bin"))
     });
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .chain([home.join("STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin"), "/opt/st/stm32cubeprogrammer/bin".into(), "/usr/local/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin".into()])
+        .chain([home.join("STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin"), "/opt/st/stm32cubeprogrammer/bin".into(), "/usr/local/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin".into(),
+            // macOS: inside the app the installer puts in /Applications.
+            "/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/STM32CubeProgrammer.app/Contents/MacOs/bin".into()])
         .chain(ide)
         .map(|d| d.join(CLI))
         .find(|p| is_exe(p))
@@ -1121,6 +1123,11 @@ fn select(app: &mut App, i: usize) {
 fn install(app: &mut App) {
     app.prog.log_shown = false;
     // ST's download needs a sign-in: its installer comes from ~/Downloads, or the page opens.
+    #[cfg(target_os = "macos")]
+    let cmd = format!(
+        "sh -c 'z=$(ls -t \"$HOME\"/Downloads/en.stm32cubeprg-mac*.zip 2>/dev/null | head -n 1); if [ -n \"$z\" ]; then d=$(mktemp -d) && unzip -q \"$z\" -d \"$d\" && open -W \"$d\"/SetupSTM32CubeProgrammer*.app; else echo \"Download STM32CubeProgrammer for macOS (ST asks you to sign in), then press Install again: {DOWNLOAD}\"; open {DOWNLOAD} >/dev/null 2>&1; fi'"
+    );
+    #[cfg(not(target_os = "macos"))]
     let cmd = format!(
         "sh -c 'z=$(ls -t \"$HOME\"/Downloads/en.stm32cubeprg-lin*.zip 2>/dev/null | head -n 1); if [ -n \"$z\" ]; then d=$(mktemp -d) && unzip -q \"$z\" -d \"$d\" && \"$d\"/SetupSTM32CubeProgrammer*.linux; else echo \"Download STM32CubeProgrammer for Linux (ST asks you to sign in), then press Install again: {DOWNLOAD}\"; xdg-open {DOWNLOAD} >/dev/null 2>&1; fi'"
     );
@@ -1786,7 +1793,7 @@ mod tests {
         crate::gitcmds::pick(&mut app, 3);
         assert_eq!(app.prog.file.as_deref(), Some(dir.join("build/fw.bin").as_path()));
         let s = screen(&mut app, &mut t);
-        assert!(s.contains("fw.bin") && s.contains("Command") && s.contains("$ STM32_Programmer_CLI -c port=SWD mode=NORMAL -d") && s.contains("-v -rst"), "the command it runs\n{s}");
+        assert!(s.contains("fw.bin") && s.contains("Command") && s.contains("$ STM32_Programmer_CLI -c port=SWD mode=NORMAL -d") && s.contains(" -v") && s.contains("-rst"), "the command it runs\n{s}");
         press(&mut app, &mut t, "Start Programming");
         assert!(screen(&mut app, &mut t).contains("▶ Programming fw.bin"), "running");
         settle(&mut app);

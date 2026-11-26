@@ -10,11 +10,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// The rates a port opens at.
-#[cfg(not(target_os = "macos"))]
 pub const BAUDS: [u32; 13] = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1000000, 2000000];
 
+/// macOS termios stops at 230400: a faster rate is set after it with IOSSIOSPEED
+/// (`_IOW('T', 2, speed_t)`, IOKit's serial ioctl; not in libc).
 #[cfg(target_os = "macos")]
-pub const BAUDS: [u32; 9] = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400];
+const IOSSIOSPEED: libc::c_ulong = 0x8008_5402;
 
 fn speed(baud: u32) -> Option<libc::speed_t> {
     Some(match baud {
@@ -35,6 +36,9 @@ fn speed(baud: u32) -> Option<libc::speed_t> {
         1000000 => libc::B1000000,
         #[cfg(not(target_os = "macos"))]
         2000000 => libc::B2000000,
+        // The rate itself (a BSD speed_t is one), set by IOSSIOSPEED (`Port::open`).
+        #[cfg(target_os = "macos")]
+        460800 | 921600 | 1000000 | 2000000 => libc::speed_t::from(baud),
         _ => return None,
     })
 }
@@ -72,10 +76,18 @@ impl Port {
             // A read waits a tenth of a second at most: the thread sees the stop flag.
             t.c_cc[libc::VMIN] = 0;
             t.c_cc[libc::VTIME] = 1;
+            #[cfg(target_os = "macos")]
+            let (sp, fast) = if sp > libc::B230400 { (libc::B230400, Some(sp)) } else { (sp, None) };
             libc::cfsetispeed(&mut t, sp);
             libc::cfsetospeed(&mut t, sp);
             if libc::tcsetattr(fd, libc::TCSANOW, &t) != 0 {
                 return Err(io::Error::last_os_error());
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(fast) = fast {
+                if libc::ioctl(fd, IOSSIOSPEED, &raw const fast) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
             }
             libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) & !libc::O_NONBLOCK);
         }
@@ -136,6 +148,13 @@ pub fn ports() -> Vec<(PathBuf, String)> {
     v
 }
 
+/// A USB serial device's name in /dev: Linux's ttyACM/ttyUSB; macOS's cu.usbmodem…,
+/// cu.usbserial…, cu.SLAB_USBtoUART… (not Bluetooth or the debug console).
+fn usb_port(name: &str) -> bool {
+    name.starts_with("ttyACM") || name.starts_with("ttyUSB")
+        || name.strip_prefix("cu.").is_some_and(|n| ["usb", "uart", "serial"].iter().any(|k| n.to_ascii_lowercase().contains(k)))
+}
+
 fn list_ports() -> Vec<(PathBuf, String)> {
     let mut named: Vec<(PathBuf, String)> = Vec::new();
     let mut seen = Vec::new();
@@ -150,7 +169,7 @@ fn list_ports() -> Vec<(PathBuf, String)> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| ["ttyACM", "ttyUSB", "cu."].iter().any(|p| e.file_name().to_string_lossy().starts_with(p)))
+        .filter(|e| usb_port(&e.file_name().to_string_lossy()))
         .filter(|e| !seen.contains(&e.path()))
         .map(|e| (e.path(), e.file_name().to_string_lossy().into_owned()))
         .collect();
@@ -165,6 +184,16 @@ mod tests {
     use std::os::unix::io::FromRawFd;
     use std::sync::mpsc::channel;
     use std::time::Duration;
+
+    #[test]
+    fn only_usb_serial_devices_are_listed() {
+        for n in ["ttyACM0", "ttyUSB1", "cu.usbmodem1101", "cu.usbserial-0001", "cu.SLAB_USBtoUART", "cu.wchusbserial1410"] {
+            assert!(usb_port(n), "{n}");
+        }
+        for n in ["cu.Bluetooth-Incoming-Port", "cu.debug-console", "cu.JBLFlip5", "tty.usbmodem1101", "ttyS0"] {
+            assert!(!usb_port(n), "{n}");
+        }
+    }
 
     #[test]
     fn every_advertised_baud_rate_can_be_selected() {

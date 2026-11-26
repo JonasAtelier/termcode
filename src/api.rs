@@ -409,13 +409,34 @@ pub(crate) fn proc_stat(pid: i32) -> Option<(String, i32, u64)> {
     Some((String::from_utf8_lossy(&name).into_owned(), info.pbi_ppid as i32, info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec))
 }
 
+/// A process's arguments (KERN_PROCARGS2: argc, the executable's path, NULs, then argv).
 #[cfg(target_os = "macos")]
 fn cmdline(pid: i32) -> Vec<String> {
-    // ps reads macOS process arguments; /proc is only available on Linux.
-    std::process::Command::new("/bin/ps").args(["-p", &pid.to_string(), "-o", "command="]).output()
-        .ok().filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().map(str::to_string).collect())
-        .unwrap_or_default()
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut len = 0;
+    // SAFETY: the first call only sizes; the second fills a buffer of that many bytes.
+    let mut buf = unsafe {
+        if libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut len, std::ptr::null_mut(), 0) != 0 {
+            return Vec::new();
+        }
+        let mut buf = vec![0u8; len];
+        if libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) != 0 {
+            return Vec::new();
+        }
+        buf
+    };
+    buf.truncate(len);
+    parse_procargs(&buf)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_procargs(buf: &[u8]) -> Vec<String> {
+    let Some((argc, rest)) = buf.split_first_chunk::<4>() else { return Vec::new() };
+    let argc = usize::try_from(i32::from_ne_bytes(*argc)).unwrap_or(0);
+    let Some(path_end) = rest.iter().position(|&b| b == 0) else { return Vec::new() };
+    let args = &rest[path_end..];
+    let start = args.iter().position(|&b| b != 0).unwrap_or(args.len());
+    args[start..].split(|&b| b == 0).take(argc).map(|a| String::from_utf8_lossy(a).into_owned()).collect()
 }
 
 /// A process's name, parent and start time (/proc/PID/stat).
@@ -1213,6 +1234,16 @@ pub fn remove() {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn procargs_give_argv_without_the_executable_path_or_environment() {
+        let mut buf = 3i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/usr/local/bin/termcode\0\0\0\0termcode\0api\0a b\0HOME=/h\0");
+        assert_eq!(parse_procargs(&buf), ["termcode", "api", "a b"]);
+        assert!(parse_procargs(&buf[..2]).is_empty());
+        #[cfg(target_os = "macos")]
+        assert_eq!(cmdline(std::process::id() as i32).first(), std::env::args().next().as_ref());
+    }
 
     #[test]
     fn socket_peer_identity_and_process_liveness_are_preserved() {

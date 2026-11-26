@@ -1801,6 +1801,7 @@ mod tests {
     /// The user's own ssh (no BatchMode) reading /dev/tty fails at once: git
     /// runs in its own session, without a controlling tty.
     #[test]
+    #[cfg(target_os = "linux")] // reads the child's session and fds from /proc
     fn user_ssh_cannot_prompt_on_the_tty() {
         let t = tmp("tty");
         let r = repo(&t);
@@ -1858,6 +1859,7 @@ mod tests {
     /// A write's git outlives this process safely: its output goes to (unlinked) files,
     /// not pipes, and it has its own session, so Ctrl+C in our terminal never reaches it.
     #[test]
+    #[cfg(target_os = "linux")] // reads the child's session and fds from /proc
     fn write_calls_need_no_pipes_and_no_terminal() {
         let t = tmp("detach");
         let r = repo(&t);
@@ -1882,6 +1884,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")] // reads the child's session and fds from /proc
     fn read_calls_get_their_own_process_group_but_no_session() {
         let t = tmp("pgrp");
         let r = repo(&t);

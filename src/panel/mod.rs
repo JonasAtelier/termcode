@@ -264,8 +264,28 @@ pub struct Upgrade {
 }
 
 /// The installed path when `/proc/self/exe` says the running binary was replaced.
+#[cfg(any(not(target_os = "macos"), test))]
 fn replaced(link: &Path) -> Option<PathBuf> {
     link.to_str()?.strip_suffix(" (deleted)").map(PathBuf::from)
+}
+
+/// The installed path when a new binary was installed over the running one.
+pub(crate) fn replaced_exe() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        // No "(deleted)" link to read: the file at our path is no longer the one we started
+        // from (first called at startup, see `run`).
+        use std::os::unix::fs::MetadataExt;
+        static RUNNING: std::sync::OnceLock<Option<(u64, u64)>> = std::sync::OnceLock::new();
+        let exe = std::env::current_exe().ok()?;
+        let id = |p: &Path| fs::metadata(p).ok().map(|m| (m.dev(), m.ino()));
+        let running = (*RUNNING.get_or_init(|| id(&exe)))?;
+        id(&exe).is_some_and(|now| now != running).then_some(exe)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        fs::read_link("/proc/self/exe").ok().and_then(|l| replaced(&l))
+    }
 }
 
 /// Search on type: the pause after the last change to the query before it runs
@@ -1324,7 +1344,7 @@ pub struct App {
     pub file_job: Option<rename::FileJob>,
     /// The last mouse event's modifiers (Ctrl+click, a Ctrl+drag's copy).
     pub mouse_mods: KeyModifiers,
-    /// The Trash Delete moves to (freedesktop's: $XDG_DATA_HOME/Trash).
+    /// The Trash Delete moves to (freedesktop's: $XDG_DATA_HOME/Trash; macOS: ~/.Trash).
     pub(crate) trash: PathBuf,
     /// Explorer file operations Ctrl+Z can take back, and those it took back (Ctrl+Y).
     pub file_undo: Vec<Vec<rename::FileOp>>,
@@ -1512,6 +1532,8 @@ pub struct App {
 pub fn run(root: PathBuf, key: PathBuf, req: Option<String>, tab: bool) -> Result<(), String> {
     // A termcode started in another's terminal is its own: its shells get its socket.
     std::env::remove_var(crate::api::ENV);
+    let _ = replaced_exe(); // macOS: remember which binary this is, before any upgrade
+
     let state = crate::data_dir(true);
     let mut private: Vec<PathBuf> = vec![state.clone(), crate::data_dir(false)];
     private.extend(["backup", "drafts", "sessions", "terminals"].map(|d| state.join(d)));
@@ -2182,7 +2204,11 @@ impl App {
             // Tests never reach the user's Trash.
             file_undo: Vec::new(),
             file_redo: Vec::new(),
-            trash: if cfg!(test) { std::env::temp_dir().join(format!("termcode-test-trash-{}", std::process::id())) } else { crate::data_home().join("Trash") },
+            trash: if cfg!(test) { std::env::temp_dir().join(format!("termcode-test-trash-{}", std::process::id())) } else if cfg!(target_os = "macos") {
+                std::env::var_os("HOME").map_or_else(std::env::temp_dir, |h| PathBuf::from(h).join(".Trash"))
+            } else {
+                crate::data_home().join("Trash")
+            },
             prog: Default::default(),
             api: None,
             api_gate: crate::api::Gate::from_env(),
@@ -2380,10 +2406,19 @@ impl App {
     /// "Help: Report Issue": what a bug report needs about this setup, and nothing private
     /// (no paths, file or repository names).
     fn report_details(&self) -> String {
-        let os = fs::read_to_string("/etc/os-release").ok()
-            .and_then(|t| t.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string())))
-            .unwrap_or_else(|| "unknown".into());
-        let kernel = fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+        #[cfg(target_os = "macos")]
+        let (os, kernel) = {
+            let out = |prog: &str, arg: &str| Command::new(prog).arg(arg).stdin(Stdio::null()).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            (out("sw_vers", "-productVersion").map_or_else(|| "unknown".into(), |v| format!("macOS {v}")), format!("Darwin {}", out("uname", "-r").unwrap_or_default()))
+        };
+        #[cfg(not(target_os = "macos"))]
+        let (os, kernel) = (
+            fs::read_to_string("/etc/os-release").ok()
+                .and_then(|t| t.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string())))
+                .unwrap_or_else(|| "unknown".into()),
+            format!("Linux {}", fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim()),
+        );
         let env = |k: &str| std::env::var(k).unwrap_or_else(|_| "-".into());
         // "git 2.53.0": the first word of `--version` that starts with a digit.
         let tool = |prog: &str| {
@@ -2397,10 +2432,9 @@ impl App {
         let error = if cfg!(test) { None } else { last_error(&crate::data_dir(true)) };
         let icons = match s.icons { Some(i) => format!("{i:?}"), None => format!("auto ({:?})", theme::icon_set()) };
         format!(
-            "termcode {}\nOS: {os}, Linux {}, {}\nTerminal: TERM={} TERM_PROGRAM={} {}\nInside: {}\n\
+            "termcode {}\nOS: {os}, {kernel}, {}\nTerminal: TERM={} TERM_PROGRAM={} {}\nInside: {}\n\
              Settings: icons {icons}, colors {:?}, density {}, blocks {:?}, error checking {}\nTools: {}, {}, {}, {}\n{}",
             env!("CARGO_PKG_VERSION"),
-            kernel.trim(),
             std::env::consts::ARCH,
             env("TERM"),
             env("TERM_PROGRAM"),
