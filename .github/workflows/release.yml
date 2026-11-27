@@ -250,6 +250,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write # create the Release and attach the .debs and the macOS archives
+      id-token: write # sign the build provenance (Sigstore, keyless)
+      attestations: write # store it with the repository
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -264,6 +266,15 @@ jobs:
         with:
           name: termcode-macos
           path: mac
+
+      # Where each file came from (this repository, this workflow, this commit), signed:
+      # `gh attestation verify <file> --repo JonasAtelier/termcode` checks it.
+      - name: Build provenance for the release files
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            debs/*.deb
+            mac/*.tar.gz
 
       - name: GitHub Release with this version's CHANGELOG section, the .debs, the macOS archives and SHA256SUMS
         env:

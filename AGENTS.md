@@ -84,4 +84,4 @@ Use Rust's built-in `#[test]` functions inside `#[cfg(test)] mod tests`, with de
 
 ## Commit & Pull Request Guidelines
 
-Follow the history's `termcode: <short imperative summary>` convention. Explain changed behavior in concise body bullets and include actual test results. Keep changes focused. PRs should describe the problem, link relevant issues, list verification, and attach terminal screenshots for visible UI changes. Update `README.md` when commands, settings, or keybindings change.
+Follow the history's `<area>: <short imperative summary>` convention (`term:`, `pager:`, `ui:`, `fix:`). Explain changed behavior in concise body bullets and include actual test results. Keep changes focused. PRs should describe the problem, link relevant issues, list verification, and attach terminal screenshots for visible UI changes. Update `README.md` when commands, settings, or keybindings change.
