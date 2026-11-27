@@ -15,7 +15,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - A terminal made shorter (its top edge dragged down, a smaller window) keeps its newest
   rows in view, the older going into the scrollback, as a terminal does: the last
   output and the prompt were cut off.
-- The macOS checks pass: these two were the tests that failed there.
+- The macOS checks pass (these two were the tests that failed there) and a release now
+  needs them to.
 
 ## [1.3.1] - 2026-11-27
 
