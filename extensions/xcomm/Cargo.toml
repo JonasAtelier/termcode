@@ -3,7 +3,7 @@ name = "termcode-xcomm"
 version = "0.1.0"
 edition = "2021"
 description = "termcode's Serial view as an extension, on the xcomm crate"
-license = "MIT"
+license = "GPL-3.0-only"
 publish = false
 
 [dependencies]

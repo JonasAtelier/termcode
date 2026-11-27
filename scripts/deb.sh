@@ -27,8 +27,9 @@ scripts/user-readme.sh > target/README.md
 # The man page, compressed as Debian keeps them (-n: no timestamp, same bytes each build).
 gzip -9nc doc/termcode.1 > target/termcode.1.gz
 
-# Debian's machine-readable copyright file: termcode's LICENSE, then every bundled
-# license, each text indented one space with "." for blank lines.
+# Debian's machine-readable copyright file: termcode's license (GPL-3, whose text
+# Debian ships in common-licenses), then every bundled one, each text indented one
+# space with "." for blank lines.
 text() { sed -e 's/^$/./' -e 's/^/ /' "$1"; }
 {
     printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n'
@@ -36,8 +37,12 @@ text() { sed -e 's/^$/./' -e 's/^/ /' "$1"; }
     printf 'Upstream-Contact: https://github.com/JonasAtelier/termcode/issues\n'
     printf 'Comment: The Rust crates built into termcode, with their copyright and\n'
     printf ' license texts, are listed in /usr/share/doc/termcode/THIRD-PARTY-LICENSES.\n\n'
-    printf 'Files: *\nCopyright: 2026 JonasAtelier\nLicense: MIT\n'
-    text LICENSE
+    printf 'Files: *\nCopyright: 2026 JonasAtelier\nLicense: GPL-3\n'
+    printf ' This program is free software: you can redistribute it and/or modify it\n'
+    printf ' under the terms of the GNU General Public License, version 3, as published\n'
+    printf ' by the Free Software Foundation.\n .\n'
+    printf ' On Debian systems, the full text of the GNU General Public License version 3\n'
+    printf ' can be found in /usr/share/common-licenses/GPL-3.\n'
     printf '\nFiles: assets/vscode_dark_defaults.json assets/seti.json\n'
     printf 'Copyright: 2015-present Microsoft Corporation; 2014 Jesse Weed\nLicense: MIT\n'
     text assets/vscode_LICENSE.txt

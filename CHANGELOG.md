@@ -6,6 +6,13 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
+## [Unreleased]
+
+### Changed
+
+- termcode is now under the GNU General Public License, version 3 (GPL-3.0-only); it
+  was MIT. Releases up to 1.3.0 stay under the MIT license.
+
 ## [1.3.0] - 2026-11-27
 
 ### Added

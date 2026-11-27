@@ -4,7 +4,7 @@
 <p align="center">
   <a href="https://crates.io/crates/termcode"><img src="https://img.shields.io/crates/v/termcode" alt="crates.io version"></a>
   <a href="https://github.com/JonasAtelier/termcode/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/JonasAtelier/termcode/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/crates/l/termcode" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/JonasAtelier/termcode" alt="GPL-3.0 license"></a>
 </p>
 
 ![A C file open in termcode, with its Git timeline on the left and a shell running the weather station sample below the editor.](doc/media/workspace.png)
@@ -121,7 +121,7 @@ From this checkout on Linux, run `cargo run -- .`. To register it with herdr 0.9
 ## License and credits
 
 <!-- dev -->
-© 2026 JonasAtelier · [MIT license](LICENSE)
+© 2026 JonasAtelier · [GPL-3.0 license](LICENSE)
 <!-- /dev -->
 
 Default colors come from Microsoft’s VS Code and file icons from Jesse Weed’s Seti UI, both under MIT. The Debian package includes its terms and dependency licenses in `/usr/share/doc/termcode/copyright` and `/usr/share/doc/termcode/THIRD-PARTY-LICENSES`.
