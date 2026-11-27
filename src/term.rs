@@ -130,7 +130,7 @@ impl OutLog {
 
 impl Term {
     /// `shell` in `cwd`, on a new PTY of `rows` x `cols`.
-    pub fn spawn(shell: &str, cwd: &Path, rows: u16, cols: u16) -> io::Result<Term> {
+    pub fn spawn(shell: &str, cwd: &Path, rows: u16, cols: u16, env: &[(String, String)]) -> io::Result<Term> {
         let (rows, cols) = (rows.max(2), cols.max(2));
         let mut ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
         let (mut m, mut s) = (0, 0);
@@ -154,8 +154,8 @@ impl Term {
             .env("COLORTERM", "truecolor")
             .env("TERM_PROGRAM", "termcode")
             .env(crate::api::ENV, crate::api::path().map(|p| p.as_os_str()).unwrap_or_default())
-            // `git log` pages in a termcode window (pager.rs).
-            .envs(std::env::current_exe().map(|exe| crate::pager::git_env(std::env::var("GIT_CONFIG_COUNT").ok().as_deref(), &exe)).unwrap_or_default())
+            // The assist keys' (pager.rs): git's pager here for the commands turned on.
+            .envs(env.iter().cloned())
             .stdin(slave.try_clone()?)
             .stdout(slave.try_clone()?)
             .stderr(slave);
@@ -642,7 +642,8 @@ impl App {
         // The panel's size is known at its first frame; until then, a fair guess.
         let (ed, term) = (self.ui.editor_area, self.ui.term);
         let (rows, cols) = if term.is_empty() { (self.term_h.unwrap_or(ed.height / 3).saturating_sub(2), ed.width.saturating_sub(2).max(20)) } else { (term.height, term.width) };
-        match Term::spawn(&shell(), &self.root, rows, cols) {
+        let assist = std::env::current_exe().map(|exe| crate::pager::git_env(std::env::var("GIT_CONFIG_COUNT").ok().as_deref(), &exe, &self.settings.git_assisted_commands())).unwrap_or_default();
+        match Term::spawn(&shell(), &self.root, rows, cols, &assist) {
             Ok(t) => {
                 self.terms.push(t);
                 self.term_at = self.terms.len() - 1;
@@ -1022,7 +1023,7 @@ mod tests {
     fn a_handed_over_terminal_is_adopted_with_its_screen_and_its_shell_still_running() {
         let dir = std::env::temp_dir().join(format!("termcode-handover-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let mut t = Term::spawn("/bin/sh", &dir, 6, 40).unwrap();
+        let mut t = Term::spawn("/bin/sh", &dir, 6, 40, &[]).unwrap();
         let until = |t: &mut Term, what: &str| {
             let deadline = Instant::now() + Duration::from_secs(10);
             while !t.lines().iter().any(|l| l.contains(what)) {
@@ -1085,7 +1086,7 @@ mod tests {
 
     #[test]
     fn a_shell_runs_on_the_pty_and_its_output_is_drawn() {
-        let mut t = Term::spawn("/bin/sh", &std::env::temp_dir(), 5, 40).unwrap();
+        let mut t = Term::spawn("/bin/sh", &std::env::temp_dir(), 5, 40, &[]).unwrap();
         assert!(fds().contains(&t.master.as_raw_fd()));
         t.send(b"stty size; echo hi-$((40+2))\r");
         let deadline = Instant::now() + Duration::from_secs(5);

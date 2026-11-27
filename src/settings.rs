@@ -180,6 +180,10 @@ pub struct Settings {
     pub auto_reveal: bool,
     /// `termcode.restoreSession`: the groups, tabs and sidebar of the last session.
     pub restore_session: bool,
+    /// Terminal pane assist keys, git: its pager a window over termcode (pager.rs).
+    pub assist_git: bool,
+    /// The git commands (of GIT_ASSIST) turned off one by one: git's own pager for those.
+    pub assist_git_off: Vec<String>,
     /// Parts that were skipped (a bad regex): shown, the rest still applies.
     pub warnings: Vec<String>,
 }
@@ -191,6 +195,22 @@ pub struct ThemeData {
     pub json: Value,
     /// Token colour customizations, applied after the theme's rules.
     pub extra_rules: Vec<Value>,
+}
+
+/// The git commands whose pager the terminal's assist key can be: each its own setting
+/// (termcode.assist.git.<command>), all on by default.
+pub const GIT_ASSIST: &[&str] = &["log", "diff", "show", "blame", "branch", "tag", "grep", "reflog", "stash"];
+
+impl Settings {
+    /// Whether git `command` pages in termcode's window in its terminal.
+    pub fn git_assisted(&self, command: &str) -> bool {
+        self.assist_git && GIT_ASSIST.contains(&command) && !self.assist_git_off.iter().any(|c| c == command)
+    }
+
+    /// The git commands that page in termcode's window, for a new terminal's environment.
+    pub fn git_assisted_commands(&self) -> Vec<&'static str> {
+        GIT_ASSIST.iter().copied().filter(|c| self.git_assisted(c)).collect()
+    }
 }
 
 impl Default for Settings {
@@ -234,6 +254,8 @@ impl Default for Settings {
             restore_view_state: true,
             auto_reveal: true,
             restore_session: true,
+            assist_git: true,
+            assist_git_off: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -467,6 +489,8 @@ pub fn from_maps(user: &Map<String, Value>, vscode: Option<&Map<String, Value>>,
         restore_view_state: g("workbench.editor.restoreViewState").and_then(Value::as_bool).unwrap_or(d.restore_view_state),
         auto_reveal: g("explorer.autoReveal").and_then(Value::as_bool).unwrap_or(d.auto_reveal),
         restore_session: g("termcode.restoreSession").and_then(Value::as_bool).unwrap_or(d.restore_session),
+        assist_git: g("termcode.assist.git").and_then(Value::as_bool).unwrap_or(d.assist_git),
+        assist_git_off: GIT_ASSIST.iter().filter(|c| g(&format!("termcode.assist.git.{c}")).and_then(Value::as_bool) == Some(false)).map(|c| c.to_string()).collect(),
         warnings,
     })
 }

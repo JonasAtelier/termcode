@@ -19,10 +19,15 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - Help: Report Issue names the macOS version.
 - Releases carry macOS binaries (Apple Silicon and Intel, built and started on a Mac
   before anything is published) and `SHA256SUMS`.
-- `git log` in termcode's terminal opens in a window over termcode, read as less reads it:
-  j/k, Space/b, d/u, g/G, / and ? to search, n/N, ←/→, q to close (then the prompt is
-  back). git's colours show; it reads only as far ahead as the window needs. Only there:
-  piped, or in other terminals, git log is as always.
+- In termcode's terminal, git's pager is a window over termcode (`git log`, `git diff`,
+  `git show`, `git blame`…): titled with the command, its branch and repository above,
+  read as less reads it (j/k, Space/b, d/u, g/G with a count as 50g, / ? n N, & to keep
+  only matching lines, -S chop or fold, -N line numbers, -i case, h help, q to close and
+  get the prompt back). A drag selects and Ctrl+C copies; a click on a commit hash copies
+  it. git's colours show; it reads only as far ahead as the window needs. Piped, or in
+  other terminals, git pages as always. Settings, **Assist Key**: Git on or off, and each
+  command (log, diff, show, blame, branch, tag, grep, reflog, stash) on its own, all on;
+  one turned off pages with git's own pager, at once even in terminals already open.
 
 ## [1.2.1] - 2026-11-26
 

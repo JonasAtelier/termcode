@@ -82,7 +82,7 @@ Open PATH like `code PATH`, in this terminal; quitting returns to the shell.
   api METHOD [JSON] call a running termcode's API (`termcode api --help`)
   mcp               the API as an MCP server on stdio, for agents (`termcode mcp --help`)
   ext COMMAND       install, list, remove or start an extension (`termcode ext --help`)
-  pager             git's pager in termcode's terminal (set there for `git log`): a window
+  pager             git's pager in termcode's terminal (Settings, Assist Key): a window
   --headless        no terminal: driven through the API alone (--api-stdio: on stdio too)
 Relative paths resolve against this folder. Settings: ~/.config/termcode/settings.json.
 (`termcode panel` is the plugin's pane entrypoint.)";

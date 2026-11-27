@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use unicode_width::UnicodeWidthStr;
 
 const CATEGORIES: &[&str] =
-    &["Appearance", "Layout", "Editor", "Minimap", "Indent Rainbow", "Files & Session", "Source Control", "Keys", "API"];
+    &["Appearance", "Layout", "Editor", "Minimap", "Indent Rainbow", "Files & Session", "Source Control", "Keys", "API", "Assist Key"];
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -214,6 +214,17 @@ const FIELDS: &[Field] = &[
     Field { category: 7, label: "Quick keys", key: "termcode.prefixKeys", kind: Json(crate::settings::DEFAULT_PREFIX_KEYS) },
     Field { category: 7, label: "Keybindings (JSON)", key: "termcode.keybindings", kind: Json("{}") },
     Field { category: 8, label: "Programs may", key: "termcode.api", kind: Choice(&["ask", "read-only", "off"]) },
+    // Terminal pane assist keys: git's pager in a window, each command on its own.
+    Field { category: 9, label: "Git", key: "termcode.assist.git", kind: Check(true) },
+    Field { category: 9, label: "git log", key: "termcode.assist.git.log", kind: Check(true) },
+    Field { category: 9, label: "git diff", key: "termcode.assist.git.diff", kind: Check(true) },
+    Field { category: 9, label: "git show", key: "termcode.assist.git.show", kind: Check(true) },
+    Field { category: 9, label: "git blame", key: "termcode.assist.git.blame", kind: Check(true) },
+    Field { category: 9, label: "git branch", key: "termcode.assist.git.branch", kind: Check(true) },
+    Field { category: 9, label: "git tag", key: "termcode.assist.git.tag", kind: Check(true) },
+    Field { category: 9, label: "git grep", key: "termcode.assist.git.grep", kind: Check(true) },
+    Field { category: 9, label: "git reflog", key: "termcode.assist.git.reflog", kind: Check(true) },
+    Field { category: 9, label: "git stash", key: "termcode.assist.git.stash", kind: Check(true) },
 ];
 
 /// What a setting does, under its name (and what the search box also finds).
@@ -280,6 +291,8 @@ fn describe(key: &str) -> &'static str {
         "files.insertFinalNewline" => "End the file with a newline when saving.",
         "termcode.restoreSession" => "Reopen the tabs and layout a folder had last time.",
         "termcode.api" => "What other programs (scripts, AI agents) may do through `termcode api`: ask you before they change files or run anything, only read, or nothing.",
+        "termcode.assist.git" => "Terminal pane assist keys for git: in termcode's terminal, git's output opens in a window over termcode, read as less (search, & to filter, copy, the branch above). Off: git pages as in any terminal.",
+        k if k.starts_with("termcode.assist.git.") => "This git command's output in the window (with Git on). Off: git's own pager for it, as in any terminal.",
         "workbench.editor.restoreViewState" => "Reopened files come back where you were in them.",
         "workbench.tree.enableStickyScroll" => "Keep the folders of the top row in view while scrolling.",
         "explorer.autoReveal" => "Show the open file in the Explorer: its folders opened, it selected.",
@@ -1969,6 +1982,25 @@ mod tests {
             .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn assist_key_has_git_and_each_of_its_commands_on_at_first() {
+        let mut app = App::new(std::env::temp_dir(), None);
+        let mut t = Terminal::new(TestBackend::new(140, 44)).unwrap();
+        open(&mut app);
+        let n = CATEGORIES.iter().position(|c| *c == "Assist Key").expect("its category");
+        app.settings_dlg.as_mut().unwrap().category(n);
+        let s = screen(&mut app, &mut t);
+        for want in ["Assist Key", "Git", "git log", "git diff", "Terminal pane assist keys"] {
+            assert!(s.contains(want), "{want}\n{s}");
+        }
+        let fields: Vec<&Field> = FIELDS.iter().filter(|f| f.category == n).collect();
+        assert_eq!(fields.len(), 1 + crate::settings::GIT_ASSIST.len(), "Git, then one per command");
+        assert!(fields.iter().all(|f| matches!(f.kind, Check(true))), "all on at first");
+        for c in crate::settings::GIT_ASSIST {
+            assert!(fields.iter().any(|f| f.key == format!("termcode.assist.git.{c}")), "{c}");
+        }
     }
 
     /// Ctrl+F, then `q` typed into the search box.

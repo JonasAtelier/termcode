@@ -427,7 +427,7 @@ pub(crate) fn proc_stat(pid: i32) -> Option<(String, i32, u64)> {
 
 /// A process's arguments (KERN_PROCARGS2: argc, the executable's path, NULs, then argv).
 #[cfg(target_os = "macos")]
-fn cmdline(pid: i32) -> Vec<String> {
+pub(crate) fn cmdline(pid: i32) -> Vec<String> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
     let mut len = 0;
     // SAFETY: the first call only sizes; the second fills a buffer of that many bytes.
@@ -466,7 +466,7 @@ pub(crate) fn proc_stat(pid: i32) -> Option<(String, i32, u64)> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn cmdline(pid: i32) -> Vec<String> {
+pub(crate) fn cmdline(pid: i32) -> Vec<String> {
     fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default().split(|&b| b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect()
 }
 

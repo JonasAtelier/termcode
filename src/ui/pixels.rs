@@ -64,6 +64,8 @@ thread_local! {
     /// This frame's cell size in pixels, when its shapes go out as pictures.
     static CELL: std::cell::Cell<Option<(u16, u16)>> = const { std::cell::Cell::new(None) };
     static ASKS: RefCell<Vec<Ask>> = const { RefCell::new(Vec::new()) };
+    /// Popups whose frame is not the usual colour this frame: their top-left corner, colour.
+    static TINTS: RefCell<Vec<(u16, u16, Color)>> = const { RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
@@ -76,6 +78,13 @@ thread_local! {
 pub(crate) fn begin(cell: Option<(u16, u16)>) {
     CELL.set(cell);
     ASKS.with_borrow_mut(Vec::clear);
+    TINTS.with_borrow_mut(Vec::clear);
+}
+
+/// The popup frame at `r` (a `kit::popup_block` with its border in `line`) drawn in pixels
+/// in that colour too: only that one, so other boxes in that colour stay as they are.
+pub(crate) fn tint(r: Rect, line: Color) {
+    TINTS.with_borrow_mut(|t| t.push((r.x, r.y, line)));
 }
 
 /// Shapes go out in pixels this frame: their cell size.
@@ -211,10 +220,12 @@ fn found(f: &mut Frame) -> Vec<Ask> {
 /// outside so what is next to the popup shows there. Titles in a border stay text.
 fn frames(buf: &ratatui::buffer::Buffer, out: &mut Vec<Ask>) {
     let area = buf.area;
-    let line = crate::theme::P.widget_border;
-    let is = |x: u16, y: u16, s: &str| buf[(x, y)].symbol() == s && buf[(x, y)].fg == line && matches!(buf[(x, y)].bg, Color::Rgb(..));
+    let tints = TINTS.with_borrow(Clone::clone);
     for y0 in area.top()..area.bottom() {
         for x0 in area.left()..area.right() {
+            // The usual border colour, or the one this popup asked for (`tint`).
+            let line = tints.iter().find(|t| (t.0, t.1) == (x0, y0)).map_or(crate::theme::P.widget_border, |t| t.2);
+            let is = |x: u16, y: u16, s: &str| buf[(x, y)].symbol() == s && buf[(x, y)].fg == line && matches!(buf[(x, y)].bg, Color::Rgb(..));
             if !is(x0, y0, "╭") {
                 continue;
             }

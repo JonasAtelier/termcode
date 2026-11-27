@@ -64,7 +64,7 @@ user -->
 - **Integrated terminal.** Press **Ctrl+T**, then **T**, to open a shell under the code. In the demo, `make check` runs three sample readings and prints a heat alert at 30 °C.
 - **Side-by-side diff.** Press **Ctrl+G** and select the changed file. The red and green lines show the heat threshold moving from 32 to 30.
 - **Commit graph.** Expand a commit under **Graph**, then select a file to read the changes introduced by that commit.
-- **git log in a window.** In termcode's terminal, `git log` opens over the editor. Page it as in less: **/** searches, **q** closes it and returns to the prompt.
+- **git's pager in a window.** In termcode's terminal, `git log`, `git diff` or `git show` opens over the editor, with its branch above. Page it as in less: **/** searches, **&** keeps matching lines, a drag and **Ctrl+C** copy, a click on a commit hash copies it, **q** closes it and returns to the prompt. Settings › Assist Key turns it off, or off for single commands.
 
 <!-- dev -->
 ![The terminal prints the three temperature bands. Source Control compares the old and new threshold, then opens the README added by an earlier commit.](doc/media/review.gif)

@@ -50,7 +50,7 @@ status bar shows). Paths are relative to the workspace (absolute ones must be in
 | `ui.prompt` | `text`, `buttons` (up to 4; `["OK"]`), `timeout` (s, 120) | the `button` the user picked (`null`: closed) |
 | `ui.decorate` | `path`, `marks`: `[{line, severity (info, warning, error), note}]` (`[]` clears) | lines marked as problems: underlined, the note on hover |
 | `ui.clear` | `path`? (none: all) | your marks gone |
-| `pager.feed` | `id`? (none: a new window), `title`?, `text` (whole lines), `done`? | `id`, `open`, `want` (more now). Only from termcode's own terminals: `termcode pager`, git log's pager there |
+| `pager.feed` | `id`? (none: a new window, with `title`?, `branch`?, `repo`?), `text` (whole lines), `done`? | `id`, `open`, `want` (more now). Only from termcode's own terminals: `termcode pager`, git's pager there |
 | `serial.ports` | | (with the Serial extension installed) each serial port: `tty`, `note`, `state` (green, yellow, red), adapter, USB ID, holder, the channel open here |
 | `serial.note` | `port` (`ttyUSB0`), `note` (`""` removes it) | the note beside that port, kept per adapter |
 | `serial.monitor` | `port` | opens it here, read only (as the Monitor button) |
