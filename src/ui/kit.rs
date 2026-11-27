@@ -337,6 +337,17 @@ pub(crate) fn progress_bar(p: u8, cells: usize) -> String {
     on.repeat(n) + &off.repeat(cells - n)
 }
 
+/// A popup's title inside it, on the first of its `inner` rows, so the line above runs
+/// unbroken (in pixels, where that line is the cells' top edge, a title in the border
+/// leaves a gap over it): the rows under it, for the rest.
+pub(crate) fn title_row<'a>(f: &mut Frame, inner: Rect, title: impl Into<Line<'a>>) -> Rect {
+    if inner.height == 0 {
+        return inner;
+    }
+    f.render_widget(title.into(), Rect { height: 1, ..inner });
+    Rect { y: inner.y + 1, height: inner.height - 1, ..inner }
+}
+
 /// A titled card with rounded corners in `border`; the inside (a cell of padding each
 /// side), or empty when `r` is too small for one.
 pub(crate) fn card(f: &mut Frame, r: Rect, title: &str, border: Color) -> Rect {

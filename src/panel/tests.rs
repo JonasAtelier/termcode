@@ -5135,8 +5135,9 @@ fn the_find_box_is_the_query_and_its_count_and_toggles_show_while_on() {
     assert_eq!(app.groups[0].tabs[0].view.selection(), Some((Pos::new(0, 2), Pos::new(0, 3))), "the first match selected without Enter");
     let mark = &t.backend().buffer()[(q.x, q.y)];
     assert_eq!((mark.symbol(), mark.fg), ("▎", crate::theme::P.focus_border), "a thin focus mark, as a tab's");
-    let top: String = (app.ui.find_area.x..app.ui.find_area.right()).map(|x| t.backend().buffer()[(x, app.ui.find_area.y)].symbol()).collect();
-    assert!(top.contains(" SEARCH "), "named in its border: {top:?}");
+    let line = |y: u16| -> String { (app.ui.find_area.x..app.ui.find_area.right()).map(|x| t.backend().buffer()[(x, y)].symbol()).collect() };
+    let (top, head) = (line(app.ui.find_area.y), line(app.ui.find_area.y + 1));
+    assert!(top.trim_matches(['╭', '╮']).chars().all(|c| c == '─') && head.contains("SEARCH"), "named inside, its top line unbroken: {top:?} {head:?}");
     typ(&mut app, "lo");
     assert_eq!(app.groups[0].tabs[0].view.selection(), Some((Pos::new(0, 2), Pos::new(0, 5))), "llo: a longer query keeps the match it extends");
     typ(&mut app, "x");

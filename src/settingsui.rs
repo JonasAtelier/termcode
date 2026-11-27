@@ -1571,10 +1571,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         let ch = 7;
         let pop = Rect::new(r.x + (w - cw) / 2, r.y + (h - ch) / 2, cw, ch);
         f.render_widget(Clear, pop);
-        f.render_widget(
-            popup_block(P.widget_bg, P.widget_fg, (0, 0)).title(" Unsaved settings "),
-            pop,
-        );
+        f.render_widget(popup_block(P.widget_bg, P.widget_fg, (0, 0)), pop);
+        text(f, Rect::new(pop.x + 2, pop.y + 1, cw - 4, 1), "Unsaved settings", st.bold());
         text(f, Rect::new(pop.x + 2, pop.y + 2, cw - 4, 1), "Save changes? Discard also rolls back the preview.", st);
         d.hits.buttons.clear();
         let bw = ((cw - 6) / 3).min(9);
@@ -1607,10 +1605,10 @@ fn on_board((code, mods): Chord) -> bool {
         }
 }
 
-/// The keyboard's rows: its frame, five rows of keys a blank row apart, and a row for keys
-/// off the board when settings.json names some.
+/// The keyboard's rows: its frame, its title, five rows of keys a blank row apart, and a
+/// row for keys off the board when settings.json names some.
 fn board_h(quick: &[(Chord, String)]) -> u16 {
-    11 + if quick.iter().all(|(c, _)| on_board(*c)) { 0 } else { 2 }
+    12 + if quick.iter().all(|(c, _)| on_board(*c)) { 0 } else { 2 }
 }
 
 /// The quick keys as a keyboard in a frame at `at`: a key with a command in the button
@@ -1623,7 +1621,8 @@ fn draw_keyboard(d: &mut Dialog, f: &mut Frame, at: Rect, hover: Option<Position
     let sel = d.board.as_ref().map(|b| b.sel);
     // Keys 3 cells wide, a blank between them where it fits.
     let step = 3 + u16::from(at.width >= 60);
-    let (x0, y0) = (at.x + 2, at.y + 1);
+    // Under its title row.
+    let (x0, y0) = (at.x + 2, at.y + 2);
     let none = KeyModifiers::NONE;
     let mut keys: Vec<(Rect, Chord, String)> = Vec::new();
     for (i, (indent, row)) in BOARD.iter().enumerate() {
@@ -1681,12 +1680,14 @@ fn draw_keyboard(d: &mut Dialog, f: &mut Frame, at: Rect, hover: Option<Position
         }
         None => Line::styled(" Point at a key to see its command; click it to change it ", st.fg(P.dim)),
     };
-    let mut block = popup_block(case, P.widget_fg, (0, 0)).title(Span::styled(prefix.clone(), st.fg(P.sidebar_title).bold())).title_bottom(info);
-    // The legend where it fits beside the prefix (a narrow window: the prefix alone).
+    f.render_widget(popup_block(case, P.widget_fg, (0, 0)).title_bottom(info), frame);
+    // Its title inside (the prefix), the legend beside it where it fits (a narrow window:
+    // the prefix alone).
+    let head = Rect::new(frame.x + 1, frame.y + 1, frame.width.saturating_sub(2), 1).intersection(frame);
+    f.render_widget(Span::styled(prefix.clone(), st.fg(P.sidebar_title).bold()), head);
     if usize::from(frame.width) >= prefix.width() + legend.width() + 4 {
-        block = block.title(legend);
+        f.render_widget(legend, head);
     }
-    f.render_widget(block, frame);
     let inner = Rect::new(frame.x + 1, frame.y + 1, frame.width.saturating_sub(2), frame.height.saturating_sub(2));
     for (r, c, label) in keys {
         if r.right() > inner.right() || r.bottom() > inner.bottom() {
@@ -1727,14 +1728,15 @@ fn draw_pick(d: &mut Dialog, f: &mut Frame, frame: Rect, dlg: Rect) {
     let room = dlg.bottom().saturating_sub(frame.bottom() + 1);
     let w = 52.min(dlg.width.saturating_sub(2));
     let x = kr.x.saturating_sub(2).min(dlg.right().saturating_sub(w + 1)).max(dlg.x + 1);
-    // As tall as its commands need (its box, a blank, them), 14 rows at most.
-    let want = (items.len() as u16 + 4).clamp(7, 14);
+    // As tall as its commands need (its title, box, a blank, them), 15 rows at most.
+    let want = (items.len() as u16 + 5).clamp(8, 15);
     let panel = if room >= 6 { Rect::new(x, frame.bottom(), w, room.min(want)) } else { below(Rect::new(x, frame.y, kr.width, frame.height), w, want, dlg) };
     f.render_widget(Clear, panel);
-    let title = Span::styled(format!(" {} runs ", crate::parse::chord_label(sel)), st.fg(P.sidebar_title).bold());
-    let block = popup_block(P.widget_bg, P.widget_fg, (1, 0)).title(title);
+    let title = Span::styled(format!("{} runs", crate::parse::chord_label(sel)), st.fg(P.sidebar_title).bold());
+    let block = popup_block(P.widget_bg, P.widget_fg, (1, 0));
     let inner = block.inner(panel);
     f.render_widget(block, panel);
+    let inner = crate::ui::kit::title_row(f, inner, title);
     d.hits.pick = panel;
     // What it covers takes no clicks (Apply and Save under it).
     d.hits.buttons.retain(|(b, _)| !b.intersects(panel));

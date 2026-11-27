@@ -902,7 +902,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     f.render_widget(Clear, outer);
     // The note (an error, or the commit under way) sits in the bottom border: no row is
     // kept empty for it under the buttons.
-    let mut block = popup_block(P.widget_bg, P.widget_fg, (1, 0)).title(" Commit ");
+    let mut block = popup_block(P.widget_bg, P.widget_fg, (1, 0));
     if !d.note.is_empty() {
         let c = if d.busy { P.dim } else { P.error_fg };
         let note = fit(&format!(" {} ", d.note), outer.width.saturating_sub(4) as usize);
@@ -910,6 +910,7 @@ pub fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     }
     let inner = block.inner(outer);
     f.render_widget(block, outer);
+    let inner = crate::ui::kit::title_row(f, inner, Span::styled("Commit", Style::new().fg(P.widget_fg).bg(P.widget_bg).bold()));
     // Lists | diff over the message splitter, the mode row, message, buttons.
     let g = geometry(inner, ratios);
     let diff = g.diff;
@@ -1096,7 +1097,7 @@ mod tests {
         settle(&mut app);
         screen(&mut app, &mut tm);
         let d = app.gitui.dlg.as_ref().unwrap();
-        assert_eq!((d.hits.inner.y, d.hits.inner.bottom()), (6, 34), "five rows clear above and below its frame");
+        assert_eq!((d.hits.inner.y, d.hits.inner.bottom()), (7, 34), "five rows clear above and below its frame; its title row on top");
         // The grey hover follows the pointer onto a button and off it again, at once.
         let btn = d.hits.btns.iter().find(|(_, b)| *b == Btn::Rescan).unwrap().0;
         let moved = |app: &mut App, x: u16, y: u16| app.on_mouse(MouseEvent { kind: MouseEventKind::Moved, column: x, row: y, modifiers: KeyModifiers::NONE });

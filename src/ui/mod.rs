@@ -263,15 +263,17 @@ fn prefix_hint(app: &App, f: &mut Frame) {
     let kw = rows.iter().map(|r| r.0.width()).max().unwrap_or(1);
     let w = (rows.iter().map(|r| kw + 2 + r.1.width()).max().unwrap_or(0).max(foot.width()) + 4) as u16;
     let area = f.area();
-    let h = (rows.len() + 4) as u16;
+    // Its frame, its title, the keys, a blank, the footer.
+    let h = (rows.len() + 5) as u16;
     if area.width < w + 2 || area.height < h + 3 {
         return;
     }
     let r = Rect::new(area.right() - w - 1, area.bottom() - h - 2, w, h);
     f.render_widget(Clear, r);
-    let block = popup_block(P.widget_bg, P.widget_fg, (1, 0)).title(Span::styled(format!(" {p} then "), Style::new().fg(P.sidebar_title).bold()));
+    let block = popup_block(P.widget_bg, P.widget_fg, (1, 0));
     let inner = block.inner(r);
     f.render_widget(block, r);
+    let inner = kit::title_row(f, inner, Span::styled(format!("{p} then"), Style::new().fg(P.sidebar_title).bg(P.widget_bg).bold()));
     let mut lines: Vec<Line> = rows
         .into_iter()
         .map(|(k, n)| Line::from(vec![Span::styled(format!("{k:>kw$}  "), Style::new().fg(P.focus_border).bold()), Span::styled(n, Style::new().fg(P.widget_fg))]))
@@ -1997,7 +1999,8 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     let rows = if fd.replace.is_some() { 2 } else { 1 };
     // Comfortable: a rounded frame with findWidgetPadding inside, one cell off the scrollbar.
     let fp = lay.s.find_padding;
-    let (bw, bh) = if lay.comfy { (2 + 2 * fp, 2) } else { (0, 0) };
+    // Its frame and title row (above the fields) take bh rows, top of them over the fields.
+    let (bw, bh, top) = if lay.comfy { (2 + 2 * fp, 3, 2) } else { (0, 0, 0) };
     let off = u16::from(lay.comfy);
     let w = 52.min(text.width.saturating_sub(bw + off));
     if w < 30 || text.height < rows + bh + 1 {
@@ -2007,12 +2010,12 @@ fn find_widget(app: &mut App, f: &mut Frame, text: Rect, lay: Lay) {
     app.ui.find_area = outer;
     if lay.comfy {
         f.render_widget(Clear, outer);
-        // Named in its top border, as the sidebar's views are.
-        let title = Span::styled(" SEARCH ", Style::new().fg(P.sidebar_title).bold());
-        let frame = popup_block(P.widget_bg, P.widget_fg, (fp, 0)).title(Line::from(vec![Span::raw(" "), title]));
-        f.render_widget(frame, outer);
+        // Named as the sidebar's views are, inside its top line.
+        f.render_widget(popup_block(P.widget_bg, P.widget_fg, (fp, 0)), outer);
+        let head = Rect::new(outer.x + bw / 2, outer.y + 1, w, 1).intersection(outer);
+        f.render_widget(Span::styled("SEARCH", Style::new().fg(P.sidebar_title).bg(P.widget_bg).bold()), head);
     }
-    let r = Rect::new(outer.x + bw / 2, outer.y + bh / 2, w, rows).intersection(outer);
+    let r = Rect::new(outer.x + bw / 2, outer.y + top, w, rows).intersection(outer);
     fill(f, r, P.widget_bg);
     // Row 1: [query…] then "N of M" against the right edge; no buttons: Enter / Shift+Enter
     // step, Esc closes, Alt+C / Alt+W / Alt+R toggle (shown in the box only while on).

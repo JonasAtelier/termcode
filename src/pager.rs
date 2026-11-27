@@ -477,10 +477,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
     f.render_widget(Clear, r);
     crate::ui::pixels::tint(r, P.focus_border);
-    // Its border in the focus colour: the window that has the keys.
-    let block = crate::ui::kit::popup_block(P.editor_bg, P.editor_fg, (1, 0))
-        .border_style(Style::new().fg(P.focus_border).bg(P.editor_bg))
-        .title(format!(" {} ", pg.title));
+    // Its border in the focus colour: the window that has the keys. Its title is inside.
+    let block = crate::ui::kit::popup_block(P.editor_bg, P.editor_fg, (1, 0)).border_style(Style::new().fg(P.focus_border).bg(P.editor_bg));
     let inner = block.inner(r);
     f.render_widget(block, r);
     if inner.height < 3 || inner.width < 8 {
@@ -488,10 +486,10 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     }
     let base = Style::new().fg(P.editor_fg).bg(P.editor_bg);
     let dim = Style::new().fg(P.dim).bg(P.editor_bg);
-    // The title row: where git runs.
-    let mut info = Vec::new();
+    // The title row: the command, where git runs.
+    let mut info = vec![Span::styled(pg.title.clone(), base.bold())];
     if !pg.branch.is_empty() {
-        info.push(Span::styled(format!(" {} {}", crate::theme::icons().branch, pg.branch), Style::new().fg(P.focus_border).bg(P.editor_bg).bold()));
+        info.push(Span::styled(format!("   {} {}", crate::theme::icons().branch, pg.branch), Style::new().fg(P.focus_border).bg(P.editor_bg).bold()));
     }
     if !pg.repo.is_empty() {
         info.push(Span::styled(format!("   {}", pg.repo), dim));
@@ -955,8 +953,11 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(100, 40)).unwrap();
         let s = screen(&mut app, &mut t);
         let rows: Vec<&str> = s.lines().collect();
-        let top = rows.iter().position(|l| l.contains(" git log --stat ")).expect("the command as its title");
-        assert!(top >= 3 && rows[top + 1].contains(&format!("{} main", crate::theme::icons().branch)) && rows[top + 1].contains("proj"), "{s}");
+        let top = rows.iter().position(|l| l.contains('╭')).expect("its frame");
+        let edge: String = rows[top].chars().filter(|c| *c != ' ').collect();
+        assert!(edge.trim_matches(['╭', '╮']).chars().all(|c| c == '─'), "the top line unbroken (in pixels a title there leaves a gap): {s}");
+        let head = rows[top + 1];
+        assert!(top >= 3 && head.contains("git log --stat") && head.contains(&format!("{} main", crate::theme::icons().branch)) && head.contains("proj"), "the command, branch and repository inside: {s}");
         let left = rows[top].chars().position(|c| c != ' ').unwrap();
         assert!((6..=10).contains(&left), "about 85% wide, centred: {left}\n{s}");
         assert_eq!(t.backend().buffer()[(left as u16, top as u16 + 2)].fg, P.focus_border, "a blue border");
@@ -1148,3 +1149,4 @@ mod tests {
         assert!(app.pager.is_none());
     }
 }
+

@@ -53,7 +53,8 @@ pub fn card(app: &mut App, f: &mut Frame, path: &Path, anchor: Rect, beside: boo
     let size = format!(" {}×{} ", px.0, px.1);
     let area = f.area();
     let w = (cols.max(size.width() as u16 + 2) + 2).min(area.width);
-    let h = (rows + 2).min(area.height);
+    // Its frame, its name above the picture.
+    let h = (rows + 3).min(area.height);
     let (x, y) = if beside {
         (anchor.right().min(area.right().saturating_sub(w)), anchor.y.min(area.bottom().saturating_sub(h)))
     } else {
@@ -62,11 +63,11 @@ pub fn card(app: &mut App, f: &mut Frame, path: &Path, anchor: Rect, beside: boo
     };
     let r = Rect::new(x, y, w, h);
     f.render_widget(Clear, r);
-    let block = crate::ui::popup_block(P.widget_bg, P.widget_fg, (0, 0))
-        .title(Span::styled(format!(" {} ", crate::ui::fit(&name, w.saturating_sub(4) as usize)), Style::new().fg(P.widget_fg).bold()))
-        .title_bottom(Line::styled(size, Style::new().fg(P.dim)).right_aligned());
+    let block = crate::ui::popup_block(P.widget_bg, P.widget_fg, (0, 0)).title_bottom(Line::styled(size, Style::new().fg(P.dim)).right_aligned());
     let inner = block.inner(r);
     f.render_widget(block, r);
+    let title = Span::styled(format!(" {}", crate::ui::fit(&name, w.saturating_sub(4) as usize)), Style::new().fg(P.widget_fg).bold());
+    let inner = crate::ui::kit::title_row(f, inner, title);
     let pic = Rect::new(inner.x + inner.width.saturating_sub(cols) / 2, inner.y, cols.min(inner.width), rows.min(inner.height));
     let mut hk = std::collections::hash_map::DefaultHasher::new();
     (path, std::fs::metadata(path).and_then(|m| m.modified()).ok(), cols, rows, cell, P.editor_bg).hash(&mut hk);
