@@ -1717,6 +1717,8 @@ fn a_repository_whose_settings_run_programs_gets_no_git_until_trusted() {
     assert!(app.reload && app.quit, "reloads to start git");
     let again = App::new(root.clone(), None);
     assert!(again.git_root.is_some() && again.untrusted.is_none(), "trusted now");
+    // Its git (now on) done before the folder goes: a dropped panel finishes its jobs.
+    drop((app, again));
     let _ = fs::remove_file(crate::trust::store());
     fs::remove_dir_all(&root).unwrap();
     let _ = fs::remove_file(&marker);
