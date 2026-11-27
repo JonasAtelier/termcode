@@ -8,6 +8,14 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 
 ## [Unreleased]
 
+### Fixed
+
+- A shell in termcode's terminal no longer gets the variables of the terminal or
+  multiplexer termcode runs in that name its pane or window (`HERDR_*`, `TMUX`,
+  `GHOSTTY_*`, `KITTY_WINDOW_ID`, `TERMINFO`…): `herdr` or `tmux` run there acted on
+  termcode's pane. `TERM_PROGRAM_VERSION` is termcode's. A popup's title is inside it,
+  its top line unbroken (in Ghostty a title in the border left a dark gap over it).
+
 ### Changed
 
 - termcode is now under the GNU General Public License, version 3 (GPL-3.0-only); it

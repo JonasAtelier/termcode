@@ -32,6 +32,21 @@ pub fn shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into())
 }
 
+/// What the terminal (or multiplexer) termcode runs in sets for its own window or pane: its
+/// pane's id and socket (herdr, tmux, zellij…), its window's id, its version, its terminfo.
+/// Not this terminal's, so a shell here does not get them: `herdr` or `tmux` run in it would
+/// act on termcode's pane. A name ending in `_` stands for every name it starts.
+const OUTER: &[&str] = &[
+    "HERDR_", "TMUX", "TMUX_PANE", "STY", "ZELLIJ", "ZELLIJ_", "GHOSTTY_", "KITTY_", "WEZTERM_", "KONSOLE_",
+    "ALACRITTY_", "ITERM_", "TERM_SESSION_ID", "LC_TERMINAL", "LC_TERMINAL_VERSION", "VTE_VERSION", "WT_SESSION",
+    "WT_PROFILE_ID", "WINDOWID", "TERMINFO", "TERM_PROGRAM_VERSION",
+];
+
+/// Whether the variable `name` belongs to the terminal termcode runs in (OUTER).
+fn outer(name: &str) -> bool {
+    OUTER.iter().any(|o| if o.ends_with('_') { name.starts_with(o) } else { name == *o })
+}
+
 /// `s` as one shell word: in single quotes, a quote in it closed and escaped.
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -149,10 +164,16 @@ impl Term {
             libc::fcntl(m, libc::F_SETFL, libc::fcntl(m, libc::F_GETFL) | libc::O_NONBLOCK);
         }
         let mut cmd = Command::new(shell);
+        for (name, _) in std::env::vars_os() {
+            if name.to_str().is_some_and(outer) {
+                cmd.env_remove(name);
+            }
+        }
         cmd.current_dir(cwd)
             .env("TERM", "xterm-256color")
             .env("COLORTERM", "truecolor")
             .env("TERM_PROGRAM", "termcode")
+            .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))
             .env(crate::api::ENV, crate::api::path().map(|p| p.as_os_str()).unwrap_or_default())
             // The assist keys' (pager.rs): git's pager here for the commands turned on.
             .envs(env.iter().cloned())
@@ -1082,6 +1103,26 @@ mod tests {
         assert_eq!(r(M::Press, E::Sgr, 0, false, false, none), None, "X10 mode: presses only");
         assert_eq!(r(M::PressRelease, E::Sgr, 0, true, true, none), None, "no motion");
         assert_eq!(r(M::None, E::Sgr, 0, true, false, none), None);
+    }
+
+    #[test]
+    fn its_shell_gets_termcodes_terminal_not_the_pane_termcode_runs_in() {
+        for name in ["HERDR_ENV", "HERDR_PANE_ID", "TMUX", "TMUX_PANE", "GHOSTTY_SURFACE_ID", "KITTY_WINDOW_ID", "WINDOWID", "TERMINFO", "TERM_PROGRAM_VERSION", "ZELLIJ"] {
+            assert!(outer(name), "{name}");
+        }
+        for name in ["PATH", "HOME", "LANG", "EDITOR", "TMUXP_CONFIGDIR", "TERM", "SSH_AUTH_SOCK", "GIT_CONFIG_COUNT"] {
+            assert!(!outer(name), "{name} is passed on");
+        }
+        let mut t = Term::spawn("/bin/sh", &std::env::temp_dir(), 5, 60, &[]).unwrap();
+        // (Under herdr, as these tests often run, its variables are there to drop.)
+        t.send(b"echo n=$(env | grep -cE '^(HERDR_|GHOSTTY_|TMUX=|TERMINFO=)') v=$TERM_PROGRAM_VERSION p=$TERM_PROGRAM\r");
+        let want = format!("n=0 v={} p=termcode", env!("CARGO_PKG_VERSION"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !t.contents().contains(&want) {
+            assert!(Instant::now() < deadline, "{want}: {:?}", t.contents());
+            t.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
