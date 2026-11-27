@@ -51,13 +51,11 @@ jobs:
       - name: Package
         run: cargo publish --dry-run --locked
 
-  # The experimental macOS port: the same lint and tests on a Mac runner. Reported, not
-  # required: a few tests still assume Linux, and a red Mac run must not stop a push's
-  # checks or a release (release.yml calls this file).
+  # The macOS port: the same lint and tests on a Mac runner, required as Linux's are (a
+  # release waits for both: release.yml calls this file).
   check-macos:
     runs-on: macos-15
     timeout-minutes: 30
-    continue-on-error: true
     env:
       CARGO_TERM_COLOR: always
       RUSTUP_TOOLCHAIN: 1.97.1
