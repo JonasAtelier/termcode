@@ -128,7 +128,9 @@ Default colors come from Microsoft’s VS Code and file icons from Jesse Weed’
 
 ## macOS (experimental)
 
-Build from this checkout with `cargo install --locked --path . -j2`, then run
+Install with `cargo install termcode --locked` (Rust 1.93 or newer), or download
+`termcode-aarch64-apple-darwin.tar.gz` (Apple Silicon) or `termcode-x86_64-apple-darwin.tar.gz`
+(Intel) from [Releases](https://github.com/JonasAtelier/termcode/releases/latest), then run
 `termcode .`. The editor, integrated terminal, API, clipboard, Trash (Finder's),
 links (`open`) and serial ports (`/dev/cu.usb*`, up to 2000000 baud) work on macOS.
 Picture icons need a Nerd Font found by fontconfig (`brew install fontconfig`).

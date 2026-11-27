@@ -2,12 +2,14 @@
 # v1.2.0): ci.yml's checks on that commit; the tag must name Cargo.toml's (and
 # herdr-plugin.toml's) version, be on main, and CHANGELOG.md must date it; the `crates-io`
 # environment must require a reviewer; the static amd64 and arm64 .debs built and installed
-# on older and newer Debian and Ubuntu; then, once the owner approves, `cargo publish`; then
-# a GitHub Release with that version's CHANGELOG section and the .debs.
+# on older and newer Debian and Ubuntu; the macOS binaries (Apple Silicon, Intel) built on a
+# Mac, the Apple Silicon one started there; then, once the owner approves, `cargo publish`;
+# then a GitHub Release with that version's CHANGELOG section, the .debs, the macOS
+# archives and SHA256SUMS.
 #
 # Run from the Actions tab (workflow_dispatch), on a branch or on a tag, it only checks (the
-# checks and the environment) and builds the .debs, which stay on the run's page: every
-# publishing job requires a tag *push*.
+# checks and the environment) and builds the .debs and the macOS archives, which stay on
+# the run's page: every publishing job requires a tag *push*.
 #
 # See AGENTS.md, "Releases", for the environment, reviewer and Trusted Publishing setup.
 # The publish job gets a crates.io token for 30 minutes; the
@@ -124,6 +126,60 @@ jobs:
           name: termcode-debs
           path: target/deb/debian/*.deb
 
+  # macOS: the Apple Silicon and Intel binaries, built on a Mac (Intel cross-compiled
+  # there), the Apple Silicon one started in a terminal: it must draw and keep running.
+  # Read-only and without secrets; github-release attaches the archives (the binary, its
+  # licence and the crates', the man page, the completions) with SHA256SUMS. A failure
+  # here stops the release, as the .debs' does.
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.97.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target aarch64-apple-darwin,x86_64-apple-darwin
+
+      # No build-machine paths in the binaries (they name the runner), as scripts/deb.sh.
+      - name: Build
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=$HOME=~ --remap-path-prefix=$PWD=."
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked --target "$target"
+          done
+
+      # On a 120x30 terminal for 3 s: it must draw and still be running (perl's alarm, as
+      # the .debs' test uses timeout, which macOS lacks; 142 = killed by the alarm).
+      - name: Start it in a terminal
+        run: |
+          bin="$PWD/target/aarch64-apple-darwin/release/termcode"
+          "$bin" --version
+          p="$RUNNER_TEMP/p" && mkdir -p "$p" && git -C "$p" init -q && echo hi > "$p/a.txt"
+          script -q "$RUNNER_TEMP/out" sh -c "stty rows 30 cols 120; TERM=xterm-256color perl -e 'alarm 3; exec @ARGV' '$bin' '$p'; echo EXIT=\$?" > /dev/null || true
+          grep -q EXPLORER "$RUNNER_TEMP/out" && grep -q EXIT=142 "$RUNNER_TEMP/out" ||
+            { echo "::error::termcode did not draw and keep running on macOS"; tail -c 2000 "$RUNNER_TEMP/out" | cat -v; exit 1; }
+
+      - name: Archives
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            d="dist/termcode-$target" && mkdir -p "$d/completions"
+            cp "target/$target/release/termcode" LICENSE doc/termcode.1 "$d/"
+            cp completions/termcode.bash completions/_termcode completions/termcode.fish "$d/completions/"
+            cargo metadata --format-version 1 --locked --filter-platform "$target" | python3 -I scripts/third-party.py > "$d/THIRD-PARTY-LICENSES"
+            tar -C dist -czf "dist/termcode-$target.tar.gz" "termcode-$target"
+          done
+          ls -l dist/*.tar.gz
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: termcode-macos
+          path: dist/*.tar.gz
+
   # crates.io, after the owner's click: the `crates-io` environment requires their review
   # and only v* tags may use it. Trusted Publishing: crates.io takes GitHub's OIDC token for
   # this workflow file in this environment and gives back a token for 30 minutes, which the
@@ -137,7 +193,7 @@ jobs:
   # toolchain file can name its own binaries, a cargo config a credential provider that gets
   # the token), so a release refuses it, first, before any token exists.
   publish:
-    needs: [ci, tag, guard, debs] # ci: `cargo publish --dry-run --locked` on this same commit
+    needs: [ci, tag, guard, debs, macos] # ci: `cargo publish --dry-run --locked` on this same commit
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -188,12 +244,12 @@ jobs:
 
   # Only this job writes to the repository, to create the GitHub Release.
   github-release:
-    needs: [publish, debs]
+    needs: [publish, debs, macos]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      contents: write # create the Release and attach the .debs
+      contents: write # create the Release and attach the .debs and the macOS archives
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -204,12 +260,18 @@ jobs:
           name: termcode-debs
           path: debs
 
-      - name: GitHub Release with this version's CHANGELOG section and the .debs
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: termcode-macos
+          path: mac
+
+      - name: GitHub Release with this version's CHANGELOG section, the .debs, the macOS archives and SHA256SUMS
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=${GITHUB_REF_NAME#v}
           { awk -v h="## [$version]" 'index($0, h) == 1 { on = 1; next } /^## \[/ { on = 0 } on' CHANGELOG.md
             echo; cat doc/release-install.md; } > "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" debs/*.deb --repo "$GITHUB_REPOSITORY" \
+          ( cd debs && sha256sum *.deb; cd ../mac && sha256sum *.tar.gz ) > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" debs/*.deb mac/*.tar.gz SHA256SUMS --repo "$GITHUB_REPOSITORY" \
             --title "termcode $version" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag

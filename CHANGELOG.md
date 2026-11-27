@@ -17,6 +17,8 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
 - On macOS, Delete moves to Finder's Trash, links open with `open`, the minimap draws
   with Monaco, a new install is noticed, and Rust checks see the free memory.
 - Help: Report Issue names the macOS version.
+- Releases carry macOS binaries (Apple Silicon and Intel, built and started on a Mac
+  before anything is published) and `SHA256SUMS`.
 - `git log` in termcode's terminal opens in a window over termcode, read as less reads it:
   j/k, Space/b, d/u, g/G, / and ? to search, n/N, ←/→, q to close (then the prompt is
   back). git's colours show; it reads only as far ahead as the window needs. Only there:
