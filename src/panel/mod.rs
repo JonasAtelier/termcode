@@ -2145,6 +2145,8 @@ impl App {
     }
 
     pub fn new(root: PathBuf, layout_file: Option<PathBuf>) -> App {
+        #[cfg(test)]
+        sweep_test_dirs();
         let (tx, rx) = mpsc::sync_channel(MAX_HITS + 1);
         let (load_tx, load_rx) = mpsc::channel();
         let repo = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -2842,6 +2844,24 @@ pub(crate) fn wait_idle(app: &mut App) {
         app.drain();
         std::thread::sleep(Duration::from_millis(2));
     }
+}
+
+/// Tests: the folders earlier test runs left in the temp folder (`termcode-<name>-<pid>`,
+/// their process gone) removed, once per run, at its first panel. A test that never removes
+/// its own (or fails first) so leaves one run's worth at most.
+#[cfg(test)]
+fn sweep_test_dirs() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let Ok(dir) = std::fs::read_dir(std::env::temp_dir()) else { return };
+        for e in dir.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(pid) = name.strip_prefix("termcode-").and_then(|n| n.rsplit_once('-')).and_then(|(_, p)| p.parse::<u32>().ok()) else { continue };
+            if e.file_type().is_ok_and(|t| t.is_dir()) && pid != std::process::id() && !crate::api::process_alive(pid) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    });
 }
 
 /// Tests: a dropped panel (one a test lets die) finishes its git jobs first, so
