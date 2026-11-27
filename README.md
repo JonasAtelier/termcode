@@ -1,5 +1,5 @@
 <!-- dev -->
-<h1 align="right"><img src="doc/media/termcode-panel.gif" width="96%" alt="termcode"></h1>
+<h1 align="center"><img src="doc/media/termcode-panel.gif" width="55%" alt="termcode"></h1>
 
 <p align="center">
   <a href="https://crates.io/crates/termcode"><img src="https://img.shields.io/crates/v/termcode" alt="crates.io version"></a>
@@ -7,13 +7,16 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/JonasAtelier/termcode" alt="GPL-3.0 license"></a>
 </p>
 
-![A C file open in termcode, with its Git timeline on the left and a shell running the weather station sample below the editor.](doc/media/workspace.png)
 <!-- /dev -->
 <!-- user
 # termcode
 user -->
 
 Edit code, run it and review the diff in one Linux terminal. Open a project folder to get a file explorer, split editors, a shell and a Git commit graph. termcode also runs as a Code tab in herdr.
+
+<!-- dev -->
+![A C file open in termcode, with its Git timeline on the left and a shell running the weather station sample below the editor.](doc/media/workspace.png)
+<!-- /dev -->
 
 ## Install
 
@@ -54,7 +57,14 @@ user -->
 - **Markdown preview.** Open the README, press **Ctrl+K**, then **V**. The temperature table renders beside its Markdown source.
 
 <!-- dev -->
+![Quick Open lists station_status for @station. Pressing Enter selects its definition on line 7 of station.c.](doc/media/symbol-jump.png)
+
+<details>
+<summary>Watch the navigation demo</summary>
+
 ![Quick Open finds station.c and its station_status function. Search finds two uses of HEAT_LIMIT, then a split editor shows the Markdown table beside its source.](doc/media/navigate.gif)
+
+</details>
 <!-- /dev -->
 
 <a id="review-changes"></a>
@@ -67,7 +77,14 @@ user -->
 - **git's pager in a window.** In termcode's terminal, `git log`, `git diff` or `git show` opens over the editor, with its branch above. Page it as in less: **/** searches, **&** keeps matching lines, a drag and **Ctrl+C** copy, a click on a commit hash copies it, **q** closes it and returns to the prompt. Settings › Assist Key turns it off, or off for single commands.
 
 <!-- dev -->
+![Side-by-side diff of station.c. Line 4 changes HEAT_LIMIT from 32 to 30.](doc/media/heat-limit-diff.png)
+
+<details>
+<summary>Watch the run and review demo</summary>
+
 ![The terminal prints the three temperature bands. Source Control compares the old and new threshold, then opens the README added by an earlier commit.](doc/media/review.gif)
+
+</details>
 <!-- /dev -->
 
 If a repository's Git settings can run external programs, Source Control asks you to trust it before enabling Git.
@@ -83,7 +100,22 @@ termcode api state.get '{"path":"/git"}'
 ```
 
 <!-- dev -->
+![The station log before and after filtering for sensor. Eight events narrow to two: sensor A connected, then timed out.](doc/media/sensor-filter.png)
+
+<details>
+<summary>Watch the log, ELF and API demo</summary>
+
 ![The log narrows to two sensor events. The ELF report lists libc, and an API call in the terminal reports src/station.c as modified.](doc/media/inspect.gif)
+
+</details>
+<!-- /dev -->
+
+## GitHub activity
+
+Open the GitHub view from the activity bar to browse your contribution calendar and repositories alongside the editor.
+
+<!-- dev -->
+![The GitHub sidebar shows a year of contributions and a repository list with the weather project selected.](doc/media/github-activity.png)
 <!-- /dev -->
 
 ## Serial ports
@@ -96,6 +128,12 @@ termcode ext install https://github.com/JonasAtelier/termcode#extensions/xcomm
 
 Choose **Monitor** to watch a port in an editor tab and **Attach** to send input. The panel beside the tab controls baud rate, line format, DTR/RTS and capture. A disconnected adapter reopens when reattached. Add a note to identify a device, or drive an open channel with `serial.*` API calls or `xcomm ctl`. [xcomm](https://crates.io/crates/xcomm)
 
+<!-- dev -->
+![Serial Monitor receives three sample temperature readings over a pseudo-terminal. The adjacent settings show baud rate, DTR and RTS.](doc/media/serial-monitor.png)
+
+*Weather station sample received over a pseudo-terminal.*
+<!-- /dev -->
+
 ## Scripts and AI agents
 
 Scripts can read unsaved buffers and diagnostics, apply edits as one undo step, and use the integrated terminal. termcode asks before an external program changes files or runs commands. Set `termcode.api` to `"read-only"` or `"off"` in Settings to limit access.
@@ -105,6 +143,10 @@ Scripts can read unsaved buffers and diagnostics, apply edits as one undo step, 
 ## Extensions
 
 The **+** view lists installed, built-in and suggested views. Install from a Git URL or local folder, enable or disable a view, or remove an extension. To build one, run `termcode ext new mine` for a starter or `termcode ext --skill` for the authoring guide. [Extension guide](https://github.com/JonasAtelier/termcode/blob/main/doc/extensions.md)
+
+<!-- dev -->
+![The + view filtered to serial shows Serial (xcomm) under Recommended with an Install button.](doc/media/serial-extension.png)
+<!-- /dev -->
 
 ## Help and settings
 
