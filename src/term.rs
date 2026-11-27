@@ -154,6 +154,8 @@ impl Term {
             .env("COLORTERM", "truecolor")
             .env("TERM_PROGRAM", "termcode")
             .env(crate::api::ENV, crate::api::path().map(|p| p.as_os_str()).unwrap_or_default())
+            // `git log` pages in a termcode window (pager.rs).
+            .envs(std::env::current_exe().map(|exe| crate::pager::git_env(std::env::var("GIT_CONFIG_COUNT").ok().as_deref(), &exe)).unwrap_or_default())
             .stdin(slave.try_clone()?)
             .stdout(slave.try_clone()?)
             .stderr(slave);

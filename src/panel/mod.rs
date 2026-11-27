@@ -1338,6 +1338,8 @@ pub struct App {
     pub tree_anchor: Option<String>,
     /// A dragged item resting on this closed folder opens it at this time.
     pub tree_spring: Option<(String, Instant)>,
+    /// git's pager window (`git log` in a terminal), over everything while open.
+    pub pager: Option<crate::pager::Pager>,
     /// A moving picture's next frame is due (set while one shows, each frame).
     pub anim_due: Option<Instant>,
     /// A paste running on its thread.
@@ -2198,6 +2200,7 @@ impl App {
             patch_stamps: HashMap::new(),
             tree_anchor: None,
             tree_spring: None,
+            pager: None,
             anim_due: None,
             file_job: None,
             mouse_mods: KeyModifiers::NONE,

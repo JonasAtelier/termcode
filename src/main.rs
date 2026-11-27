@@ -41,6 +41,7 @@ mod term;
 mod md5;
 mod media;
 mod logview;
+mod pager;
 mod patch;
 mod size;
 mod mdpreview;
@@ -81,6 +82,7 @@ Open PATH like `code PATH`, in this terminal; quitting returns to the shell.
   api METHOD [JSON] call a running termcode's API (`termcode api --help`)
   mcp               the API as an MCP server on stdio, for agents (`termcode mcp --help`)
   ext COMMAND       install, list, remove or start an extension (`termcode ext --help`)
+  pager             git's pager in termcode's terminal (set there for `git log`): a window
   --headless        no terminal: driven through the API alone (--api-stdio: on stdio too)
 Relative paths resolve against this folder. Settings: ~/.config/termcode/settings.json.
 (`termcode panel` is the plugin's pane entrypoint.)";
@@ -94,6 +96,7 @@ enum Cmd {
     Api(Vec<String>),
     Mcp(Vec<String>),
     Ext(Vec<String>),
+    Pager(Vec<String>),
     Headless { path: Option<String>, stdio: bool },
     Open { tab: bool, new: bool, path: Option<String> },
 }
@@ -108,6 +111,9 @@ fn parse_args(args: &[String]) -> Result<Cmd, String> {
         }
         if a == "ext" {
             return Ok(Cmd::Ext(rest.to_vec()));
+        }
+        if a == "pager" {
+            return Ok(Cmd::Pager(rest.to_vec()));
         }
     }
     if let [a] = args {
@@ -165,6 +171,7 @@ fn main() -> ExitCode {
         Cmd::Api(args) => api::cli(&args),
         Cmd::Mcp(args) => mcp::run(&args),
         Cmd::Ext(args) => ext::cli(&args),
+        Cmd::Pager(args) => pager::run(&args),
         Cmd::Headless { path, stdio } => {
             let cwd = env::current_dir().map_err(|e| e.to_string())?;
             let (root, _) = target(path.as_deref(), &cwd)?;

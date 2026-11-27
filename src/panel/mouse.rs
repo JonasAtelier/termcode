@@ -21,6 +21,9 @@ impl App {
             MouseEventKind::Up(_) => self.pressed = None,
             _ => {}
         }
+        if self.pager.is_some() {
+            return crate::pager::mouse(self, m);
+        }
         if self.settings_dlg.is_some() {
             return crate::settingsui::mouse(self, m);
         }

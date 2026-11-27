@@ -7,6 +7,10 @@ impl App {
 
     pub fn on_key(&mut self, k: KeyEvent) {
         self.activity_lit = false;
+        // git's pager window (`git log` in the terminal) takes every key while it is open.
+        if self.pager.is_some() {
+            return crate::pager::key(self, k);
+        }
         if self.settings_dlg.is_some() {
             return crate::settingsui::key(self, k);
         }
@@ -802,6 +806,9 @@ impl App {
 
     /// Bracketed paste or Ctrl+V: into the focused input or the editor.
     pub fn paste_text(&mut self, text: &str) {
+        if self.pager.is_some() {
+            return;
+        }
         if self.settings_dlg.is_some() {
             return crate::settingsui::paste(self, text);
         }

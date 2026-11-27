@@ -418,6 +418,7 @@ fn draw_frame(app: &mut App, f: &mut Frame) {
         prompt(app, f, area, lay);
     }
     crate::settingsui::draw(app, f);
+    crate::pager::draw(app, f);
 }
 
 fn title_bar(app: &mut App, f: &mut Frame, r: Rect, lay: Lay) {

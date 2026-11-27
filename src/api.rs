@@ -377,6 +377,22 @@ pub(crate) fn process_alive(pid: u32) -> bool {
 }
 
 /// The connecting process: its pid and uid (SO_PEERCRED).
+/// Whether process `pid` was started, at any depth, from this termcode.
+pub fn descends(pid: i32) -> bool {
+    let me = std::process::id() as i32;
+    let mut p = pid;
+    for _ in 0..64 {
+        if p == me {
+            return true;
+        }
+        match proc_stat(p) {
+            Some((_, parent, _)) if parent > 1 => p = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
 #[cfg(not(target_os = "macos"))]
 fn peer(s: &UnixStream) -> Option<(i32, u32)> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
@@ -929,6 +945,11 @@ pub fn respond(app: &mut App, req: &Value, client: &Client, allowed: bool) -> Re
             }
             None => return Reply::Later(Box::new(Wait { id, until: std::time::Instant::now() + ASK, what: Waiting::Grant { client: client.clone(), tier, req: req.clone(), shown: false, once: false } })),
         }
+    }
+    // A pager's window: only for programs started in this termcode's terminals (git log
+    // typed there), so nothing else can put a window over the user's work.
+    if method == "pager.feed" && !client.own && !descends(client.key.0) {
+        return Reply::Now(envelope(&id, Err("pager.feed: only from this termcode's terminals".into())));
     }
     if tier != Tier::Read && !client.own && client.ext.is_none() {
         app.msg = format!("API: {} — {method}", client.label);

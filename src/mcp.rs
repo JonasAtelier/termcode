@@ -146,11 +146,12 @@ mod tests {
         let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"state_get") && names.contains(&"serial_send") && names.iter().all(|n| !n.contains('.')));
         // Every tool is a method the API has, or (serial.*) the Serial extension serves; every
-        // method but events.watch a tool.
+        // method a tool but events.watch and pager.feed (git log's pager, not an agent's).
         for (m, _) in TOOLS {
             assert!(crate::rpc::METHODS.contains(m) || m.starts_with("serial."), "{m}");
         }
-        assert_eq!(TOOLS.iter().filter(|(m, _)| !m.starts_with("serial.")).count(), crate::rpc::METHODS.len() - 1);
+        assert_eq!(TOOLS.iter().filter(|(m, _)| !m.starts_with("serial.")).count(), crate::rpc::METHODS.len() - 2);
+        assert!(!TOOLS.iter().any(|(m, _)| *m == "pager.feed"));
         let r = handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "hello", "arguments": {}}}), &mut call).unwrap();
         assert_eq!(r["result"]["isError"], false);
         assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("\"root\""));

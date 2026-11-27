@@ -47,6 +47,7 @@ pub const METHODS: &[&str] = &[
     "ui.pick",
     "ui.decorate",
     "ui.clear",
+    "pager.feed",
 ];
 
 /// What `method` may do (`api::Gate` asks the user before `Edit` and `Run`): reading
@@ -98,6 +99,8 @@ pub fn call(app: &mut App, method: &str, p: &Value) -> Result<Out, String> {
             now(json!({"opened": rel, "line": line, "col": col}))
         }
         "state.get" => state(app, p["path"].as_str().unwrap_or("/workspace")),
+        // git's pager in this termcode's terminal (`termcode pager`): its window.
+        "pager.feed" => now(crate::pager::feed(app, p)?),
         "buffer.edit" => edit(app, p).map(Out::Now),
         "buffer.save" => {
             let rel = rel_path(app, p)?;
@@ -468,5 +471,15 @@ mod tests {
         let huge = "a".repeat(1001);
         assert!(call(&mut app, "events.wait", &json!({"topic": "terminal.output", "match": huge})).err().unwrap().contains("1000"));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pager_feed_opens_git_logs_window_and_says_when_it_closed() {
+        let mut app = App::new(std::env::temp_dir(), None);
+        let r = call_now(&mut app, "pager.feed", json!({"title": "git log", "text": "commit 1\n"})).unwrap();
+        assert_eq!((r["open"].as_bool(), app.pager.is_some()), (Some(true), true));
+        app.pager = None;
+        let r = call_now(&mut app, "pager.feed", json!({"id": r["id"], "text": "more\n"})).unwrap();
+        assert_eq!(r["open"], false);
     }
 }

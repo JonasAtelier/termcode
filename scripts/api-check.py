@@ -110,6 +110,8 @@ def asked(method, params, pid, session, keys, via=FRESH):
 def safety(pid, session, repo):
     r, err = api("state.get", {"path": "/buffers/a.txt"}, to=pid)
     check("safety: reading needs no answer", r and "text" in r, err)
+    r, err = api("pager.feed", {"title": "x", "text": "x\n"}, to=pid)
+    check("safety: a pager window only from its own terminals", r is None and "only from this termcode's terminals" in err, err)
     shown, r, err = asked("terminal.send", {"text": "echo should-not-run\n"}, pid, session, ["Enter"])
     check("safety: running is asked first; Enter is Deny", shown and r is None and "said no" in err, err)
     shown, r, err = asked("buffer.edit", {"path": "a.txt", "changes": [{"start": {"line": 1}, "text": "ONCE "}]}, pid, session, ["Left", "Enter"])
