@@ -6,6 +6,17 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
+## [1.3.2] - 2026-11-27
+
+### Fixed
+
+- Find in the terminal (Ctrl+F) searches all of the scrollback: it read the oldest
+  screenful and the screen only, so a match between them was not found.
+- A terminal made shorter (its top edge dragged down, a smaller window) keeps its newest
+  rows in view, the older going into the scrollback, as a terminal does: the last
+  output and the prompt were cut off.
+- The macOS checks pass: these two were the tests that failed there.
+
 ## [1.3.1] - 2026-11-27
 
 ### Fixed

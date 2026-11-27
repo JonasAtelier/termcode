@@ -6090,7 +6090,8 @@ fn the_terminal_button_opens_a_shell_under_the_editors_and_its_top_edge_resizes_
     assert!(!screen(&mut app, &mut t).contains(" Terminal "));
     assert_eq!(app.ui.editor_area, full);
     mouse(&mut app, MouseEventKind::Down(MouseButton::Left), btn.x, btn.y);
-    assert!(screen(&mut app, &mut t).contains("hi-42"), "the same shell");
+    let s = screen(&mut app, &mut t);
+    assert!(s.contains("hi-42"), "the same shell: {s}");
 
     // The shell exiting closes the panel.
     typ(&mut app, "exit");
@@ -7259,7 +7260,7 @@ fn terminals_open_as_tabs_switch_close_and_find_in_the_scrollback() {
     assert!(app.term_find.is_some());
     typ(&mut app, "needle");
     let f = app.term_find.as_ref().unwrap();
-    assert_eq!(f.count, (2, 2), "the newest of the two");
+    assert_eq!(f.count, (2, 2), "the newest of the two: {:?}", app.terms[0].lines().iter().filter(|l| l.contains("needle") || l.contains("ne%s")).collect::<Vec<_>>());
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(app.term_find.as_ref().unwrap().count.0, 1);
     let s = screen(&mut app, &mut t);

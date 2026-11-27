@@ -413,6 +413,14 @@ impl Term {
         if self.parser.screen().size() == (rows, cols) {
             return;
         }
+        // Shorter: vt100 drops the bottom rows, the newest (the prompt, the last output). A
+        // terminal pushes the top ones into the scrollback instead, the cursor's row kept in
+        // view. A full-screen program's screen is its own: it redraws it.
+        let (old, (cr, cc)) = (self.parser.screen().size().0, self.parser.screen().cursor_position());
+        if rows < old && cr >= rows && !self.parser.screen().alternate_screen() {
+            let k = cr + 1 - rows;
+            self.parser.process(format!("\x1b[{old};1H{}\x1b[{};{}H", "\n".repeat(usize::from(k)), cr + 1 - k, cc + 1).as_bytes());
+        }
         self.parser.screen_mut().set_size(rows, cols);
         let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
         // SAFETY: an open PTY master and a valid winsize.
@@ -429,10 +437,19 @@ impl Term {
     /// Every row: the scrollback's, oldest first, then the screen's.
     pub fn lines(&mut self) -> Vec<String> {
         let keep = self.parser.screen().scrollback();
-        let cols = self.parser.screen().size().1;
+        let (h, cols) = self.parser.screen().size();
+        let h = usize::from(h);
         self.parser.screen_mut().set_scrollback(usize::MAX);
         let n = self.parser.screen().scrollback();
-        let mut v: Vec<String> = self.parser.screen().rows(0, cols).take(n).collect();
+        // A view shows one screenful: the scrollback a screenful at a time (scrolled back
+        // by `s`, the view's top row is row n - s of it).
+        let mut v: Vec<String> = Vec::with_capacity(n + h);
+        let mut s = n;
+        while s > 0 {
+            self.parser.screen_mut().set_scrollback(s);
+            v.extend(self.parser.screen().rows(0, cols).take(s.min(h)));
+            s = s.saturating_sub(h);
+        }
         self.parser.screen_mut().set_scrollback(0);
         v.extend(self.parser.screen().rows(0, cols));
         self.parser.screen_mut().set_scrollback(keep);
@@ -1103,6 +1120,29 @@ mod tests {
         assert_eq!(r(M::Press, E::Sgr, 0, false, false, none), None, "X10 mode: presses only");
         assert_eq!(r(M::PressRelease, E::Sgr, 0, true, true, none), None, "no motion");
         assert_eq!(r(M::None, E::Sgr, 0, true, false, none), None);
+    }
+
+    #[test]
+    fn every_row_of_the_scrollback_is_found_and_a_shorter_screen_keeps_the_newest() {
+        let mut t = Term::spawn("/bin/sh", &std::env::temp_dir(), 10, 40, &[]).unwrap();
+        // (The shell's own output is never pumped in: only these rows are on it.)
+        t.parser.process(b"\x1b[2J\x1b[H");
+        for i in 0..100 {
+            t.parser.process(format!("row {i}\r\n").as_bytes());
+        }
+        let rows = |t: &mut Term| t.lines().into_iter().filter(|l| l.starts_with("row ")).collect::<Vec<_>>();
+        assert_eq!(rows(&mut t), (0..100).map(|i| format!("row {i}")).collect::<Vec<_>>(), "all of the scrollback, in order");
+        // Five rows shorter: the newest rows stay on the screen, the older go up.
+        t.resize(5, 40);
+        let screen = t.contents();
+        assert!(screen.contains("row 99") && screen.contains("row 96"), "the newest in view: {screen:?}");
+        assert_eq!(t.parser.screen().cursor_position().0, 4, "the cursor on the last row, under row 99");
+        assert_eq!(rows(&mut t).len(), 100, "nothing lost");
+        // Taller again, then a full-screen program's screen is its own to redraw.
+        t.resize(10, 40);
+        t.parser.process(b"\x1b[?1049h\x1b[10;1Hbottom");
+        t.resize(5, 40);
+        assert!(t.parser.screen().alternate_screen());
     }
 
     #[test]
