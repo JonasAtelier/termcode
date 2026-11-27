@@ -244,7 +244,9 @@ pub fn command_id(title: &str) -> String {
                 if i == 0 {
                     w
                 } else {
-                    w[..1].to_uppercase() + &w[1..]
+                    // By char: a title's word may start with a letter of any script.
+                    let mut c = w.chars();
+                    c.next().map(|first| first.to_uppercase().chain(c).collect()).unwrap_or_default()
                 }
             })
             .collect::<String>()
@@ -427,6 +429,7 @@ mod tests {
         assert_eq!(command_id("View: Toggle Minimap"), "view.toggleMinimap");
         assert_eq!(command_id("Preferences: Open Settings (JSON)"), "preferences.openSettingsJson");
         assert_eq!(command_id("Go Back"), "goBack");
+        assert_eq!(command_id("Serial: Open 開啟 éclair"), "serial.open開啟Éclair", "any script");
         let ids: Vec<String> = commands().map(|c| c.0).collect();
         let mut seen = std::collections::HashSet::new();
         assert!(ids.iter().all(|i| seen.insert(i.clone())), "duplicate ids");

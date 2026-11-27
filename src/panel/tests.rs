@@ -1425,6 +1425,49 @@ fn tiny_terminals_never_panic() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn every_view_and_popup_draws_at_any_size_down_to_one_cell() {
+    let root = repo("anysize");
+    fs::write(root.join("README.md"), "changed\n").unwrap();
+    let mut app = App::new(root.clone(), None);
+    app.refresh();
+    wait(&mut app);
+    app.open_file(0, "src/main.rs", false);
+    wait(&mut app);
+    app.outline_open = true;
+    app.toggle_terminal();
+    let text: String = (0..40).map(|i| format!("\x1b[33mcommit {i:07x}\x1b[m line {i} {}\n", "x".repeat(i * 3))).collect();
+    let sizes = [1u16, 2, 3, 5, 8, 12, 17, 23, 29, 45, 60];
+    for w in sizes {
+        for h in [1u16, 2, 3, 4, 6, 9, 13, 20] {
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            let mut draw = |app: &mut App, what: &str| {
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    t.draw(|f| crate::ui::draw(app, f)).unwrap();
+                }));
+                assert!(r.is_ok(), "{what} at {w}x{h}");
+            };
+            for side in [Side::EXPLORER, Side::SEARCH, Side::SCM, Side::PROGRAMMER, Side::GITHUB] {
+                app.side = side;
+                draw(&mut app, &format!("side {}", side.idx()));
+            }
+            app.side = Side::EXPLORER;
+            crate::pager::feed(&mut app, &serde_json::json!({"title": "git log --oneline", "branch": "main", "repo": "anysize", "text": text, "done": true})).unwrap();
+            draw(&mut app, "the git window");
+            app.pager = None;
+            app.prefix_armed = true;
+            draw(&mut app, "the prefix popup");
+            app.prefix_armed = false;
+            crate::settingsui::open(&mut app);
+            draw(&mut app, "settings");
+            app.settings_dlg = None;
+        }
+    }
+    wait_idle(&mut app);
+    drop(app);
+    fs::remove_dir_all(&root).unwrap();
+}
+
 /// Press on tab `i` of group `g`, drag through `via` (live hit rects), release on the last.
 fn drag_tab(app: &mut App, t: &mut Terminal<TestBackend>, g: usize, i: usize, via: &[(u16, u16)]) {
     screen(app, t);

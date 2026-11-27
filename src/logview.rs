@@ -99,8 +99,9 @@ pub fn time_of(line: &str) -> Option<f64> {
     };
     // 2026-11-17 12:00:00.123 / 2026-11-17T12:00:00Z
     if t.len() >= 19 && t.as_bytes()[4] == b'-' && t.as_bytes()[7] == b'-' {
-        let days = days_from(num(&t[0..4])? as i64, num(&t[5..7])? as i64, num(&t[8..10])? as i64);
-        let (s, _) = clock(&t[11..])?;
+        // Checked: only bytes 4 and 7 are known ASCII (serial garbage can sit in the rest).
+        let days = days_from(num(t.get(0..4)?)? as i64, num(t.get(5..7)?)? as i64, num(t.get(8..10)?)? as i64);
+        let (s, _) = clock(t.get(11..)?)?;
         return Some(days as f64 * 86400.0 + s);
     }
     if let Some((s, _)) = clock(t) {
@@ -807,6 +808,10 @@ mod tests {
         assert_eq!(time_of("[   12.500000] usb 1-1: new device"), Some(12.5));
         assert_eq!(time_of("I (1500) wifi: up"), Some(1.5));
         assert_eq!(time_of("no time here"), None);
+        // Serial garbage (a lost byte reads as U+FFFD, 3 bytes) where the date's digits go.
+        for line in ["2026-11-17\u{FFFD}2:00:00 boot", "2026-11-1\u{FFFD}T12:00:00 boot", "2026-1\u{FFFD}-17 12:00:00 x"] {
+            assert_eq!(time_of(line), None, "{line}");
+        }
         assert_eq!((gap(0.012), gap(1.25), gap(185.0)), ("+12 ms".into(), "+1.25 s".into(), "+3m05s".into()));
     }
 

@@ -721,6 +721,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let title = args.iter().position(|a| a == "--title").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(git_command);
     let (branch, repo) = where_git_runs();
     let command = args.iter().position(|a| a == "--command").and_then(|i| args.get(i + 1)).cloned();
+    // The user's own pager.<command> wins: false pages not at all, a program (delta…) is theirs.
+    match command.as_deref().and_then(|c| own_pager(c, &|k| std::env::var(k).ok(), None)).as_deref().map(choice) {
+        Some(Own::AsIs) => return std::io::copy(&mut std::io::stdin(), &mut std::io::stdout()).map(|_| ()).map_err(|e| e.to_string()),
+        Some(Own::Run(p)) => return std::process::Command::new("sh").args(["-c", &p]).status().map(|_| ()).map_err(|e| e.to_string()),
+        Some(Own::Window) | None => {}
+    }
     let sock = std::env::var_os(crate::api::ENV).filter(|s| !s.is_empty()).map(std::path::PathBuf::from);
     let feed = |sock: &std::path::Path, p: Value| -> Result<Value, String> {
         let r = crate::api::rpc(sock, &json!({"jsonrpc": "2.0", "id": 1, "method": "pager.feed", "params": p}))?;
@@ -815,6 +821,46 @@ fn where_git_runs() -> (String, String) {
     let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"]).or_else(|| git(&["rev-parse", "--short", "HEAD"]).map(|c| format!("({c})"))).unwrap_or_default();
     let repo = git(&["rev-parse", "--show-toplevel"]).and_then(|t| t.rsplit('/').next().map(str::to_string)).unwrap_or_default();
     (branch, repo)
+}
+
+/// What the user's own pager.<command> asks for.
+#[derive(Debug, PartialEq)]
+enum Own {
+    Window,
+    AsIs,
+    Run(String),
+}
+
+/// git's reading of a pager.<command> value: a boolean (true: the usual pager, here the
+/// window), else the program to page with.
+fn choice(v: &str) -> Own {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "false" | "no" | "off" | "0" => Own::AsIs,
+        "" | "true" | "yes" | "on" | "1" => Own::Window,
+        // termcode's own (never run it again from here: it would call itself).
+        _ if v.contains(" pager --command ") => Own::Window,
+        _ => Own::Run(v.trim().to_string()),
+    }
+}
+
+/// The user's own pager.<command> in git's configuration, termcode's (git_env's entries,
+/// the last in GIT_CONFIG_COUNT) left out; `get` reads the environment, `dir` is where git
+/// runs (none: here).
+fn own_pager(command: &str, get: &dyn Fn(&str) -> Option<String>, dir: Option<&std::path::Path>) -> Option<String> {
+    let n: usize = get("GIT_CONFIG_COUNT").and_then(|c| c.parse().ok()).unwrap_or(0);
+    let ours = (0..n).find(|i| get(&format!("GIT_CONFIG_VALUE_{i}")).is_some_and(|v| v.contains(" pager --command "))).unwrap_or(n);
+    let mut git = std::process::Command::new("git");
+    if let Some(d) = dir {
+        git.current_dir(d);
+    }
+    let out = git
+        .args(["config", "--get", &format!("pager.{command}")])
+        .env("GIT_CONFIG_COUNT", ours.to_string())
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Not in termcode's window (no termcode, the API off, that command's assist key off):
@@ -1121,6 +1167,27 @@ mod tests {
         assert!(s.git_assisted("log") && !s.git_assisted("blame") && !s.git_assisted("commit"));
         s.assist_git = false;
         assert!(s.git_assisted_commands().is_empty());
+    }
+
+    #[test]
+    fn the_users_own_pager_setting_for_a_command_wins_over_termcodes() {
+        assert_eq!((choice("false"), choice("Off"), choice("0")), (Own::AsIs, Own::AsIs, Own::AsIs), "no paging");
+        assert_eq!((choice("true"), choice("1")), (Own::Window, Own::Window), "the usual pager: the window");
+        assert_eq!(choice("delta --side-by-side"), Own::Run("delta --side-by-side".into()), "their program");
+        assert_eq!(choice("'/t/termcode' pager --command log"), Own::Window, "termcode's own, never run again");
+        // Read from git, with termcode's own entries (the last ones) left out.
+        let dir = std::env::temp_dir().join(format!("termcode-ownpager-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |a: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&dir).args(a).status().unwrap().success());
+        git(&["init", "-q"]);
+        git(&["config", "pager.branch", "false"]);
+        let env = |k: &str| match k {
+            "GIT_CONFIG_COUNT" => Some("1".to_string()),
+            "GIT_CONFIG_VALUE_0" => Some("'/t/termcode' pager --command branch".to_string()),
+            _ => None,
+        };
+        assert_eq!((own_pager("branch", &env, Some(&dir)), own_pager("log", &env, Some(&dir))), (Some("false".to_string()), None), "theirs, or none set");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

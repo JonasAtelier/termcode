@@ -15,6 +15,10 @@ version (0.2.0) adds features or changes settings or keys, and a new PATCH versi
   `GHOSTTY_*`, `KITTY_WINDOW_ID`, `TERMINFO`…): `herdr` or `tmux` run there acted on
   termcode's pane. `TERM_PROGRAM_VERSION` is termcode's. A popup's title is inside it,
   its top line unbroken (in Ghostty a title in the border left a dark gap over it).
+- The git window respects a command's own pager setting: `pager.branch=false` prints
+  as git does without termcode, `pager.diff=delta` pages with delta.
+- The log view no longer crashes on a line whose date has a garbled character in it
+  (serial noise), as `2026-11-17�12:00:00`.
 
 ### Changed
 
