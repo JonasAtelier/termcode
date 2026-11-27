@@ -6,15 +6,16 @@ Versions follow [Semantic Versioning](https://semver.org): before 1.0, a new MIN
 version (0.2.0) adds features or changes settings or keys, and a new PATCH version
 (0.1.1) only fixes bugs.
 
-## [Unreleased]
+## [1.3.1] - 2026-11-27
 
 ### Fixed
 
 - A shell in termcode's terminal no longer gets the variables of the terminal or
   multiplexer termcode runs in that name its pane or window (`HERDR_*`, `TMUX`,
   `GHOSTTY_*`, `KITTY_WINDOW_ID`, `TERMINFO`…): `herdr` or `tmux` run there acted on
-  termcode's pane. `TERM_PROGRAM_VERSION` is termcode's. A popup's title is inside it,
-  its top line unbroken (in Ghostty a title in the border left a dark gap over it).
+  termcode's pane. `TERM_PROGRAM_VERSION` is termcode's.
+- A popup's title is inside it, its top line unbroken: in Ghostty a title in the border
+  left a dark gap over it.
 - The git window respects a command's own pager setting: `pager.branch=false` prints
   as git does without termcode, `pager.diff=delta` pages with delta.
 - The log view no longer crashes on a line whose date has a garbled character in it
