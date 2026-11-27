@@ -27,12 +27,30 @@ cargo install termcode --locked
 termcode .
 ```
 
+**Optional file and folder icons.** To install JetBrainsMono Nerd Font Mono for your Linux user, run these commands with `curl`, `unzip` and `fontconfig` installed.
+
+```sh
+font_dir="${XDG_DATA_HOME:-$HOME/.local/share}/fonts/JetBrainsMonoNerd"
+font_zip=$(mktemp) &&
+  curl -fL https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip -o "$font_zip" &&
+  mkdir -p "$font_dir" &&
+  unzip -jn "$font_zip" 'JetBrainsMonoNerdFontMono-*.ttf' -d "$font_dir" &&
+  fc-cache -f "$font_dir" &&
+  rm "$font_zip"
+```
+
+You can also download the archive and install `JetBrainsMonoNerdFontMono-Regular.ttf` with your font viewer. [Nerd Fonts downloads](https://www.nerdfonts.com/font-downloads)
+
+Restart termcode and leave **Settings → Icons** on `auto`. If icons appear as boxes, select **JetBrainsMono Nerd Font Mono** in your terminal’s font settings.
+
 Git enables Source Control and ripgrep (`rg`) enables project search. Press **Ctrl+P** to open a file, **Ctrl+S** to save, **F1** to see commands and **Ctrl+Q** to quit. To open directly at a line, run `termcode README.md:12`.
 
 <details>
 <summary>Debian, Ubuntu and herdr</summary>
 
 On Debian or Ubuntu, check your architecture with `dpkg --print-architecture`, download the matching package and run `sudo apt install ./termcode_*.deb`. [Latest release](https://github.com/JonasAtelier/termcode/releases/latest)
+
+The package also includes an interactive setup script. Run `/usr/share/termcode/setup.sh` as your user and accept the JetBrainsMono Nerd Font prompt to install the font. You can skip the other optional components.
 
 To add a Code tab in herdr 0.9.1+ from the Debian package, run `herdr plugin link /usr/share/termcode`, then `termcode --tab .`.
 
